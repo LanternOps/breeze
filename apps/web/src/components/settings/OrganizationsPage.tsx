@@ -52,6 +52,9 @@ export default function OrganizationsPage() {
   const [siteModalMode, setSiteModalMode] = useState<SiteModalMode>('closed');
   const [selectedSite, setSelectedSite] = useState<Site | null>(null);
   const [siteSubmitting, setSiteSubmitting] = useState(false);
+  // True when the site-add modal was auto-opened right after creating an org —
+  // drives first-site guidance copy and a Skip-for-now affordance.
+  const [guidingFirstSite, setGuidingFirstSite] = useState(false);
 
   const filteredOrgs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -159,8 +162,26 @@ export default function OrganizationsPage() {
         throw new Error('Failed to save organization');
       }
 
+      const createdOrg = await response.json().catch(() => null) as { id?: string } | null;
+
       await fetchOrganizations();
       handleCloseModal();
+
+      // Guide the user straight into adding their first site for the new org.
+      if (createdOrg?.id) {
+        const newOrg: Organization = {
+          id: createdOrg.id,
+          name: values.name,
+          status: values.status,
+          deviceCount: 0,
+          createdAt: new Date().toISOString()
+        };
+        setSelectedOrg(newOrg);
+        window.location.hash = createdOrg.id;
+        setSelectedSite(null);
+        setGuidingFirstSite(true);
+        setSiteModalMode('add');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -214,6 +235,7 @@ export default function OrganizationsPage() {
   const handleCloseSiteModal = () => {
     setSiteModalMode('closed');
     setSelectedSite(null);
+    setGuidingFirstSite(false);
   };
 
   const handleSiteSubmit = async (values: Record<string, unknown>) => {
@@ -569,15 +591,32 @@ export default function OrganizationsPage() {
       {(siteModalMode === 'add' || siteModalMode === 'edit') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4">
-              <h2 className="text-lg font-semibold">
-                {siteModalMode === 'add' ? 'Add Site' : 'Edit Site'}
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                {siteModalMode === 'add'
-                  ? `Add a new site to ${selectedOrg?.name}.`
-                  : 'Update the site details below.'}
-              </p>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {siteModalMode === 'edit'
+                    ? 'Edit Site'
+                    : guidingFirstSite
+                      ? `Add the first site for ${selectedOrg?.name}`
+                      : 'Add Site'}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  {siteModalMode === 'edit'
+                    ? 'Update the site details below.'
+                    : guidingFirstSite
+                      ? 'Organizations need at least one site — this is where devices will live. You can add more later.'
+                      : `Add a new site to ${selectedOrg?.name}.`}
+                </p>
+              </div>
+              {guidingFirstSite && (
+                <button
+                  type="button"
+                  onClick={handleCloseSiteModal}
+                  className="shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                >
+                  Skip for now
+                </button>
+              )}
             </div>
             <SiteForm
               onSubmit={handleSiteSubmit}
@@ -587,7 +626,13 @@ export default function OrganizationsPage() {
                   ? getSiteFormDefaults(selectedSite as Site & { address?: Record<string, string>; contact?: Record<string, string> })
                   : undefined
               }
-              submitLabel={siteModalMode === 'add' ? 'Create site' : 'Save changes'}
+              submitLabel={
+                siteModalMode === 'edit'
+                  ? 'Save changes'
+                  : guidingFirstSite
+                    ? 'Create first site'
+                    : 'Create site'
+              }
               loading={siteSubmitting}
             />
           </div>
