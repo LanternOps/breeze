@@ -15,8 +15,9 @@
  *   - resources/read
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import type { z } from 'zod';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
@@ -27,6 +28,8 @@ import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import type { BootstrapTool } from '../modules/mcpBootstrap/types';
+import { BOOTSTRAP_TOOL_NAMES, BootstrapError } from '../modules/mcpBootstrap/types';
 
 export const mcpServerRoutes = new Hono();
 
@@ -56,8 +59,156 @@ function isExecuteToolAllowedInProd(toolName: string): boolean {
   return mcpExecuteToolAllowlist.has('*') || mcpExecuteToolAllowlist.has(toolName);
 }
 
-// All MCP routes require API key auth
-mcpServerRoutes.use('*', apiKeyAuthMiddleware);
+// ============================================
+// Bootstrap module (unauthenticated tools)
+// ============================================
+
+const MCP_BOOTSTRAP_ENABLED = envFlag('MCP_BOOTSTRAP_ENABLED', false);
+
+type BootstrapModule = { unauthTools: BootstrapTool<any, any>[]; authTools: BootstrapTool<any, any>[] };
+let bootstrapModule: BootstrapModule | null = null;
+
+async function loadBootstrapModule(): Promise<BootstrapModule | null> {
+  if (!MCP_BOOTSTRAP_ENABLED) return null;
+  const mod = await import('../modules/mcpBootstrap');
+  return mod.initMcpBootstrap();
+}
+
+// Kick off load; await completes before first request in practice because
+// route handlers are async and the module import resolves synchronously from
+// the bundler cache after first resolution. Tests override this via vi.mock.
+void loadBootstrapModule()
+  .then((b) => {
+    bootstrapModule = b;
+  })
+  .catch((err) => {
+    console.error('[MCP] Failed to initialize bootstrap module:', err);
+  });
+
+// Exposed for tests to force-load the module after vi.mock registration.
+export async function __loadMcpBootstrapForTests(): Promise<BootstrapModule | null> {
+  bootstrapModule = await loadBootstrapModule();
+  return bootstrapModule;
+}
+
+/**
+ * Minimal zod → JSON Schema converter covering the shapes used by bootstrap
+ * tool input schemas (objects with string/enum/email fields). We don't pull
+ * in `zod-to-json-schema` for one use-site; if future bootstrap tools need
+ * richer shapes, swap this for the package.
+ */
+function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
+  const def: any = (schema as any)._def;
+  if (!def) return { type: 'object' };
+  switch (def.typeName) {
+    case 'ZodObject': {
+      const shape = typeof def.shape === 'function' ? def.shape() : def.shape;
+      const properties: Record<string, unknown> = {};
+      const required: string[] = [];
+      for (const [key, value] of Object.entries(shape)) {
+        const child = value as z.ZodSchema<any>;
+        properties[key] = zodToJsonSchema(child);
+        const childDef: any = (child as any)._def;
+        if (childDef?.typeName !== 'ZodOptional' && childDef?.typeName !== 'ZodDefault') {
+          required.push(key);
+        }
+      }
+      const out: Record<string, unknown> = { type: 'object', properties };
+      if (required.length > 0) out.required = required;
+      return out;
+    }
+    case 'ZodString': {
+      const out: Record<string, unknown> = { type: 'string' };
+      for (const check of def.checks ?? []) {
+        if (check.kind === 'email') out.format = 'email';
+        if (check.kind === 'min') out.minLength = check.value;
+        if (check.kind === 'max') out.maxLength = check.value;
+      }
+      return out;
+    }
+    case 'ZodEnum':
+      return { type: 'string', enum: [...def.values] };
+    case 'ZodNumber':
+      return { type: 'number' };
+    case 'ZodBoolean':
+      return { type: 'boolean' };
+    case 'ZodOptional':
+    case 'ZodDefault':
+      return zodToJsonSchema(def.innerType);
+    default:
+      return {};
+  }
+}
+
+/**
+ * Auth middleware with bootstrap carve-out.
+ *
+ * - Requests with an `X-API-Key` header go through normal API-key auth.
+ * - Requests WITHOUT an API key are rejected UNLESS the bootstrap flag is on
+ *   AND the request body is a JSON-RPC `tools/list` or `tools/call` for one
+ *   of the unauthenticated bootstrap tools. This lets fresh MCP clients
+ *   discover and invoke the three pre-activation tools without credentials.
+ */
+async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
+  const hasKey = Boolean(c.req.header('X-API-Key'));
+  if (hasKey) {
+    return apiKeyAuthMiddleware(c, next);
+  }
+
+  if (!MCP_BOOTSTRAP_ENABLED || !bootstrapModule) {
+    return c.json(
+      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
+      401,
+    );
+  }
+
+  // GET (SSE) with no key: allow only if bootstrap flag is on; SSE is optional
+  // transport and bootstrap clients use the plain POST flow anyway. Reject to
+  // keep the surface minimal.
+  if (c.req.method !== 'POST') {
+    return c.json(
+      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
+      401,
+    );
+  }
+
+  // Clone the body so downstream handlers can re-parse.
+  let body: any = null;
+  try {
+    body = await c.req.raw.clone().json();
+  } catch {
+    return c.json(
+      { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: invalid JSON' } },
+      400,
+    );
+  }
+
+  if (body?.method === 'initialize' || body?.method === 'notifications/initialized') {
+    return next();
+  }
+  if (body?.method === 'tools/list') {
+    return next();
+  }
+  if (
+    body?.method === 'tools/call' &&
+    typeof body?.params?.name === 'string' &&
+    (BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(body.params.name)
+  ) {
+    return next();
+  }
+
+  return c.json(
+    {
+      jsonrpc: '2.0',
+      id: body?.id ?? null,
+      error: { code: -32001, message: 'Missing X-API-Key header' },
+    },
+    401,
+  );
+}
+
+// All MCP routes go through auth (with bootstrap carve-out when flag is on).
+mcpServerRoutes.use('*', mcpAuthOrBootstrapMiddleware);
 
 // ============================================
 // Types
@@ -199,12 +350,12 @@ mcpServerRoutes.get(
 
 mcpServerRoutes.post(
   '/message',
-  requireApiKeyScope('ai:read'),
   async (c) => {
-    const apiKey = c.get('apiKey');
+    const apiKey = c.get('apiKey'); // undefined when bootstrap carve-out let us through unauthed
 
-    // Rate limit messages in production
-    if (process.env.NODE_ENV === 'production') {
+    // Rate limit messages in production (only if authed — unauth bootstrap
+    // tools are individually rate-limited inside the handlers)
+    if (apiKey && process.env.NODE_ENV === 'production') {
       const redis = getRedis();
       if (!redis) {
         return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } }, 503);
@@ -237,6 +388,26 @@ mcpServerRoutes.post(
         id: body?.id ?? null,
         error: { code: -32600, message: 'Invalid JSON-RPC request' }
       } satisfies JsonRpcResponse, 400);
+    }
+
+    // Unauthenticated path: only bootstrap methods (carve-out middleware
+    // guarantees we only arrive here for whitelisted methods).
+    if (!apiKey) {
+      const response = await handleJsonRpcUnauth(body, c);
+      return c.json(response);
+    }
+
+    // Authed path: enforce ai:read scope (previously done via requireApiKeyScope).
+    const hasAiRead = apiKey.scopes.includes('*') || apiKey.scopes.includes('ai:read');
+    if (!hasAiRead) {
+      return c.json(
+        {
+          jsonrpc: '2.0',
+          id: body.id ?? null,
+          error: { code: -32001, message: 'API key missing required scope: ai:read' },
+        } satisfies JsonRpcResponse,
+        403,
+      );
     }
 
     // Build a minimal AuthContext from the API key
@@ -335,9 +506,12 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
   const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
   const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
+  const bootstrapNames = new Set<string>(BOOTSTRAP_TOOL_NAMES);
 
-  // Filter tools based on API key scopes
+  // Filter tools based on API key scopes; bootstrap tools are pre-activation
+  // only and must never appear in the authed list.
   const filteredTools = allTools.filter((tool) => {
+    if (bootstrapNames.has(tool.name)) return false;
     const tier = getToolTier(tool.name);
     if (tier === undefined) return false;
 
@@ -359,6 +533,101 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
 }
 
 // ============================================
+// Unauthenticated JSON-RPC (bootstrap-only)
+// ============================================
+
+async function handleJsonRpcUnauth(
+  req: JsonRpcRequest,
+  c: Context,
+): Promise<JsonRpcResponse> {
+  try {
+    switch (req.method) {
+      case 'initialize':
+        return jsonRpcResult(req.id, {
+          protocolVersion: '2024-11-05',
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: 'breeze-rmm-bootstrap', version: '1.0.0' },
+        });
+      case 'notifications/initialized':
+        return jsonRpcResult(req.id, {});
+      case 'tools/list':
+        return handleBootstrapToolsList(req.id);
+      case 'tools/call':
+        return await handleBootstrapToolsCall(req.id, req.params ?? {}, c);
+      default:
+        return jsonRpcError(req.id, -32601, `Method not available pre-activation: ${req.method}`);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Internal error';
+    console.error('[MCP] Bootstrap JSON-RPC handler error:', err);
+    return jsonRpcError(req.id, -32000, message);
+  }
+}
+
+function handleBootstrapToolsList(id: string | number): JsonRpcResponse {
+  if (!bootstrapModule) {
+    return jsonRpcResult(id, { tools: [] });
+  }
+  return jsonRpcResult(id, {
+    tools: bootstrapModule.unauthTools.map((tool) => ({
+      name: tool.definition.name,
+      description: tool.definition.description,
+      inputSchema: zodToJsonSchema(tool.definition.inputSchema),
+    })),
+  });
+}
+
+async function handleBootstrapToolsCall(
+  id: string | number,
+  params: Record<string, unknown>,
+  c: Context,
+): Promise<JsonRpcResponse> {
+  const toolName = params.name as string;
+  const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
+
+  if (!toolName) {
+    return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+  if (!bootstrapModule) {
+    return jsonRpcError(id, -32601, 'Bootstrap tools are not available.');
+  }
+  const tool = bootstrapModule.unauthTools.find((t) => t.definition.name === toolName);
+  if (!tool) {
+    return jsonRpcError(id, -32601, `Unknown bootstrap tool: ${toolName}`);
+  }
+
+  const parsed = tool.definition.inputSchema.safeParse(toolInput);
+  if (!parsed.success) {
+    return jsonRpcError(id, -32602, 'Invalid arguments', parsed.error.flatten());
+  }
+
+  const ctx = {
+    ip: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    userAgent: c.req.header('user-agent') ?? null,
+    region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
+  };
+
+  try {
+    const result = await tool.handler(parsed.data, ctx);
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(result) }],
+    });
+  } catch (err) {
+    if (err instanceof BootstrapError) {
+      return jsonRpcError(id, -32000, err.message, {
+        code: err.code,
+        remediation: err.remediation,
+      });
+    }
+    const message = err instanceof Error ? err.message : 'Tool execution failed';
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+      isError: true,
+    });
+  }
+}
+
+// ============================================
 // tools/call
 // ============================================
 
@@ -373,6 +642,15 @@ async function handleToolsCall(
 
   if (!toolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // Bootstrap tools are pre-activation only — refuse when authed.
+  if ((BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(toolName)) {
+    return jsonRpcError(
+      id,
+      -32001,
+      `already_authenticated: bootstrap tool "${toolName}" is only available pre-activation.`,
+    );
   }
 
   // Check scope-based access

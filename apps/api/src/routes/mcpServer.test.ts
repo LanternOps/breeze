@@ -1,4 +1,47 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+
+// Mock heavy module-graph leaves so importing ./mcpServer doesn't stand up
+// a real postgres client / redis connection.
+vi.mock('../db', () => ({
+  db: {},
+  withDbAccessContext: vi.fn(),
+  withSystemDbAccessContext: vi.fn(),
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+}));
+
+vi.mock('../db/schema', () => ({
+  devices: {},
+  alerts: {},
+  scripts: {},
+  automations: {},
+  organizations: {},
+  apiKeys: {},
+}));
+
+vi.mock('../services/aiTools', () => ({
+  getToolDefinitions: () => [],
+  executeTool: vi.fn(),
+  getToolTier: () => undefined,
+}));
+
+vi.mock('../services/aiGuardrails', () => ({
+  checkGuardrails: () => ({ allowed: true }),
+  checkToolPermission: async () => null,
+  checkToolRateLimit: async () => null,
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  requestLikeFromSnapshot: vi.fn(),
+}));
+
+vi.mock('../services/redis', () => ({
+  getRedis: () => null,
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
+}));
 
 // Test the pure utility functions extracted from mcpServer.ts
 // These are not exported, so we test them via their behavior patterns
@@ -101,5 +144,101 @@ describe('MCP utility functions', () => {
       expect(isExecuteToolAllowedInProd(allowlist, 'restart-service')).toBe(true);
       expect(isExecuteToolAllowedInProd(allowlist, 'delete-device')).toBe(false);
     });
+  });
+});
+
+// ============================================================================
+// Bootstrap carve-out integration tests
+// ============================================================================
+//
+// These tests exercise the route file directly. Because the module reads
+// MCP_BOOTSTRAP_ENABLED at import time and kicks off a background load, we
+// set the env var BEFORE dynamic-importing the route module and reset modules
+// between cases.
+
+describe('MCP bootstrap carve-out', () => {
+  const originalFlag = process.env.MCP_BOOTSTRAP_ENABLED;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.MCP_BOOTSTRAP_ENABLED;
+    else process.env.MCP_BOOTSTRAP_ENABLED = originalFlag;
+    vi.doUnmock('../modules/mcpBootstrap');
+    vi.doUnmock('../middleware/apiKeyAuth');
+  });
+
+  it('flag off + no auth header → tools/list returns 401', async () => {
+    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    // Stub the API-key middleware to be inert (the carve-out middleware is
+    // what we exercise); middleware import still resolves.
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async () => {
+        throw new Error('should not be called when no X-API-Key header');
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error?.code).toBe(-32001);
+  });
+
+  it('flag on + no auth header → tools/list returns the three bootstrap tools', async () => {
+    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async () => {
+        throw new Error('should not be called when no X-API-Key header');
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    // Mock the bootstrap module so we don't pull in DB/redis/startup checks.
+    const fakeTool = (name: string) => ({
+      definition: {
+        name,
+        description: `fake ${name}`,
+        inputSchema: {
+          _def: { typeName: 'ZodObject', shape: () => ({}) },
+          safeParse: (v: unknown) => ({ success: true, data: v }),
+        },
+      },
+      handler: async () => ({ ok: true }),
+    });
+    vi.doMock('../modules/mcpBootstrap', () => ({
+      initMcpBootstrap: () => ({
+        unauthTools: [
+          fakeTool('create_tenant'),
+          fakeTool('verify_tenant'),
+          fakeTool('attach_payment_method'),
+        ],
+        authTools: [],
+      }),
+    }));
+
+    const mod = await import('./mcpServer');
+    // Force the bootstrap module to be loaded (the top-level load is fire-
+    // and-forget; tests call this helper to await it deterministically).
+    await mod.__loadMcpBootstrapForTests();
+
+    const res = await mod.mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.result?.tools).toBeDefined();
+    const names = body.result.tools.map((t: any) => t.name).sort();
+    expect(names).toEqual(['attach_payment_method', 'create_tenant', 'verify_tenant']);
   });
 });
