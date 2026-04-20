@@ -93,7 +93,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(agentVersions.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ versions, total: versions.length });
+        return JSON.stringify({ versions, total: versions.length }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
       }
 
       if (action === 'check_upgrades') {

@@ -117,7 +117,7 @@ vmRestoreRoutes.post(
   zValidator('json', bmrVmRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -265,7 +265,7 @@ vmRestoreRoutes.post(
   zValidator('json', instantBootSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -407,7 +407,7 @@ vmRestoreRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -468,7 +468,7 @@ vmRestoreRoutes.get(
 
 vmRestoreRoutes.get('/backup/restore/as-vm/estimate/:snapshotId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }

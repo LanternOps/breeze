@@ -23,7 +23,7 @@ vssRoutes.get(
   zValidator('param', deviceIdParamSchema),
   async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }

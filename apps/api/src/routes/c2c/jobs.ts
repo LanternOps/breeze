@@ -15,7 +15,7 @@ export const c2cJobsRoutes = new Hono();
 
 c2cJobsRoutes.get('/jobs', zValidator('query', c2cJobListSchema), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
   const query = c.req.valid('query');
@@ -40,7 +40,7 @@ c2cJobsRoutes.get('/jobs', zValidator('query', c2cJobListSchema), async (c) => {
 
 c2cJobsRoutes.get('/jobs/:id', zValidator('param', idParamSchema), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
   const { id } = c.req.valid('param');
@@ -61,7 +61,7 @@ c2cJobsRoutes.post(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const { id: configId } = c.req.valid('param');

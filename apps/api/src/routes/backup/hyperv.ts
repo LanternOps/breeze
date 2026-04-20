@@ -52,7 +52,7 @@ async function verifyDevice(deviceId: string, orgId: string) {
 
 hypervRoutes.get('/vms', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
@@ -86,7 +86,7 @@ hypervRoutes.get(
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -116,7 +116,7 @@ hypervRoutes.get(
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -170,7 +170,7 @@ hypervRoutes.post(
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -270,7 +270,7 @@ hypervRoutes.post(
   zValidator('json', hypervBackupSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -389,7 +389,7 @@ hypervRoutes.post(
   zValidator('json', hypervRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -477,7 +477,7 @@ hypervRoutes.post(
   zValidator('json', hypervCheckpointSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -558,7 +558,7 @@ hypervRoutes.post(
   zValidator('json', hypervVmStateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }

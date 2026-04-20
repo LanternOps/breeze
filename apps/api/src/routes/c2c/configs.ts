@@ -13,7 +13,7 @@ export const c2cConfigsRoutes = new Hono();
 
 c2cConfigsRoutes.get('/configs', async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
   const rows = await db
@@ -31,7 +31,7 @@ c2cConfigsRoutes.post(
   zValidator('json', createC2cConfigSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const payload = c.req.valid('json');
@@ -91,7 +91,7 @@ c2cConfigsRoutes.patch(
   zValidator('json', updateC2cConfigSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const { id } = c.req.valid('param');
@@ -134,7 +134,7 @@ c2cConfigsRoutes.delete(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const { id } = c.req.valid('param');

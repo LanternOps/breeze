@@ -345,7 +345,7 @@ registerTool({
         .limit(1);
 
       if (!latest) {
-        return JSON.stringify({ error: 'No CIS baseline result found for the selected device' });
+        return JSON.stringify({ message: 'No CIS baseline result found for the selected device' });
       }
       baselineResultId = latest.id;
       baselineId = latest.baselineId;

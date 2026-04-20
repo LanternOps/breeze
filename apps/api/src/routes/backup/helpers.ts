@@ -330,8 +330,29 @@ export function resolveScopedOrgId(
     scope: 'system' | 'partner' | 'organization';
     orgId?: string | null;
     accessibleOrgIds?: string[] | null;
-  }
+    canAccessOrg?: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string | null
 ) {
+  // If the caller passed ?orgId=... (set by fetchWithAuth from the org
+  // switcher), honor it as long as the auth context allows access. This is
+  // the normal path for partner/system users who have more than one
+  // accessible org — without it, resolveScopedOrgId would return null and
+  // every route would 400.
+  if (requestedOrgId) {
+    if (auth.canAccessOrg && !auth.canAccessOrg(requestedOrgId)) {
+      return null;
+    }
+    if (
+      !auth.canAccessOrg &&
+      Array.isArray(auth.accessibleOrgIds) &&
+      !auth.accessibleOrgIds.includes(requestedOrgId)
+    ) {
+      return null;
+    }
+    return requestedOrgId;
+  }
+
   if (auth.orgId) {
     return auth.orgId;
   }

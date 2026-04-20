@@ -18,7 +18,7 @@ const keyIdParamSchema = z.object({ id: z.string().uuid() });
 
 encryptionRoutes.get('/keys', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
@@ -47,7 +47,7 @@ encryptionRoutes.post(
   zValidator('json', createEncryptionKeySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -93,7 +93,7 @@ encryptionRoutes.get(
   zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -128,7 +128,7 @@ encryptionRoutes.delete(
   zValidator('param', keyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -172,7 +172,7 @@ encryptionRoutes.post(
   zValidator('json', rotateEncryptionKeySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }

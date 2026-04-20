@@ -22,7 +22,7 @@ dashboardRoutes.get(
   zValidator('query', usageHistoryQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
@@ -116,7 +116,7 @@ dashboardRoutes.get(
 
 dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
@@ -229,7 +229,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
 
 dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }

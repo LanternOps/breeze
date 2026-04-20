@@ -21,7 +21,7 @@ c2cItemsRoutes.get(
   zValidator('query', c2cItemSearchSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const query = c.req.valid('query');
@@ -66,7 +66,7 @@ c2cItemsRoutes.post(
   zValidator('json', c2cRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const payload = c.req.valid('json');
@@ -160,7 +160,7 @@ c2cItemsRoutes.get(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
     const { id } = c.req.valid('param');
@@ -188,7 +188,7 @@ c2cItemsRoutes.get(
 
 c2cItemsRoutes.get('/dashboard', async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
   const [connCount] = await db

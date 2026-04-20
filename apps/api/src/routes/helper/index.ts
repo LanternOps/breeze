@@ -13,7 +13,7 @@ import { streamSSE } from 'hono/streaming';
 import { createHash } from 'crypto';
 import { eq, and, desc, sql, asc, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext } from '../../db';
-import { aiSessions, aiMessages, aiToolExecutions, devices } from '../../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, devices, organizations } from '../../db/schema';
 import { approveToolSchema } from '@breeze/shared/validators/ai';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -88,8 +88,10 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
         status: devices.status,
+        partnerId: organizations.partnerId,
       })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(or(eq(devices.agentTokenHash, tokenHash), eq(devices.previousTokenHash, tokenHash)))
       .limit(1);
     return row ?? null;
@@ -161,6 +163,7 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
       scope: 'organization',
       orgId: device.orgId,
       accessibleOrgIds: [device.orgId],
+      accessiblePartnerIds: [device.partnerId],
     },
     async () => {
       await next();

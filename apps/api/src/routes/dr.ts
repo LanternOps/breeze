@@ -36,7 +36,26 @@ drRoutes.use('*', authMiddleware);
 const idParamSchema = z.object({ id: z.string().uuid() });
 const groupParamSchema = z.object({ id: z.string().uuid(), gid: z.string().uuid() });
 
-function resolveOrgId(auth: { orgId?: string | null; scope: string; accessibleOrgIds?: string[] | null }): string | null {
+function resolveOrgId(
+  auth: {
+    orgId?: string | null;
+    scope: string;
+    accessibleOrgIds?: string[] | null;
+    canAccessOrg?: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string | null
+): string | null {
+  if (requestedOrgId) {
+    if (auth.canAccessOrg && !auth.canAccessOrg(requestedOrgId)) return null;
+    if (
+      !auth.canAccessOrg &&
+      Array.isArray(auth.accessibleOrgIds) &&
+      !auth.accessibleOrgIds.includes(requestedOrgId)
+    ) {
+      return null;
+    }
+    return requestedOrgId;
+  }
   if (auth.orgId) return auth.orgId;
   if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
     return auth.accessibleOrgIds[0] ?? null;
@@ -53,7 +72,7 @@ drRoutes.post(
   zValidator('json', drPlanCreateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const payload = c.req.valid('json');
@@ -89,7 +108,7 @@ drRoutes.post(
 
 drRoutes.get('/plans', requireDrRead, async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveOrgId(auth);
+  const orgId = resolveOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
   const rows = await db
@@ -107,7 +126,7 @@ drRoutes.get(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id } = c.req.valid('param');
@@ -137,7 +156,7 @@ drRoutes.patch(
   zValidator('json', drPlanUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id } = c.req.valid('param');
@@ -183,7 +202,7 @@ drRoutes.delete(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id } = c.req.valid('param');
@@ -223,7 +242,7 @@ drRoutes.post(
   zValidator('json', drGroupCreateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id: planId } = c.req.valid('param');
@@ -266,7 +285,7 @@ drRoutes.patch(
   zValidator('json', drGroupUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id: planId, gid } = c.req.valid('param');
@@ -317,7 +336,7 @@ drRoutes.delete(
   zValidator('param', groupParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id: planId, gid } = c.req.valid('param');
@@ -360,7 +379,7 @@ drRoutes.post(
   zValidator('json', drExecutionTriggerSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id: planId } = c.req.valid('param');
@@ -405,7 +424,7 @@ drRoutes.get(
   zValidator('query', drExecutionsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const query = c.req.valid('query');
@@ -437,7 +456,7 @@ drRoutes.get(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id } = c.req.valid('param');
@@ -481,7 +500,7 @@ drRoutes.post(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveOrgId(auth);
+    const orgId = resolveOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
 
     const { id } = c.req.valid('param');

@@ -2,11 +2,27 @@
  * C2C route helpers — org resolution and secret masking
  */
 
-export function resolveScopedOrgId(auth: {
-  scope: 'system' | 'partner' | 'organization';
-  orgId?: string | null;
-  accessibleOrgIds?: string[] | null;
-}): string | null {
+export function resolveScopedOrgId(
+  auth: {
+    scope: 'system' | 'partner' | 'organization';
+    orgId?: string | null;
+    accessibleOrgIds?: string[] | null;
+    canAccessOrg?: (orgId: string) => boolean;
+  },
+  requestedOrgId?: string | null
+): string | null {
+  if (requestedOrgId) {
+    if (auth.canAccessOrg && !auth.canAccessOrg(requestedOrgId)) return null;
+    if (
+      !auth.canAccessOrg &&
+      Array.isArray(auth.accessibleOrgIds) &&
+      !auth.accessibleOrgIds.includes(requestedOrgId)
+    ) {
+      return null;
+    }
+    return requestedOrgId;
+  }
+
   if (auth.orgId) return auth.orgId;
 
   if (
