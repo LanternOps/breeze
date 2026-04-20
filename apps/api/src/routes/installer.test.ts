@@ -9,6 +9,7 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    delete: vi.fn(),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
@@ -48,7 +49,7 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
     } as any);
 
     const app = makeApp();
-    const res = await app.request('/api/v1/installer/bootstrap/AAAAAA');
+    const res = await app.request('/api/v1/installer/bootstrap/AAAAAAAAAA');
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'token invalid, expired, or already used' });
   });
@@ -58,7 +59,7 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
       from: () => ({
         where: () => ({
           limit: () => Promise.resolve([{
-            id: 't1', token: 'BBBBBB', orgId: 'o1',
+            id: 't1', token: 'BBBBBBBBBB', orgId: 'o1',
             parentEnrollmentKeyId: 'pk1', siteId: 's1', maxUsage: 1,
             consumedAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
           }]),
@@ -67,7 +68,7 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
     } as any);
 
     const app = makeApp();
-    const res = await app.request('/api/v1/installer/bootstrap/BBBBBB');
+    const res = await app.request('/api/v1/installer/bootstrap/BBBBBBBBBB');
     expect(res.status).toBe(404);
   });
 
@@ -76,7 +77,7 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
       from: () => ({
         where: () => ({
           limit: () => Promise.resolve([{
-            id: 't1', token: 'CCCCCC', orgId: 'o1',
+            id: 't1', token: 'CCCCCCCCCC', orgId: 'o1',
             parentEnrollmentKeyId: 'pk1', siteId: 's1', maxUsage: 1,
             consumedAt: null, expiresAt: new Date(Date.now() - 1000),
           }]),
@@ -85,7 +86,7 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
     } as any);
 
     const app = makeApp();
-    const res = await app.request('/api/v1/installer/bootstrap/CCCCCC');
+    const res = await app.request('/api/v1/installer/bootstrap/CCCCCCCCCC');
     expect(res.status).toBe(404);
   });
 
@@ -94,7 +95,7 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
     process.env.AGENT_ENROLLMENT_SECRET = 'shared-secret-test';
 
     const tokenRow = {
-      id: 't1', token: 'DDDDDD', orgId: 'o1',
+      id: 't1', token: 'DDDDDDDDDD', orgId: 'o1',
       parentEnrollmentKeyId: 'pk1', siteId: 's1', maxUsage: 3,
       createdBy: 'u1',
       consumedAt: null, expiresAt: new Date(Date.now() + 60_000),
@@ -102,9 +103,11 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
     const parentKey = {
       id: 'pk1', name: 'Acme parent', orgId: 'o1', siteId: 's1',
       keySecretHash: 'parent-secret-hash',
+      expiresAt: new Date(Date.now() + 60_000 * 60),
     };
     const org = { id: 'o1', name: 'Acme Corp' };
 
+    // Select call order: (1) token row, (2) parent key, (3) org name
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
@@ -116,6 +119,14 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
         from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }),
       } as any);
 
+    // INSERT child key
+    vi.mocked(db.insert).mockReturnValue({
+      values: () => ({
+        returning: () => Promise.resolve([{ id: 'ck1', orgId: 'o1', siteId: 's1' }]),
+      }),
+    } as any);
+
+    // UPDATE consume (returns consumed row)
     vi.mocked(db.update).mockReturnValue({
       set: () => ({
         where: () => ({
@@ -124,14 +135,8 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
       }),
     } as any);
 
-    vi.mocked(db.insert).mockReturnValue({
-      values: () => ({
-        returning: () => Promise.resolve([{ id: 'ck1', orgId: 'o1', siteId: 's1' }]),
-      }),
-    } as any);
-
     const app = makeApp();
-    const res = await app.request('/api/v1/installer/bootstrap/DDDDDD');
+    const res = await app.request('/api/v1/installer/bootstrap/DDDDDDDDDD');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.serverUrl).toBe('https://us.2breeze.app');
