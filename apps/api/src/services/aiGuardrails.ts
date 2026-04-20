@@ -261,6 +261,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+  get_fleet_status: { resource: 'devices', action: 'read' },
   // Tags, custom fields, and registry tools
   manage_tags: {
     list: { resource: 'devices', action: 'read' },

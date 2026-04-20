@@ -476,6 +476,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     quarantineDir: safePath.optional(),
   }),
 
+  get_fleet_status: z.object({}),
+
   get_fleet_health: z.object({
     orgId: uuid.optional(),
     siteId: uuid.optional(),
