@@ -84,7 +84,7 @@ m365AuthRoutes.get('/m365/config', async (c) => {
 /** Generate a Microsoft admin consent URL with CSRF state. */
 m365AuthRoutes.get('/m365/consent-url', async (c) => {
   const auth = c.get('auth');
-  const orgId = resolveScopedOrgId(auth);
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
   const config = getPlatformConfig();

@@ -186,7 +186,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         const posture = await getLatestSecurityPostureForDevice(input.deviceId);
         if (!posture) {
           return JSON.stringify({
-            error: 'No security posture data available for this device yet'
+            message: 'No security posture data available for this device yet'
           });
         }
 

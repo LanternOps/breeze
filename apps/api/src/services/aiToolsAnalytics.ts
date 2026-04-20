@@ -248,7 +248,7 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!summary) {
-        return JSON.stringify({ error: `No executive summary found for period type "${periodType}".` });
+        return JSON.stringify({ message: `No executive summary found for period type "${periodType}".` });
       }
 
       return JSON.stringify({ summary });

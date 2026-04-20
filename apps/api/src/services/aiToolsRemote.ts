@@ -305,7 +305,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
         .orderBy(desc(remoteSessions.createdAt))
         .limit(limit);
 
-      return JSON.stringify({ sessions, total: sessions.length });
+      return JSON.stringify({ sessions, total: sessions.length }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     },
   });
 

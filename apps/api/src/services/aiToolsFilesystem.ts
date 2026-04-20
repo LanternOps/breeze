@@ -163,7 +163,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (!snapshot) {
-        return JSON.stringify({ error: 'No filesystem analysis available. Try refresh=true.' });
+        return JSON.stringify({ message: 'No filesystem analysis available. Try refresh=true.' });
       }
 
       const cleanupPreview = buildCleanupPreview(snapshot);
@@ -226,7 +226,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       const snapshot = await getLatestFilesystemSnapshot(deviceId);
       if (!snapshot) {
-        return JSON.stringify({ error: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
+        return JSON.stringify({ message: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
       }
 
       const requestedCategories = Array.isArray(input.categories)

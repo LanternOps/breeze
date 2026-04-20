@@ -153,7 +153,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           summary,
           metrics: metrics.slice(0, 50) // Limit raw output
-        });
+        }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
       }
 
       // Hourly/daily aggregation
@@ -163,7 +163,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         summary,
         aggregation,
         buckets
-      });
+      }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
     }
   });
 
@@ -578,7 +578,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!latestBoot) {
-        return JSON.stringify({ error: 'No boot performance data available for this device.' });
+        return JSON.stringify({ message: 'No boot performance data available for this device.' });
       }
 
       const allItems = normalizeStartupItems(Array.isArray(latestBoot.startupItems) ? latestBoot.startupItems : []);

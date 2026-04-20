@@ -230,7 +230,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
 
       const detail = await getUserRiskDetail(resolved.orgId, input.userId);
       if (!detail) {
-        return JSON.stringify({ error: 'No user risk data available for this user' });
+        return JSON.stringify({ message: 'No user risk data available for this user' });
       }
 
       return JSON.stringify({ userRisk: detail });
