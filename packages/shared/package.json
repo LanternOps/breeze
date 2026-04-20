@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "disposable-email-domains": "^1.0.62",
     "zod": "^3.24.1"
   },
   "devDependencies": {
