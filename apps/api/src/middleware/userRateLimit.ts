@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import type { AuthContext } from './auth';
-import { getRedis } from '../services';
+import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 
 /**

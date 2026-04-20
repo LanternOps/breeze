@@ -7,7 +7,7 @@ const mockRateLimiter = vi.fn();
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: (...args: unknown[]) => mockRateLimiter(...args),
 }));
-vi.mock('../services', () => ({
+vi.mock('../services/redis', () => ({
   getRedis: () => ({} as any),
 }));
 

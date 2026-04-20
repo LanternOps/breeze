@@ -328,6 +328,22 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     const shortUrlOrigin = new URL(body.shortUrl).origin;
     expect(urlOrigin).toBe(shortUrlOrigin);
   });
+
+  it('returns 429 when per-user rate limit is exceeded', async () => {
+    const { rateLimiter } = await import('../services/rate-limit');
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(),
+    });
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'windows' }),
+    });
+    expect(res.status).toBe(429);
+  });
 });
 
 // ============================================================

@@ -7,6 +7,7 @@ import { customAlphabet } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import { enrollmentKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { userRateLimit } from '../middleware/userRateLimit';
 import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
@@ -286,6 +287,7 @@ enrollmentKeyRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   zValidator('json', createEnrollmentKeySchema),
   async (c) => {
@@ -394,6 +396,7 @@ enrollmentKeyRoutes.post(
   '/:id/rotate',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   zValidator('json', rotateEnrollmentKeySchema),
   async (c) => {
@@ -462,6 +465,7 @@ enrollmentKeyRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
@@ -856,6 +860,7 @@ enrollmentKeyRoutes.post(
   '/:id/installer-link',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   zValidator('json', installerLinkSchema),
   async (c) => {
