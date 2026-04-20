@@ -15,8 +15,10 @@ import {
   buildMacosInstallerZip, buildWindowsInstallerZip,
   fetchRegularMsi, fetchMacosPkg,
 } from '../services/installerBuilder';
-import { generateBootstrapToken, bootstrapTokenExpiresAt } from '../services/installerBootstrapToken';
-import { installerBootstrapTokens } from '../db/schema/installerBootstrapTokens';
+import {
+  issueBootstrapTokenForKey,
+  BootstrapTokenIssuanceError,
+} from '../services/installerBootstrapTokenIssuance';
 import { MsiSigningService } from '../services/msiSigning';
 import { getGithubReleaseVersion } from '../services/binarySource';
 import { captureException } from '../services/sentry';
@@ -752,42 +754,29 @@ enrollmentKeyRoutes.post(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    if (parent.expiresAt && new Date(parent.expiresAt) < new Date()) {
-      return c.json({ error: 'Enrollment key has expired' }, 410);
-    }
-    if (parent.maxUsage !== null && parent.usageCount >= parent.maxUsage) {
-      return c.json({ error: 'Enrollment key usage exhausted' }, 410);
-    }
-
-    const token = generateBootstrapToken();
-    const expiresAt = bootstrapTokenExpiresAt();
-
-    const [row] = await db
-      .insert(installerBootstrapTokens)
-      .values({
-        token,
-        orgId: parent.orgId,
+    try {
+      const { token, expiresAt } = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: parent.id,
-        siteId: parent.siteId,
+        createdByUserId: auth.user.id,
         maxUsage,
-        createdBy: auth.user.id,
-        expiresAt,
-      })
-      .returning();
+      });
 
-    writeEnrollmentKeyAudit(c, auth, {
-      orgId: parent.orgId,
-      action: 'enrollment_key.bootstrap_token_issued',
-      keyId: parent.id,
-      keyName: parent.name,
-      details: { tokenId: row.id, maxUsage },
-    });
+      writeEnrollmentKeyAudit(c, auth, {
+        orgId: parent.orgId,
+        action: 'enrollment_key.bootstrap_token_issued',
+        keyId: parent.id,
+        keyName: parent.name,
+        details: { maxUsage },
+      });
 
-    return c.json({
-      token,
-      expiresAt: expiresAt.toISOString(),
-      maxUsage,
-    });
+      return c.json({ token, expiresAt: expiresAt.toISOString(), maxUsage });
+    } catch (err) {
+      if (err instanceof BootstrapTokenIssuanceError) {
+        if (err.code === 'parent_not_found') return c.json({ error: err.message }, 404);
+        return c.json({ error: err.message }, 410);
+      }
+      throw err;
+    }
   },
 );
 

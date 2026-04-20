@@ -24,6 +24,14 @@ vi.mock('../db/schema', () => ({
   installerBootstrapTokens: {},
 }));
 
+vi.mock('../db/schema/orgs', () => ({
+  enrollmentKeys: {},
+}));
+
+vi.mock('../db/schema/installerBootstrapTokens', () => ({
+  installerBootstrapTokens: {},
+}));
+
 vi.mock('../services/installerBootstrapToken', () => ({
   generateBootstrapToken: vi.fn(() => 'ABC123'),
   bootstrapTokenExpiresAt: vi.fn(() => new Date('2026-04-20T00:00:00.000Z')),
@@ -604,34 +612,22 @@ describe('POST /:id/bootstrap-token', () => {
 
   it('issues a bootstrap token for a valid parent key', async () => {
     const parent = makeKeyRow();
-    const tokenRow = {
-      id: randomUUID(),
-      token: 'ABC123',
-      orgId: ORG_ID,
-      parentEnrollmentKeyId: parent.id,
-      siteId: SITE_ID,
-      maxUsage: 1,
-      createdBy: 'user-system',
-      createdAt: new Date(),
-      expiresAt: new Date('2026-04-20T00:00:00.000Z'),
-      consumedAt: null,
-      consumedFromIp: null,
-    };
 
-    // select: look up parent key
-    vi.mocked(db.select).mockReturnValueOnce({
+    // select x2: route's access-control lookup + helper's business-rule lookup
+    const parentSelectMock = {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([parent]),
         }),
       }),
-    } as any);
+    } as any;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(parentSelectMock)
+      .mockReturnValueOnce(parentSelectMock);
 
-    // insert: create bootstrap token row
+    // insert: create bootstrap token row (helper does not use .returning())
     vi.mocked(db.insert).mockReturnValueOnce({
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([tokenRow]),
-      }),
+      values: vi.fn().mockResolvedValue(undefined),
     } as any);
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
@@ -706,13 +702,17 @@ describe('POST /:id/bootstrap-token', () => {
       expiresAt: new Date(Date.now() - 10_000), // past
     });
 
-    vi.mocked(db.select).mockReturnValueOnce({
+    // select x2: route's access-control lookup + helper's business-rule lookup
+    const expiredSelectMock = {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([expiredParent]),
         }),
       }),
-    } as any);
+    } as any;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(expiredSelectMock)
+      .mockReturnValueOnce(expiredSelectMock);
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
       method: 'POST',
