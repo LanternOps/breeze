@@ -235,7 +235,10 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
       });
       if (resp.status === 404) return false;
       return resp.ok;
-    } catch {
+    } catch (err) {
+      console.warn('[installer] probeMacosInstallerApp: GitHub HEAD failed, treating as unavailable', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return false;
     }
   }
@@ -243,7 +246,10 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
   try {
     await stat(join(binaryDir, 'Breeze Installer.app.zip'));
     return true;
-  } catch {
+  } catch (err) {
+    console.warn('[installer] probeMacosInstallerApp: filesystem stat failed, treating as unavailable', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return false;
   }
 }
