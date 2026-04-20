@@ -33,9 +33,9 @@ vi.mock('../db/schema/installerBootstrapTokens', () => ({
 }));
 
 vi.mock('../services/installerBootstrapToken', () => ({
-  generateBootstrapToken: vi.fn(() => 'ABC123'),
+  generateBootstrapToken: vi.fn(() => 'ABC1234567'),
   bootstrapTokenExpiresAt: vi.fn(() => new Date('2026-04-20T00:00:00.000Z')),
-  BOOTSTRAP_TOKEN_PATTERN: /^[A-Z0-9]{6}$/,
+  BOOTSTRAP_TOKEN_PATTERN: /^[A-Z0-9]{10}$/,
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -633,9 +633,11 @@ describe('POST /:id/bootstrap-token', () => {
       .mockReturnValueOnce(parentSelectMock)
       .mockReturnValueOnce(parentSelectMock);
 
-    // insert: create bootstrap token row (helper does not use .returning())
+    // insert: create bootstrap token row — helper now uses .returning() to get the row id
     vi.mocked(db.insert).mockReturnValueOnce({
-      values: vi.fn().mockResolvedValue(undefined),
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'token-row-uuid-1' }]),
+      }),
     } as any);
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
@@ -646,7 +648,7 @@ describe('POST /:id/bootstrap-token', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.token).toMatch(/^[A-Z0-9]{6}$/);
+    expect(body.token).toMatch(/^[A-Z0-9]{10}$/);
     expect(body.expiresAt).toBeTypeOf('string');
     expect(body.maxUsage).toBe(1);
   });
@@ -749,7 +751,8 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
 
     // Default: issueBootstrapTokenForKey succeeds with a fixed token
     issueSpy = vi.spyOn(installerBootstrapTokenIssuance, 'issueBootstrapTokenForKey').mockResolvedValue({
-      token: 'ABC123',
+      id: 'token-row-uuid-1',
+      token: 'ABC1234567',
       expiresAt: new Date('2026-04-20T00:00:00.000Z'),
       parentKeyName: 'Test Key',
     });
@@ -785,7 +788,7 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
     expect(res.headers.get('Content-Type')).toBe('application/zip');
     const cd = res.headers.get('Content-Disposition') ?? '';
     // Should contain the bootstrap token + api host embedded in the filename
-    expect(cd).toMatch(/Breeze Installer \[ABC123@api\.example\.com\]\.app\.zip/);
+    expect(cd).toMatch(/Breeze Installer \[ABC1234567@api\.example\.com\]\.app\.zip/);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
 
     // renameAppInZip was called with correct args
@@ -793,7 +796,7 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
       Buffer.from('fixture-app-zip'),
       expect.objectContaining({
         oldAppName: 'Breeze Installer.app',
-        newAppName: 'Breeze Installer [ABC123@api.example.com].app',
+        newAppName: 'Breeze Installer [ABC1234567@api.example.com].app',
       }),
     );
   });

@@ -602,24 +602,37 @@ enrollmentKeyRoutes.get(
 
         const apiHost = new URL(serverUrl).host;
         const newAppName = `Breeze Installer [${issued.token}@${apiHost}].app`;
-        const renamedZip = await renameAppInZip(appZip, {
-          oldAppName: 'Breeze Installer.app',
-          newAppName,
-        });
 
-        writeEnrollmentKeyAudit(c, auth, {
-          orgId: parentKey.orgId,
-          action: 'enrollment_key.installer_download',
-          keyId: parentKey.id,
-          keyName: parentKey.name,
-          details: { platform, mode: 'app-bundle', token: issued.token, count: childMaxUsage },
-        });
+        let renamedZip: Buffer | undefined;
+        try {
+          renamedZip = await renameAppInZip(appZip, {
+            oldAppName: 'Breeze Installer.app',
+            newAppName,
+          });
+        } catch (err) {
+          console.error('[installer] renameAppInZip failed, falling back to legacy zip', {
+            parentKeyId: parentKey.id,
+            tokenId: issued.id, // orphaned bootstrap token — will expire normally
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Fall through to legacy path — do NOT return.
+        }
 
-        c.header('Content-Type', 'application/zip');
-        c.header('Content-Disposition', `attachment; filename="${newAppName}.zip"`);
-        c.header('Content-Length', String(renamedZip.length));
-        c.header('Cache-Control', 'no-store');
-        return c.body(renamedZip as unknown as ArrayBuffer);
+        if (renamedZip) {
+          writeEnrollmentKeyAudit(c, auth, {
+            orgId: parentKey.orgId,
+            action: 'enrollment_key.installer_download',
+            keyId: parentKey.id,
+            keyName: parentKey.name,
+            details: { platform, mode: 'app-bundle', tokenId: issued.id, count: childMaxUsage },
+          });
+
+          c.header('Content-Type', 'application/zip');
+          c.header('Content-Disposition', `attachment; filename="${newAppName}.zip"`);
+          c.header('Content-Length', String(renamedZip.length));
+          c.header('Cache-Control', 'no-store');
+          return c.body(renamedZip as unknown as ArrayBuffer);
+        }
       }
 
       // Falls through to legacy path below.
@@ -810,7 +823,7 @@ enrollmentKeyRoutes.post(
     }
 
     try {
-      const { token, expiresAt } = await issueBootstrapTokenForKey({
+      const { id: tokenId, token, expiresAt } = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: parent.id,
         createdByUserId: auth.user.id,
         maxUsage,
@@ -821,7 +834,7 @@ enrollmentKeyRoutes.post(
         action: 'enrollment_key.bootstrap_token_issued',
         keyId: parent.id,
         keyName: parent.name,
-        details: { maxUsage },
+        details: { maxUsage, tokenId },
       });
 
       return c.json({ token, expiresAt: expiresAt.toISOString(), maxUsage });
