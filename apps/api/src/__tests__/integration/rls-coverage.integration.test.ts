@@ -46,6 +46,8 @@ const ORG_ID_KEYED_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, string>([
   ['partners', 'id'],
   ['partner_users', 'partner_id'],
+  ['partner_activations', 'partner_id'],
+  ['deployment_invites', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
