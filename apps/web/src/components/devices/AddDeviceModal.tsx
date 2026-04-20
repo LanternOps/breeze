@@ -696,7 +696,25 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         )}
 
         {/* Footer */}
-        <div className="mt-6 flex justify-end">
+        <div className="mt-6 flex items-center justify-between gap-4">
+          <p className="text-xs text-muted-foreground">
+            Need to uninstall?{' '}
+            <a
+              href="/scripts/uninstall-darwin.sh"
+              download
+              className="underline hover:text-foreground"
+            >
+              macOS
+            </a>
+            {' · '}
+            <a
+              href="/scripts/uninstall-linux.sh"
+              download
+              className="underline hover:text-foreground"
+            >
+              Linux
+            </a>
+          </p>
           <button
             type="button"
             onClick={onClose}
