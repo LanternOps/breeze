@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { db } from '../../db';
 import {
@@ -25,6 +25,27 @@ import { recordActivationTransition } from './metrics';
  *   POST /activate/setup-intent        — create Stripe SetupIntent for payment attachment
  *   POST /activate/complete/webhook    — Stripe webhook for setup_intent.succeeded
  */
+/**
+ * Resolve the partner's default (first-created) organization id. Mirrors the
+ * convention used by configure_defaults / send_deployment_invites. Used to
+ * scope partner.* audit events so query_audit_log surfaces them for the
+ * partner's own MCP caller.
+ */
+async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
+  try {
+    const [row] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId))
+      .orderBy(asc(organizations.createdAt))
+      .limit(1);
+    return row?.id ?? null;
+  } catch (err) {
+    console.error('[activationRoutes] failed to resolve default orgId for partner', partnerId, err);
+    return null;
+  }
+}
+
 export function mountActivationRoutes(app: Hono): void {
   app.get('/activate/:token', async (c) => {
     const raw = c.req.param('token');
@@ -69,8 +90,9 @@ export function mountActivationRoutes(app: Hono): void {
       }
     });
 
+    const activationOrgId = await resolveDefaultOrgId(row.partnerId);
     writeAuditEvent({ req: { header: () => undefined } }, {
-      orgId: null,
+      orgId: activationOrgId,
       actorType: 'system',
       action: 'partner.activation_completed',
       resourceType: 'partner',
@@ -183,8 +205,9 @@ export function mountActivationRoutes(app: Hono): void {
       }
     });
 
+    const paymentOrgId = await resolveDefaultOrgId(partner.id);
     writeAuditEvent({ req: { header: () => undefined } }, {
-      orgId: null,
+      orgId: paymentOrgId,
       actorType: 'system',
       action: 'partner.payment_method_attached',
       resourceType: 'partner',

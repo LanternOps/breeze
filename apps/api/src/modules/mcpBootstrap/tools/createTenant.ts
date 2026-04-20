@@ -92,7 +92,10 @@ export const createTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Create
       userAgent: ctx.userAgent ?? undefined,
     });
     writeAuditEvent(reqLike, {
-      orgId: null,
+      // Scope the event to the tenant's default org so it shows up via
+      // query_audit_log for the partner's own MCP caller (audit_logs RLS /
+      // caller-side filter is org-scoped).
+      orgId: result.orgId,
       actorType: 'system',
       action: 'partner.mcp_provisioned',
       resourceType: 'partner',

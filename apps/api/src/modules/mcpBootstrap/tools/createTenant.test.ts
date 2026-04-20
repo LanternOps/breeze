@@ -126,6 +126,9 @@ describe('create_tenant', () => {
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        // Must scope to the tenant's default org so query_audit_log surfaces it
+        // for the partner's own MCP caller.
+        orgId: 'org-1',
         actorType: 'system',
         action: 'partner.mcp_provisioned',
         resourceType: 'partner',

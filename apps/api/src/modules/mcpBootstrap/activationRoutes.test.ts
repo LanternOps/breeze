@@ -89,6 +89,7 @@ function enqueueSelects(rows: unknown[][]): void {
         this.then = (resolve: any) => resolve(queue.shift() ?? []);
         return this;
       }),
+      orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockImplementation(() => Promise.resolve(queue.shift() ?? [])),
     };
     return chain as any;
@@ -180,6 +181,7 @@ describe('GET /activate/:token', () => {
         },
       ],
       [{ userId: 'user-1' }], // partnerUsers lookup inside the transaction
+      [{ id: 'org-default' }], // resolveDefaultOrgId() for the audit event
     ]);
     const { setMock } = defaultUpdateMock();
 
@@ -195,6 +197,7 @@ describe('GET /activate/:token', () => {
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        orgId: 'org-default',
         actorType: 'system',
         action: 'partner.activation_completed',
         resourceId: 'p1',
@@ -343,6 +346,7 @@ describe('POST /activate/complete/webhook', () => {
     enqueueSelects([
       [{ id: 'p1' }], // partner lookup by stripe_customer_id
       [{ id: 'org-1' }, { id: 'org-2' }], // organizations under the partner
+      [{ id: 'org-1' }], // resolveDefaultOrgId() for the audit event
     ]);
     const { setMock } = defaultUpdateMock();
 
@@ -359,6 +363,7 @@ describe('POST /activate/complete/webhook', () => {
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        orgId: 'org-1',
         action: 'partner.payment_method_attached',
         actorType: 'system',
         resourceId: 'p1',
