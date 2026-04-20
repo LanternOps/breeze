@@ -14,6 +14,9 @@ vi.mock('../../db', () => ({
       await cb(tx);
     }),
   },
+  // In tests the system DB access context is a passthrough — production wires
+  // it through AsyncLocalStorage + set_config() to establish RLS GUCs.
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({

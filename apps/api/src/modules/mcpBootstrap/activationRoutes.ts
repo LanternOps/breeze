@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import { createHash } from 'node:crypto';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import Stripe from 'stripe';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import {
   partners,
   partnerActivations,
@@ -54,54 +54,56 @@ export function mountActivationRoutes(app: Hono): void {
     const rl = await rateLimiter(getRedis(), `mcp:activate:token:${tokenHash}`, 10, 3600);
     if (!rl.allowed) return c.text('Too many attempts', 429);
 
-    const [row] = await db
-      .select()
-      .from(partnerActivations)
-      .where(eq(partnerActivations.tokenHash, tokenHash))
-      .limit(1);
-    if (!row) return c.text('Invalid activation link', 404);
-    if (row.consumedAt) return c.text('This link has already been used.', 410);
-    if (row.expiresAt < new Date()) {
-      return c.text('This link has expired. Ask your agent to call create_tenant again.', 410);
-    }
-
-    await db.transaction(async (tx) => {
-      await tx
-        .update(partnerActivations)
-        .set({ consumedAt: new Date() })
-        .where(eq(partnerActivations.id, row.id));
-      await tx
-        .update(partners)
-        .set({ emailVerifiedAt: new Date() })
-        .where(eq(partners.id, row.partnerId));
-      // Mark the admin user active so they can log in via the web app.
-      // (users table has no `emailVerified` column; moving status from
-      // 'invited' to 'active' is the closest analog.)
-      const [adminLink] = await tx
-        .select({ userId: partnerUsers.userId })
-        .from(partnerUsers)
-        .where(eq(partnerUsers.partnerId, row.partnerId))
+    return withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select()
+        .from(partnerActivations)
+        .where(eq(partnerActivations.tokenHash, tokenHash))
         .limit(1);
-      if (adminLink) {
-        await tx
-          .update(users)
-          .set({ status: 'active' })
-          .where(eq(users.id, adminLink.userId));
+      if (!row) return c.text('Invalid activation link', 404);
+      if (row.consumedAt) return c.text('This link has already been used.', 410);
+      if (row.expiresAt < new Date()) {
+        return c.text('This link has expired. Ask your agent to call create_tenant again.', 410);
       }
-    });
 
-    const activationOrgId = await resolveDefaultOrgId(row.partnerId);
-    writeAuditEvent({ req: { header: () => undefined } }, {
-      orgId: activationOrgId,
-      actorType: 'system',
-      action: 'partner.activation_completed',
-      resourceType: 'partner',
-      resourceId: row.partnerId,
-      result: 'success',
-    });
-    recordActivationTransition('pending_payment');
+      await db.transaction(async (tx) => {
+        await tx
+          .update(partnerActivations)
+          .set({ consumedAt: new Date() })
+          .where(eq(partnerActivations.id, row.id));
+        await tx
+          .update(partners)
+          .set({ emailVerifiedAt: new Date() })
+          .where(eq(partners.id, row.partnerId));
+        // Mark the admin user active so they can log in via the web app.
+        // (users table has no `emailVerified` column; moving status from
+        // 'invited' to 'active' is the closest analog.)
+        const [adminLink] = await tx
+          .select({ userId: partnerUsers.userId })
+          .from(partnerUsers)
+          .where(eq(partnerUsers.partnerId, row.partnerId))
+          .limit(1);
+        if (adminLink) {
+          await tx
+            .update(users)
+            .set({ status: 'active' })
+            .where(eq(users.id, adminLink.userId));
+        }
+      });
 
-    return c.redirect(`/activate/${raw}?status=email_verified`);
+      const activationOrgId = await resolveDefaultOrgId(row.partnerId);
+      writeAuditEvent({ req: { header: () => undefined } }, {
+        orgId: activationOrgId,
+        actorType: 'system',
+        action: 'partner.activation_completed',
+        resourceType: 'partner',
+        resourceId: row.partnerId,
+        result: 'success',
+      });
+      recordActivationTransition('pending_payment');
+
+      return c.redirect(`/activate/${raw}?status=email_verified`);
+    });
   });
 
   app.post('/activate/setup-intent', async (c) => {
@@ -116,27 +118,29 @@ export function mountActivationRoutes(app: Hono): void {
       return c.json({ error: 'missing_token' }, 400);
     }
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const [row] = await db
-      .select()
-      .from(partnerActivations)
-      .where(eq(partnerActivations.tokenHash, tokenHash))
-      .limit(1);
-    if (!row || !row.consumedAt) {
-      return c.json({ error: 'invalid_state' }, 400);
-    }
+    return withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select()
+        .from(partnerActivations)
+        .where(eq(partnerActivations.tokenHash, tokenHash))
+        .limit(1);
+      if (!row || !row.consumedAt) {
+        return c.json({ error: 'invalid_state' }, 400);
+      }
 
-    const billing = getBreezeBillingClient();
-    const returnUrl = `${process.env.PUBLIC_ACTIVATION_BASE_URL ?? ''}/activate/complete`;
-    const { setupUrl, customerId } = await billing.createSetupIntent({
-      partnerId: row.partnerId,
-      returnUrl,
+      const billing = getBreezeBillingClient();
+      const returnUrl = `${process.env.PUBLIC_ACTIVATION_BASE_URL ?? ''}/activate/complete`;
+      const { setupUrl, customerId } = await billing.createSetupIntent({
+        partnerId: row.partnerId,
+        returnUrl,
+      });
+      await db
+        .update(partners)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(partners.id, row.partnerId));
+
+      return c.json({ setup_url: setupUrl });
     });
-    await db
-      .update(partners)
-      .set({ stripeCustomerId: customerId })
-      .where(eq(partners.id, row.partnerId));
-
-    return c.json({ setup_url: setupUrl });
   });
 
   app.post('/activate/complete/webhook', async (c) => {
@@ -170,53 +174,55 @@ export function mountActivationRoutes(app: Hono): void {
     const customerId = typeof si.customer === 'string' ? si.customer : si.customer?.id ?? null;
     if (!customerId) return c.text('no customer', 400);
 
-    const [partner] = await db
-      .select({ id: partners.id })
-      .from(partners)
-      .where(eq(partners.stripeCustomerId, customerId))
-      .limit(1);
-    if (!partner) return c.text('unknown customer', 404);
+    return withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .select({ id: partners.id })
+        .from(partners)
+        .where(eq(partners.stripeCustomerId, customerId))
+        .limit(1);
+      if (!partner) return c.text('unknown customer', 404);
 
-    await db.transaction(async (tx) => {
-      await tx
-        .update(partners)
-        .set({ paymentMethodAttachedAt: new Date() })
-        .where(eq(partners.id, partner.id));
-      // Upgrade all readonly MCP-provisioning keys scoped to any org under this
-      // partner. The apiKeys.orgId is an organization id, so we join through
-      // the organizations table to scope by partner.
-      const orgIds = await tx
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, partner.id));
-      if (orgIds.length > 0) {
+      await db.transaction(async (tx) => {
         await tx
-          .update(apiKeys)
-          .set({ scopeState: 'full' })
-          .where(
-            and(
-              inArray(
-                apiKeys.orgId,
-                orgIds.map((o) => o.id),
+          .update(partners)
+          .set({ paymentMethodAttachedAt: new Date() })
+          .where(eq(partners.id, partner.id));
+        // Upgrade all readonly MCP-provisioning keys scoped to any org under this
+        // partner. The apiKeys.orgId is an organization id, so we join through
+        // the organizations table to scope by partner.
+        const orgIds = await tx
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, partner.id));
+        if (orgIds.length > 0) {
+          await tx
+            .update(apiKeys)
+            .set({ scopeState: 'full' })
+            .where(
+              and(
+                inArray(
+                  apiKeys.orgId,
+                  orgIds.map((o) => o.id),
+                ),
+                eq(apiKeys.scopeState, 'readonly'),
               ),
-              eq(apiKeys.scopeState, 'readonly'),
-            ),
-          );
-      }
-    });
+            );
+        }
+      });
 
-    const paymentOrgId = await resolveDefaultOrgId(partner.id);
-    writeAuditEvent({ req: { header: () => undefined } }, {
-      orgId: paymentOrgId,
-      actorType: 'system',
-      action: 'partner.payment_method_attached',
-      resourceType: 'partner',
-      resourceId: partner.id,
-      result: 'success',
-    });
-    recordActivationTransition('active');
+      const paymentOrgId = await resolveDefaultOrgId(partner.id);
+      writeAuditEvent({ req: { header: () => undefined } }, {
+        orgId: paymentOrgId,
+        actorType: 'system',
+        action: 'partner.payment_method_attached',
+        resourceType: 'partner',
+        resourceId: partner.id,
+        result: 'success',
+      });
+      recordActivationTransition('active');
 
-    return c.text('ok');
+      return c.text('ok');
+    });
   });
 
   // ============================================
@@ -230,62 +236,66 @@ export function mountActivationRoutes(app: Hono): void {
   if (process.env.MCP_BOOTSTRAP_TEST_MODE === 'true') {
     app.post('/test/activate/:partnerId', async (c) => {
       const partnerId = c.req.param('partnerId');
-      await db.transaction(async (tx) => {
-        await tx
-          .update(partners)
-          .set({ emailVerifiedAt: new Date() })
-          .where(eq(partners.id, partnerId));
-        await tx
-          .update(partnerActivations)
-          .set({ consumedAt: new Date() })
-          .where(
-            and(
-              eq(partnerActivations.partnerId, partnerId),
-              isNull(partnerActivations.consumedAt),
-            ),
-          );
-        const [link] = await tx
-          .select({ userId: partnerUsers.userId })
-          .from(partnerUsers)
-          .where(eq(partnerUsers.partnerId, partnerId))
-          .limit(1);
-        if (link) {
+      return withSystemDbAccessContext(async () => {
+        await db.transaction(async (tx) => {
           await tx
-            .update(users)
-            .set({ status: 'active' })
-            .where(eq(users.id, link.userId));
-        }
+            .update(partners)
+            .set({ emailVerifiedAt: new Date() })
+            .where(eq(partners.id, partnerId));
+          await tx
+            .update(partnerActivations)
+            .set({ consumedAt: new Date() })
+            .where(
+              and(
+                eq(partnerActivations.partnerId, partnerId),
+                isNull(partnerActivations.consumedAt),
+              ),
+            );
+          const [link] = await tx
+            .select({ userId: partnerUsers.userId })
+            .from(partnerUsers)
+            .where(eq(partnerUsers.partnerId, partnerId))
+            .limit(1);
+          if (link) {
+            await tx
+              .update(users)
+              .set({ status: 'active' })
+              .where(eq(users.id, link.userId));
+          }
+        });
+        return c.json({ ok: true });
       });
-      return c.json({ ok: true });
     });
 
     app.post('/test/complete-payment/:partnerId', async (c) => {
       const partnerId = c.req.param('partnerId');
-      await db.transaction(async (tx) => {
-        await tx
-          .update(partners)
-          .set({ paymentMethodAttachedAt: new Date() })
-          .where(eq(partners.id, partnerId));
-        const orgs = await tx
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, partnerId));
-        if (orgs.length > 0) {
+      return withSystemDbAccessContext(async () => {
+        await db.transaction(async (tx) => {
           await tx
-            .update(apiKeys)
-            .set({ scopeState: 'full' })
-            .where(
-              and(
-                inArray(
-                  apiKeys.orgId,
-                  orgs.map((o) => o.id),
+            .update(partners)
+            .set({ paymentMethodAttachedAt: new Date() })
+            .where(eq(partners.id, partnerId));
+          const orgs = await tx
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(eq(organizations.partnerId, partnerId));
+          if (orgs.length > 0) {
+            await tx
+              .update(apiKeys)
+              .set({ scopeState: 'full' })
+              .where(
+                and(
+                  inArray(
+                    apiKeys.orgId,
+                    orgs.map((o) => o.id),
+                  ),
+                  eq(apiKeys.scopeState, 'readonly'),
                 ),
-                eq(apiKeys.scopeState, 'readonly'),
-              ),
-            );
-        }
+              );
+          }
+        });
+        return c.json({ ok: true });
       });
-      return c.json({ ok: true });
     });
   }
 }
