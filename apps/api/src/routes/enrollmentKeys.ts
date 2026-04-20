@@ -15,6 +15,8 @@ import {
   buildMacosInstallerZip, buildWindowsInstallerZip,
   fetchRegularMsi, fetchMacosPkg,
 } from '../services/installerBuilder';
+import { generateBootstrapToken, bootstrapTokenExpiresAt } from '../services/installerBootstrapToken';
+import { installerBootstrapTokens } from '../db/schema/installerBootstrapTokens';
 import { MsiSigningService } from '../services/msiSigning';
 import { getGithubReleaseVersion } from '../services/binarySource';
 import { captureException } from '../services/sentry';
@@ -714,6 +716,79 @@ enrollmentKeyRoutes.get(
       return c.json({ error: 'Failed to build installer', detail }, 500);
     }
   }
+);
+
+// ============================================
+// POST /:id/bootstrap-token — issue a single-use installer bootstrap token
+// ============================================
+
+const bootstrapTokenBodySchema = z.object({
+  maxUsage: z.number().int().min(1).max(1000).default(1),
+});
+
+enrollmentKeyRoutes.post(
+  '/:id/bootstrap-token',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('json', bootstrapTokenBodySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const keyId = c.req.param('id')!;
+    const { maxUsage } = c.req.valid('json');
+
+    const [parent] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, keyId))
+      .limit(1);
+
+    if (!parent) {
+      return c.json({ error: 'Enrollment key not found' }, 404);
+    }
+
+    const hasAccess = await ensureOrgAccess(parent.orgId, auth);
+    if (!hasAccess) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (parent.expiresAt && new Date(parent.expiresAt) < new Date()) {
+      return c.json({ error: 'Enrollment key has expired' }, 410);
+    }
+    if (parent.maxUsage !== null && parent.usageCount >= parent.maxUsage) {
+      return c.json({ error: 'Enrollment key usage exhausted' }, 410);
+    }
+
+    const token = generateBootstrapToken();
+    const expiresAt = bootstrapTokenExpiresAt();
+
+    const [row] = await db
+      .insert(installerBootstrapTokens)
+      .values({
+        token,
+        orgId: parent.orgId,
+        parentEnrollmentKeyId: parent.id,
+        siteId: parent.siteId,
+        maxUsage,
+        createdBy: auth.user.id,
+        expiresAt,
+      })
+      .returning();
+
+    writeEnrollmentKeyAudit(c, auth, {
+      orgId: parent.orgId,
+      action: 'enrollment_key.bootstrap_token_issued',
+      keyId: parent.id,
+      keyName: parent.name,
+      details: { tokenId: row.id, maxUsage },
+    });
+
+    return c.json({
+      token,
+      expiresAt: expiresAt.toISOString(),
+      maxUsage,
+    });
+  },
 );
 
 // ============================================
