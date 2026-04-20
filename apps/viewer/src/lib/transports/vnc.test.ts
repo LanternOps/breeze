@@ -133,4 +133,36 @@ describe('connectVnc', () => {
     session.close(); // must not throw
     expect(rfb.disconnect).toHaveBeenCalled();
   });
+
+  it('does not include raw server reason text in the error', async () => {
+    const seen: string[] = [];
+    const deps = makeDeps({
+      onError: (msg: string) => seen.push(msg),
+    });
+    await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
+    const { RFB } = await import('../novnc');
+    const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+
+    await fireEvent(rfb, 'securityfailure', {
+      status: 1,
+      reason: '<script>alert(1)</script>',
+    });
+    expect(seen.some((m) => m.includes('<script>'))).toBe(false);
+  });
+
+  it('maps known reasons to friendly text', async () => {
+    const seen: string[] = [];
+    const deps = makeDeps({
+      onError: (msg: string) => seen.push(msg),
+    });
+    await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
+    const { RFB } = await import('../novnc');
+    const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+
+    await fireEvent(rfb, 'securityfailure', {
+      status: 1,
+      reason: 'authentication failed',
+    });
+    expect(seen.join('\n')).toMatch(/authentication failed/i);
+  });
 });
