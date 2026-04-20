@@ -60,5 +60,26 @@ describe('mintApiKey', () => {
     expect(args.scopeState).toBe('full');
     expect(args.status).toBe('active');
     expect(args.scopes).toEqual(['ai:read', 'ai:write']);
+    expect(args.source).toBe('mcp_provisioning');
+  });
+
+  it('persists source="manual" when caller requests manual provenance', async () => {
+    const valuesMock = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'key-3' }]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+    await mintApiKey({
+      partnerId: 'p1',
+      defaultOrgId: 'o1',
+      createdByUserId: 'u1',
+      name: 'Manual',
+      scopeState: 'full',
+      scopes: ['ai:read'],
+      source: 'manual',
+    });
+
+    const args = valuesMock.mock.calls[0]![0];
+    expect(args.source).toBe('manual');
   });
 });

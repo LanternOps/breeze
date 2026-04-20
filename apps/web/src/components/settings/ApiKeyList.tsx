@@ -3,6 +3,8 @@ import { cn } from '@/lib/utils';
 
 export type ApiKeyStatus = 'active' | 'revoked' | 'expired';
 
+export type ApiKeySource = 'manual' | 'mcp_provisioning';
+
 export type ApiKey = {
   id: string;
   name: string;
@@ -13,6 +15,7 @@ export type ApiKey = {
   status: ApiKeyStatus;
   expiresAt: string | null;
   rateLimit: number | null;
+  source?: ApiKeySource;
 };
 
 type ApiKeyListProps = {
@@ -162,7 +165,19 @@ export default function ApiKeyList({
             ) : (
               filteredApiKeys.map(apiKey => (
                 <tr key={apiKey.id} className="transition hover:bg-muted/40">
-                  <td className="px-4 py-3 text-sm font-medium">{apiKey.name}</td>
+                  <td className="px-4 py-3 text-sm font-medium">
+                    <div className="flex items-center gap-2">
+                      <span>{apiKey.name}</span>
+                      {apiKey.source === 'mcp_provisioning' && (
+                        <span
+                          className="inline-flex items-center rounded-full bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-700"
+                          title="Minted by the MCP agent-bootstrap flow"
+                        >
+                          MCP Provisioning
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-sm font-mono text-muted-foreground">
                     {formatKeyPrefix(apiKey.keyPrefix)}
                   </td>

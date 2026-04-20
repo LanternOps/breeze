@@ -20,4 +20,5 @@ export const apiKeys = pgTable('api_keys', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   status: apiKeyStatusEnum('status').notNull().default('active'),
   scopeState: text('scope_state').notNull().default('full'),
+  source: text('source').notNull().default('manual'),
 });

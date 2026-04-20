@@ -40,6 +40,7 @@ export async function mintApiKey(
       scopes: input.scopes,
       scopeState: input.scopeState,
       status: 'active',
+      source: input.source,
       createdBy: input.createdByUserId,
     } as any)
     .returning({ id: apiKeys.id });
