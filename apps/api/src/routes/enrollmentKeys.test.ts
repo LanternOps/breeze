@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { randomUUID } from 'crypto';
 
@@ -21,6 +21,21 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   enrollmentKeys: {},
+  installerBootstrapTokens: {},
+}));
+
+vi.mock('../db/schema/orgs', () => ({
+  enrollmentKeys: {},
+}));
+
+vi.mock('../db/schema/installerBootstrapTokens', () => ({
+  installerBootstrapTokens: {},
+}));
+
+vi.mock('../services/installerBootstrapToken', () => ({
+  generateBootstrapToken: vi.fn(() => 'ABC1234567'),
+  bootstrapTokenExpiresAt: vi.fn(() => new Date('2026-04-20T00:00:00.000Z')),
+  BOOTSTRAP_TOKEN_PATTERN: /^[A-Z0-9]{10}$/,
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -63,6 +78,11 @@ vi.mock('../services/installerBuilder', () => ({
   buildMacosInstallerZip: vi.fn(async () => Buffer.from('macos-zip')),
   fetchRegularMsi: vi.fn(async () => Buffer.from('regular-msi')),
   fetchMacosPkg: vi.fn(async () => Buffer.from('macos-pkg')),
+  fetchMacosInstallerAppZip: vi.fn(async () => null),
+}));
+
+vi.mock('../services/installerAppZip', () => ({
+  renameAppInZip: vi.fn(async (buf: Buffer) => buf),
 }));
 
 // Mock dynamic imports inside serveInstaller
@@ -80,6 +100,9 @@ vi.mock('../services/rate-limit', () => ({
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './enrollmentKeys';
 import { db, withSystemDbAccessContext } from '../db';
 import { MsiSigningService } from '../services/msiSigning';
+import { fetchMacosInstallerAppZip } from '../services/installerBuilder';
+import { renameAppInZip } from '../services/installerAppZip';
+import * as installerBootstrapTokenIssuance from '../services/installerBootstrapTokenIssuance';
 
 // ============================================================
 // Helpers
@@ -578,5 +601,284 @@ describe('GET /public-download/:platform', () => {
     );
 
     delete process.env.BINARY_VERSION;
+  });
+});
+
+// ============================================================
+// POST /:id/bootstrap-token
+// ============================================================
+
+describe('POST /:id/bootstrap-token', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', enrollmentKeyRoutes);
+  });
+
+  it('issues a bootstrap token for a valid parent key', async () => {
+    const parent = makeKeyRow();
+
+    // select x2: route's access-control lookup + helper's business-rule lookup
+    const parentSelectMock = {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(parentSelectMock)
+      .mockReturnValueOnce(parentSelectMock);
+
+    // insert: create bootstrap token row — helper now uses .returning() to get the row id
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'token-row-uuid-1' }]),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.token).toMatch(/^[A-Z0-9]{10}$/);
+    expect(body.expiresAt).toBeTypeOf('string');
+    expect(body.maxUsage).toBe(1);
+  });
+
+  it('rejects unknown parent key with 404', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys/missing/bootstrap-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects when caller has no org access (403)', async () => {
+    // Override authMiddleware to return a scope where canAccessOrg returns false
+    const { authMiddleware: mockAuth } = await import('../middleware/auth');
+    vi.mocked(mockAuth).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        orgId: null,
+        user: { id: 'user-partner', email: 'partner@example.com' },
+        canAccessOrg: () => false,
+        accessibleOrgIds: [],
+      });
+      return next();
+    });
+
+    const restrictedApp = new Hono();
+    restrictedApp.route('/enrollment-keys', enrollmentKeyRoutes);
+
+    const parent = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const res = await restrictedApp.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects expired parent key with 410', async () => {
+    const expiredParent = makeKeyRow({
+      expiresAt: new Date(Date.now() - 10_000), // past
+    });
+
+    // select x2: route's access-control lookup + helper's business-rule lookup
+    const expiredSelectMock = {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([expiredParent]),
+        }),
+      }),
+    } as any;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(expiredSelectMock)
+      .mockReturnValueOnce(expiredSelectMock);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(410);
+  });
+});
+
+// ============================================================
+// GET /:id/installer/macos — app-bundle path
+// ============================================================
+
+describe('GET /:id/installer/macos — app-bundle path', () => {
+  let app: Hono;
+  let issueSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', enrollmentKeyRoutes);
+
+    // Default: issueBootstrapTokenForKey succeeds with a fixed token
+    issueSpy = vi.spyOn(installerBootstrapTokenIssuance, 'issueBootstrapTokenForKey').mockResolvedValue({
+      id: 'token-row-uuid-1',
+      token: 'ABC1234567',
+      expiresAt: new Date('2026-04-20T00:00:00.000Z'),
+      parentKeyName: 'Test Key',
+    });
+  });
+
+  afterEach(() => {
+    issueSpy.mockRestore();
+  });
+
+  it('returns a renamed app zip when installer app is available', async () => {
+    const parentRow = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    // fetchMacosInstallerAppZip returns a fixture buffer
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(Buffer.from('fixture-app-zip'));
+
+    // renameAppInZip returns a renamed buffer
+    vi.mocked(renameAppInZip).mockResolvedValueOnce(Buffer.from('renamed-app-zip'));
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
+      { headers: { authorization: 'Bearer jwt' } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/zip');
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    // Should contain the bootstrap token + api host embedded in the filename
+    expect(cd).toMatch(/Breeze Installer \[ABC1234567@api\.example\.com\]\.app\.zip/);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+
+    // renameAppInZip was called with correct args
+    expect(vi.mocked(renameAppInZip)).toHaveBeenCalledWith(
+      Buffer.from('fixture-app-zip'),
+      expect.objectContaining({
+        oldAppName: 'Breeze Installer.app',
+        newAppName: 'Breeze Installer [ABC1234567@api.example.com].app',
+      }),
+    );
+  });
+
+  it('falls back to legacy zip when ?legacy=1 is passed', async () => {
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow({ installerPlatform: 'macos' });
+
+    // select: parent key lookup + allocateShortCode dedup check
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]), // no existing short code → unique
+          }),
+        }),
+      } as any);
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+
+    // fetchMacosInstallerAppZip is NOT called when ?legacy=1 is passed
+    // (wantLegacy=true → appZip=null without calling the function)
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=1&legacy=1`,
+      { headers: { authorization: 'Bearer jwt' } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
+    // The app-bundle path must NOT have been called
+    expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
+    expect(issueSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to legacy zip when installer app asset is missing (returns null)', async () => {
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow({ installerPlatform: 'macos' });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+
+    // fetchMacosInstallerAppZip default mock returns null → falls back to legacy path
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
+      { headers: { authorization: 'Bearer jwt' } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
+    expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
+    expect(issueSpy).not.toHaveBeenCalled();
   });
 });

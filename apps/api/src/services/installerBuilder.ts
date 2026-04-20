@@ -1,7 +1,7 @@
 import archiver from 'archiver';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { getBinarySource, getGithubAgentPkgUrl, getGithubRegularMsiUrl } from './binarySource';
+import { getBinarySource, getGithubAgentPkgUrl, getGithubInstallerAppUrl, getGithubRegularMsiUrl } from './binarySource';
 
 // --- Windows zip bundle builder (fallback when remote signing service is not configured) ---
 
@@ -194,4 +194,62 @@ export async function fetchMacosPkg(): Promise<Buffer> {
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   return readFile(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
+}
+
+/**
+ * Fetches the notarized Breeze Installer.app.zip from the GitHub release.
+ * Returns null if the asset is not available (e.g. first release after
+ * Plan B merged but before the next tag is cut). Caller falls back to
+ * the legacy install.sh zip in that case.
+ */
+export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubInstallerAppUrl();
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw new Error(`Failed to fetch installer app zip: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const path = join(binaryDir, 'Breeze Installer.app.zip');
+  try {
+    return await readFile(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * HEAD probe for the installer app asset. Mirrors probeMacosPkg.
+ * Returns true if reachable, false if 404, throws otherwise.
+ */
+export async function probeMacosInstallerApp(): Promise<boolean> {
+  if (getBinarySource() === 'github') {
+    const url = getGithubInstallerAppUrl();
+    try {
+      const resp = await fetch(url, {
+        method: 'HEAD',
+        redirect: 'follow',
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (resp.status === 404) return false;
+      return resp.ok;
+    } catch (err) {
+      console.warn('[installer] probeMacosInstallerApp: GitHub HEAD failed, treating as unavailable', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  try {
+    await stat(join(binaryDir, 'Breeze Installer.app.zip'));
+    return true;
+  } catch (err) {
+    console.warn('[installer] probeMacosInstallerApp: filesystem stat failed, treating as unavailable', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
 }

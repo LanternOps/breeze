@@ -61,3 +61,4 @@ export * from './drPlans';
 export * from './localVault';
 export * from './incidentResponse';
 export * from './tunnels';
+export * from './installerBootstrapTokens';

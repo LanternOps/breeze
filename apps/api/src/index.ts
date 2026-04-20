@@ -32,6 +32,7 @@ import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
+import { installerRoutes } from './routes/installer';
 import { ssoRoutes } from './routes/sso';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
@@ -670,6 +671,7 @@ api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
+api.route('/installer', installerRoutes);
 api.route('/sso', ssoRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);

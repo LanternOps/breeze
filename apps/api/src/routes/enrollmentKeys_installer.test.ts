@@ -67,6 +67,22 @@ vi.mock('../services/installerBuilder', () => ({
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from('fake-windows-zip')),
   fetchRegularMsi: vi.fn(async () => Buffer.alloc(2048, 0xbb)),
   fetchMacosPkg: vi.fn(async () => Buffer.alloc(2048, 0xcc)),
+  // Plan C — returns null so macOS tests fall through to the legacy pkg path.
+  fetchMacosInstallerAppZip: vi.fn(async () => null),
+}));
+
+// Plan C imports — mocked so Vitest can resolve them even though neither is
+// called in the legacy (fetchMacosInstallerAppZip → null) code path.
+vi.mock('../services/installerAppZip', () => ({
+  renameAppInZip: vi.fn(),
+}));
+
+vi.mock('../services/installerBootstrapTokenIssuance', () => ({
+  issueBootstrapTokenForKey: vi.fn(),
+  BootstrapTokenIssuanceError: class BootstrapTokenIssuanceError extends Error {
+    code: string;
+    constructor(code: string, msg: string) { super(msg); this.code = code; }
+  },
 }));
 
 vi.mock('../services/msiSigning', () => ({

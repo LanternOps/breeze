@@ -768,6 +768,102 @@ jobs:
         if: always() && vars.ENABLE_MACOS_SIGNING == 'true'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
+  build-macos-installer-app:
+    name: Build macOS Installer App
+    needs: [build-macos-agent]
+    runs-on: macos-latest
+    if: vars.ENABLE_MACOS_SIGNING == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download .pkg darwin/amd64
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-agent-darwin-amd64-pkg
+          path: installer-pkgs/
+
+      - name: Download .pkg darwin/arm64
+        uses: actions/download-artifact@v8
+        with:
+          name: breeze-agent-darwin-arm64-pkg
+          path: installer-pkgs/
+
+      - name: Import certificate into keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$CERT_PATH"
+
+      - name: Build .app bundle
+        run: |
+          chmod +x agent/installer/macos-app/build-app-bundle.sh
+          agent/installer/macos-app/build-app-bundle.sh \
+            --pkg-amd64 installer-pkgs/breeze-agent-darwin-amd64.pkg \
+            --pkg-arm64 installer-pkgs/breeze-agent-darwin-arm64.pkg \
+            --output "build/Breeze Installer.app"
+
+      - name: Sign .app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --options runtime \
+            --entitlements agent/installer/macos-app/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" --timestamp \
+            --deep "build/Breeze Installer.app"
+          codesign --verify --verbose=2 "build/Breeze Installer.app"
+
+      - name: Notarize + staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
+          xcrun notarytool submit build/installer-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple "build/Breeze Installer.app"
+          xcrun stapler validate "build/Breeze Installer.app"
+          spctl -a -t exec -vv "build/Breeze Installer.app"
+
+      - name: Package for release
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Breeze Installer.app" \
+            "build/Breeze Installer.app.zip"
+          ls -lh build/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-installer-app
+          path: build/Breeze Installer.app.zip
+          retention-days: 30
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
   build-viewer:
     name: Build Viewer
     strategy:
@@ -1548,7 +1644,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater]
     if: >-
       !cancelled()
       && needs.build-api.result == 'success'
@@ -1556,6 +1652,7 @@ jobs:
       && needs.build-agent.result == 'success'
       && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
+      && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
       && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
       && (needs.build-viewer.result == 'success' || needs.build-viewer.result == 'skipped')
@@ -1574,7 +1671,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,viewer-latest-json}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1627,6 +1724,11 @@ jobs:
               cp "$dir"/* release-assets/
             fi
           done
+
+          # Copy macOS installer app
+          if [ -d "artifacts/breeze-installer-app" ] && ls "artifacts/breeze-installer-app/"* >/dev/null 2>&1; then
+            cp "artifacts/breeze-installer-app/"* release-assets/
+          fi
 
           # Create archives for API and Web
           if [ -d "artifacts/api-dist" ]; then
