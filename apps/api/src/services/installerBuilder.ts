@@ -3,9 +3,20 @@ import { readFile, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { getBinarySource, getGithubAgentPkgUrl, getGithubInstallerAppUrl, getGithubRegularMsiUrl } from './binarySource';
 
+// --- Enrollment key validation ---
+
+const ENROLLMENT_KEY_PATTERN = /^brz_[a-f0-9]{60}$/;
+
+function assertValidEnrollmentKey(key: string): void {
+  if (!ENROLLMENT_KEY_PATTERN.test(key)) {
+    throw new Error('Invalid enrollment key: must match brz_<60-hex>');
+  }
+}
+
 // --- Windows zip bundle builder (fallback when remote signing service is not configured) ---
 
-const WINDOWS_INSTALL_SCRIPT = `@echo off
+function generateWindowsInstallScript(enrollmentKey: string): string {
+  return `@echo off
 setlocal EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
@@ -33,10 +44,10 @@ for /f "usebackq tokens=1,* delims=:" %%a in (\`type "%ENROLLMENT_JSON%"\`) do (
     set "val=!val:"=!"
     set "val=!val:,=!"
     if "!key!"=="serverUrl" set "SERVER_URL=!val!"
-    if "!key!"=="enrollmentKey" set "ENROLLMENT_KEY=!val!"
     if "!key!"=="enrollmentSecret" set "ENROLLMENT_SECRET=!val!"
 )
 
+set ENROLLMENT_KEY="${enrollmentKey}"
 set ENROLL_CMD="%ProgramFiles%\\Breeze\\breeze-agent.exe" enroll "%ENROLLMENT_KEY%" --server "%SERVER_URL%"
 if defined ENROLLMENT_SECRET if not "%ENROLLMENT_SECRET%"=="" (
     set ENROLL_CMD=%ENROLL_CMD% --enrollment-secret "%ENROLLMENT_SECRET%"
@@ -50,6 +61,7 @@ del "%ENROLLMENT_JSON%" 2>nul
 
 echo Breeze agent installed and enrolled successfully.
 `;
+}
 
 interface WindowsZipValues {
   serverUrl: string;
@@ -62,6 +74,7 @@ export async function buildWindowsInstallerZip(
   msiBuffer: Buffer,
   values: WindowsZipValues
 ): Promise<Buffer> {
+  assertValidEnrollmentKey(values.enrollmentKey);
   return new Promise((resolve, reject) => {
     const archive = archiver('zip', { zlib: { level: 6 } });
     const chunks: Buffer[] = [];
@@ -83,7 +96,8 @@ export async function buildWindowsInstallerZip(
       2
     );
     archive.append(enrollmentJson, { name: 'enrollment.json' });
-    archive.append(WINDOWS_INSTALL_SCRIPT, { name: 'install.bat' });
+    const installScript = generateWindowsInstallScript(values.enrollmentKey);
+    archive.append(installScript, { name: 'install.bat' });
 
     archive.finalize().catch(reject);
   });
@@ -138,6 +152,7 @@ export async function buildMacosInstallerZip(
   pkgBuffer: Buffer,
   values: MacosZipValues
 ): Promise<Buffer> {
+  assertValidEnrollmentKey(values.enrollmentKey);
   return new Promise((resolve, reject) => {
     const archive = archiver('zip', { zlib: { level: 6 } });
     const chunks: Buffer[] = [];
