@@ -262,6 +262,10 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
   get_fleet_status: { resource: 'devices', action: 'read' },
+  // Tenant lifecycle (tier 3 destructive, typed-confirmation gated in handler).
+  // Written as `organizations:write` so any partner admin with org write access
+  // can call it; the handler additionally enforces tenant_id == auth.partnerId.
+  delete_tenant: { resource: 'organizations', action: 'write' },
   // Tags, custom fields, and registry tools
   manage_tags: {
     list: { resource: 'devices', action: 'read' },

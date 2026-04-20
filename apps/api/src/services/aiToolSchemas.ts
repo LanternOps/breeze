@@ -478,6 +478,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_fleet_status: z.object({}),
 
+  delete_tenant: z.object({
+    tenant_id: uuid,
+    confirmation_phrase: z.string().min(1).max(500),
+  }),
+
   get_fleet_health: z.object({
     orgId: uuid.optional(),
     siteId: uuid.optional(),
