@@ -346,10 +346,10 @@ app.route('/metrics', metricsRoutes);
 app.route('/s', publicShortLinkRoutes);
 
 // MCP bootstrap activation routes (flag-gated). Mounted only when
-// MCP_BOOTSTRAP_ENABLED=true so the module's side effects and env
-// requirements stay off the hot path on deployments that don't use it.
+// MCP_BOOTSTRAP_ENABLED=true. Static import is fine — tsup bundles
+// statically regardless; the conditional mount is what matters.
 if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
-  const { mountActivationRoutes, mountInviteLandingRoutes } = await import('./modules/mcpBootstrap');
+  const { mountActivationRoutes, mountInviteLandingRoutes } = require('./modules/mcpBootstrap') as typeof import('./modules/mcpBootstrap');
   mountActivationRoutes(app);
   mountInviteLandingRoutes(app);
 }
