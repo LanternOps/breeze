@@ -1276,13 +1276,33 @@ publicShortLinkRoutes.get('/:code', async (c) => {
       return c.json({ error: 'Not found' }, 404);
     }
 
-    // Check expiry on the short-code row BEFORE spawning a child key.
-    if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
-      return c.json({ error: 'This link has expired.' }, 410);
+    // Atomic claim: decrement usage budget with a combined WHERE that
+    // includes the expiry check. If this matches zero rows, return 410
+    // without ever inserting a child key.
+    const claim = await db
+      .update(enrollmentKeys)
+      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+      .where(
+        and(
+          eq(enrollmentKeys.id, row.id),
+          row.maxUsage !== null
+            ? lt(enrollmentKeys.usageCount, row.maxUsage)
+            : sql`true`,
+          or(
+            isNull(enrollmentKeys.expiresAt),
+            sql`${enrollmentKeys.expiresAt} > NOW()`,
+          ),
+        ),
+      )
+      .returning({ id: enrollmentKeys.id });
+
+    if (claim.length === 0) {
+      return c.json({ error: 'This link has expired or reached its maximum usage limit.' }, 410);
     }
 
+    // Only now create the child key — no cleanup needed on failure.
     // The short-link row holds only the hashed token — the raw token was never stored.
-    // Spawn a fresh single-use child key FIRST so we have something to embed in the installer.
+    // We create a fresh single-use child key so we have something to embed in the installer.
     // Child gets a FRESH TTL independent of the short-link row's remaining
     // lifetime so the installer survives the trip to the target machine even
     // if the short-link row is near its own expiry.
@@ -1306,27 +1326,6 @@ publicShortLinkRoutes.get('/:code', async (c) => {
 
     if (!downloadKey) {
       return c.json({ error: 'Failed to prepare installer' }, 500);
-    }
-
-    // Atomic: only increment usage if still under the limit.
-    // This prevents TOCTOU races and ensures a failed insert doesn't burn a slot.
-    const claimed = await db
-      .update(enrollmentKeys)
-      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-      .where(
-        and(
-          eq(enrollmentKeys.id, row.id),
-          row.maxUsage !== null
-            ? lt(enrollmentKeys.usageCount, row.maxUsage)
-            : sql`true`
-        )
-      )
-      .returning({ id: enrollmentKeys.id });
-
-    if (claimed.length === 0) {
-      // Limit was hit between our read and now — clean up the child key we just inserted.
-      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, downloadKey.id)).catch(() => {});
-      return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
     }
 
     return serveInstaller(c, downloadKey, row.installerPlatform, rawToken, true);

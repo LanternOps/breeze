@@ -427,6 +427,15 @@ describe('GET /s/:code', () => {
       }),
     } as any);
 
+    // Atomic update returns empty because expiry check in WHERE clause fails
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
     const res = await app.request('/s/expiredcode');
     expect(res.status).toBe(410);
   });
@@ -470,6 +479,38 @@ describe('GET /s/:code', () => {
 
     const res = await app.request('/s/fullcode567');
     expect(res.status).toBe(410);
+  });
+
+  it('does not spawn a child key for an already-expired short-link parent', async () => {
+    const expiredRow = makeKeyRow({
+      installerPlatform: 'windows',
+      shortCode: 'test123',
+      expiresAt: new Date(Date.now() - 1000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([expiredRow]),
+        }),
+      }),
+    } as any);
+
+    // Atomic update should fail immediately due to expiry in WHERE clause
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]), // empty = expired
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request('/s/test123');
+    expect(res.status).toBe(410);
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it('returns 404 for code longer than 12 chars', async () => {
