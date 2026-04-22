@@ -86,6 +86,7 @@ import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
+import { mountActivationRoutes, mountInviteLandingRoutes } from './modules/mcpBootstrap';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
@@ -345,11 +346,12 @@ app.route('/metrics', metricsRoutes);
 // Short link routes (enrollment short URLs at /s/<code>)
 app.route('/s', publicShortLinkRoutes);
 
-// MCP bootstrap activation routes (flag-gated). Mounted only when
-// MCP_BOOTSTRAP_ENABLED=true. Static import is fine — tsup bundles
-// statically regardless; the conditional mount is what matters.
+// MCP bootstrap activation routes (flag-gated). Mount sites are conditional
+// on MCP_BOOTSTRAP_ENABLED so the routes only attach when the feature is on.
+// The module is statically imported above — tsup bundles it either way and
+// dynamic import broke both CJS production (top-level await) and ESM dev
+// (require()). The flag still gates whether the routes actually exist.
 if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
-  const { mountActivationRoutes, mountInviteLandingRoutes } = require('./modules/mcpBootstrap') as typeof import('./modules/mcpBootstrap');
   mountActivationRoutes(app);
   mountInviteLandingRoutes(app);
 }

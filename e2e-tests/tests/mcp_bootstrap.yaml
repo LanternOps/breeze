@@ -61,7 +61,7 @@ tests:
         mcp_result: true
         request:
           method: POST
-          path: "/mcp/message"
+          path: "/api/v1/mcp/message"
           body:
             jsonrpc: "2.0"
             id: 1
@@ -86,7 +86,7 @@ tests:
         mcp_result: true
         request:
           method: POST
-          path: "/mcp/message"
+          path: "/api/v1/mcp/message"
           body:
             jsonrpc: "2.0"
             id: 2
@@ -116,7 +116,7 @@ tests:
         mcp_result: true
         request:
           method: POST
-          path: "/mcp/message"
+          path: "/api/v1/mcp/message"
           body:
             jsonrpc: "2.0"
             id: 3
@@ -148,7 +148,7 @@ tests:
         mcp_result: true
         request:
           method: POST
-          path: "/mcp/message"
+          path: "/api/v1/mcp/message"
           body:
             jsonrpc: "2.0"
             id: 4
@@ -170,7 +170,7 @@ tests:
           X-API-Key: "{{api_key}}"
         request:
           method: POST
-          path: "/mcp/message"
+          path: "/api/v1/mcp/message"
           body:
             jsonrpc: "2.0"
             id: 5
@@ -181,7 +181,7 @@ tests:
                 emails:
                   - "test+invitee-{{runId}}@acme-e2e.test"
         expect:
-          sent: ">= 1"
+          invites_sent: ">= 1"
 
       # ── Stage 8: Authed get_fleet_status ──────────────────────────────
       - id: fleet_status
@@ -193,7 +193,7 @@ tests:
           X-API-Key: "{{api_key}}"
         request:
           method: POST
-          path: "/mcp/message"
+          path: "/api/v1/mcp/message"
           body:
             jsonrpc: "2.0"
             id: 6
