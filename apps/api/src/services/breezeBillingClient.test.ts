@@ -19,6 +19,7 @@ describe('breezeBillingClient', () => {
       expect.objectContaining({ method: 'POST' }),
     );
     const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error('fetch was not called');
     const init = call[1] as RequestInit;
     expect(JSON.parse(init.body as string)).toEqual({
       partner_id: 'p1',
