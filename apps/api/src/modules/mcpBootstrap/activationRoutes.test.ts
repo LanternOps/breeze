@@ -310,7 +310,9 @@ describe('POST /activate/complete/webhook', () => {
       body: '{}',
     });
     expect(res.status).toBe(400);
-    expect(await res.text()).toContain('bad sig');
+    // Response body should not leak internal error details — that's logged
+    // server-side only. The caller gets a bare message.
+    expect(await res.text()).toBe('bad signature');
   });
 
   it('returns 404 when customer is unknown', async () => {
@@ -369,6 +371,69 @@ describe('POST /activate/complete/webhook', () => {
         orgId: 'org-1',
         action: 'partner.payment_method_attached',
         actorType: 'system',
+        resourceId: 'p1',
+      }),
+    );
+  });
+
+  it('on setup_intent.setup_failed writes audit event and metric, no state mutation', async () => {
+    stripeWebhooksConstructEvent.mockReturnValue({
+      id: 'evt_fail_1',
+      type: 'setup_intent.setup_failed',
+      data: {
+        object: {
+          customer: 'cus_123',
+          last_setup_error: { message: 'card_declined' },
+        },
+      },
+    });
+    enqueueSelects([
+      [{ id: 'p1' }], // partner lookup by stripe_customer_id
+      [{ id: 'org-default' }], // resolveDefaultOrgId for audit
+    ]);
+    defaultUpdateMock();
+
+    const res = await buildApp().request('/activate/complete/webhook', {
+      method: 'POST',
+      headers: { 'stripe-signature': 'sig_ok' },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'partner.payment_method_failed',
+        resourceId: 'p1',
+        result: 'failure',
+        details: expect.objectContaining({ stripe_error: 'card_declined' }),
+      }),
+    );
+  });
+
+  it('on setup_intent.canceled writes audit event, no state mutation', async () => {
+    stripeWebhooksConstructEvent.mockReturnValue({
+      id: 'evt_cancel_1',
+      type: 'setup_intent.canceled',
+      data: { object: { customer: 'cus_123' } },
+    });
+    enqueueSelects([
+      [{ id: 'p1' }], // partner lookup
+      [{ id: 'org-default' }], // resolveDefaultOrgId
+    ]);
+    defaultUpdateMock();
+
+    const res = await buildApp().request('/activate/complete/webhook', {
+      method: 'POST',
+      headers: { 'stripe-signature': 'sig_ok' },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'partner.payment_method_canceled',
         resourceId: 'p1',
       }),
     );

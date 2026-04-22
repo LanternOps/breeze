@@ -161,12 +161,99 @@ export function mountActivationRoutes(app: Hono): void {
     try {
       event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
     } catch (err) {
+      // Log the real error server-side with source IP for forensics; return
+      // a bare message to the caller so we don't leak internals.
       const message = err instanceof Error ? err.message : String(err);
-      return c.text(`bad signature: ${message}`, 400);
+      const sourceIp = c.req.header('x-forwarded-for') ?? null;
+      console.error(
+        '[stripe-webhook] signature verification failed',
+        { error: message, sourceIp },
+      );
+      return c.text('bad signature', 400);
+    }
+
+    // Handle setup_intent.setup_failed: audit + metric; no state change.
+    if (event.type === 'setup_intent.setup_failed') {
+      const si = event.data.object as Stripe.SetupIntent;
+      const customerId =
+        typeof si.customer === 'string' ? si.customer : si.customer?.id ?? null;
+      if (!customerId) {
+        console.warn('[stripe-webhook] setup_failed event with no customer', {
+          eventId: event.id,
+        });
+        return c.text('ok');
+      }
+      return withSystemDbAccessContext(async () => {
+        const [partner] = await db
+          .select({ id: partners.id })
+          .from(partners)
+          .where(eq(partners.stripeCustomerId, customerId))
+          .limit(1);
+        if (!partner) {
+          console.warn('[stripe-webhook] setup_failed for unknown customer', {
+            customerId,
+            eventId: event.id,
+          });
+          return c.text('ok');
+        }
+        const failOrgId = await resolveDefaultOrgId(partner.id);
+        writeAuditEvent({ req: { header: () => undefined } }, {
+          orgId: failOrgId,
+          actorType: 'system',
+          action: 'partner.payment_method_failed',
+          resourceType: 'partner',
+          resourceId: partner.id,
+          result: 'failure',
+          details: {
+            stripe_error: si.last_setup_error?.message ?? null,
+            event_id: event.id,
+          },
+        });
+        recordActivationTransition('payment_failed');
+        return c.text('ok');
+      });
+    }
+
+    // Handle setup_intent.canceled: audit only, keep partner pending_payment.
+    if (event.type === 'setup_intent.canceled') {
+      const si = event.data.object as Stripe.SetupIntent;
+      const customerId =
+        typeof si.customer === 'string' ? si.customer : si.customer?.id ?? null;
+      if (!customerId) return c.text('ok');
+      return withSystemDbAccessContext(async () => {
+        const [partner] = await db
+          .select({ id: partners.id })
+          .from(partners)
+          .where(eq(partners.stripeCustomerId, customerId))
+          .limit(1);
+        if (!partner) {
+          console.warn('[stripe-webhook] canceled for unknown customer', {
+            customerId,
+            eventId: event.id,
+          });
+          return c.text('ok');
+        }
+        const cancelOrgId = await resolveDefaultOrgId(partner.id);
+        writeAuditEvent({ req: { header: () => undefined } }, {
+          orgId: cancelOrgId,
+          actorType: 'system',
+          action: 'partner.payment_method_canceled',
+          resourceType: 'partner',
+          resourceId: partner.id,
+          result: 'failure',
+          details: { event_id: event.id },
+        });
+        return c.text('ok');
+      });
     }
 
     if (event.type !== 'setup_intent.succeeded') {
-      // No-op for other event types.
+      // Routing issue — Stripe was configured to send an event we don't
+      // handle. Log at warn (not error) and ack so Stripe doesn't retry.
+      console.warn('[stripe-webhook] unhandled event type', {
+        eventType: event.type,
+        eventId: event.id,
+      });
       return c.text('ok');
     }
 
@@ -180,7 +267,16 @@ export function mountActivationRoutes(app: Hono): void {
         .from(partners)
         .where(eq(partners.stripeCustomerId, customerId))
         .limit(1);
-      if (!partner) return c.text('unknown customer', 404);
+      if (!partner) {
+        // Unreachable in normal operation — every SetupIntent we create has
+        // a customer that was written into partners.stripe_customer_id. Log
+        // at error level so we get alerted.
+        console.error(
+          '[stripe-webhook] setup_intent.succeeded for unknown customer',
+          { customerId, eventId: event.id },
+        );
+        return c.text('unknown customer', 404);
+      }
 
       await db.transaction(async (tx) => {
         await tx

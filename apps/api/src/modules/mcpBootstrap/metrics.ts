@@ -19,7 +19,8 @@ export type ActivationStatus =
   | 'pending_email'
   | 'pending_payment'
   | 'active'
-  | 'expired';
+  | 'expired'
+  | 'payment_failed';
 
 const METRIC_NAME = 'mcp_bootstrap_activations_total';
 
