@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prebuild": "node --experimental-strip-types scripts/compute-uninstall-sha256.ts",
+    "presync:scripts": "node --experimental-strip-types scripts/compute-uninstall-sha256.ts",
     "dev": "astro dev",
     "build": "astro build",
     "build:prod": "NODE_ENV=production astro build",

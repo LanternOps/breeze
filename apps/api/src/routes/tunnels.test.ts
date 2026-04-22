@@ -25,6 +25,7 @@ vi.mock('../db/schema', () => ({
   tunnelAllowlists: {},
   devices: {},
   users: {},
+  remoteSessions: {},
 }));
 
 // --- Auth middleware ---
@@ -65,6 +66,23 @@ vi.mock('../services/remoteSessionAuth', () => ({
 // --- JWT service ---
 vi.mock('../services/jwt', () => ({
   createViewerAccessToken: vi.fn(async () => 'mock-viewer-access-token'),
+  verifyViewerAccessToken: vi.fn(async () => null),
+}));
+
+// --- Redis (used by requireViewerToken session-revoke check) ---
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({
+    set: vi.fn(async () => 'OK'),
+    get: vi.fn(async () => null),
+  })),
+}));
+
+// --- Viewer token revocation ---
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerJti: vi.fn(async () => undefined),
+  revokeViewerSession: vi.fn(async () => undefined),
 }));
 
 import { db } from '../db';
@@ -180,6 +198,75 @@ describe('POST /tunnels (VNC)', () => {
     expect(body).toHaveProperty('id', SESSION_ID);
     expect(body).toHaveProperty('type', 'vnc');
     expect(body).toHaveProperty('status', 'pending');
+  });
+});
+
+// ─── Malformed params/query ───────────────────────────────────────────────────
+
+describe('Malformed UUID params and query strings', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('returns 400 on GET /:id with malformed UUID', async () => {
+    const res = await app.request('/tunnels/not-a-uuid', { method: 'GET' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 on DELETE /:id with malformed UUID', async () => {
+    const res = await app.request('/tunnels/invalid-id-format', { method: 'DELETE' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 on POST /:id/ws-ticket with malformed UUID', async () => {
+    const res = await app.request('/tunnels/bad-uuid/ws-ticket', { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 on POST /:id/connect-code with malformed UUID', async () => {
+    const res = await app.request('/tunnels/bad-uuid/connect-code', { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 on PUT /allowlist/:id with malformed UUID', async () => {
+    const res = await app.request('/tunnels/allowlist/not-uuid', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern: '10.0.0.0/8:*' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 on DELETE /allowlist/:id with malformed UUID', async () => {
+    const res = await app.request('/tunnels/allowlist/malformed', { method: 'DELETE' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 on GET /allowlist with malformed siteId query', async () => {
+    const res = await app.request('/tunnels/allowlist?siteId=not-a-uuid', { method: 'GET' });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts GET /allowlist without siteId query', async () => {
+    // Create fresh app to reset mocks for this test
+    const testApp = new Hono();
+    testApp.route('/tunnels', tunnelRoutes);
+    vi.mocked(db.select).mockReturnValue(makeSelectChain([]) as any);
+    const res = await testApp.request('/tunnels/allowlist', { method: 'GET' });
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts GET /allowlist with valid UUID siteId query', async () => {
+    const testApp = new Hono();
+    testApp.route('/tunnels', tunnelRoutes);
+    const validSiteId = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+    vi.mocked(db.select).mockReturnValue(makeSelectChain([]) as any);
+    const res = await testApp.request(`/tunnels/allowlist?siteId=${validSiteId}`, { method: 'GET' });
+    expect(res.status).toBe(200);
   });
 });
 

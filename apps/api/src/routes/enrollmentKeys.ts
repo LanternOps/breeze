@@ -6,7 +6,9 @@ import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
 import { customAlphabet } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import { enrollmentKeys } from '../db/schema';
+import { sites } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { userRateLimit } from '../middleware/userRateLimit';
 import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
@@ -202,6 +204,8 @@ function sanitizeEnrollmentKey(enrollmentKey: typeof enrollmentKeys.$inferSelect
   return safeRecord;
 }
 
+const idParamSchema = z.object({ id: z.string().uuid() });
+
 // ============================================
 // Routes
 // ============================================
@@ -286,6 +290,7 @@ enrollmentKeyRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   zValidator('json', createEnrollmentKeySchema),
   async (c) => {
@@ -316,6 +321,17 @@ enrollmentKeyRoutes.post(
       }
     } else if (!orgId) {
       return c.json({ error: 'orgId is required' }, 400);
+    }
+
+    // Verify siteId belongs to the target org (if provided)
+    if (data.siteId) {
+      const [site] = await db.select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, data.siteId), eq(sites.orgId, orgId)))
+        .limit(1);
+      if (!site) {
+        return c.json({ error: 'siteId does not belong to the specified org' }, 400);
+      }
     }
 
     const rawKey = generateEnrollmentKey();
@@ -394,6 +410,7 @@ enrollmentKeyRoutes.post(
   '/:id/rotate',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   zValidator('json', rotateEnrollmentKeySchema),
   async (c) => {
@@ -462,6 +479,7 @@ enrollmentKeyRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
@@ -800,11 +818,13 @@ enrollmentKeyRoutes.post(
   '/:id/bootstrap-token',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
+  zValidator('param', idParamSchema),
   zValidator('json', bootstrapTokenBodySchema),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
+    const { id: keyId } = c.req.valid('param');
     const { maxUsage } = c.req.valid('json');
 
     const [parent] = await db
@@ -856,6 +876,7 @@ enrollmentKeyRoutes.post(
   '/:id/installer-link',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-write', 10, 60),
   requireMfa(),
   zValidator('json', installerLinkSchema),
   async (c) => {
@@ -954,7 +975,11 @@ enrollmentKeyRoutes.post(
       return c.json({ error: 'Server URL not configured (set PUBLIC_API_URL or API_URL)' }, 500);
     }
 
-    const publicUrl = `${serverUrl.replace(/\/$/, '')}/api/v1/enrollment-keys/public-download/${platform}?token=${rawChildKey}`;
+    // Issue a one-time download handle so the raw token never appears in the URL.
+    const { issueDownloadHandle } = await import('../services/downloadHandle');
+    const handle = await issueDownloadHandle(rawChildKey);
+
+    const publicUrl = `${serverUrl.replace(/\/$/, '')}/api/v1/enrollment-keys/public-download/${platform}?h=${handle}`;
     const shortUrl = `${serverUrl.replace(/\/$/, '')}/s/${shortCode}`;
 
     // Audit log
@@ -975,6 +1000,46 @@ enrollmentKeyRoutes.post(
       childKeyId: childKey.id,
     });
   }
+);
+
+// ============================================
+// POST /:id/download-handle - Exchange key for a one-time handle.
+// Moves the raw token out of the public URL; the handle survives ~5 min and is single-use.
+// ============================================
+
+enrollmentKeyRoutes.post(
+  '/:id/download-handle',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  userRateLimit('enroll-handle', 30, 60),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: keyId } = c.req.valid('param');
+    const body = await c.req.json().catch(() => ({})) as { rawToken?: string };
+    if (!body.rawToken || typeof body.rawToken !== 'string') {
+      return c.json({ error: 'rawToken is required' }, 400);
+    }
+
+    // Ownership check: caller must own the key row.
+    const [row] = await db.select().from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, keyId))
+      .limit(1);
+    if (!row) return c.json({ error: 'Not found' }, 404);
+
+    // Verify org access.
+    const hasAccess = await ensureOrgAccess(row.orgId, auth);
+    if (!hasAccess) return c.json({ error: 'Not found' }, 404);
+
+    // Verify the raw token matches the stored hash.
+    if (row.key !== hashEnrollmentKey(body.rawToken)) {
+      return c.json({ error: 'Invalid token' }, 400);
+    }
+
+    const { issueDownloadHandle } = await import('../services/downloadHandle');
+    const handle = await issueDownloadHandle(body.rawToken);
+    return c.json({ handle });
+  },
 );
 
 // ============================================
@@ -1002,8 +1067,14 @@ async function serveInstaller(
     if (!rateResult.allowed) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
-  } catch {
-    // If Redis is unavailable, allow the request (fail open for downloads)
+  } catch (err) {
+    // Fail open for downloads (keep installers working during Redis outages),
+    // but log so the outage is visible in ops dashboards — otherwise rate
+    // limiting is silently disabled across the whole public endpoint.
+    console.error(
+      '[public-installer] rate-limit check skipped:',
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // Validate key is still usable
@@ -1135,18 +1206,31 @@ async function serveInstaller(
 export const publicEnrollmentRoutes = new Hono();
 
 const publicDownloadQuerySchema = z.object({
-  token: z.string().min(1),
-});
+  h: z.string().regex(/^dlh_[a-f0-9]{32}$/).optional(),
+  token: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).refine((v) => v.h || v.token, { message: 'h or token is required' });
 
 publicEnrollmentRoutes.get(
   '/public-download/:platform',
   zValidator('query', publicDownloadQuerySchema),
   async (c) => {
     const platform = c.req.param('platform');
-    const { token } = c.req.valid('query');
+    const { h, token } = c.req.valid('query');
 
     if (platform !== 'windows' && platform !== 'macos') {
       return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
+    }
+
+    let rawToken: string | null = null;
+    if (h) {
+      const { consumeDownloadHandle } = await import('../services/downloadHandle');
+      rawToken = await consumeDownloadHandle(h);
+    } else if (token) {
+      console.warn('[enrollmentKeys] public-download used legacy ?token= path; expected ?h=');
+      rawToken = token;
+    }
+    if (!rawToken) {
+      return c.json({ error: 'Invalid or expired download link' }, 404);
     }
 
     // System context required: public endpoint with no authenticated user,
@@ -1155,7 +1239,9 @@ publicEnrollmentRoutes.get(
     // also scoped correctly — otherwise the breeze_app role's RLS UPDATE
     // policy silently drops the row modification and download quotas are
     // never enforced.
-    const keyHash = hashEnrollmentKey(token);
+    const keyHash = hashEnrollmentKey(rawToken);
+    // Capture in const so the closure below has a non-null narrowed type.
+    const finalToken = rawToken;
     return withSystemDbAccessContext(async () => {
       const [enrollmentKey] = await db
         .select()
@@ -1167,7 +1253,7 @@ publicEnrollmentRoutes.get(
         return c.json({ error: 'Invalid or expired download link' }, 404);
       }
 
-      return serveInstaller(c, enrollmentKey, platform, token);
+      return serveInstaller(c, enrollmentKey, platform, finalToken);
     });
   }
 );
@@ -1200,13 +1286,33 @@ publicShortLinkRoutes.get('/:code', async (c) => {
       return c.json({ error: 'Not found' }, 404);
     }
 
-    // Check expiry on the short-code row BEFORE spawning a child key.
-    if (row.expiresAt && new Date(row.expiresAt) < new Date()) {
-      return c.json({ error: 'This link has expired.' }, 410);
+    // Atomic claim: decrement usage budget with a combined WHERE that
+    // includes the expiry check. If this matches zero rows, return 410
+    // without ever inserting a child key.
+    const claim = await db
+      .update(enrollmentKeys)
+      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+      .where(
+        and(
+          eq(enrollmentKeys.id, row.id),
+          row.maxUsage !== null
+            ? lt(enrollmentKeys.usageCount, row.maxUsage)
+            : sql`true`,
+          or(
+            isNull(enrollmentKeys.expiresAt),
+            sql`${enrollmentKeys.expiresAt} > NOW()`,
+          ),
+        ),
+      )
+      .returning({ id: enrollmentKeys.id });
+
+    if (claim.length === 0) {
+      return c.json({ error: 'This link has expired or reached its maximum usage limit.' }, 410);
     }
 
+    // Only now create the child key — no cleanup needed on failure.
     // The short-link row holds only the hashed token — the raw token was never stored.
-    // Spawn a fresh single-use child key FIRST so we have something to embed in the installer.
+    // We create a fresh single-use child key so we have something to embed in the installer.
     // Child gets a FRESH TTL independent of the short-link row's remaining
     // lifetime so the installer survives the trip to the target machine even
     // if the short-link row is near its own expiry.
@@ -1230,27 +1336,6 @@ publicShortLinkRoutes.get('/:code', async (c) => {
 
     if (!downloadKey) {
       return c.json({ error: 'Failed to prepare installer' }, 500);
-    }
-
-    // Atomic: only increment usage if still under the limit.
-    // This prevents TOCTOU races and ensures a failed insert doesn't burn a slot.
-    const claimed = await db
-      .update(enrollmentKeys)
-      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-      .where(
-        and(
-          eq(enrollmentKeys.id, row.id),
-          row.maxUsage !== null
-            ? lt(enrollmentKeys.usageCount, row.maxUsage)
-            : sql`true`
-        )
-      )
-      .returning({ id: enrollmentKeys.id });
-
-    if (claimed.length === 0) {
-      // Limit was hit between our read and now — clean up the child key we just inserted.
-      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, downloadKey.id)).catch(() => {});
-      return c.json({ error: 'This link has reached its maximum usage limit.' }, 410);
     }
 
     return serveInstaller(c, downloadKey, row.installerPlatform, rawToken, true);

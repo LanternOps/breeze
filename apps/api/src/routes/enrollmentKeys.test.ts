@@ -25,6 +25,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../db/schema/orgs', () => ({
+  sites: {},
   enrollmentKeys: {},
 }));
 
@@ -85,13 +86,8 @@ vi.mock('../services/installerAppZip', () => ({
   renameAppInZip: vi.fn(async (buf: Buffer) => buf),
 }));
 
-// Mock dynamic imports inside serveInstaller
-vi.mock('../services', () => ({
-  getRedis: vi.fn(() => ({})),
-}));
-
 vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true })),
+  rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
 }));
 
 // ============================================================
@@ -328,6 +324,22 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     const shortUrlOrigin = new URL(body.shortUrl).origin;
     expect(urlOrigin).toBe(shortUrlOrigin);
   });
+
+  it('returns 429 when per-user rate limit is exceeded', async () => {
+    const { rateLimiter } = await import('../services/rate-limit');
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(),
+    });
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'windows' }),
+    });
+    expect(res.status).toBe(429);
+  });
 });
 
 // ============================================================
@@ -415,6 +427,15 @@ describe('GET /s/:code', () => {
       }),
     } as any);
 
+    // Atomic update returns empty because expiry check in WHERE clause fails
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
     const res = await app.request('/s/expiredcode');
     expect(res.status).toBe(410);
   });
@@ -458,6 +479,38 @@ describe('GET /s/:code', () => {
 
     const res = await app.request('/s/fullcode567');
     expect(res.status).toBe(410);
+  });
+
+  it('does not spawn a child key for an already-expired short-link parent', async () => {
+    const expiredRow = makeKeyRow({
+      installerPlatform: 'windows',
+      shortCode: 'test123',
+      expiresAt: new Date(Date.now() - 1000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([expiredRow]),
+        }),
+      }),
+    } as any);
+
+    // Atomic update should fail immediately due to expiry in WHERE clause
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]), // empty = expired
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request('/s/test123');
+    expect(res.status).toBe(410);
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it('returns 404 for code longer than 12 chars', async () => {
@@ -537,8 +590,10 @@ describe('GET /public-download/:platform', () => {
       throw new Error('db.update called on public-download — regression of the usage_count-burn bug');
     });
 
+    // Use a valid 64-char hex token (legacy ?token= path; new callers should use ?h=).
+    const legacyToken = 'a'.repeat(64);
     const res = await app.request(
-      '/enrollment-keys/public-download/windows?token=abc123',
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
     );
 
     expect(res.status).toBe(200);
@@ -662,7 +717,8 @@ describe('POST /:id/bootstrap-token', () => {
       }),
     } as any);
 
-    const res = await app.request('/enrollment-keys/missing/bootstrap-token', {
+    const missingId = randomUUID();
+    const res = await app.request(`/enrollment-keys/${missingId}/bootstrap-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ maxUsage: 1 }),
@@ -880,5 +936,113 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
     expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
     expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// POST / - siteId ownership validation
+// ============================================================
+
+describe('POST / - siteId ownership validation', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', enrollmentKeyRoutes);
+  });
+
+  it('rejects siteId that does not belong to the target org', async () => {
+    const orgId = randomUUID();
+    const siteId = randomUUID();
+
+    // select: site lookup returns empty (site not found in org)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]), // not found
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Test Key',
+        siteId,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/siteId.*does not belong.*org/i);
+    // insert should never be called when siteId validation fails
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('creates key with valid siteId', async () => {
+    const orgId = randomUUID();
+    const siteId = randomUUID();
+    const keyRow = makeKeyRow({ orgId, siteId });
+
+    // select: site lookup returns the site
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: siteId }]),
+        }),
+      }),
+    } as any);
+
+    // insert: create enrollment key
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Test Key',
+        siteId,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.siteId).toBe(siteId);
+  });
+
+  it('creates key without siteId (null is valid)', async () => {
+    const orgId = randomUUID();
+    const keyRow = makeKeyRow({ orgId, siteId: null });
+
+    // insert: create enrollment key with no siteId
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Test Key',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.siteId).toBeNull();
+    // when no siteId is provided, site lookup should not be called
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

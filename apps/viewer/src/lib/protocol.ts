@@ -23,16 +23,13 @@ export interface VncConnectionParams {
 
 export type ConnectionParams = DesktopConnectionParams | VncConnectionParams;
 
-function isPrivateHost(hostname: string): boolean {
+function isLocalhost(host: string): boolean {
+  const normalized = host.toLowerCase();
   return (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '[::1]' ||
-    hostname === '::1' ||
-    hostname.startsWith('10.') ||
-    hostname.startsWith('192.168.') ||
-    hostname.startsWith('100.') ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+    normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized === '[::1]'
   );
 }
 
@@ -48,7 +45,7 @@ function validateApiUrl(apiUrl: string): string | null {
   if (api.protocol !== 'https:' && api.protocol !== 'http:') {
     return null;
   }
-  if (api.protocol === 'http:' && !isPrivateHost(api.hostname)) {
+  if (api.protocol === 'http:' && !isLocalhost(api.hostname)) {
     return null;
   }
   return api.toString().replace(/\/$/, '');

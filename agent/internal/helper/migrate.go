@@ -112,7 +112,7 @@ func (m *Manager) migrateToSessions() {
 			log.Warn("failed to prepare session dir", "session", key, "error", err.Error())
 		}
 		if len(globalConfig) > 0 {
-			if err := os.WriteFile(filepath.Join(sessionDir, configName), globalConfig, 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(sessionDir, configName), globalConfig, 0600); err != nil {
 				log.Warn("failed to copy legacy config", "session", key, "error", err.Error())
 			}
 		}

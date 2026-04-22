@@ -113,14 +113,15 @@ describe('connectVnc', () => {
     expect(rfb.sendCredentials).toHaveBeenCalledWith({ username: 'olive', password: 'secret' });
   });
 
-  it('fires onError on securityfailure', async () => {
+  it('fires onError with sanitised fallback when server reason is unknown', async () => {
     const deps = makeDeps();
     await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
     const { RFB } = await import('../novnc');
     const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
 
     await fireEvent(rfb, 'securityfailure', { status: 1, reason: 'wrong password' });
-    expect(deps.onError).toHaveBeenCalledWith(expect.stringMatching(/wrong password|Authentication failed/));
+    expect(deps.onError).toHaveBeenCalledWith(expect.stringMatching(/connection refused by remote/));
+    expect(deps.onError).toHaveBeenCalledWith(expect.not.stringMatching(/wrong password/));
     expect(deps.onStatus).toHaveBeenCalledWith('error');
   });
 
@@ -132,5 +133,47 @@ describe('connectVnc', () => {
     session.close();
     session.close(); // must not throw
     expect(rfb.disconnect).toHaveBeenCalled();
+  });
+
+  it('does not include raw server reason text in the error', async () => {
+    const seen: string[] = [];
+    const deps = makeDeps({
+      onError: (msg: string) => seen.push(msg),
+    });
+    await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
+    const { RFB } = await import('../novnc');
+    const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+
+    await fireEvent(rfb, 'securityfailure', {
+      status: 1,
+      reason: '<script>alert(1)</script>',
+    });
+    expect(seen.some((m) => m.includes('<script>'))).toBe(false);
+  });
+
+  it.each([
+    ['authentication failed', 'authentication failed'],
+    ['Authentication failed.', 'authentication failed.'],
+    ['too many attempts', 'too many attempts'],
+    ['unsupported security type', 'unsupported security type'],
+    ['unsupported protocol version', 'unsupported protocol version'],
+    ['<script>alert(1)</script>', 'connection refused by remote'],
+    ['unknown reason', 'connection refused by remote'],
+    ['', 'connection refused by remote'],
+  ])('sanitises VNC reason "%s" → "%s"', async (input, expected) => {
+    const seen: string[] = [];
+    const deps = makeDeps({
+      onError: (msg: string) => seen.push(msg),
+    });
+    await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
+    const { RFB } = await import('../novnc');
+    const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+
+    await fireEvent(rfb, 'securityfailure', { status: 1, reason: input });
+    expect(seen.join('\n')).toContain(expected);
+    // Verify XSS attempt does not leak through
+    if (input.includes('<script>')) {
+      expect(seen.join('\n')).not.toContain('<script>');
+    }
   });
 });

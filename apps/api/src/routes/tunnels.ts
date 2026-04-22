@@ -9,6 +9,7 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
 
 export const tunnelRoutes = new Hono();
@@ -17,6 +18,10 @@ export const tunnelRoutes = new Hono();
 tunnelRoutes.use('*', authMiddleware);
 
 // --- Schemas ---
+
+const idParamSchema = z.object({ id: z.string().uuid() });
+const listQuerySchema = z.object({ siteId: z.string().uuid().optional().nullable() });
+const allowlistIdParamSchema = idParamSchema;
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().uuid(), type: z.literal('vnc') }),
@@ -35,6 +40,12 @@ const allowlistRuleSchema = z.object({
   siteId: z.string().uuid().optional(),
   source: z.enum(['manual', 'discovery', 'policy']).optional(),
   discoveredAssetId: z.string().uuid().optional(),
+});
+
+const updateAllowlistSchema = z.object({
+  pattern: z.string().min(1).max(255).optional(),
+  description: z.string().max(500).optional(),
+  enabled: z.boolean().optional(),
 });
 
 // --- Helpers ---
@@ -302,186 +313,20 @@ tunnelRoutes.get(
   }
 );
 
-// GET /tunnels/:id — Get tunnel details (ownership enforced)
-tunnelRoutes.get(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id')!;
-
-    const conditions = [eq(tunnelSessions.id, id)];
-    if (auth.orgId) {
-      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
-    }
-    if (auth.scope === 'organization') {
-      conditions.push(eq(tunnelSessions.userId, auth.user.id));
-    }
-
-    const [session] = await db
-      .select()
-      .from(tunnelSessions)
-      .where(and(...conditions))
-      .limit(1);
-
-    if (!session) {
-      return c.json({ error: 'Tunnel session not found' }, 404);
-    }
-
-    return c.json(session);
-  }
-);
-
-// DELETE /tunnels/:id — Close a tunnel (ownership enforced)
-tunnelRoutes.delete(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id')!;
-
-    const conditions = [eq(tunnelSessions.id, id)];
-    if (auth.orgId) {
-      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
-    }
-    if (auth.scope === 'organization') {
-      conditions.push(eq(tunnelSessions.userId, auth.user.id));
-    }
-
-    const [session] = await db
-      .select()
-      .from(tunnelSessions)
-      .where(and(...conditions))
-      .limit(1);
-
-    if (!session) {
-      return c.json({ error: 'Tunnel session not found' }, 404);
-    }
-
-    // Get device to find agent
-    const [device] = await db
-      .select()
-      .from(devices)
-      .where(eq(devices.id, session.deviceId))
-      .limit(1);
-
-    if (device?.agentId && isAgentConnected(device.agentId)) {
-      sendCommandToAgent(device.agentId, {
-        id: `tun-close-${Date.now()}`,
-        type: 'tunnel_close',
-        payload: { tunnelId: id },
-      });
-    }
-
-    await db
-      .update(tunnelSessions)
-      .set({ status: 'disconnected', endedAt: new Date() })
-      .where(eq(tunnelSessions.id, id));
-
-    return c.json({ closed: true });
-  }
-);
-
-// POST /tunnels/:id/ws-ticket — Issue a one-time WebSocket ticket
-tunnelRoutes.post(
-  '/:id/ws-ticket',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id')!;
-
-    const conditions = [eq(tunnelSessions.id, id)];
-    if (auth.orgId) {
-      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
-    }
-
-    const [session] = await db
-      .select()
-      .from(tunnelSessions)
-      .where(and(...conditions))
-      .limit(1);
-
-    if (!session) {
-      return c.json({ error: 'Tunnel session not found' }, 404);
-    }
-
-    if (session.userId !== auth.user.id) {
-      return c.json({ error: 'Not the session owner' }, 403);
-    }
-
-    const ticket = await createWsTicket({
-      sessionId: id,
-      sessionType: 'tunnel',
-      userId: auth.user.id,
-    });
-
-    return c.json({ ticket });
-  }
-);
-
-// POST /tunnels/:id/connect-code — Issue a short-lived VNC connect code (keeps JWT out of deep links)
-tunnelRoutes.post(
-  '/:id/connect-code',
-  requireScope('organization', 'partner', 'system'),
-  async (c) => {
-    const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id')!;
-
-    const conditions = [eq(tunnelSessions.id, id)];
-    if (auth.orgId) {
-      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
-    }
-    if (auth.scope === 'organization') {
-      conditions.push(eq(tunnelSessions.userId, auth.user.id));
-    }
-
-    const [session] = await db
-      .select()
-      .from(tunnelSessions)
-      .where(and(...conditions))
-      .limit(1);
-
-    if (!session) {
-      return c.json({ error: 'Tunnel session not found' }, 404);
-    }
-
-    if (session.type !== 'vnc') {
-      return c.json({ error: 'Connect code only supported for VNC tunnels' }, 400);
-    }
-
-    if (session.userId !== auth.user.id) {
-      return c.json({ error: 'Not the session owner' }, 403);
-    }
-
-    try {
-      const result = await createVncConnectCode({
-        tunnelId: session.id,
-        deviceId: session.deviceId,
-        orgId: session.orgId,
-        userId: auth.user.id,
-        email: auth.user.email,
-      });
-      return c.json(result);
-    } catch (err) {
-      console.error('[tunnels] Failed to create VNC connect code:', err instanceof Error ? err.message : err);
-      return c.json({ error: 'Unable to create VNC connect code. Please try again later.' }, 503);
-    }
-  }
-);
-
-// --- Allowlist routes ---
+// --- Allowlist routes (must come BEFORE /:id routes for route matching) ---
 
 // GET /tunnels/allowlist — List allowlist rules for the org
 tunnelRoutes.get(
   '/allowlist',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }
 
-    const siteId = c.req.query('siteId');
+    const { siteId } = c.req.valid('query');
     const conditions: ReturnType<typeof eq>[] = [eq(tunnelAllowlists.orgId, auth.orgId)];
     if (siteId) {
       conditions.push(eq(tunnelAllowlists.siteId, siteId));
@@ -529,19 +374,14 @@ tunnelRoutes.post(
 );
 
 // PUT /tunnels/allowlist/:id — Update a rule
-const updateAllowlistSchema = z.object({
-  pattern: z.string().min(1).max(255).optional(),
-  description: z.string().max(500).optional(),
-  enabled: z.boolean().optional(),
-});
-
 tunnelRoutes.put(
   '/allowlist/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', allowlistIdParamSchema),
   zValidator('json', updateAllowlistSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id')!;
+    const { id } = c.req.valid('param');
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }
@@ -577,9 +417,10 @@ tunnelRoutes.put(
 tunnelRoutes.delete(
   '/allowlist/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', allowlistIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const id = c.req.param('id')!;
+    const { id } = c.req.valid('param');
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }
@@ -599,6 +440,183 @@ tunnelRoutes.delete(
       .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, auth.orgId)));
 
     return c.json({ deleted: true });
+  }
+);
+
+// --- Parameterized tunnel routes ---
+
+// GET /tunnels/:id — Get tunnel details (ownership enforced)
+tunnelRoutes.get(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const conditions = [eq(tunnelSessions.id, id)];
+    if (auth.orgId) {
+      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
+    }
+    if (auth.scope === 'organization') {
+      conditions.push(eq(tunnelSessions.userId, auth.user.id));
+    }
+
+    const [session] = await db
+      .select()
+      .from(tunnelSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    return c.json(session);
+  }
+);
+
+// DELETE /tunnels/:id — Close a tunnel (ownership enforced)
+tunnelRoutes.delete(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const conditions = [eq(tunnelSessions.id, id)];
+    if (auth.orgId) {
+      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
+    }
+    if (auth.scope === 'organization') {
+      conditions.push(eq(tunnelSessions.userId, auth.user.id));
+    }
+
+    const [session] = await db
+      .select()
+      .from(tunnelSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    // Get device to find agent
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(eq(devices.id, session.deviceId))
+      .limit(1);
+
+    if (device?.agentId && isAgentConnected(device.agentId)) {
+      sendCommandToAgent(device.agentId, {
+        id: `tun-close-${Date.now()}`,
+        type: 'tunnel_close',
+        payload: { tunnelId: id },
+      });
+    }
+
+    await db
+      .update(tunnelSessions)
+      .set({ status: 'disconnected', endedAt: new Date() })
+      .where(eq(tunnelSessions.id, id));
+
+    // Revoke any viewer JWTs minted for this tunnel. The service logs if Redis
+    // is unavailable; the check path (requireViewerToken) fails closed.
+    await revokeViewerSession(id);
+
+    return c.json({ closed: true });
+  }
+);
+
+// POST /tunnels/:id/ws-ticket — Issue a one-time WebSocket ticket
+tunnelRoutes.post(
+  '/:id/ws-ticket',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const conditions = [eq(tunnelSessions.id, id)];
+    if (auth.orgId) {
+      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
+    }
+
+    const [session] = await db
+      .select()
+      .from(tunnelSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    if (session.userId !== auth.user.id) {
+      return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    const ticket = await createWsTicket({
+      sessionId: id,
+      sessionType: 'tunnel',
+      userId: auth.user.id,
+    });
+
+    return c.json({ ticket });
+  }
+);
+
+// POST /tunnels/:id/connect-code — Issue a short-lived VNC connect code (keeps JWT out of deep links)
+tunnelRoutes.post(
+  '/:id/connect-code',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const conditions = [eq(tunnelSessions.id, id)];
+    if (auth.orgId) {
+      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
+    }
+    if (auth.scope === 'organization') {
+      conditions.push(eq(tunnelSessions.userId, auth.user.id));
+    }
+
+    const [session] = await db
+      .select()
+      .from(tunnelSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    if (session.type !== 'vnc') {
+      return c.json({ error: 'Connect code only supported for VNC tunnels' }, 400);
+    }
+
+    if (session.userId !== auth.user.id) {
+      return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    try {
+      const result = await createVncConnectCode({
+        tunnelId: session.id,
+        deviceId: session.deviceId,
+        orgId: session.orgId,
+        userId: auth.user.id,
+        email: auth.user.email,
+      });
+      return c.json(result);
+    } catch (err) {
+      console.error('[tunnels] Failed to create VNC connect code:', err instanceof Error ? err.message : err);
+      return c.json({ error: 'Unable to create VNC connect code. Please try again later.' }, 503);
+    }
   }
 );
 
@@ -681,17 +699,27 @@ vncExchangeRoutes.post(
 
 export const vncViewerRoutes = new Hono();
 
-async function requireViewerToken(c: Context): Promise<{ sessionId: string } | Response> {
+async function requireViewerToken(c: Context): Promise<{ sessionId: string; jti: string } | Response> {
   const authHeader = c.req.header('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
   }
   const token = authHeader.slice(7);
   const payload = await verifyViewerAccessToken(token);
-  if (!payload) {
+  if (!payload || !payload.jti) {
     return c.json({ error: 'Invalid or expired token' }, 401);
   }
-  return { sessionId: payload.sessionId };
+  // Check jti-level revocation (belt — individual token invalidation)
+  if (await isViewerJtiRevoked(payload.jti)) {
+    return c.json({ error: 'Token revoked' }, 401);
+  }
+  // Check session-level revocation (suspenders — stamped on tunnel close).
+  // isViewerSessionRevoked fails closed on Redis unavailability, symmetric
+  // with the jti check above.
+  if (await isViewerSessionRevoked(payload.sessionId)) {
+    return c.json({ error: 'Session closed' }, 401);
+  }
+  return { sessionId: payload.sessionId, jti: payload.jti };
 }
 
 // GET /vnc-viewer/desktop-access

@@ -61,6 +61,14 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed_${key}`),
 }));
 
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
+}));
+
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';

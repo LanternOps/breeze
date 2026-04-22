@@ -1,6 +1,8 @@
 package helper
 
 import (
+	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -68,6 +70,14 @@ func installPackage(dmgPath, _ string) error {
 	return nil
 }
 
+// xmlEscapeString returns s with XML special characters escaped so it is safe
+// to embed between <string>...</string> tags in a plist document.
+func xmlEscapeString(s string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(s))
+	return buf.String()
+}
+
 func installAutoStart(binaryPath string) error {
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -87,7 +97,7 @@ func installAutoStart(binaryPath string) error {
     <string>Aqua</string>
 </dict>
 </plist>
-`, plistLabel, binaryPath)
+`, xmlEscapeString(plistLabel), xmlEscapeString(binaryPath))
 
 	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
 		return fmt.Errorf("write plist: %w", err)

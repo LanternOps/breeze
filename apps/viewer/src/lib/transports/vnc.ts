@@ -29,6 +29,20 @@ export interface VncSessionWrapper extends TransportSession {
  * a TransportSession so DesktopViewer can treat it uniformly alongside
  * WebRTC and the JPEG WebSocket fallback.
  */
+const KNOWN_VNC_REASONS = new Set([
+  'authentication failed',
+  'authentication failed.',
+  'too many attempts',
+  'unsupported security type',
+  'unsupported protocol version',
+]);
+
+function friendlyReason(raw: string): string {
+  const lower = raw.toLowerCase().trim();
+  if (KNOWN_VNC_REASONS.has(lower)) return lower;
+  return 'connection refused by remote';
+}
+
 export async function connectVnc(
   info: VncTunnelInfo,
   deps: VncDeps,
@@ -66,13 +80,14 @@ export async function connectVnc(
 
   rfb.addEventListener('securityfailure', (e: CustomEvent) => {
     const status = e.detail?.status;
-    const reason = e.detail?.reason ?? 'Authentication failed';
+    const reason = e.detail?.reason ?? 'connection refused by remote';
+    const friendlyMsg = friendlyReason(reason);
     const msg =
       status === 1
-        ? `Authentication failed: ${reason}. Check your macOS username and password.`
+        ? `Authentication failed: ${friendlyMsg}. Check your macOS username and password.`
         : status === 2
-        ? `Security type not supported: ${reason}`
-        : `Security failure: ${reason}`;
+        ? `Security type not supported: ${friendlyMsg}`
+        : `Security failure: ${friendlyMsg}`;
     deps.onError(msg);
     deps.onStatus('error');
   });
