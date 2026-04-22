@@ -80,46 +80,32 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
       return { status: 'pending_email' };
     }
 
-    // Email verified — look up the MCP-provisioning API key (if any).
-    const [existingKey] = await db
-      .select({ id: apiKeys.id, scopeState: apiKeys.scopeState })
-      .from(apiKeys)
-      .where(and(eq(apiKeys.orgId, partner.id), eq(apiKeys.status, 'active')))
-      .limit(1);
-
-    // Fallback for existingKey lookup: apiKeys are scoped by org_id, not
-    // partner_id. We try partner.id first (defensive, in case future migrations
-    // introduce a partner_id column), then fall back to the partner's default
-    // organization id. For now, look up the default org and search there too.
-    let keyRow = existingKey;
+    // Email verified — resolve the partner's default organization (first org
+    // created by createPartner, ordered by createdAt ascending) and look up
+    // the MCP-provisioning API key scoped to that org.
     let defaultOrgId: string | null = null;
     let adminUserId: string | null = null;
     let rawKey: string | null = null;
 
-    if (!keyRow) {
-      // Resolve the partner's default organization (first org created by
-      // createPartner — ordered by createdAt ascending).
-      const [org] = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, partner.id))
-        .limit(1);
-      if (!org) {
-        throw new BootstrapError(
-          'TENANT_INCOMPLETE',
-          'Tenant has no default organization; cannot mint API key.',
-        );
-      }
-      defaultOrgId = org.id;
-
-      // Re-check with the real org scope.
-      const [byOrg] = await db
-        .select({ id: apiKeys.id, scopeState: apiKeys.scopeState })
-        .from(apiKeys)
-        .where(and(eq(apiKeys.orgId, defaultOrgId), eq(apiKeys.status, 'active')))
-        .limit(1);
-      keyRow = byOrg;
+    const [org] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partner.id))
+      .limit(1);
+    if (!org) {
+      throw new BootstrapError(
+        'TENANT_INCOMPLETE',
+        'Tenant has no default organization; cannot mint API key.',
+      );
     }
+    defaultOrgId = org.id;
+
+    const [byOrg] = await db
+      .select({ id: apiKeys.id, scopeState: apiKeys.scopeState })
+      .from(apiKeys)
+      .where(and(eq(apiKeys.orgId, defaultOrgId), eq(apiKeys.status, 'active')))
+      .limit(1);
+    let keyRow = byOrg;
 
     if (!keyRow) {
       // Need an admin user id for api_keys.created_by (NOT NULL).

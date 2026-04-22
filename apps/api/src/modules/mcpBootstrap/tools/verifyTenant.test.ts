@@ -98,7 +98,6 @@ describe('verify_tenant', () => {
   it('mints a readonly key on first pending_payment poll', async () => {
     enqueueSelects([
       [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }], // partner (verified)
-      [],                                                                          // existingKey by partner.id scope → none
       [{ id: 'org-1' }],                                                            // organizations → default org
       [],                                                                          // existingKey by default org → none
       [{ userId: 'user-1' }],                                                       // partnerUsers → admin user
@@ -123,7 +122,8 @@ describe('verify_tenant', () => {
   it('returns pending_payment with null api_key when key already exists', async () => {
     enqueueSelects([
       [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }],
-      [{ id: 'key-1', scopeState: 'readonly' }], // existingKey found
+      [{ id: 'org-1' }],                          // organizations → default org
+      [{ id: 'key-1', scopeState: 'readonly' }], // existingKey (byOrg) found
     ]);
     const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
     expect(r).toEqual({ status: 'pending_payment', api_key: null, scope: 'readonly' });
@@ -133,7 +133,8 @@ describe('verify_tenant', () => {
   it('upgrades readonly → full in place on active transition', async () => {
     enqueueSelects([
       [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
-      [{ id: 'key-1', scopeState: 'readonly' }],
+      [{ id: 'org-1' }],                          // organizations → default org
+      [{ id: 'key-1', scopeState: 'readonly' }], // byOrg existing key
     ]);
     const whereMock = vi.fn().mockResolvedValue(undefined);
     const setMock = vi.fn().mockReturnValue({ where: whereMock });
@@ -149,7 +150,8 @@ describe('verify_tenant', () => {
   it('returns active/full without update when key is already full', async () => {
     enqueueSelects([
       [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
-      [{ id: 'key-1', scopeState: 'full' }],
+      [{ id: 'org-1' }],                    // organizations → default org
+      [{ id: 'key-1', scopeState: 'full' }], // byOrg existing key
     ]);
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
@@ -163,10 +165,9 @@ describe('verify_tenant', () => {
   it('mints a full-scope key when active and no existing key', async () => {
     enqueueSelects([
       [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
-      [],
-      [{ id: 'org-1' }],
-      [],
-      [{ userId: 'user-1' }],
+      [{ id: 'org-1' }],          // organizations → default org
+      [],                          // byOrg → none
+      [{ userId: 'user-1' }],     // partnerUsers → admin user
     ]);
     const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
     expect(r).toEqual({ status: 'active', api_key: 'brz_abc123', scope: 'full' });
