@@ -153,6 +153,20 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
     }
   }, [cliInitialized]);
 
+  // Exchange a raw enrollment key token for a short-lived one-time handle, then
+  // navigate to the public-download URL. This keeps the raw token out of browser
+  // history, server logs, and referrer headers.
+  async function downloadInstaller(keyId: string, rawToken: string, platform: 'windows' | 'macos') {
+    const res = await fetchWithAuth(`/enrollment-keys/${keyId}/download-handle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rawToken }),
+    });
+    if (!res.ok) throw new Error('Failed to prepare download');
+    const { handle } = (await res.json()) as { handle: string };
+    window.location.href = `/api/v1/enrollment-keys/public-download/${platform}?h=${encodeURIComponent(handle)}`;
+  }
+
   const handleTabChange = (tab: 'installer' | 'cli') => {
     setActiveTab(tab);
     if (tab === 'cli') {

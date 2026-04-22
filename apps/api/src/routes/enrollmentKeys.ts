@@ -1007,7 +1007,7 @@ enrollmentKeyRoutes.post(
 
     // Ownership check: caller must own the key row.
     const [row] = await db.select().from(enrollmentKeys)
-      .where(and(eq(enrollmentKeys.id, keyId)))
+      .where(eq(enrollmentKeys.id, keyId))
       .limit(1);
     if (!row) return c.json({ error: 'Not found' }, 404);
 
@@ -1218,7 +1218,8 @@ publicEnrollmentRoutes.get(
     // policy silently drops the row modification and download quotas are
     // never enforced.
     const keyHash = hashEnrollmentKey(rawToken);
-    const resolvedToken = rawToken;
+    // Capture in const so the closure below has a non-null narrowed type.
+    const finalToken = rawToken;
     return withSystemDbAccessContext(async () => {
       const [enrollmentKey] = await db
         .select()
@@ -1230,7 +1231,7 @@ publicEnrollmentRoutes.get(
         return c.json({ error: 'Invalid or expired download link' }, 404);
       }
 
-      return serveInstaller(c, enrollmentKey, platform, resolvedToken);
+      return serveInstaller(c, enrollmentKey, platform, finalToken);
     });
   }
 );

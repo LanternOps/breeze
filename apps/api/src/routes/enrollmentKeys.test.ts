@@ -548,8 +548,10 @@ describe('GET /public-download/:platform', () => {
       throw new Error('db.update called on public-download — regression of the usage_count-burn bug');
     });
 
+    // Use a valid 64-char hex token (legacy ?token= path; new callers should use ?h=).
+    const legacyToken = 'a'.repeat(64);
     const res = await app.request(
-      '/enrollment-keys/public-download/windows?token=abc123',
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
     );
 
     expect(res.status).toBe(200);
