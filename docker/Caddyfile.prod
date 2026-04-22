@@ -32,7 +32,7 @@
   }
 
   # --- API routes (with compression) ---
-  @api path /api/* /s/* /health /ready /metrics/*
+  @api path /api/* /s/* /health /ready /metrics/* /i/* /activate/setup-intent /activate/complete/webhook
   handle @api {
     encode zstd gzip
     reverse_proxy api:3001
