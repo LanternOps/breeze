@@ -10,7 +10,11 @@ import { getRedis } from '../services/redis';
 
 export const externalServicesRoutes = new Hono();
 
-externalServicesRoutes.use('*', authMiddleware);
+// NOTE: scoped to the actual routes — `.use('*', ...)` here would attach
+// the middleware to every `/api/v1/*` request via the `api.route('/', ...)`
+// mount in index.ts, breaking unauth paths like /api/v1/mcp/message.
+externalServicesRoutes.use('/billing/portal', authMiddleware);
+externalServicesRoutes.use('/support', authMiddleware);
 
 function externalBaseUrl(): string | null {
   return process.env.BREEZE_BILLING_URL || null;
