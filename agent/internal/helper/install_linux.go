@@ -45,15 +45,22 @@ func installPackage(appImagePath, binaryPath string) error {
 	return nil
 }
 
-func installAutoStart(binaryPath string) error {
-	entry := fmt.Sprintf(`[Desktop Entry]
+// renderAutoStartEntry returns the XDG desktop entry content for the given
+// binary path. The Exec= value is quoted with %q so that paths containing
+// spaces or other shell-special characters are handled correctly.
+func renderAutoStartEntry(binaryPath string) string {
+	return fmt.Sprintf(`[Desktop Entry]
 Type=Application
 Name=Breeze Helper
-Exec=%s
+Exec=%q
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
 `, binaryPath)
+}
+
+func installAutoStart(binaryPath string) error {
+	entry := renderAutoStartEntry(binaryPath)
 
 	if err := os.MkdirAll(desktopEntryDir, 0755); err != nil {
 		return fmt.Errorf("create autostart dir: %w", err)

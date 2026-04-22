@@ -262,7 +262,7 @@ func (m *Manager) writeLegacyConfig(cfg *Config) error {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("write legacy temp config: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -287,7 +287,7 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 	}
 
 	tmp := state.configPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("write temp config: %w", err)
 	}
 	if err := os.Rename(tmp, state.configPath); err != nil {
