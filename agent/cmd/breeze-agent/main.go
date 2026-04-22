@@ -142,9 +142,22 @@ var rootCmd = &cobra.Command{
 	Long:  `Breeze Agent - Remote Monitoring and Management agent for Windows, macOS, and Linux`,
 }
 
-var runCmd = &cobra.Command{
-	Use:   "run",
+var startCmd = &cobra.Command{
+	Use:   "start",
 	Short: "Start the agent",
+	Run: func(cmd *cobra.Command, args []string) {
+		runAgent()
+	},
+}
+
+// runCmd is the legacy name for `start`, retained as a hidden alias so
+// systemd units and MSI invocations on already-deployed agents continue
+// to work after a binary-only upgrade. Safe to remove once every shipped
+// unit file references `start`.
+var runCmd = &cobra.Command{
+	Use:    "run",
+	Short:  "Deprecated: alias for 'start'",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		runAgent()
 	},
@@ -206,6 +219,7 @@ func init() {
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
+	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(enrollCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -903,7 +917,7 @@ func enrollDevice(enrollmentKey string) {
 		}
 	} else {
 		if !quietEnroll {
-			fmt.Println("Run 'breeze-agent run' to start the agent.")
+			fmt.Println("Run 'breeze-agent start' to start the agent.")
 		}
 	}
 }

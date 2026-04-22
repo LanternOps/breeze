@@ -8,7 +8,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/breeze-agent run
+ExecStart=/usr/local/bin/breeze-agent start
 WorkingDirectory=/etc/breeze
 Restart=on-failure
 RestartSec=5

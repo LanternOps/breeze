@@ -92,7 +92,7 @@ endif
 
 # Development run
 run:
-	go run ./cmd/breeze-agent run
+	go run ./cmd/breeze-agent start
 
 # Run user helper (for development)
 run-user-helper:
