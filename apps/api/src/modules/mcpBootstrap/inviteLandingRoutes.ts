@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { deploymentInvites } from '../../db/schema';
 import {
   peekShortCode,
@@ -99,10 +99,15 @@ export function mountInviteLandingRoutes(app: Hono): void {
     // matching deployment_invites row (e.g. legacy admin-created links
     // that happen to be reached through `/i/`), so a no-op update is fine.
     try {
-      await db
-        .update(deploymentInvites)
-        .set({ status: 'clicked', clickedAt: new Date() })
-        .where(eq(deploymentInvites.enrollmentKeyId, peeked.id));
+      // Wrap in system DB context — /i/:shortCode is unauthenticated and
+      // has no request-scoped tenant context, so RLS on deployment_invites
+      // would otherwise match zero rows and silently drop the update.
+      await withSystemDbAccessContext(async () => {
+        await db
+          .update(deploymentInvites)
+          .set({ status: 'clicked', clickedAt: new Date() })
+          .where(eq(deploymentInvites.enrollmentKeyId, peeked.id));
+      });
     } catch (err) {
       // Don't fail the landing page over an audit-side update.
       console.error('[invite-landing] Failed to mark invite clicked:', err instanceof Error ? err.message : err);

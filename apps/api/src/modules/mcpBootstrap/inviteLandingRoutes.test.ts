@@ -16,11 +16,16 @@ vi.mock('../../routes/enrollmentKeys', () => ({
 const updateWhereMock = vi.fn().mockResolvedValue(undefined);
 const updateSetMock = vi.fn().mockReturnValue({ where: updateWhereMock });
 const dbUpdateMock = vi.fn().mockReturnValue({ set: updateSetMock });
+const withSystemDbAccessContextMock = vi.fn(
+  async (fn: () => Promise<unknown>) => fn(),
+);
 
 vi.mock('../../db', () => ({
   db: {
     update: (...args: unknown[]) => dbUpdateMock(...args),
   },
+  withSystemDbAccessContext: (fn: () => Promise<unknown>) =>
+    withSystemDbAccessContextMock(fn),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -128,6 +133,9 @@ describe('GET /i/:shortCode (landing page)', () => {
       expect.objectContaining({ status: 'clicked', clickedAt: expect.any(Date) }),
     );
     expect(updateWhereMock).toHaveBeenCalledTimes(1);
+    // The update must run inside the system DB context or RLS silently
+    // drops the update on this unauth route.
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
   });
 
   it('still renders HTML even if the invite-click update throws', async () => {
