@@ -1133,7 +1133,12 @@ function jsonRpcError(id: string | number | null, code: number, message: string,
 async function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: string; createdBy: string }): Promise<AuthContext> {
   const orgId = apiKey.orgId;
 
-  // Look up the org's partner so getUserPermissions can fall back to partnerUsers
+  // Look up the org's partner so getUserPermissions can fall back to
+  // partnerUsers. Distinguish "row not found" from "DB threw" — a thrown
+  // error means we can't safely assume partnerId is null; re-throw so the
+  // request-level error handler returns a clean 500 instead of a misleading
+  // downstream permissions error (e.g. paymentGate's "requires a resolvable
+  // partner" message, which only makes sense for the row-not-found case).
   let partnerId: string | null = null;
   try {
     const [org] = await db
@@ -1143,7 +1148,13 @@ async function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: st
       .limit(1);
     partnerId = org?.partnerId ?? null;
   } catch (err) {
-    console.error('[MCP] Failed to resolve partnerId for org', orgId, err);
+    console.error(
+      '[MCP] DB error resolving partnerId for org (mcp_partner_lookup_failed)',
+      { orgId, error: err instanceof Error ? err.message : String(err) },
+    );
+    throw new Error(
+      `mcp_partner_lookup_failed: failed to resolve partner for org ${orgId}`,
+    );
   }
 
   return {
