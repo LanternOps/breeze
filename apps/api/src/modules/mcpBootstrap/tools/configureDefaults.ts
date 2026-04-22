@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, or } from 'drizzle-orm';
 import { db } from '../../../db';
 import {
   deviceGroups,
@@ -111,8 +111,7 @@ export async function applyStandardAlertPolicy(
     .where(
       and(
         eq(alertRules.orgId, orgId),
-        // in(templateId, ...) — avoid import for a 3-element set
-        sql`${alertRules.templateId} = ANY(${templateIds})`,
+        inArray(alertRules.templateId, templateIds),
       ),
     );
   const existingSet = new Set(existing.map((r) => r.templateId));
