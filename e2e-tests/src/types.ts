@@ -12,6 +12,17 @@ export interface TestStep {
     query?: Record<string, string>;
     body?: Record<string, unknown>;
   };
+  /** Per-step auth override. Set `'none'` to skip the default Bearer token injection on `api` steps. */
+  auth?: 'none' | 'bearer';
+  /** Extra headers merged onto the outgoing `api` request. Overrides any defaults with the same key. */
+  headers?: Record<string, string>;
+  /**
+   * If set on an `api` step, the runner interprets the response as an MCP `tools/call` envelope,
+   * parses `result.content[0].text` as JSON, and uses that parsed payload as the target for
+   * `expect:` matching and for hoisting into `context.vars` (so subsequent steps can template
+   * `{{tenant_id}}`, `{{api_key}}`, etc). The raw envelope is still returned as the step output.
+   */
+  mcp_result?: boolean;
   poll?: {
     maxAttempts: number;
     intervalMs: number;

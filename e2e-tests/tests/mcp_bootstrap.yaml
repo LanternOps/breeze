@@ -22,29 +22,23 @@
 #     npx tsx run.ts --mode live --test mcp_bootstrap
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# RUNNER NOTE (must read before executing):
+# Runner features used by this test (see e2e-tests/src/steps.ts):
 #
-# The `e2e-tests/run.ts` `api` action currently:
-#   1. ALWAYS attaches `Authorization: Bearer <token>` and cannot emit
-#      unauthenticated requests. The bootstrap carve-out on `/mcp/message`
-#      requires NO auth header for tier-0 tools (create_tenant, verify_tenant).
-#   2. Does not accept per-step custom headers, so the tier-2 authed tools
-#      (send_deployment_invites, get_fleet_status) cannot be given the
-#      `X-API-Key` header the MCP server expects for a freshly-issued
-#      `brz_test_*` key (Bearer JWT won't match the api-key-auth path).
-#   3. Does not unwrap the JSON-RPC `result.content[0].text` JSON-string
-#      payload, so `expect:` matchers can't assert on fields like
-#      `activation_status` or `api_key` without step-side extraction.
+#   auth: none           — skip the default `Authorization: Bearer <token>`
+#                          injection. Required for the tier-0 bootstrap tools
+#                          on /mcp/message and the /test/* simulators.
 #
-# Until the runner grows (a) `auth: none` + `headers:` on `api` steps and
-# (b) a `contentJsonPath` extractor for `tools/call` responses, execute this
-# flow via the existing integration test at
-#   apps/api/src/__tests__/integration/mcpBootstrap.integration.test.ts
-# (Task 9.1), which exercises the same seven stages against a live
-# PostgreSQL + Stripe-stub stack in-process.
+#   headers: { ... }     — per-step header map merged onto the request.
+#                          Values support {{var}} templating. Used to send
+#                          `X-API-Key: {{api_key}}` on tier-2 authed tools.
 #
-# This YAML is the *intended* public-runner shape and documents the contract
-# the runner extensions should satisfy.
+#   mcp_result: true     — tells the runner the response is an MCP tools/call
+#                          envelope. The runner parses
+#                          `result.content[0].text` as JSON and uses the
+#                          parsed payload as the target for `expect:` and
+#                          hoists its top-level fields into context.vars so
+#                          later steps can template `{{tenant_id}}`, `{{api_key}}`,
+#                          etc.
 # ─────────────────────────────────────────────────────────────────────────────
 
 tests:
@@ -63,7 +57,8 @@ tests:
       - id: create_tenant
         action: api
         description: "MCP tools/call create_tenant — unauthenticated bootstrap tool"
-        # RUNNER EXTENSION NEEDED: auth: none  |  headers: {}
+        auth: none
+        mcp_result: true
         request:
           method: POST
           path: "/mcp/message"
@@ -74,23 +69,21 @@ tests:
             params:
               name: create_tenant
               arguments:
-                org_name: "MCP E2E {{testId}}-{{testStartTime}}"
-                admin_email: "test+{{testId}}@acme-e2e.test"
+                org_name: "MCP E2E {{runId}}"
+                admin_email: "test+{{runId}}@acme-e2e.test"
                 admin_name: "Test Admin"
                 region: us
-        # RUNNER EXTENSION NEEDED: extract `result.content[0].text` as JSON
-        # and hoist `tenant_id`, `activation_status` into context.vars.
+        # After mcp_result unwrap: tenant_id + activation_status become
+        # available as {{tenant_id}} / {{activation_status}} downstream.
         expect:
-          # Tier-0 bootstrap tools always return a success envelope with
-          # content-array text payload. Once unwrapped:
-          #   activation_status: pending_email
-          #   tenant_id: <uuid>
-          jsonrpc: "2.0"
+          activation_status: pending_email
 
       # ── Stage 2: verify_tenant before activation ──────────────────────
       - id: verify_pending_email
         action: api
         description: "verify_tenant should report pending_email before activation"
+        auth: none
+        mcp_result: true
         request:
           method: POST
           path: "/mcp/message"
@@ -102,15 +95,14 @@ tests:
               name: verify_tenant
               arguments:
                 tenant_id: "{{tenant_id}}"
-        # Expected unwrapped payload: { status: "pending_email" }
         expect:
-          jsonrpc: "2.0"
+          status: pending_email
 
       # ── Stage 3: Simulate email-verification click ────────────────────
       - id: simulate_email_click
         action: api
         description: "POST /test/activate/:partnerId — simulates the email link click"
-        # RUNNER EXTENSION NEEDED: auth: none
+        auth: none
         request:
           method: POST
           path: "/test/activate/{{tenant_id}}"
@@ -120,6 +112,8 @@ tests:
       - id: verify_pending_payment
         action: api
         description: "verify_tenant should now report pending_payment and return the API key"
+        auth: none
+        mcp_result: true
         request:
           method: POST
           path: "/mcp/message"
@@ -131,17 +125,16 @@ tests:
               name: verify_tenant
               arguments:
                 tenant_id: "{{tenant_id}}"
-        # Expected unwrapped payload:
-        #   { status: "pending_payment", api_key: "brz_test_...", payment_link: "https://..." }
-        # RUNNER EXTENSION NEEDED: extract `api_key` into context.vars.
+        # After mcp_result unwrap: api_key + payment_link are hoisted into
+        # context.vars so Stage 7/8 can send `X-API-Key: {{api_key}}`.
         expect:
-          jsonrpc: "2.0"
+          status: pending_payment
 
       # ── Stage 5: Simulate Stripe payment-method attach ────────────────
       - id: simulate_payment
         action: api
         description: "POST /test/complete-payment/:partnerId — simulates Stripe webhook"
-        # RUNNER EXTENSION NEEDED: auth: none
+        auth: none
         request:
           method: POST
           path: "/test/complete-payment/{{tenant_id}}"
@@ -151,6 +144,8 @@ tests:
       - id: verify_active
         action: api
         description: "verify_tenant should now report active (tier-2 scope granted)"
+        auth: none
+        mcp_result: true
         request:
           method: POST
           path: "/mcp/message"
@@ -162,17 +157,17 @@ tests:
               name: verify_tenant
               arguments:
                 tenant_id: "{{tenant_id}}"
-        # Expected unwrapped payload: { status: "active" }
         expect:
-          jsonrpc: "2.0"
+          status: active
 
       # ── Stage 7: Authed send_deployment_invites ───────────────────────
       - id: send_invites
         action: api
         description: "Authed send_deployment_invites using the API key from stage 4"
-        # RUNNER EXTENSION NEEDED:
-        #   headers: { X-API-Key: "{{api_key}}" }
-        #   auth: none   (so Bearer is NOT added)
+        auth: none
+        mcp_result: true
+        headers:
+          X-API-Key: "{{api_key}}"
         request:
           method: POST
           path: "/mcp/message"
@@ -184,15 +179,18 @@ tests:
               name: send_deployment_invites
               arguments:
                 emails:
-                  - "test+invitee-{{testId}}@acme-e2e.test"
+                  - "test+invitee-{{runId}}@acme-e2e.test"
         expect:
-          jsonrpc: "2.0"
+          sent: ">= 1"
 
       # ── Stage 8: Authed get_fleet_status ──────────────────────────────
       - id: fleet_status
         action: api
         description: "Authed get_fleet_status — invite funnel should count the invite"
-        # RUNNER EXTENSION NEEDED: headers: { X-API-Key: "{{api_key}}" }
+        auth: none
+        mcp_result: true
+        headers:
+          X-API-Key: "{{api_key}}"
         request:
           method: POST
           path: "/mcp/message"
@@ -203,7 +201,6 @@ tests:
             params:
               name: get_fleet_status
               arguments: {}
-        # Expected unwrapped payload includes:
-        #   invite_funnel: { total_invited: >= 1, ... }
         expect:
-          jsonrpc: "2.0"
+          invite_funnel:
+            total_invited: ">= 1"
