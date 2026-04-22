@@ -33,6 +33,21 @@ for f in "$PKG_AMD64" "$PKG_ARM64"; do
     [[ -f "$f" ]] || { echo "Missing PKG: $f" >&2; exit 1; }
 done
 
+# Resolve to absolute paths BEFORE we `cd` — these args are typically
+# relative to the original CWD (e.g. installer-pkgs/...) and would break
+# after switching into the script directory.
+abspath() {
+    local p="$1"
+    if [[ "$p" = /* ]]; then
+        printf '%s\n' "$p"
+    else
+        printf '%s/%s\n' "$(pwd)" "$p"
+    fi
+}
+PKG_AMD64="$(abspath "$PKG_AMD64")"
+PKG_ARM64="$(abspath "$PKG_ARM64")"
+OUTPUT="$(abspath "$OUTPUT")"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
