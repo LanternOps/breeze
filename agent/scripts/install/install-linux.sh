@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY="/usr/local/bin/breeze-agent"
-SERVICE_SRC="$(dirname "$0")/../../service/systemd/breeze-agent.service"
+SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/breeze-agent.service"
 SERVICE_DST="/etc/systemd/system/breeze-agent.service"
 CONFIG_DIR="/etc/breeze"
 DATA_DIR="/var/lib/breeze"
@@ -66,14 +67,8 @@ fi
 if [ -f "$SERVICE_SRC" ]; then
     cp "$SERVICE_SRC" "$SERVICE_DST"
 else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    SERVICE_ALT="$SCRIPT_DIR/../../service/systemd/breeze-agent.service"
-    if [ -f "$SERVICE_ALT" ]; then
-        cp "$SERVICE_ALT" "$SERVICE_DST"
-    else
-        echo "Error: systemd unit file not found" >&2
-        exit 1
-    fi
+    echo "Error: systemd unit file not found at $SERVICE_SRC" >&2
+    exit 1
 fi
 chmod 644 "$SERVICE_DST"
 
@@ -81,7 +76,6 @@ systemctl daemon-reload
 systemctl enable breeze-agent
 
 # Install user helper systemd user unit
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 USER_SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/breeze-agent-user.service"
 USER_SERVICE_DST="/usr/lib/systemd/user/breeze-agent-user.service"
 
@@ -107,6 +101,22 @@ fi
 if ! getent group breeze &>/dev/null; then
     groupadd --system breeze 2>/dev/null || true
     echo "Created 'breeze' group for IPC socket access."
+fi
+
+# Install tmpfiles.d snippet so /run/breeze is recreated on every boot.
+# /run is tmpfs-backed and wiped across reboots; without this the service
+# fails sandbox setup (ProtectSystem=strict + ReadWritePaths=/var/run/breeze)
+# and does not auto-start after reboot. Runs AFTER groupadd because the
+# snippet references the breeze group for ownership.
+TMPFILES_SRC="$SCRIPT_DIR/../../service/tmpfiles.d/breeze-agent.conf"
+TMPFILES_DST="/usr/lib/tmpfiles.d/breeze-agent.conf"
+if [ -f "$TMPFILES_SRC" ]; then
+    cp "$TMPFILES_SRC" "$TMPFILES_DST"
+    chmod 644 "$TMPFILES_DST"
+    if ! systemd-tmpfiles --create "$TMPFILES_DST"; then
+        echo "Warning: systemd-tmpfiles --create failed; /run/breeze will be created on next boot" >&2
+    fi
+    echo "tmpfiles.d snippet installed (recreates /run/breeze on reboot)."
 fi
 
 # Create IPC socket directory

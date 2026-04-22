@@ -35,10 +35,15 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/breeze-agent run
+ExecStart=/usr/local/bin/breeze-agent start
 WorkingDirectory=/etc/breeze
 Restart=on-failure
 RestartSec=5
+
+# Cap total stop time so a hung HTTP flush during OS shutdown (network
+# going down) doesn't block system power-off for the 90s systemd default.
+TimeoutStopSec=15
+KillMode=mixed
 
 # Security hardening
 ProtectSystem=strict

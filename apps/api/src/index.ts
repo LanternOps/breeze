@@ -13,6 +13,8 @@ import { bodyLimit } from 'hono/body-limit';
 import { securityMiddleware } from './middleware/security';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
+import { configRoutes } from './routes/config';
+import { externalServicesRoutes } from './routes/externalServices';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
 import { scriptRoutes } from './routes/scripts';
@@ -590,6 +592,7 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
 api.use('*', async (c, next) => {
   const path = c.req.path;
   if (path.startsWith('/api/v1/auth')) { await next(); return; }
+  if (path === '/api/v1/config' || path.startsWith('/api/v1/config/')) { await next(); return; }
   if (path.startsWith('/api/v1/users/me')) { await next(); return; }
   if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) { await next(); return; }
   if (path.startsWith('/api/v1/agents/')) { await next(); return; }
@@ -652,6 +655,8 @@ api.use('*', async (c, next) => {
 });
 
 api.route('/auth', authRoutes);
+api.route('/config', configRoutes);
+api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
 api.route('/scripts', scriptRoutes);

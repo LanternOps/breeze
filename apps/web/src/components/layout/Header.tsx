@@ -13,15 +13,20 @@ import {
   Activity,
   Sparkles,
   BookOpen,
-  Menu
+  Menu,
+  LifeBuoy,
+  CreditCard
 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
+import SupportModal from '../support/SupportModal';
 import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
 import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useFeaturesStore } from '../../stores/featuresStore';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '../../lib/navigation';
 
 export default function Header() {
@@ -29,7 +34,11 @@ export default function Header() {
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
+  const [billingLoading, setBillingLoading] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const features = useFeaturesStore((s) => s.features);
+  const loadFeatures = useFeaturesStore((s) => s.load);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const themeRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +54,50 @@ export default function Header() {
     const stored = (raw === 'light' || raw === 'dark' || raw === 'system') ? raw : null;
     setTheme(stored || 'system');
   }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      void loadFeatures();
+    }
+  }, [isAuthenticated, loadFeatures]);
+
+  const openBillingPortal = async () => {
+    if (billingLoading) return;
+    setBillingLoading(true);
+    try {
+      const res = await fetchWithAuth('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: window.location.href }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.error('[billing] portal failed', { status: res.status, body });
+        const code = typeof body.error === 'string' ? body.error : '';
+        const messages: Record<string, string> = {
+          no_billing_record: 'No active subscription — contact support.',
+          not_configured: 'Billing is not available on this deployment.',
+          upstream_unavailable: 'Billing service is temporarily unavailable. Please try again in a moment.',
+          rate_limited: 'Too many requests. Please wait a few minutes and try again.',
+        };
+        const message = messages[code] ?? (code || 'Failed to open billing portal');
+        showToast({ type: 'error', message });
+        return;
+      }
+      const data = (await res.json()) as { url?: string };
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        console.error('[billing] upstream returned no url', data);
+        showToast({ type: 'error', message: 'Billing portal URL missing from response' });
+      }
+    } catch (err) {
+      console.error('[billing] portal request threw', err);
+      showToast({ type: 'error', message: 'Failed to open billing portal' });
+    } finally {
+      setBillingLoading(false);
+    }
+  };
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -300,6 +353,33 @@ export default function Header() {
                   <Key className="h-4 w-4 text-muted-foreground" />
                   <span>API Keys</span>
                 </a>
+                {features.billing && (
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition hover:bg-muted disabled:opacity-50"
+                    disabled={billingLoading}
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      void openBillingPortal();
+                    }}
+                  >
+                    <CreditCard className="h-4 w-4 text-muted-foreground" />
+                    <span>{billingLoading ? 'Opening…' : 'Billing'}</span>
+                  </button>
+                )}
+                {features.support && (
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition hover:bg-muted"
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      setShowSupportModal(true);
+                    }}
+                  >
+                    <LifeBuoy className="h-4 w-4 text-muted-foreground" />
+                    <span>Contact support</span>
+                  </button>
+                )}
               </div>
 
               {/* Activity Section */}
@@ -330,6 +410,7 @@ export default function Header() {
           )}
         </div>
       </div>
+      <SupportModal open={showSupportModal} onClose={() => setShowSupportModal(false)} />
     </header>
   );
 }

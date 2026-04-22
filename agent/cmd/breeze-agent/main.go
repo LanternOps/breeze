@@ -142,9 +142,22 @@ var rootCmd = &cobra.Command{
 	Long:  `Breeze Agent - Remote Monitoring and Management agent for Windows, macOS, and Linux`,
 }
 
-var runCmd = &cobra.Command{
-	Use:   "run",
+var startCmd = &cobra.Command{
+	Use:   "start",
 	Short: "Start the agent",
+	Run: func(cmd *cobra.Command, args []string) {
+		runAgent()
+	},
+}
+
+// runCmd is the legacy name for `start`, retained as a hidden alias so
+// systemd units and MSI invocations on already-deployed agents continue
+// to work after a binary-only upgrade. Safe to remove once every shipped
+// unit file references `start`.
+var runCmd = &cobra.Command{
+	Use:    "run",
+	Short:  "Deprecated: alias for 'start'",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		runAgent()
 	},
@@ -206,6 +219,7 @@ func init() {
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
+	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(enrollCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -272,6 +286,11 @@ type agentComponents struct {
 }
 
 // shutdownAgent gracefully stops all agent components.
+//
+// Every blocking stage is wrapped with a deadline so that a stuck HTTP flush
+// (common during OS shutdown when the network has already gone down) can't
+// pin the process past systemd's TimeoutStopSec. Total worst case is bounded
+// by the sum of per-stage timeouts; the unit file caps the outer wait at 15s.
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
@@ -299,13 +318,39 @@ func shutdownAgent(comps *agentComponents) {
 	}
 
 	comps.hb.StopAcceptingCommands()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	comps.hb.DrainAndWait(ctx)
-	comps.wsClient.Stop()
-	comps.hb.Stop()
+
+	// Inner ctx deadline is slightly longer than the outer runWithTimeout
+	// budget so ordering is deterministic: runWithTimeout fires first on
+	// a hung DrainAndWait, logs the stage, then drainCancel triggers the
+	// still-running goroutine's ctx to abort.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 6*time.Second)
+	runWithTimeout("drain in-flight commands", 5*time.Second, func() {
+		comps.hb.DrainAndWait(drainCtx)
+	})
+	drainCancel()
+
+	runWithTimeout("websocket stop", 3*time.Second, comps.wsClient.Stop)
+	runWithTimeout("heartbeat stop", 5*time.Second, comps.hb.Stop)
+
 	if comps.secureToken != nil {
 		comps.secureToken.Zero()
+	}
+}
+
+// runWithTimeout invokes fn on a goroutine and waits up to d for it to return.
+// If fn exceeds the deadline, logs a warning and returns; fn continues in the
+// background and is abandoned when the process exits. Used on the shutdown
+// path where we prefer to drop work rather than let systemd SIGKILL us.
+func runWithTimeout(name string, d time.Duration, fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		log.Warn("shutdown stage timed out, continuing", "stage", name, "timeout", d.String())
 	}
 }
 
@@ -872,7 +917,7 @@ func enrollDevice(enrollmentKey string) {
 		}
 	} else {
 		if !quietEnroll {
-			fmt.Println("Run 'breeze-agent run' to start the agent.")
+			fmt.Println("Run 'breeze-agent start' to start the agent.")
 		}
 	}
 }
