@@ -251,6 +251,7 @@ async function runTest(test: Test): Promise<TestResult> {
       baseUrl: resolveEnvString(config.environment.baseUrl),
       apiUrl: resolveEnvString(config.environment.apiUrl),
       testId: test.id,
+      runId: `${test.id}-${Date.now()}`,
       testStartTime: new Date().toISOString(),
       twoHoursAgo: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
       oneHourAgo: new Date(Date.now() - 60 * 60 * 1000).toISOString(),

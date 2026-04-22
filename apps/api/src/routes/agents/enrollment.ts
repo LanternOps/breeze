@@ -21,6 +21,7 @@ import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { dispatchHook } from '../../services/partnerHooks';
+import { matchDeploymentInviteOnEnrollment } from '../../modules/mcpBootstrap/matchInviteOnEnrollment';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -480,6 +481,14 @@ deviceLimitPartnerId = org.partnerId;
     // Queue warranty lookup for the newly enrolled device (fire-and-forget)
     queueWarrantySyncForDevice(device.id).catch((err) => {
       console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
+    });
+
+    // Close the MCP deployment-invite funnel if this enrollment key was
+    // issued by `send_deployment_invites` (best-effort; no-op for manual
+    // enrollments or re-enrollments).
+    await matchDeploymentInviteOnEnrollment({
+      enrollmentKeyId: key.id,
+      deviceId: device.id,
     });
 
     return c.json({

@@ -70,6 +70,8 @@ export const TOOL_TIERS = {
   get_cis_device_report: 1,
   apply_cis_remediation: 3,
   get_fleet_health: 1,
+  get_fleet_status: 1,
+  delete_tenant: 3,
   get_backup_health: 1,
   run_backup_verification: 2,
   get_recovery_readiness: 1,
@@ -663,6 +665,23 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_fleet_status',
+      'Return the deployment-invite funnel for this tenant (total invited, clicked, enrolled, online) with recent enrollments. Poll during MCP bootstrap to track devices coming online.',
+      {},
+      makeHandler('get_fleet_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'delete_tenant',
+      'Soft-delete this tenant with a 30-day restore window. confirmation_phrase must exactly equal "delete <tenant_name> permanently" (lowercase, trimmed). Can ONLY delete the tenant this API key belongs to.',
+      {
+        tenant_id: z.string().uuid(),
+        confirmation_phrase: z.string().min(1).max(500),
+      },
+      makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

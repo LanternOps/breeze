@@ -284,6 +284,118 @@ describe('apiKeyAuth middleware', () => {
       expect.any(Function)
     );
   });
+
+  it('populates accessiblePartnerIds for MCP-provisioning keys so partner-axis RLS sees the key', async () => {
+    // First select: api_keys lookup. Second select: organizations -> partnerId.
+    const fromFn = vi.fn();
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: fromFn.mockReturnValueOnce({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: 'key-9',
+                orgId: 'org-3',
+                name: 'Key',
+                keyPrefix: 'brz_',
+                keyHash: 'hash',
+                scopes: ['read'],
+                expiresAt: null,
+                rateLimit: 5,
+                usageCount: 0,
+                status: 'active',
+                createdBy: 'user-3',
+                source: 'mcp_provisioning'
+              }
+            ])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-7' }])
+          })
+        })
+      } as any);
+
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 4,
+      resetAt: new Date(Date.now() + 60_000)
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+    } as any);
+
+    const c = createContext({ 'X-API-Key': 'brz_valid' });
+    const next = vi.fn();
+
+    await apiKeyAuthMiddleware(c, next);
+
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      {
+        scope: 'organization',
+        orgId: 'org-3',
+        accessibleOrgIds: ['org-3'],
+        accessiblePartnerIds: ['partner-7']
+      },
+      expect.any(Function)
+    );
+  });
+
+  it('keeps accessiblePartnerIds empty for non-MCP keys and skips the org→partner lookup', async () => {
+    // Only one select call expected (api_keys lookup). If the partner lookup
+    // happens it'll throw because we only queue one mock.
+    const limitFn = vi.fn().mockResolvedValue([
+      {
+        id: 'key-10',
+        orgId: 'org-4',
+        name: 'Agent Key',
+        keyPrefix: 'brz_',
+        keyHash: 'hash',
+        scopes: ['agent:read'],
+        expiresAt: null,
+        rateLimit: 100,
+        usageCount: 0,
+        status: 'active',
+        createdBy: 'user-4',
+        source: 'manual'
+      }
+    ]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: limitFn })
+      })
+    } as any);
+
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 99,
+      resetAt: new Date(Date.now() + 60_000)
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+    } as any);
+
+    const c = createContext({ 'X-API-Key': 'brz_manualkey' });
+    const next = vi.fn();
+    await apiKeyAuthMiddleware(c, next);
+
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      {
+        scope: 'organization',
+        orgId: 'org-4',
+        accessibleOrgIds: ['org-4'],
+        accessiblePartnerIds: []
+      },
+      expect.any(Function)
+    );
+    // api_keys lookup only — no organizations→partnerId lookup on hot path.
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('requireApiKeyScope middleware', () => {

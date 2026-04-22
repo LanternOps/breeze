@@ -12,6 +12,7 @@ import {
 } from '../constants';
 
 export * from './reliability';
+export * from './businessEmail';
 
 // ============================================
 // Device Roles

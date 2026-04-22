@@ -15,6 +15,7 @@ export interface ApiKeyContext {
     scopes: string[];
     rateLimit: number;
     createdBy: string;
+    scopeState: 'readonly' | 'full';
   };
   orgId: string;
 }
@@ -75,7 +76,9 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         rateLimit: apiKeys.rateLimit,
         usageCount: apiKeys.usageCount,
         status: apiKeys.status,
-        createdBy: apiKeys.createdBy
+        createdBy: apiKeys.createdBy,
+        scopeState: apiKeys.scopeState,
+        source: apiKeys.source
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -146,6 +149,26 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     console.error('Failed to update API key usage stats:', err);
   });
 
+  // Resolve the owning partner for this API key's org ONLY for MCP-provisioning
+  // keys. Those keys route through paymentGate, which reads the partners table
+  // (partner-axis RLS) — without the allowlist entry breeze_has_partner_access()
+  // short-circuits to false and the authed caller sees zero rows.
+  //
+  // Every other API key type has no legitimate need to read partner rows, so
+  // we skip the round-trip and keep accessiblePartnerIds empty. This also
+  // avoids a per-request DB hit on the hot agent-authed path.
+  const isMcpProvisioningKey = apiKey.source === 'mcp_provisioning';
+  const resolvedPartnerId = isMcpProvisioningKey
+    ? await withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, apiKey.orgId))
+          .limit(1);
+        return row?.partnerId ?? null;
+      })
+    : null;
+
   // Set API key context for route handlers
   c.set('apiKey', {
     id: apiKey.id,
@@ -154,7 +177,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     keyPrefix: apiKey.keyPrefix,
     scopes: apiKey.scopes || [],
     rateLimit: apiKey.rateLimit,
-    createdBy: apiKey.createdBy
+    createdBy: apiKey.createdBy,
+    scopeState: (apiKey.scopeState === 'readonly' ? 'readonly' : 'full')
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 
@@ -163,8 +187,11 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
       scope: 'organization',
       orgId: apiKey.orgId,
       accessibleOrgIds: [apiKey.orgId],
-      // API keys are org-scoped; they have no access to partner-level tables.
-      accessiblePartnerIds: []
+      // The API key is scoped to a single org, but that org belongs to a
+      // partner. We include the owning partner in the allowlist so the key can
+      // read its own partner row (billing gate, MCP provisioning). If the org
+      // somehow has no partner link, fall back to an empty allowlist.
+      accessiblePartnerIds: resolvedPartnerId ? [resolvedPartnerId] : []
     },
     async () => {
       await next();

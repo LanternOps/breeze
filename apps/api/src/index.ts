@@ -83,7 +83,7 @@ import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { scriptAiRoutes } from './routes/scriptAi';
-import { mcpServerRoutes } from './routes/mcpServer';
+import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
@@ -342,6 +342,15 @@ app.route('/metrics', metricsRoutes);
 
 // Short link routes (enrollment short URLs at /s/<code>)
 app.route('/s', publicShortLinkRoutes);
+
+// MCP bootstrap activation routes (flag-gated). Mounted only when
+// MCP_BOOTSTRAP_ENABLED=true so the module's side effects and env
+// requirements stay off the hot path on deployments that don't use it.
+if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
+  const { mountActivationRoutes, mountInviteLandingRoutes } = await import('./modules/mcpBootstrap');
+  mountActivationRoutes(app);
+  mountInviteLandingRoutes(app);
+}
 
 // API routes
 const api = new Hono();
@@ -1168,6 +1177,13 @@ async function bootstrap(): Promise<void> {
   }
 
   await runStartupChecks();
+
+  // Initialize MCP bootstrap module (no-op when MCP_BOOTSTRAP_ENABLED is false).
+  // Synchronous startup wait — if required envs are missing when the flag is
+  // on, checkMcpBootstrapStartup() throws here and aborts boot. This also
+  // eliminates the cold-start load-race where the first unauth request could
+  // see bootstrapModule === null and fall through to a 401.
+  await initMcpBootstrapForStartup();
 
   try {
     await runWithSystemDbAccess(async () => {

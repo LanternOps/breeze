@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean } from 'drizzle-orm/pg-core';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned']);
@@ -20,7 +20,13 @@ export const partners = pgTable('partners', {
   billingEmail: varchar('billing_email', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-  deletedAt: timestamp('deleted_at')
+  deletedAt: timestamp('deleted_at'),
+  mcpOrigin: boolean('mcp_origin').notNull().default(false),
+  mcpOriginIp: text('mcp_origin_ip'),
+  mcpOriginUserAgent: text('mcp_origin_user_agent'),
+  emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
+  paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
+  stripeCustomerId: text('stripe_customer_id'),
 });
 
 export const organizations = pgTable('organizations', {

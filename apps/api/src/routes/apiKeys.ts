@@ -183,7 +183,8 @@ apiKeyRoutes.get(
         createdBy: apiKeys.createdBy,
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
-        status: apiKeys.status
+        status: apiKeys.status,
+        source: apiKeys.source
       })
       .from(apiKeys)
       .where(whereCondition)
@@ -307,7 +308,8 @@ apiKeyRoutes.get(
         createdBy: apiKeys.createdBy,
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
-        status: apiKeys.status
+        status: apiKeys.status,
+        source: apiKeys.source
       })
       .from(apiKeys)
       .where(eq(apiKeys.id, keyId))

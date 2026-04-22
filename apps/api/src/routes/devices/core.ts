@@ -50,6 +50,8 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
+  // Deployment invites (FK device_id → devices.id; no cascade)
+  'deployment_invites',
   // Core device tables
   'device_group_memberships', 'group_membership_log',
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',

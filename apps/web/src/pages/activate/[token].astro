@@ -1,0 +1,11 @@
+---
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import ActivateTokenPage from '../../components/activate/ActivateTokenPage';
+
+const { token } = Astro.params;
+const status = Astro.url.searchParams.get('status') ?? 'pending';
+---
+
+<AuthLayout title="Activate your Breeze tenant">
+  <ActivateTokenPage client:load token={token!} initialStatus={status} />
+</AuthLayout>

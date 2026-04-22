@@ -239,7 +239,8 @@ export async function runApiStepLive(step: TestStep, context: RunnerContext, con
     throw new Error('API step is missing request configuration');
   }
 
-  const token = await authenticateApi(config);
+  const skipAuth = step.auth === 'none';
+  const token = skipAuth ? '' : await authenticateApi(config);
   const apiUrl = resolveEnvString(config.environment.apiUrl);
   const method = (request.method ?? 'GET').toUpperCase();
 
@@ -268,9 +269,21 @@ export async function runApiStepLive(step: TestStep, context: RunnerContext, con
       }
 
       const headers: Record<string, string> = {
-        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       };
+      if (!skipAuth && token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      if (step.headers) {
+        const resolvedHeaders = resolveTemplates(step.headers, context.vars);
+        if (isRecord(resolvedHeaders)) {
+          for (const [k, v] of Object.entries(resolvedHeaders)) {
+            if (v !== undefined && v !== null) {
+              headers[k] = String(v);
+            }
+          }
+        }
+      }
 
       const fetchOptions: RequestInit = { method, headers };
 
@@ -287,7 +300,7 @@ export async function runApiStepLive(step: TestStep, context: RunnerContext, con
       let resp = await fetch(url.toString(), fetchOptions);
       clearTimeout(abortTimeout);
 
-      if (resp.status === 401 && cachedApiToken) {
+      if (!skipAuth && resp.status === 401 && cachedApiToken) {
         setCachedApiToken(null);
         const freshToken = await authenticateApi(config);
         fetchOptions.headers = { ...fetchOptions.headers as Record<string, string>, Authorization: `Bearer ${freshToken}` };
@@ -302,12 +315,26 @@ export async function runApiStepLive(step: TestStep, context: RunnerContext, con
       lastResult = contentType.includes('json') ? await resp.json() : await resp.text();
       lastError = null;
 
-      if (!until || evaluatePollCondition(until, lastResult)) {
+      // If this step is flagged as an MCP tools/call response, unwrap
+      // result.content[0].text JSON and use that as the assert/return target.
+      let unwrapped: unknown = lastResult;
+      if (step.mcp_result && isRecord(lastResult)) {
+        if (isRecord(lastResult.error)) {
+          const err = lastResult.error;
+          throw new Error(`MCP error ${String(err.code ?? '?')}: ${String(err.message ?? JSON.stringify(err))}`);
+        }
+        const structured = extractStructuredResult(lastResult.result);
+        if (structured !== undefined) {
+          unwrapped = structured;
+        }
+      }
+
+      if (!until || evaluatePollCondition(until, unwrapped)) {
         if (step.expect !== undefined) {
           const expected = resolveTemplates(step.expect, context.vars);
-          assertExpectations(expected, lastResult);
+          assertExpectations(expected, unwrapped);
         }
-        return lastResult;
+        return unwrapped;
       }
 
       if (attempt < maxAttempts) {
