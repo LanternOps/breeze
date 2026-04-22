@@ -9,6 +9,8 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { getRedis } from '../services/redis';
+import { isViewerJtiRevoked, revokeViewerJti } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
 
 export const tunnelRoutes = new Hono();
@@ -522,6 +524,16 @@ tunnelRoutes.delete(
       .set({ status: 'disconnected', endedAt: new Date() })
       .where(eq(tunnelSessions.id, id));
 
+    // Revoke any viewer JWTs minted for this tunnel. Stamp a per-sessionId
+    // revoke key so that requireViewerToken rejects lingering tokens even if
+    // the jti itself is not individually tracked. TTL matches the viewer token
+    // max TTL so the key auto-expires. Best-effort: if Redis is down the DB
+    // status='disconnected' write already happened, so we don't fail the close.
+    const redis = getRedis();
+    if (redis) {
+      await redis.set(`viewer-session-revoked:${id}`, '1', 'EX', 2 * 60 * 60);
+    }
+
     return c.json({ closed: true });
   }
 );
@@ -694,17 +706,25 @@ vncExchangeRoutes.post(
 
 export const vncViewerRoutes = new Hono();
 
-async function requireViewerToken(c: Context): Promise<{ sessionId: string } | Response> {
+async function requireViewerToken(c: Context): Promise<{ sessionId: string; jti: string } | Response> {
   const authHeader = c.req.header('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
   }
   const token = authHeader.slice(7);
   const payload = await verifyViewerAccessToken(token);
-  if (!payload) {
+  if (!payload || !payload.jti) {
     return c.json({ error: 'Invalid or expired token' }, 401);
   }
-  return { sessionId: payload.sessionId };
+  // Check jti-level revocation (belt — individual token invalidation)
+  if (await isViewerJtiRevoked(payload.jti)) {
+    return c.json({ error: 'Token revoked' }, 401);
+  }
+  // Check session-level revocation (suspenders — stamped on tunnel close)
+  if (await getRedis()?.get(`viewer-session-revoked:${payload.sessionId}`)) {
+    return c.json({ error: 'Session closed' }, 401);
+  }
+  return { sessionId: payload.sessionId, jti: payload.jti };
 }
 
 // GET /vnc-viewer/desktop-access

@@ -31,6 +31,7 @@ export interface VncSessionWrapper extends TransportSession {
  */
 const KNOWN_VNC_REASONS = new Set([
   'authentication failed',
+  'authentication failed.',
   'too many attempts',
   'unsupported security type',
   'unsupported protocol version',

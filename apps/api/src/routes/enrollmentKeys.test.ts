@@ -85,13 +85,8 @@ vi.mock('../services/installerAppZip', () => ({
   renameAppInZip: vi.fn(async (buf: Buffer) => buf),
 }));
 
-// Mock dynamic imports inside serveInstaller
-vi.mock('../services', () => ({
-  getRedis: vi.fn(() => ({})),
-}));
-
 vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true })),
+  rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
 }));
 
 // ============================================================

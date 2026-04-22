@@ -56,6 +56,22 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
   const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(userOS);
+  const [sha256s, setSha256s] = useState<Record<string, string>>({});
+
+  // Fetch published SHA256SUMS so users can verify uninstall scripts before running
+  useEffect(() => {
+    fetch('/scripts/SHA256SUMS')
+      .then((r) => r.text())
+      .then((t) => {
+        const map: Record<string, string> = {};
+        for (const line of t.trim().split('\n')) {
+          const [hash, name] = line.split(/\s+/, 2);
+          if (hash && name) map[name] = hash;
+        }
+        setSha256s(map);
+      })
+      .catch(() => {});
+  }, []);
 
   // Initialize site selection
   useEffect(() => {
@@ -696,29 +712,45 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         )}
 
         {/* Footer */}
-        <div className="mt-6 flex items-center justify-between gap-4">
-          <p className="text-xs text-muted-foreground">
-            Need to uninstall?{' '}
-            <a
-              href="/scripts/uninstall-darwin.sh"
-              download
-              className="underline hover:text-foreground"
-            >
-              macOS
-            </a>
-            {' · '}
-            <a
-              href="/scripts/uninstall-linux.sh"
-              download
-              className="underline hover:text-foreground"
-            >
-              Linux
-            </a>
-          </p>
+        <div className="mt-6 flex items-start justify-between gap-4">
+          <div className="text-xs text-muted-foreground">
+            <p>
+              Need to uninstall?{' '}
+              <a
+                href="/scripts/uninstall-darwin.sh"
+                download
+                className="underline hover:text-foreground"
+              >
+                macOS
+              </a>
+              {' · '}
+              <a
+                href="/scripts/uninstall-linux.sh"
+                download
+                className="underline hover:text-foreground"
+              >
+                Linux
+              </a>
+            </p>
+            {sha256s['uninstall-darwin.sh'] && (
+              <p className="mt-1 font-mono text-[10px] leading-tight">
+                macOS SHA256: {sha256s['uninstall-darwin.sh']}
+                <br />
+                Verify: <code>shasum -a 256 uninstall-darwin.sh</code>
+              </p>
+            )}
+            {sha256s['uninstall-linux.sh'] && (
+              <p className="mt-1 font-mono text-[10px] leading-tight">
+                Linux SHA256: {sha256s['uninstall-linux.sh']}
+                <br />
+                Verify: <code>shasum -a 256 uninstall-linux.sh</code>
+              </p>
+            )}
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="h-10 shrink-0 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             Done
           </button>

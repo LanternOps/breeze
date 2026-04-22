@@ -9,8 +9,9 @@ const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
 // login-window → logged-in auto-handoff, and remote-desktop sessions often
 // run for hours. A 15m access token turned into silent 401s that killed the
 // poll and the auto-handoff with it. The token is scoped to purpose='viewer'
-// and a specific sessionId, so the longer TTL is low-risk.
-const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '8h';
+// and a specific sessionId. TTL reduced to 2h (from 8h) and jti revocation
+// is enforced on tunnel close, so the window of exposure is now bounded.
+const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '2h';
 
 function getSecretKey(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -40,6 +41,7 @@ export interface ViewerTokenPayload {
   email: string;
   sessionId: string;
   purpose: 'viewer';
+  jti: string;
   iat?: number;
 }
 
@@ -95,12 +97,13 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
 }
 
 export async function createViewerAccessToken(
-  payload: Omit<ViewerTokenPayload, 'purpose'>
+  payload: Omit<ViewerTokenPayload, 'purpose' | 'jti'>
 ): Promise<string> {
   const secret = getSecretKey();
 
   return new SignJWT({ ...payload, purpose: 'viewer' })
     .setProtectedHeader({ alg: 'HS256' })
+    .setJti(randomUUID())
     .setIssuedAt()
     .setExpirationTime(VIEWER_ACCESS_TOKEN_EXPIRY)
     .setIssuer('breeze')
@@ -125,6 +128,7 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
       email: payload.email as string,
       sessionId: payload.sessionId as string,
       purpose: 'viewer',
+      jti: payload.jti as string,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined
     };
   } catch (error) {

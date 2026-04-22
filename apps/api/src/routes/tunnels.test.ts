@@ -25,6 +25,7 @@ vi.mock('../db/schema', () => ({
   tunnelAllowlists: {},
   devices: {},
   users: {},
+  remoteSessions: {},
 }));
 
 // --- Auth middleware ---
@@ -65,6 +66,21 @@ vi.mock('../services/remoteSessionAuth', () => ({
 // --- JWT service ---
 vi.mock('../services/jwt', () => ({
   createViewerAccessToken: vi.fn(async () => 'mock-viewer-access-token'),
+  verifyViewerAccessToken: vi.fn(async () => null),
+}));
+
+// --- Redis (used by requireViewerToken session-revoke check) ---
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({
+    set: vi.fn(async () => 'OK'),
+    get: vi.fn(async () => null),
+  })),
+}));
+
+// --- Viewer token revocation ---
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  revokeViewerJti: vi.fn(async () => undefined),
 }));
 
 import { db } from '../db';
