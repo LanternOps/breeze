@@ -26,30 +26,51 @@ connectionsRoutes.put(
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  await db.transaction(async (tx) => {
-    await tx
-      .delete(deviceConnections)
-      .where(eq(deviceConnections.deviceId, device.id));
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(deviceConnections)
+        .where(eq(deviceConnections.deviceId, device.id));
 
-    if (data.connections.length > 0) {
-      const now = new Date();
-      await tx.insert(deviceConnections).values(
-        data.connections.map((conn) => ({
-          deviceId: device.id,
-          orgId: device.orgId,
-          protocol: conn.protocol,
-          localAddr: conn.localAddr,
-          localPort: conn.localPort,
-          remoteAddr: conn.remoteAddr || null,
-          remotePort: conn.remotePort || null,
-          state: conn.state || null,
-          pid: conn.pid || null,
-          processName: conn.processName || null,
-          updatedAt: now
-        }))
-      );
-    }
-  });
+      if (data.connections.length > 0) {
+        const now = new Date();
+        await tx.insert(deviceConnections).values(
+          data.connections.map((conn) => ({
+            deviceId: device.id,
+            orgId: device.orgId,
+            protocol: conn.protocol,
+            localAddr: conn.localAddr,
+            localPort: conn.localPort,
+            remoteAddr: conn.remoteAddr || null,
+            remotePort: conn.remotePort || null,
+            state: conn.state || null,
+            pid: conn.pid || null,
+            processName: conn.processName || null,
+            updatedAt: now
+          }))
+        );
+      }
+    });
+  } catch (err) {
+    // Surface the actual Postgres error shape (code, constraint, column) so
+    // we can diagnose 500s without needing per-site log spelunking. The
+    // global onError handler returns "Internal Server Error" to the caller;
+    // this adds route-level context to the server log.
+    const pg = err as { code?: string; detail?: string; table_name?: string; column_name?: string; constraint_name?: string; message?: string };
+    console.error('connections-inventory insert failed', {
+      agentId,
+      deviceId: device.id,
+      orgId: device.orgId,
+      count: data.connections.length,
+      pgCode: pg.code,
+      pgDetail: pg.detail,
+      pgTable: pg.table_name,
+      pgColumn: pg.column_name,
+      pgConstraint: pg.constraint_name,
+      message: pg.message
+    });
+    throw err;
+  }
 
   return c.json({ success: true, count: data.connections.length });
 });
