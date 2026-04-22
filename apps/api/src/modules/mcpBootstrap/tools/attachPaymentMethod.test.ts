@@ -13,13 +13,21 @@ vi.mock('../../../db/schema', () => ({
   },
 }));
 
-vi.mock('../../../services/breezeBillingClient', () => ({
-  getBreezeBillingClient: vi.fn(),
-}));
+vi.mock('../../../services/breezeBillingClient', () => {
+  class BillingError extends Error {
+    constructor(public code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
+    getBreezeBillingClient: vi.fn(),
+    BillingError,
+  };
+});
 
 import { attachPaymentMethodTool } from './attachPaymentMethod';
 import { db } from '../../../db';
-import { getBreezeBillingClient } from '../../../services/breezeBillingClient';
+import { BillingError, getBreezeBillingClient } from '../../../services/breezeBillingClient';
 
 function enqueueSelects(rows: unknown[][]): void {
   const queue = [...rows];
@@ -105,5 +113,58 @@ describe('attach_payment_method', () => {
       returnUrl: 'https://us.2breeze.app/activate/complete?partner=p1',
     });
     expect(setMock).toHaveBeenCalledWith({ stripeCustomerId: 'cus_123' });
+  });
+
+  it('translates BillingError to BILLING_UNAVAILABLE BootstrapError', async () => {
+    enqueueSelects([
+      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }],
+    ]);
+    createSetupIntent.mockRejectedValue(
+      new BillingError('BILLING_UNAVAILABLE', 'Billing service returned 503: down'),
+    );
+    await expect(
+      attachPaymentMethodTool.handler({ tenant_id: 'p1' }, {} as any),
+    ).rejects.toMatchObject({
+      code: 'BILLING_UNAVAILABLE',
+      remediation: { retryAfter: '30s' },
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('translates network/TypeError to BILLING_UNAVAILABLE BootstrapError', async () => {
+    enqueueSelects([
+      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }],
+    ]);
+    createSetupIntent.mockRejectedValue(new TypeError('fetch failed'));
+    await expect(
+      attachPaymentMethodTool.handler({ tenant_id: 'p1' }, {} as any),
+    ).rejects.toMatchObject({
+      code: 'BILLING_UNAVAILABLE',
+      message: expect.stringContaining('Billing service unreachable'),
+      remediation: { retryAfter: '30s' },
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('throws PARTIAL_BILLING_STATE when DB update fails after SetupIntent success', async () => {
+    enqueueSelects([
+      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }],
+    ]);
+    createSetupIntent.mockResolvedValue({
+      setupUrl: 'https://stripe.example/setup/abc',
+      customerId: 'cus_123',
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockRejectedValue(new Error('db down')),
+      }),
+    } as any);
+
+    await expect(
+      attachPaymentMethodTool.handler({ tenant_id: 'p1' }, {} as any),
+    ).rejects.toMatchObject({
+      code: 'PARTIAL_BILLING_STATE',
+      message: expect.stringContaining('SetupIntent created'),
+    });
   });
 });

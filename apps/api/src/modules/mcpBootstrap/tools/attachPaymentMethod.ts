@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../../../db';
 import { partners } from '../../../db/schema';
-import { getBreezeBillingClient } from '../../../services/breezeBillingClient';
+import { BillingError, getBreezeBillingClient } from '../../../services/breezeBillingClient';
 import type { BootstrapTool } from '../types';
 import { BootstrapError } from '../types';
 
@@ -47,15 +47,53 @@ export const attachPaymentMethodTool: BootstrapTool<z.infer<typeof inputSchema>,
     if (!base) throw new Error('PUBLIC_ACTIVATION_BASE_URL not configured.');
 
     const billing = getBreezeBillingClient();
-    const { setupUrl, customerId } = await billing.createSetupIntent({
-      partnerId: partner.id,
-      returnUrl: `${base}/activate/complete?partner=${partner.id}`,
-    });
 
-    await db
-      .update(partners)
-      .set({ stripeCustomerId: customerId })
-      .where(eq(partners.id, partner.id));
+    let setupUrl: string;
+    let customerId: string;
+    try {
+      const res = await billing.createSetupIntent({
+        partnerId: partner.id,
+        returnUrl: `${base}/activate/complete?partner=${partner.id}`,
+      });
+      setupUrl = res.setupUrl;
+      customerId = res.customerId;
+    } catch (err) {
+      if (err instanceof BillingError) {
+        throw new BootstrapError('BILLING_UNAVAILABLE', err.message, {
+          retryAfter: '30s',
+        });
+      }
+      // Network/TypeError or anything else: billing is effectively down.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new BootstrapError(
+        'BILLING_UNAVAILABLE',
+        `Billing service unreachable: ${msg}`,
+        { retryAfter: '30s' },
+      );
+    }
+
+    // If the subsequent update fails, the Stripe Customer has been created
+    // but isn't linked to the partner row. The agent's next call will land
+    // on billing's idempotency path (customers.search on partner metadata)
+    // and reuse the existing Customer — so no orphan is created — but we
+    // surface the failure loudly rather than silently returning success.
+    try {
+      await db
+        .update(partners)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(partners.id, partner.id));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        '[attach_payment_method] Failed to persist stripeCustomerId after SetupIntent creation',
+        { partnerId: partner.id, customerId, error: msg },
+      );
+      throw new BootstrapError(
+        'PARTIAL_BILLING_STATE',
+        `SetupIntent created but failed to link customer to partner: ${msg}. Retry attach_payment_method — the billing side is idempotent.`,
+        { retryAfter: '5s' },
+      );
+    }
 
     return { setup_url: setupUrl, already_attached: false };
   },
