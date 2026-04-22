@@ -77,7 +77,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         usageCount: apiKeys.usageCount,
         status: apiKeys.status,
         createdBy: apiKeys.createdBy,
-        scopeState: apiKeys.scopeState
+        scopeState: apiKeys.scopeState,
+        source: apiKeys.source
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -148,18 +149,25 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     console.error('Failed to update API key usage stats:', err);
   });
 
-  // Resolve the owning partner for this API key's org. Required so partner-axis
-  // RLS tables (e.g. `partners` read by the MCP bootstrap paymentGate) remain
-  // visible to the API key's request — otherwise breeze_has_partner_access()
+  // Resolve the owning partner for this API key's org ONLY for MCP-provisioning
+  // keys. Those keys route through paymentGate, which reads the partners table
+  // (partner-axis RLS) — without the allowlist entry breeze_has_partner_access()
   // short-circuits to false and the authed caller sees zero rows.
-  const resolvedPartnerId = await withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, apiKey.orgId))
-      .limit(1);
-    return row?.partnerId ?? null;
-  });
+  //
+  // Every other API key type has no legitimate need to read partner rows, so
+  // we skip the round-trip and keep accessiblePartnerIds empty. This also
+  // avoids a per-request DB hit on the hot agent-authed path.
+  const isMcpProvisioningKey = apiKey.source === 'mcp_provisioning';
+  const resolvedPartnerId = isMcpProvisioningKey
+    ? await withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, apiKey.orgId))
+          .limit(1);
+        return row?.partnerId ?? null;
+      })
+    : null;
 
   // Set API key context for route handlers
   c.set('apiKey', {
