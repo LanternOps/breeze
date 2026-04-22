@@ -25,6 +25,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../db/schema/orgs', () => ({
+  sites: {},
   enrollmentKeys: {},
 }));
 
@@ -893,5 +894,113 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
     expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
     expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// POST / - siteId ownership validation
+// ============================================================
+
+describe('POST / - siteId ownership validation', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    app = new Hono();
+    app.route('/enrollment-keys', enrollmentKeyRoutes);
+  });
+
+  it('rejects siteId that does not belong to the target org', async () => {
+    const orgId = randomUUID();
+    const siteId = randomUUID();
+
+    // select: site lookup returns empty (site not found in org)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]), // not found
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Test Key',
+        siteId,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/siteId.*does not belong.*org/i);
+    // insert should never be called when siteId validation fails
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('creates key with valid siteId', async () => {
+    const orgId = randomUUID();
+    const siteId = randomUUID();
+    const keyRow = makeKeyRow({ orgId, siteId });
+
+    // select: site lookup returns the site
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: siteId }]),
+        }),
+      }),
+    } as any);
+
+    // insert: create enrollment key
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Test Key',
+        siteId,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.siteId).toBe(siteId);
+  });
+
+  it('creates key without siteId (null is valid)', async () => {
+    const orgId = randomUUID();
+    const keyRow = makeKeyRow({ orgId, siteId: null });
+
+    // insert: create enrollment key with no siteId
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    const res = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId,
+        name: 'Test Key',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.siteId).toBeNull();
+    // when no siteId is provided, site lookup should not be called
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

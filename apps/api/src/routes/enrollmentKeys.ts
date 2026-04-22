@@ -6,6 +6,7 @@ import { and, eq, sql, desc, inArray, lt, isNull, or } from 'drizzle-orm';
 import { customAlphabet } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import { enrollmentKeys } from '../db/schema';
+import { sites } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { randomBytes } from 'crypto';
@@ -318,6 +319,17 @@ enrollmentKeyRoutes.post(
       }
     } else if (!orgId) {
       return c.json({ error: 'orgId is required' }, 400);
+    }
+
+    // Verify siteId belongs to the target org (if provided)
+    if (data.siteId) {
+      const [site] = await db.select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, data.siteId), eq(sites.orgId, orgId)))
+        .limit(1);
+      if (!site) {
+        return c.json({ error: 'siteId does not belong to the specified org' }, 400);
+      }
     }
 
     const rawKey = generateEnrollmentKey();
