@@ -70,7 +70,9 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         }
         setSha256s(map);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn('[AddDeviceModal] Failed to load SHA256SUMS:', err);
+      });
   }, []);
 
   // Initialize site selection

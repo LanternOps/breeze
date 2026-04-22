@@ -10,6 +10,12 @@ vi.mock('./redis', () => ({
     }),
     get: vi.fn(async (k: string) => redisStore.get(k) ?? null),
     del: vi.fn(async (k: string) => (redisStore.delete(k) ? 1 : 0)),
+    // Atomic GETDEL used by consumeDownloadHandle (Redis 6.2+).
+    getdel: vi.fn(async (k: string) => {
+      const v = redisStore.get(k) ?? null;
+      redisStore.delete(k);
+      return v;
+    }),
   }),
 }));
 

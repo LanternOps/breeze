@@ -9,8 +9,7 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
-import { getRedis } from '../services/redis';
-import { isViewerJtiRevoked, revokeViewerJti } from '../services/viewerTokenRevocation';
+import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
 
 export const tunnelRoutes = new Hono();
@@ -524,15 +523,9 @@ tunnelRoutes.delete(
       .set({ status: 'disconnected', endedAt: new Date() })
       .where(eq(tunnelSessions.id, id));
 
-    // Revoke any viewer JWTs minted for this tunnel. Stamp a per-sessionId
-    // revoke key so that requireViewerToken rejects lingering tokens even if
-    // the jti itself is not individually tracked. TTL matches the viewer token
-    // max TTL so the key auto-expires. Best-effort: if Redis is down the DB
-    // status='disconnected' write already happened, so we don't fail the close.
-    const redis = getRedis();
-    if (redis) {
-      await redis.set(`viewer-session-revoked:${id}`, '1', 'EX', 2 * 60 * 60);
-    }
+    // Revoke any viewer JWTs minted for this tunnel. The service logs if Redis
+    // is unavailable; the check path (requireViewerToken) fails closed.
+    await revokeViewerSession(id);
 
     return c.json({ closed: true });
   }
@@ -720,8 +713,10 @@ async function requireViewerToken(c: Context): Promise<{ sessionId: string; jti:
   if (await isViewerJtiRevoked(payload.jti)) {
     return c.json({ error: 'Token revoked' }, 401);
   }
-  // Check session-level revocation (suspenders — stamped on tunnel close)
-  if (await getRedis()?.get(`viewer-session-revoked:${payload.sessionId}`)) {
+  // Check session-level revocation (suspenders — stamped on tunnel close).
+  // isViewerSessionRevoked fails closed on Redis unavailability, symmetric
+  // with the jti check above.
+  if (await isViewerSessionRevoked(payload.sessionId)) {
     return c.json({ error: 'Session closed' }, 401);
   }
   return { sessionId: payload.sessionId, jti: payload.jti };

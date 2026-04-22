@@ -122,13 +122,18 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
     if (payload.purpose !== 'viewer') {
       return null;
     }
+    // jti must be present and non-empty — revocation lookups would otherwise
+    // match every empty-jti token against the same revoke key.
+    if (typeof payload.jti !== 'string' || payload.jti.length === 0) {
+      return null;
+    }
 
     return {
       sub: payload.sub as string,
       email: payload.email as string,
       sessionId: payload.sessionId as string,
       purpose: 'viewer',
-      jti: payload.jti as string,
+      jti: payload.jti,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined
     };
   } catch (error) {

@@ -17,10 +17,12 @@ export async function issueDownloadHandle(rawEnrollmentKey: string): Promise<str
 export async function consumeDownloadHandle(handle: string): Promise<string | null> {
   if (!handle.startsWith(PREFIX)) return null;
   const redis = getRedis();
-  if (!redis) return null;
+  if (!redis) {
+    console.error('[downloadHandle] Redis unavailable — treating handle as invalid');
+    return null;
+  }
+  // Atomic get-and-delete (Redis 6.2+). Prevents the race where two
+  // concurrent consumes both observe the value before either deletes it.
   const key = `download-handle:${handle}`;
-  const value = await redis.get(key);
-  if (!value) return null;
-  await redis.del(key); // single-use
-  return value;
+  return await redis.getdel(key);
 }

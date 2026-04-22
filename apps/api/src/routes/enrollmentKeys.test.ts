@@ -717,7 +717,8 @@ describe('POST /:id/bootstrap-token', () => {
       }),
     } as any);
 
-    const res = await app.request('/enrollment-keys/missing/bootstrap-token', {
+    const missingId = randomUUID();
+    const res = await app.request(`/enrollment-keys/${missingId}/bootstrap-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ maxUsage: 1 }),

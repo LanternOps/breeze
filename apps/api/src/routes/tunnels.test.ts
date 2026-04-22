@@ -80,7 +80,9 @@ vi.mock('../services/redis', () => ({
 // --- Viewer token revocation ---
 vi.mock('../services/viewerTokenRevocation', () => ({
   isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
   revokeViewerJti: vi.fn(async () => undefined),
+  revokeViewerSession: vi.fn(async () => undefined),
 }));
 
 import { db } from '../db';

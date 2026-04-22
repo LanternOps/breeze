@@ -204,6 +204,8 @@ function sanitizeEnrollmentKey(enrollmentKey: typeof enrollmentKeys.$inferSelect
   return safeRecord;
 }
 
+const idParamSchema = z.object({ id: z.string().uuid() });
+
 // ============================================
 // Routes
 // ============================================
@@ -818,10 +820,11 @@ enrollmentKeyRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   userRateLimit('enroll-write', 10, 60),
   requireMfa(),
+  zValidator('param', idParamSchema),
   zValidator('json', bootstrapTokenBodySchema),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
+    const { id: keyId } = c.req.valid('param');
     const { maxUsage } = c.req.valid('json');
 
     const [parent] = await db
@@ -1009,9 +1012,10 @@ enrollmentKeyRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   userRateLimit('enroll-handle', 30, 60),
+  zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
+    const { id: keyId } = c.req.valid('param');
     const body = await c.req.json().catch(() => ({})) as { rawToken?: string };
     if (!body.rawToken || typeof body.rawToken !== 'string') {
       return c.json({ error: 'rawToken is required' }, 400);
@@ -1063,8 +1067,14 @@ async function serveInstaller(
     if (!rateResult.allowed) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
-  } catch {
-    // If Redis is unavailable, allow the request (fail open for downloads)
+  } catch (err) {
+    // Fail open for downloads (keep installers working during Redis outages),
+    // but log so the outage is visible in ops dashboards — otherwise rate
+    // limiting is silently disabled across the whole public endpoint.
+    console.error(
+      '[public-installer] rate-limit check skipped:',
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // Validate key is still usable
