@@ -1,6 +1,6 @@
 import { getRedis } from './redis';
 
-const REVOKE_TTL_SECONDS = 8 * 60 * 60; // Match max viewer TTL so keys auto-expire.
+const REVOKE_TTL_SECONDS = 2 * 60 * 60; // Match viewer JWT TTL (jwt.ts) so keys auto-expire.
 
 export async function revokeViewerJti(jti: string): Promise<void> {
   const redis = getRedis();

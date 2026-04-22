@@ -5,11 +5,11 @@ import { getBinarySource, getGithubAgentPkgUrl, getGithubInstallerAppUrl, getGit
 
 // --- Enrollment key validation ---
 
-const ENROLLMENT_KEY_PATTERN = /^brz_[a-f0-9]{64}$/;
+const ENROLLMENT_KEY_PATTERN = /^[a-f0-9]{64}$/;
 
 function assertValidEnrollmentKey(key: string): void {
   if (!ENROLLMENT_KEY_PATTERN.test(key)) {
-    throw new Error('Invalid enrollment key: must match brz_<64-hex>');
+    throw new Error('Invalid enrollment key: must be 64 lowercase hex chars');
   }
 }
 
