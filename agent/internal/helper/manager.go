@@ -628,6 +628,10 @@ func (m *Manager) startSessionWatcher(state *sessionState) {
 	go w.run()
 }
 
+// stopSessionWatcher cancels the watcher and waits for it to return, but
+// never more than watcherStopTimeout — shutdown must not hang if a watcher
+// goroutine is stuck inside ensureRunningSession() (process spawn). The
+// leaked goroutine is abandoned when the process exits.
 func (m *Manager) stopSessionWatcher(state *sessionState) {
 	if state == nil || state.watcher == nil {
 		return
@@ -636,9 +640,15 @@ func (m *Manager) stopSessionWatcher(state *sessionState) {
 	state.watcher = nil
 	w.cancel()
 	m.mu.Unlock()
-	<-w.done
+	select {
+	case <-w.done:
+	case <-time.After(watcherStopTimeout):
+		log.Warn("session watcher shutdown timed out, abandoning", "session", state.key)
+	}
 	m.mu.Lock()
 }
+
+const watcherStopTimeout = 2 * time.Second
 
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)

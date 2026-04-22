@@ -13,6 +13,13 @@ WorkingDirectory=/etc/breeze
 Restart=on-failure
 RestartSec=5
 
+# Shutdown: agent's shutdownAgent bounds each stage to ~5s; cap overall at 15s
+# so a hung HTTP flush during OS shutdown (network going down) doesn't block
+# system power-off for the full 90s default. KillMode=mixed sends SIGTERM to
+# the main process, then SIGKILL to the whole cgroup after TimeoutStopSec.
+TimeoutStopSec=15
+KillMode=mixed
+
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only

@@ -272,6 +272,11 @@ type agentComponents struct {
 }
 
 // shutdownAgent gracefully stops all agent components.
+//
+// Every blocking stage is wrapped with a deadline so that a stuck HTTP flush
+// (common during OS shutdown when the network has already gone down) can't
+// pin the process past systemd's TimeoutStopSec. Total worst case is bounded
+// by the sum of per-stage timeouts; the unit file caps the outer wait at 15s.
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
@@ -299,13 +304,35 @@ func shutdownAgent(comps *agentComponents) {
 	}
 
 	comps.hb.StopAcceptingCommands()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	comps.hb.DrainAndWait(ctx)
-	comps.wsClient.Stop()
-	comps.hb.Stop()
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	runWithTimeout("drain in-flight commands", 5*time.Second, func() {
+		comps.hb.DrainAndWait(drainCtx)
+	})
+	drainCancel()
+
+	runWithTimeout("websocket stop", 3*time.Second, comps.wsClient.Stop)
+	runWithTimeout("heartbeat stop", 5*time.Second, comps.hb.Stop)
+
 	if comps.secureToken != nil {
 		comps.secureToken.Zero()
+	}
+}
+
+// runWithTimeout invokes fn on a goroutine and waits up to d for it to return.
+// If fn exceeds the deadline, logs a warning and returns; fn continues in the
+// background and is abandoned when the process exits. Used on the shutdown
+// path where we prefer to drop work rather than let systemd SIGKILL us.
+func runWithTimeout(name string, d time.Duration, fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		log.Warn("shutdown stage timed out, continuing", "stage", name, "timeout", d.String())
 	}
 }
 
