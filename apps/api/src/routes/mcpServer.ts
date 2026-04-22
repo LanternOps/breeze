@@ -69,26 +69,29 @@ const MCP_BOOTSTRAP_ENABLED = envFlag('MCP_BOOTSTRAP_ENABLED', false);
 type BootstrapModule = { unauthTools: BootstrapTool<any, any>[]; authTools: BootstrapTool<any, any>[] };
 let bootstrapModule: BootstrapModule | null = null;
 
-async function loadBootstrapModule(): Promise<BootstrapModule | null> {
+async function loadBootstrapModuleInternal(): Promise<BootstrapModule | null> {
   if (!MCP_BOOTSTRAP_ENABLED) return null;
   const mod = await import('../modules/mcpBootstrap');
   return mod.initMcpBootstrap();
 }
 
-// Kick off load; await completes before first request in practice because
-// route handlers are async and the module import resolves synchronously from
-// the bundler cache after first resolution. Tests override this via vi.mock.
-void loadBootstrapModule()
-  .then((b) => {
-    bootstrapModule = b;
-  })
-  .catch((err) => {
-    console.error('[MCP] Failed to initialize bootstrap module:', err);
-  });
+/**
+ * Initialize the bootstrap module. Called from `apps/api/src/index.ts` during
+ * `bootstrap()` so startup fails loudly if required envs are missing when the
+ * flag is on. A flag-off call is a no-op and returns null.
+ *
+ * Must complete before the API begins serving requests to eliminate the
+ * load-race where a cold-start first request sees `bootstrapModule === null`
+ * and falls through to a 401.
+ */
+export async function initMcpBootstrapForStartup(): Promise<BootstrapModule | null> {
+  bootstrapModule = await loadBootstrapModuleInternal();
+  return bootstrapModule;
+}
 
 // Exposed for tests to force-load the module after vi.mock registration.
 export async function __loadMcpBootstrapForTests(): Promise<BootstrapModule | null> {
-  bootstrapModule = await loadBootstrapModule();
+  bootstrapModule = await loadBootstrapModuleInternal();
   return bootstrapModule;
 }
 
