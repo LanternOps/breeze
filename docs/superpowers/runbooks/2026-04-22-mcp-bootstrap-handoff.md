@@ -29,7 +29,7 @@
 
 ### breeze-billing repo
 
-- `POST /setup-intents` endpoint at `/Users/toddhebebrand/breeze-billing` commit `1c2df7b` on `main`. Idempotent (reuses Stripe Customer keyed on `metadata.breeze_partner_id`), returns `{ setup_url, customer_id }`. Unauthenticated — mounted at root (not under `/billing/*`) so Caddy doesn't expose it publicly.
+- `POST /setup-intents` endpoint at `<path-to-breeze-billing-repo>` commit `1c2df7b` on `main`. Idempotent (reuses Stripe Customer keyed on `metadata.breeze_partner_id`), returns `{ setup_url, customer_id }`. Unauthenticated — mounted at root (not under `/billing/*`) so Caddy doesn't expose it publicly.
 
 ### Pre-PR fixes (caught latent bugs)
 
@@ -58,12 +58,12 @@ All three are idempotent and safe to re-run. Apply to both US + EU Postgres befo
 
 #### breeze-billing deploy (per memory notes — no CI/CD)
 
-Run on **both** droplets:
+Run on **both** droplets (actual IPs live in `.env` / `internal/` — gitignored):
 
 ```bash
-ssh root@143.198.144.173 'cd /opt/breeze-billing && git pull && \
+ssh root@<US_DROPLET_IP> 'cd /opt/breeze-billing && git pull && \
   cd /opt/breeze && docker compose build billing && docker compose up -d billing'
-ssh root@164.90.237.99 'cd /opt/breeze-billing && git pull && \
+ssh root@<EU_DROPLET_IP> 'cd /opt/breeze-billing && git pull && \
   cd /opt/breeze && docker compose build billing && docker compose up -d billing'
 ```
 
@@ -219,7 +219,7 @@ e2e-tests/
   src/steps.ts                    (auth: 'none', headers, mcp_result)
   src/types.ts                    (extended TestStep)
 
-breeze-billing (separate repo at /Users/toddhebebrand/breeze-billing)
+breeze-billing (separate repo — local clone path lives in internal/)
   src/routes/setupIntents.ts      (commit 1c2df7b on main)
   src/index.ts                    (mounts the route)
 ```
