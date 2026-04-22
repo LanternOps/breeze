@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceConnections } from '../../db/schema';
+import { captureException } from '../../services/sentry';
 import { submitConnectionsSchema } from './schemas';
 
 export const connectionsRoutes = new Hono();
@@ -52,10 +53,9 @@ connectionsRoutes.put(
       }
     });
   } catch (err) {
-    // Surface the actual Postgres error shape (code, constraint, column) so
-    // we can diagnose 500s without needing per-site log spelunking. The
-    // global onError handler returns "Internal Server Error" to the caller;
-    // this adds route-level context to the server log.
+    // Global onError returns a generic 500; re-log with pg error fields
+    // (code/constraint/column) so server logs retain diagnostic context,
+    // and capture to Sentry for durability.
     const pg = err as { code?: string; detail?: string; table_name?: string; column_name?: string; constraint_name?: string; message?: string };
     console.error('connections-inventory insert failed', {
       agentId,
@@ -69,6 +69,7 @@ connectionsRoutes.put(
       pgConstraint: pg.constraint_name,
       message: pg.message
     });
+    captureException(err, c);
     throw err;
   }
 

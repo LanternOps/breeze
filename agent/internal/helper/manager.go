@@ -28,6 +28,8 @@ type Settings struct {
 	PortalUrl          string `json:"portalUrl,omitempty" yaml:"portal_url,omitempty"`
 }
 
+const watcherStopTimeout = 2 * time.Second
+
 // Config is the YAML shape written to helper_config.yaml.
 type Config struct {
 	ShowOpenPortal     bool   `yaml:"show_open_portal"`
@@ -610,12 +612,16 @@ func (m *Manager) applyPendingUpdate() {
 	_ = os.Remove(backupPath)
 }
 
-// Shutdown stops all session watchers gracefully.
+// Shutdown stops all session watchers gracefully. Unlike the Apply/update
+// paths (which call stopSessionWatcher and immediately restart a new
+// watcher), Shutdown must not hang — systemd caps total stop time and a
+// watcher stuck in process spawn would prevent the agent from exiting.
+// Uses the bounded variant which abandons stuck watchers after a short wait.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, state := range m.sessions {
-		m.stopSessionWatcher(state)
+		m.stopSessionWatcherBounded(state, watcherStopTimeout)
 	}
 }
 
@@ -628,11 +634,28 @@ func (m *Manager) startSessionWatcher(state *sessionState) {
 	go w.run()
 }
 
-// stopSessionWatcher cancels the watcher and waits for it to return, but
-// never more than watcherStopTimeout — shutdown must not hang if a watcher
-// goroutine is stuck inside ensureRunningSession() (process spawn). The
-// leaked goroutine is abandoned when the process exits.
+// stopSessionWatcher cancels the watcher and waits unbounded for it to
+// return. Used on hot paths (Apply, applyPendingUpdate) that immediately
+// start a new watcher for the same session — abandoning the old goroutine
+// there would let two watchers race on the same sessionState (and a
+// mid-spawn watcher could TOCTOU the helper binary during an update).
+// For the process-exit path, Shutdown calls stopSessionWatcherBounded.
 func (m *Manager) stopSessionWatcher(state *sessionState) {
+	if state == nil || state.watcher == nil {
+		return
+	}
+	w := state.watcher
+	state.watcher = nil
+	w.cancel()
+	m.mu.Unlock()
+	<-w.done
+	m.mu.Lock()
+}
+
+// stopSessionWatcherBounded is the shutdown-only variant that abandons a
+// stuck watcher after d. The leaked goroutine is harmless at shutdown
+// because the process is about to exit.
+func (m *Manager) stopSessionWatcherBounded(state *sessionState, d time.Duration) {
 	if state == nil || state.watcher == nil {
 		return
 	}
@@ -642,13 +665,12 @@ func (m *Manager) stopSessionWatcher(state *sessionState) {
 	m.mu.Unlock()
 	select {
 	case <-w.done:
-	case <-time.After(watcherStopTimeout):
+	case <-time.After(d):
 		log.Warn("session watcher shutdown timed out, abandoning", "session", state.key)
 	}
 	m.mu.Lock()
 }
 
-const watcherStopTimeout = 2 * time.Second
 
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)

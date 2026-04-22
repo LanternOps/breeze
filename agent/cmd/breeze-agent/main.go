@@ -305,7 +305,11 @@ func shutdownAgent(comps *agentComponents) {
 
 	comps.hb.StopAcceptingCommands()
 
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Inner ctx deadline is slightly longer than the outer runWithTimeout
+	// budget so ordering is deterministic: runWithTimeout fires first on
+	// a hung DrainAndWait, logs the stage, then drainCancel triggers the
+	// still-running goroutine's ctx to abort.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 6*time.Second)
 	runWithTimeout("drain in-flight commands", 5*time.Second, func() {
 		comps.hb.DrainAndWait(drainCtx)
 	})

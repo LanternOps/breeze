@@ -75,20 +75,6 @@ chmod 644 "$SERVICE_DST"
 systemctl daemon-reload
 systemctl enable breeze-agent
 
-# Install tmpfiles.d snippet so /run/breeze is recreated on every boot.
-# /run is tmpfs-backed and wiped across reboots; without this the service
-# fails sandbox setup (ProtectSystem=strict + ReadWritePaths=/var/run/breeze)
-# and does not auto-start after reboot.
-TMPFILES_SRC="$SCRIPT_DIR/../../service/tmpfiles.d/breeze-agent.conf"
-TMPFILES_DST="/usr/lib/tmpfiles.d/breeze-agent.conf"
-if [ -f "$TMPFILES_SRC" ]; then
-    cp "$TMPFILES_SRC" "$TMPFILES_DST"
-    chmod 644 "$TMPFILES_DST"
-    # Materialize /run/breeze now so we don't need a reboot to pick it up.
-    systemd-tmpfiles --create "$TMPFILES_DST" 2>/dev/null || true
-    echo "tmpfiles.d snippet installed (recreates /run/breeze on reboot)."
-fi
-
 # Install user helper systemd user unit
 USER_SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/breeze-agent-user.service"
 USER_SERVICE_DST="/usr/lib/systemd/user/breeze-agent-user.service"
@@ -115,6 +101,22 @@ fi
 if ! getent group breeze &>/dev/null; then
     groupadd --system breeze 2>/dev/null || true
     echo "Created 'breeze' group for IPC socket access."
+fi
+
+# Install tmpfiles.d snippet so /run/breeze is recreated on every boot.
+# /run is tmpfs-backed and wiped across reboots; without this the service
+# fails sandbox setup (ProtectSystem=strict + ReadWritePaths=/var/run/breeze)
+# and does not auto-start after reboot. Runs AFTER groupadd because the
+# snippet references the breeze group for ownership.
+TMPFILES_SRC="$SCRIPT_DIR/../../service/tmpfiles.d/breeze-agent.conf"
+TMPFILES_DST="/usr/lib/tmpfiles.d/breeze-agent.conf"
+if [ -f "$TMPFILES_SRC" ]; then
+    cp "$TMPFILES_SRC" "$TMPFILES_DST"
+    chmod 644 "$TMPFILES_DST"
+    if ! systemd-tmpfiles --create "$TMPFILES_DST"; then
+        echo "Warning: systemd-tmpfiles --create failed; /run/breeze will be created on next boot" >&2
+    fi
+    echo "tmpfiles.d snippet installed (recreates /run/breeze on reboot)."
 fi
 
 # Create IPC socket directory
