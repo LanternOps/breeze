@@ -18,6 +18,7 @@
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { z } from 'zod';
+import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
@@ -58,6 +59,12 @@ const mcpExecuteToolAllowlist = parseCsvSet(process.env.MCP_EXECUTE_TOOL_ALLOWLI
 function isExecuteToolAllowedInProd(toolName: string): boolean {
   if (mcpExecuteToolAllowlist.size === 0) return false;
   return mcpExecuteToolAllowlist.has('*') || mcpExecuteToolAllowlist.has(toolName);
+}
+
+function setWwwAuthenticate(c: Context) {
+  if (!MCP_OAUTH_ENABLED) return;
+  const resourceUrl = `${OAUTH_ISSUER}/.well-known/oauth-protected-resource`;
+  c.header('WWW-Authenticate', `Bearer realm="breeze", resource_metadata="${resourceUrl}"`);
 }
 
 // ============================================
@@ -160,6 +167,7 @@ async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
   }
 
   if (!MCP_BOOTSTRAP_ENABLED || !bootstrapModule) {
+    setWwwAuthenticate(c);
     return c.json(
       { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
       401,
@@ -170,6 +178,7 @@ async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
   // transport and bootstrap clients use the plain POST flow anyway. Reject to
   // keep the surface minimal.
   if (c.req.method !== 'POST') {
+    setWwwAuthenticate(c);
     return c.json(
       { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
       401,
@@ -201,6 +210,7 @@ async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
     return next();
   }
 
+  setWwwAuthenticate(c);
   return c.json(
     {
       jsonrpc: '2.0',
