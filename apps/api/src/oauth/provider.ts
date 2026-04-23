@@ -3,6 +3,7 @@ import { OAUTH_COOKIE_SECRET, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config
 import { BreezeOidcAdapter } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
+import { revokeJti } from './revocationCache';
 
 let providerInstance: Provider | null = null;
 
@@ -78,5 +79,12 @@ export async function getProvider(): Promise<Provider> {
   });
 
   providerInstance.proxy = true;
+  (providerInstance as any).on('revocation.success', (_ctx: any, token: any) => {
+    if (!token.jti || !token.exp) return;
+    const ttl = Math.max(token.exp - Math.floor(Date.now() / 1000), 1);
+    revokeJti(token.jti, ttl).catch((err) => {
+      console.error('[oauth] revocation cache write failed', err);
+    });
+  });
   return providerInstance;
 }
