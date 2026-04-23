@@ -139,6 +139,17 @@ describe('connectedAppsRoutes', () => {
     expect(mocks.eq).toHaveBeenCalledWith(expect.objectContaining({ name: 'partner_id' }), 'current-partner');
   });
 
+  it('DELETE returns 403 when auth has no partner scope and skips DB calls', async () => {
+    resetAuth(null);
+    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ message: 'partner scope required' });
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when deleting a missing client', async () => {
     queueSelect([], 'limit');
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-missing', {
