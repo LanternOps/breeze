@@ -47,6 +47,7 @@ vi.mock('drizzle-orm', async () => {
     or: (...args: unknown[]) => ({ _op: 'or', args }),
     eq: (a: unknown, b: unknown) => ({ _op: 'eq', a, b }),
     ilike: (a: unknown, b: unknown) => ({ _op: 'ilike', a, b }),
+    inArray: (a: unknown, b: unknown) => ({ _op: 'inArray', a, b }),
     sql: Object.assign(
       (strings: TemplateStringsArray, ...vals: unknown[]) => ({
         _op: 'sql',
