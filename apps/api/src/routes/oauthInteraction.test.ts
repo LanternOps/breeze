@@ -123,8 +123,10 @@ describe('oauthInteractionRoutes', () => {
     delete process.env.OAUTH_RESOURCE_URL;
   });
 
-  it('returns 404 when interactionDetails rejects', async () => {
-    mocks.interactionDetails.mockRejectedValue(new Error('expired'));
+  it('returns 404 when interactionDetails rejects with SessionNotFound', async () => {
+    const err: Error & { name: string } = new Error('cookie missing');
+    err.name = 'SessionNotFound';
+    mocks.interactionDetails.mockRejectedValue(err);
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(404);
   });
@@ -220,5 +222,24 @@ describe('oauthInteractionRoutes', () => {
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {
     const res = await request(await loadApp(false), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(404);
+  });
+
+  it('returns 500 when interactionDetails throws an unexpected error', async () => {
+    mocks.interactionDetails.mockRejectedValueOnce(new Error('boom'));
+    const res = await request(await loadApp(true), '/api/v1/oauth/interaction/uid-1');
+    expect(res.status).toBe(500);
+  });
+
+  it('returns 401 when authMiddleware rejects (no Bearer header)', async () => {
+    // Replace the per-test authMiddleware mock with the real-shape rejection
+    // so we can assert the routes propagate auth failures rather than silently
+    // accepting all callers.
+    const authMod = await import('../middleware/auth');
+    const HTTPException = (await import('hono/http-exception')).HTTPException;
+    vi.mocked(authMod.authMiddleware).mockImplementationOnce(async () => {
+      throw new HTTPException(401, { message: 'Missing or invalid authorization header' });
+    });
+    const res = await request(await loadApp(true), '/api/v1/oauth/interaction/uid-1');
+    expect(res.status).toBe(401);
   });
 });

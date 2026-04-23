@@ -55,6 +55,10 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}`);
         if (cancelled) return;
         if (res.status === 401) {
+          // Auto-navigate to /login so the user lands directly in the sign-in
+          // flow with `next` set to come back here. The unauthenticated state
+          // remains as a fallback in case navigation is blocked (e.g. tests).
+          window.location.href = loginRedirectTarget(uid);
           setState({ kind: 'unauthenticated' });
           return;
         }
@@ -64,10 +68,12 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         }
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
+          if (cancelled) return;
           setState({ kind: 'error', message: body?.message ?? `Request failed (${res.status})` });
           return;
         }
         const details = (await res.json()) as InteractionDetails;
+        if (cancelled) return;
         if (details.partners.length === 0) {
           setState({ kind: 'no-tenants' });
           return;

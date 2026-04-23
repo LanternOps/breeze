@@ -14,13 +14,25 @@ const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
 export const oauthInteractionRoutes = new Hono<{ Bindings: HttpBindings }>();
 
 async function interactionDetails(provider: Awaited<ReturnType<typeof getProvider>>, c: any, uid: string) {
+  let details: Awaited<ReturnType<typeof provider.interactionDetails>>;
   try {
-    const details = await provider.interactionDetails(c.env.incoming, c.env.outgoing);
-    if (!details || details.uid !== uid) throw new Error('interaction mismatch');
-    return details;
-  } catch {
+    details = await provider.interactionDetails(c.env.incoming, c.env.outgoing);
+  } catch (err) {
+    // oidc-provider throws SessionNotFound (and similar) when the cookie is
+    // missing/expired — that's a real 404 case. Anything else is unexpected
+    // and should surface a 500 with a logged cause so we don't silently
+    // mask provider/cookie/bridge bugs as "interaction expired".
+    const name = (err as { name?: string }).name ?? '';
+    if (name === 'SessionNotFound' || name === 'InvalidRequest') {
+      throw new HTTPException(404, { message: 'interaction expired or mismatched' });
+    }
+    console.error('[oauth] interactionDetails failed unexpectedly', { uid, err });
+    throw new HTTPException(500, { message: 'failed to load interaction' });
+  }
+  if (!details || details.uid !== uid) {
     throw new HTTPException(404, { message: 'interaction expired or mismatched' });
   }
+  return details;
 }
 
 if (MCP_OAUTH_ENABLED) {
