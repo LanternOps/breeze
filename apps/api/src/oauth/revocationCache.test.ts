@@ -1,9 +1,15 @@
 import Redis from 'ioredis';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { closeRedis } from '../services/redis';
-import { isJtiRevoked, revokeJti } from './revocationCache';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const redisUrl = 'redis://localhost:6379';
+// The global unit-test setup (apps/api/src/__tests__/setup.ts) auto-mocks
+// `../services/redis` with a fake. This suite exercises the real cache
+// against a live local Redis, so unmock here.
+vi.unmock('../services/redis');
+
+const { closeRedis } = await vi.importActual<typeof import('../services/redis')>('../services/redis');
+const { isJtiRevoked, revokeJti } = await vi.importActual<typeof import('./revocationCache')>('./revocationCache');
+
+const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const oldRedisUrl = process.env.REDIS_URL;
 
 async function canReachRedis(): Promise<boolean> {
