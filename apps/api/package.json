@@ -46,6 +46,7 @@
     "nanoid": "^5.1.7",
     "node-stream-zip": "^1.15.0",
     "nodemailer": "^8.0.4",
+    "oidc-provider": "^8",
     "otplib": "^13.1.0",
     "pg": "^8.13.1",
     "postgres": "^3.4.5",
