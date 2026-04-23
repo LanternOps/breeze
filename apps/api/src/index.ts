@@ -23,6 +23,7 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { orgRoutes } from './routes/orgs';
+import { oauthRoutes } from './routes/oauth';
 import { userRoutes } from './routes/users';
 import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
@@ -237,6 +238,10 @@ app.use(
 );
 app.use('*', securityMiddleware());
 app.use('*', async (c, next) => {
+  // oidc-provider reads the raw Node IncomingMessage stream itself.
+  if (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/')) {
+    return next();
+  }
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (c.req.path.startsWith('/api/v1/dev/push')) {
     return bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Binary too large (max 150MB)' }, 413) })(c, next);
@@ -354,6 +359,12 @@ app.route('/s', publicShortLinkRoutes);
 if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
   mountActivationRoutes(app);
   mountInviteLandingRoutes(app);
+}
+
+// MCP OAuth routes (flag-gated). Mount conditional on MCP_OAUTH_ENABLED so
+// the catch-all only attaches when the feature is on.
+if (process.env.MCP_OAUTH_ENABLED === 'true') {
+  app.route('/oauth', oauthRoutes);
 }
 
 // API routes
