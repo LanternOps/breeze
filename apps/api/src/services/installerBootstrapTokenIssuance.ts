@@ -59,7 +59,15 @@ export async function issueBootstrapTokenForKey(
   }
 
   const token = generateBootstrapToken();
-  const expiresAt = bootstrapTokenExpiresAt();
+  // Bound the token's TTL by the parent's remaining lifetime. Without this
+  // cap, a token could be valid for 24h on paper while the parent expires
+  // 30s later — recipients would click an "active" link and get 404
+  // (parent_already_expired). Bound conservatively so consume reflects the
+  // real usable window.
+  const baseTokenExpiry = bootstrapTokenExpiresAt();
+  const expiresAt = parent.expiresAt && new Date(parent.expiresAt) < baseTokenExpiry
+    ? new Date(parent.expiresAt)
+    : baseTokenExpiry;
 
   const [row] = await db.insert(installerBootstrapTokens).values({
     token,
