@@ -1,4 +1,3 @@
-// @ts-expect-error oidc-provider v8.8.1 does not publish TypeScript declarations.
 import Provider from 'oidc-provider';
 import { OAUTH_COOKIE_SECRET, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { BreezeOidcAdapter } from './adapter';
@@ -48,7 +47,9 @@ export async function getProvider(): Promise<Provider> {
       },
     },
     scopes: ['openid', 'offline_access', 'mcp:read', 'mcp:write'],
-    pkce: { required: () => true, methods: ['S256'] },
+    // S256 is the only PKCE method supported in oidc-provider v8 (the spec
+    // dropped `plain`); pass only `required`.
+    pkce: { required: () => true },
     ttl: {
       AccessToken: 600,
       AuthorizationCode: 600,
