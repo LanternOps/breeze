@@ -30,8 +30,9 @@ if (MCP_OAUTH_ENABLED) {
         cleanup();
         resolve(new Response(null, { status: res.statusCode || 499 }));
       };
-      const onError = () => {
+      const onError = (err: unknown) => {
         cleanup();
+        console.error('[oauth] bridge response error', { path: originalUrl, err });
         resolve(new Response('oauth error', { status: 500 }));
       };
       res.on('finish', onFinish);
@@ -39,8 +40,9 @@ if (MCP_OAUTH_ENABLED) {
       res.on('error', onError);
       try {
         callback(req, res);
-      } catch {
+      } catch (err) {
         cleanup();
+        console.error('[oauth] bridge callback threw', { path: originalUrl, err });
         resolve(new Response('oauth threw', { status: 500 }));
       }
     });
