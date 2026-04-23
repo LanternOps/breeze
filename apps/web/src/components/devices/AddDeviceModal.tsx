@@ -759,7 +759,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
               <p className="mt-1 font-mono text-[10px] leading-tight">
                 Linux SHA256: {sha256s['uninstall-linux.sh']}
                 <br />
-                Verify: <code>shasum -a 256 uninstall-linux.sh</code>
+                Verify: <code>sha256sum uninstall-linux.sh</code>
               </p>
             )}
           </div>

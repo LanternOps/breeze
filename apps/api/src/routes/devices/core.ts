@@ -11,7 +11,8 @@ import {
   deviceGroupMemberships,
   deviceGroups,
   sites,
-  enrollmentKeys
+  enrollmentKeys,
+  organizations,
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -446,6 +447,13 @@ coreRoutes.get(
       .where(eq(sites.id, device.siteId))
       .limit(1);
 
+    // Get org name (used by ChangeSiteModal copy)
+    const [org] = await db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
+
     // Resolve remote access policy (non-critical — don't fail the whole response)
     let remoteAccessPolicy = null;
     try {
@@ -470,6 +478,7 @@ coreRoutes.get(
       groups: memberships,
       siteName: site?.name || 'Unknown Site',
       siteTimezone: site?.timezone || 'UTC',
+      orgName: org?.name ?? null,
       remoteAccessPolicy,
     });
   }
