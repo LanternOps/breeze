@@ -163,4 +163,44 @@ describe('BreezeOidcAdapter', () => {
 
     await expect(new BreezeOidcAdapter('RefreshToken').find('missing')).resolves.toBeUndefined();
   });
+
+  it('returns undefined for consumed AuthorizationCode rows', async () => {
+    mockSelectRows([{
+      payload: { accountId: 'user_abc' },
+      consumedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBeUndefined();
+  });
+
+  it('returns undefined for expired AuthorizationCode rows', async () => {
+    mockSelectRows([{
+      payload: { accountId: 'user_abc' },
+      consumedAt: null,
+      expiresAt: new Date(Date.now() - 1_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBeUndefined();
+  });
+
+  it('returns undefined for revoked RefreshToken rows', async () => {
+    mockSelectRows([{
+      payload: { accountId: 'user_abc' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+  });
+
+  it('returns undefined for expired RefreshToken rows', async () => {
+    mockSelectRows([{
+      payload: { accountId: 'user_abc' },
+      revokedAt: null,
+      expiresAt: new Date(Date.now() - 1_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+  });
 });

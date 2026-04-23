@@ -9,6 +9,22 @@ vi.unmock('../services/redis');
 const { closeRedis } = await vi.importActual<typeof import('../services/redis')>('../services/redis');
 const { isJtiRevoked, revokeJti } = await vi.importActual<typeof import('./revocationCache')>('./revocationCache');
 
+describe('revocationCache fail-closed', () => {
+  it('returns true when redis.get rejects (Redis hiccup mid-call)', async () => {
+    const throwing = { get: vi.fn().mockRejectedValue(new Error('connection lost')) };
+    vi.resetModules();
+    vi.doMock('../services', () => ({ getRedis: () => throwing }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.isJtiRevoked('jti-x')).resolves.toBe(true);
+    expect(throwing.get).toHaveBeenCalledOnce();
+
+    vi.doUnmock('../services');
+    vi.resetModules();
+  });
+});
+
 const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const oldRedisUrl = process.env.REDIS_URL;
 

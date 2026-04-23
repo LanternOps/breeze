@@ -12,6 +12,13 @@ export async function revokeJti(jti: string, ttlSeconds: number): Promise<void> 
 export async function isJtiRevoked(jti: string): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return true;
-  const v = await redis.get(KEY(jti));
-  return v === '1';
+  try {
+    const v = await redis.get(KEY(jti));
+    return v === '1';
+  } catch (err) {
+    // Fail closed: a Redis hiccup mid-call must not let a potentially
+    // revoked token through. The bearer middleware will reject.
+    console.error('[oauth] revocation cache read failed; failing closed', err);
+    return true;
+  }
 }
