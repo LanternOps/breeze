@@ -44,6 +44,12 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
 }));
 
+vi.mock('../middleware/bearerTokenAuth', () => ({
+  bearerTokenAuthMiddleware: async () => {
+    throw new Error('should not be called without a Bearer header');
+  },
+}));
+
 // Test the pure utility functions extracted from mcpServer.ts
 // These are not exported, so we test them via their behavior patterns
 

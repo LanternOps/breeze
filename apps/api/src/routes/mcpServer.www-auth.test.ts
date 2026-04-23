@@ -50,6 +50,12 @@ vi.mock('../middleware/apiKeyAuth', () => ({
   requireApiKeyScope: () => async (_c: any, next: any) => next(),
 }));
 
+vi.mock('../middleware/bearerTokenAuth', () => ({
+  bearerTokenAuthMiddleware: async () => {
+    throw new Error('should not be called without a Bearer header');
+  },
+}));
+
 const ENV = ['MCP_OAUTH_ENABLED', 'MCP_BOOTSTRAP_ENABLED', 'OAUTH_ISSUER'] as const;
 const clear = () => {
   for (const k of ENV) delete process.env[k];

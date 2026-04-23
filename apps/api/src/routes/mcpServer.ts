@@ -20,6 +20,7 @@ import { streamSSE } from 'hono/streaming';
 import type { z } from 'zod';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
+import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
@@ -161,6 +162,12 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
  *   discover and invoke the three pre-activation tools without credentials.
  */
 async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
+  const authHeader = c.req.header('Authorization') ?? '';
+  const hasBearer = MCP_OAUTH_ENABLED && authHeader.startsWith('Bearer ');
+  if (hasBearer) {
+    return bearerTokenAuthMiddleware(c, next);
+  }
+
   const hasKey = Boolean(c.req.header('X-API-Key'));
   if (hasKey) {
     return apiKeyAuthMiddleware(c, next);
