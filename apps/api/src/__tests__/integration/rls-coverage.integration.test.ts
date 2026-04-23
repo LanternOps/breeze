@@ -47,6 +47,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['partners', 'id'],
   ['partner_users', 'partner_id'],
   ['partner_activations', 'partner_id'],
+  ['oauth_clients', 'partner_id'],
+  ['oauth_refresh_tokens', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -79,6 +81,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   'mobile_devices',
   'ticket_comments',
   'access_review_items',
+  'oauth_authorization_codes',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
