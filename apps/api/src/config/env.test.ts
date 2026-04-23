@@ -1,16 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loadEnv = async () => import('./env');
 
+const OAUTH_ENV_KEYS = [
+  'MCP_OAUTH_ENABLED',
+  'OAUTH_ISSUER',
+  'OAUTH_RESOURCE_URL',
+  'OAUTH_JWKS_PRIVATE_JWK',
+  'OAUTH_JWKS_PUBLIC_JWK',
+  'OAUTH_COOKIE_SECRET',
+] as const;
+
+const clearOauthEnv = () => {
+  for (const key of OAUTH_ENV_KEYS) delete process.env[key];
+};
+
 describe('config env', () => {
   beforeEach(() => {
-    delete process.env.MCP_OAUTH_ENABLED;
-    delete process.env.OAUTH_ISSUER;
-    delete process.env.OAUTH_RESOURCE_URL;
-    delete process.env.OAUTH_JWKS_PRIVATE_JWK;
-    delete process.env.OAUTH_JWKS_PUBLIC_JWK;
-    delete process.env.OAUTH_COOKIE_SECRET;
+    clearOauthEnv();
     vi.resetModules();
+  });
+
+  afterEach(() => {
+    clearOauthEnv();
   });
 
   it('defaults MCP_OAUTH_ENABLED to false when unset', async () => {
