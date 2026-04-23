@@ -25,6 +25,7 @@ import { alertTemplateRoutes } from './routes/alertTemplates';
 import { orgRoutes } from './routes/orgs';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
+import { oauthInteractionRoutes } from './routes/oauthInteraction';
 import { userRoutes } from './routes/users';
 import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
@@ -367,6 +368,7 @@ if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
 if (process.env.MCP_OAUTH_ENABLED === 'true') {
   app.route('/oauth', oauthRoutes);
   app.route('/.well-known', wellKnownRoutes);
+  app.route('/api/v1/oauth', oauthInteractionRoutes);
 }
 
 // API routes
