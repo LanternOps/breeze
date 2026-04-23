@@ -24,6 +24,7 @@ import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { orgRoutes } from './routes/orgs';
 import { oauthRoutes } from './routes/oauth';
+import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { userRoutes } from './routes/users';
 import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
@@ -365,6 +366,7 @@ if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
 // the catch-all only attaches when the feature is on.
 if (process.env.MCP_OAUTH_ENABLED === 'true') {
   app.route('/oauth', oauthRoutes);
+  app.route('/.well-known', wellKnownRoutes);
 }
 
 // API routes
