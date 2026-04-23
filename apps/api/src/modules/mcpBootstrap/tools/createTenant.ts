@@ -30,7 +30,7 @@ export const createTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Create
     description: [
       'Create a brand-new Breeze tenant for an organization. This is the entry point for agent-driven Breeze setup.',
       'Accepts an org name, an admin email (must be a business email — free-provider and disposable-email domains are rejected), a name, and a region ("us" or "eu" — must match the MCP endpoint you are connected to).',
-      'Returns a tenant_id. No API key is issued yet. An activation email is sent to the admin. Call verify_tenant(tenant_id) to poll for activation status; once the admin clicks the link, verify_tenant will return a readonly API key that you use for subsequent calls. To unlock mutations (invites, configuration), the admin must attach a payment method via attach_payment_method.',
+      'Returns a tenant_id. No API key is issued yet. An activation email is sent to the admin. Call verify_tenant(tenant_id) to poll for activation status; once active it also returns `next_steps` guiding the user to add Breeze as an MCP connector (the OAuth flow), or — for backwards-compat — a readonly API key for raw HTTP callers. To unlock mutations (invites, configuration), the admin must attach a payment method via attach_payment_method.',
       'If you get INVALID_EMAIL with reason "free_provider" or "disposable", ask the user for a business email.',
       'If you get REGION_MISMATCH, connect to the correct regional MCP endpoint.',
     ].join(' '),

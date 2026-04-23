@@ -15,7 +15,7 @@ export const attachPaymentMethodTool: BootstrapTool<z.infer<typeof inputSchema>,
     name: 'attach_payment_method',
     description: [
       'Return a Stripe Checkout URL (mode=setup) where the admin can attach a payment method for identity verification. No charge; this is KYC that unlocks tenant mutations.',
-      'Flow: (1) the user opens the returned setup_url in a browser, (2) completes the Stripe flow, (3) the agent resumes polling verify_tenant until it returns { status: "active" }.',
+      'Flow: (1) the user opens the returned setup_url in a browser, (2) completes the Stripe flow, (3) the agent resumes polling verify_tenant until it returns { status: "active" }. When status flips to active, follow `next_steps` from verify_tenant — that returns the OAuth connector setup instructions for Claude.ai/ChatGPT/Cursor.',
       'Idempotent: if a payment method is already attached, returns { setup_url: null, already_attached: true } without calling the billing service.',
       'Call this whenever a mutating tool returns PAYMENT_REQUIRED, or proactively after verify_tenant returns { status: "pending_payment" }.',
     ].join(' '),

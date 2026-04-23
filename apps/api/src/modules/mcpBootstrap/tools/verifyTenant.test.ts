@@ -107,6 +107,7 @@ describe('verify_tenant', () => {
       status: 'pending_payment',
       api_key: 'brz_abc123',
       scope: 'readonly',
+      next_steps: expect.stringContaining('attach_payment_method'),
     });
     expect(mintApiKey).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -126,7 +127,12 @@ describe('verify_tenant', () => {
       [{ id: 'key-1', scopeState: 'readonly' }], // existingKey (byOrg) found
     ]);
     const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
-    expect(r).toEqual({ status: 'pending_payment', api_key: null, scope: 'readonly' });
+    expect(r).toEqual({
+      status: 'pending_payment',
+      api_key: null,
+      scope: 'readonly',
+      next_steps: expect.stringContaining('attach_payment_method'),
+    });
     expect(mintApiKey).not.toHaveBeenCalled();
   });
 
@@ -141,7 +147,12 @@ describe('verify_tenant', () => {
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
     const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
-    expect(r).toEqual({ status: 'active', api_key: null, scope: 'full' });
+    expect(r).toEqual({
+      status: 'active',
+      api_key: null,
+      scope: 'full',
+      next_steps: expect.stringContaining('connector'),
+    });
     expect(db.update).toHaveBeenCalled();
     expect(setMock).toHaveBeenCalledWith({ scopeState: 'full' });
     expect(mintApiKey).not.toHaveBeenCalled();
@@ -158,7 +169,12 @@ describe('verify_tenant', () => {
     } as any);
 
     const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
-    expect(r).toEqual({ status: 'active', api_key: null, scope: 'full' });
+    expect(r).toEqual({
+      status: 'active',
+      api_key: null,
+      scope: 'full',
+      next_steps: expect.stringContaining('connector'),
+    });
     expect(db.update).not.toHaveBeenCalled();
   });
 
@@ -170,7 +186,12 @@ describe('verify_tenant', () => {
       [{ userId: 'user-1' }],     // partnerUsers → admin user
     ]);
     const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
-    expect(r).toEqual({ status: 'active', api_key: 'brz_abc123', scope: 'full' });
+    expect(r).toEqual({
+      status: 'active',
+      api_key: 'brz_abc123',
+      scope: 'full',
+      next_steps: expect.stringContaining('connector'),
+    });
     expect(mintApiKey).toHaveBeenCalledWith(
       expect.objectContaining({ scopeState: 'full' }),
     );
