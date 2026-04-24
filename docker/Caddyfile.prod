@@ -50,6 +50,31 @@
     reverse_proxy web:4321
   }
 
+  # --- OAuth consent UI (Astro page on web) ---
+  # Must come BEFORE the `/oauth/*` → api block so the consent page lands
+  # on the dashboard, not the API.
+  @webOauthConsent path /oauth/consent /oauth/consent/*
+  handle @webOauthConsent {
+    encode zstd gzip
+    reverse_proxy web:4321
+  }
+
+  # --- OAuth provider endpoints (api): /oauth/auth, /token, /reg, etc. ---
+  # No compression — oidc-provider serves redirects + small JSON; encoding
+  # adds latency without a benefit, and avoids any Set-Cookie / streaming
+  # interference with the Hono bridge.
+  @oauth path /oauth/*
+  handle @oauth {
+    reverse_proxy api:3001
+  }
+
+  # --- OAuth + general .well-known endpoints (api) ---
+  @oauthWellKnown path /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource /.well-known/jwks.json
+  handle @oauthWellKnown {
+    encode zstd gzip
+    reverse_proxy api:3001
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /ready /metrics/* /i/* /activate/*
   handle @api {
