@@ -45,10 +45,10 @@ describe('config env', () => {
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
   });
 
-  it('defaults OAUTH_ISSUER and derives OAUTH_RESOURCE_URL', async () => {
+  it('defaults OAUTH_ISSUER and OAUTH_RESOURCE_URL to empty strings', async () => {
     const mod = await loadEnv();
-    expect(mod.OAUTH_ISSUER).toBe('https://us.2breeze.app');
-    expect(mod.OAUTH_RESOURCE_URL).toBe('https://us.2breeze.app/mcp/server');
+    expect(mod.OAUTH_ISSUER).toBe('');
+    expect(mod.OAUTH_RESOURCE_URL).toBe('');
   });
 
   it('allows OAUTH_RESOURCE_URL to override the derived value', async () => {

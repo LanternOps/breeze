@@ -28,6 +28,10 @@ export function _resetJwksCacheForTests() {
 }
 
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
+  if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
+    throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
+  }
+
   const auth = c.req.header('Authorization') ?? '';
   if (!auth.startsWith('Bearer ')) throw new HTTPException(401, { message: 'missing bearer token' });
 
@@ -43,8 +47,15 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     payload = result.payload as typeof payload;
   } catch (e) {
     const code = (e as { code?: string }).code;
-    const msg = code ?? (e as Error).message ?? 'verification failed';
-    throw new HTTPException(401, { message: `invalid token: ${msg}` });
+    // jose throws errors with codes like ERR_JWS_*, ERR_JWT_*, ERR_JWKS_NO_MATCHING_KEY.
+    // Anything else (no code, or non-jose code) is almost certainly a network/IO problem
+    // talking to the JWKS endpoint - fail loud (503) rather than silently 401-ing every request.
+    const isJoseError = typeof code === 'string' && code.startsWith('ERR_');
+    if (!isJoseError) {
+      console.error('[oauth] jwt verification failed for non-token reason (jwks fetch?)', e);
+      throw new HTTPException(503, { message: 'oauth verification temporarily unavailable' });
+    }
+    throw new HTTPException(401, { message: `invalid token: ${code ?? (e as Error).message}` });
   }
 
   if (typeof payload.jti === 'string' && await isJtiRevoked(payload.jti)) {

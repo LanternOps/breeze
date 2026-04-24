@@ -6,9 +6,8 @@ function envFlag(name: string, fallback = false): boolean {
 }
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
-export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? 'https://us.2breeze.app';
-export const OAUTH_RESOURCE_URL =
-  process.env.OAUTH_RESOURCE_URL ?? `${process.env.OAUTH_ISSUER ?? 'https://us.2breeze.app'}/mcp/server`;
+export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
+export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 export const OAUTH_JWKS_PRIVATE_JWK = process.env.OAUTH_JWKS_PRIVATE_JWK ?? '';
 export const OAUTH_JWKS_PUBLIC_JWK = process.env.OAUTH_JWKS_PUBLIC_JWK ?? '';
 export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';

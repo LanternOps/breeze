@@ -12,6 +12,12 @@ export async function getProvider(): Promise<Provider> {
   if (!OAUTH_COOKIE_SECRET) {
     throw new Error('OAUTH_COOKIE_SECRET is required when MCP_OAUTH_ENABLED is true (set a strong random string in env)');
   }
+  if (!OAUTH_ISSUER) {
+    throw new Error('OAUTH_ISSUER is required when MCP_OAUTH_ENABLED is true (set the issuer URL in env)');
+  }
+  if (!OAUTH_RESOURCE_URL) {
+    throw new Error('OAUTH_RESOURCE_URL is required when MCP_OAUTH_ENABLED is true (typically `${OAUTH_ISSUER}/mcp/server`)');
+  }
 
   const jwks = await loadJwks();
 

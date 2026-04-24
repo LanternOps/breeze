@@ -5,9 +5,18 @@ const jwksState = vi.hoisted(() => ({
   importedPublicKey: undefined as unknown,
 }));
 
+const envState = vi.hoisted(() => ({
+  issuer: 'https://issuer.test',
+  resourceUrl: 'https://issuer.test/mcp/server',
+}));
+
 vi.mock('../config/env', () => ({
-  OAUTH_ISSUER: 'https://issuer.test',
-  OAUTH_RESOURCE_URL: 'https://issuer.test/mcp/server',
+  get OAUTH_ISSUER() {
+    return envState.issuer;
+  },
+  get OAUTH_RESOURCE_URL() {
+    return envState.resourceUrl;
+  },
 }));
 
 vi.mock('../db', () => ({
@@ -22,13 +31,14 @@ vi.mock('jose', async () => {
   const actual = await vi.importActual<typeof import('jose')>('jose');
   return {
     ...actual,
+    jwtVerify: vi.fn(actual.jwtVerify),
     createRemoteJWKSet: vi.fn(
       () => async () => jwksState.importedPublicKey as Awaited<ReturnType<typeof actual.importJWK>>
     ),
   };
 });
 
-import { importJWK, type JWK } from 'jose';
+import { importJWK, jwtVerify, type JWK } from 'jose';
 import { withDbAccessContext } from '../db';
 import { isJtiRevoked } from '../oauth/revocationCache';
 import { generateTestKeypair, signTestJwt, type TestKeypair } from '../oauth/testHelpers';
@@ -87,7 +97,19 @@ describe('bearerTokenAuthMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetJwksCacheForTests();
+    envState.issuer = issuer;
+    envState.resourceUrl = audience;
     vi.mocked(isJtiRevoked).mockResolvedValue(false);
+  });
+
+  it('fails fast when OAuth issuer and resource URL are not configured', async () => {
+    envState.issuer = '';
+    envState.resourceUrl = '';
+
+    await expect(bearerTokenAuthMiddleware(createContext(), vi.fn())).rejects.toMatchObject({
+      status: 500,
+      message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set',
+    });
   });
 
   it('rejects when Authorization header is missing', async () => {
@@ -136,6 +158,23 @@ describe('bearerTokenAuthMiddleware', () => {
     );
 
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), /invalid token:/);
+  });
+
+  it('returns 503 when JWT verification fails for a non-jose error', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(jwtVerify).mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    await expect(
+      bearerTokenAuthMiddleware(createContext({ Authorization: 'Bearer token' }), vi.fn())
+    ).rejects.toMatchObject({
+      status: 503,
+      message: 'oauth verification temporarily unavailable',
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[oauth] jwt verification failed for non-token reason (jwks fetch?)',
+      expect.any(TypeError)
+    );
+    errorSpy.mockRestore();
   });
 
   it('rejects a valid token with a revoked jti', async () => {
