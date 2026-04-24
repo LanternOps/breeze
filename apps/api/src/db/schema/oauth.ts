@@ -51,3 +51,43 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
   partnerIdx: index('oauth_refresh_tokens_partner_idx').on(table.partnerId),
   clientIdx: index('oauth_refresh_tokens_client_idx').on(table.clientId),
 }));
+
+// oauth_sessions: oidc-provider Session payloads (was in-memory, now persisted
+// so OAuth flows survive API restart). Schema designed in migration
+// 2026-04-24-oauth-sessions-grants.sql.
+export const oauthSessions = pgTable('oauth_sessions', {
+  id: text('id').primaryKey(),
+  uid: text('uid').notNull(),
+  accountId: uuid('account_id').references(() => users.id, { onDelete: 'cascade' }),
+  payload: jsonb('payload').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+}, (table) => ({
+  uidIdx: index('oauth_sessions_uid_idx').on(table.uid),
+  accountIdx: index('oauth_sessions_account_idx')
+    .on(table.accountId)
+    .where(sql`${table.accountId} IS NOT NULL`),
+  expiresIdx: index('oauth_sessions_expires_idx').on(table.expiresAt),
+}));
+
+// oauth_grants: persisted oidc-provider Grants. partner_id/org_id are
+// populated by the consent route; payload carries the rest of the Grant
+// state (resources, openid, rejected, rar) plus our breeze meta inline.
+export const oauthGrants = pgTable('oauth_grants', {
+  id: text('id').primaryKey(),
+  accountId: uuid('account_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  clientId: text('client_id').notNull().references(() => oauthClients.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
+  payload: jsonb('payload').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  accountIdx: index('oauth_grants_account_idx').on(table.accountId),
+  clientIdx: index('oauth_grants_client_idx').on(table.clientId),
+  partnerIdx: index('oauth_grants_partner_idx')
+    .on(table.partnerId)
+    .where(sql`${table.partnerId} IS NOT NULL`),
+  expiresIdx: index('oauth_grants_expires_idx').on(table.expiresAt),
+}));

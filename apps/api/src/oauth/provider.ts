@@ -1,6 +1,6 @@
 import Provider from 'oidc-provider';
 import { OAUTH_COOKIE_SECRET, OAUTH_CONSENT_URL_BASE, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
-import { BreezeOidcAdapter, getGrantBreezeMeta } from './adapter';
+import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
@@ -19,7 +19,14 @@ export async function buildExtraTokenClaims(
   // on save and never restored on find. The side-table in adapter.ts is keyed
   // by that same jti — set in the consent route, read here at token mint.
   const grantId: string | undefined = grant.jti ?? grant.grantId;
-  const meta = getGrantBreezeMeta(grantId) ?? grant.breeze ?? {};
+  // First try the in-memory cache (warm path: same process as consent), then
+  // fall back to the DB row for refresh-token grants that span an API
+  // restart between consent and the next token exchange.
+  const meta =
+    getGrantBreezeMeta(grantId) ??
+    (await getGrantBreezeMetaAsync(grantId)) ??
+    grant.breeze ??
+    {};
   return {
     partner_id: meta.partner_id ?? null,
     org_id: meta.org_id ?? null,

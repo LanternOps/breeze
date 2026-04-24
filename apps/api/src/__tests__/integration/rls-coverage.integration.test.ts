@@ -49,6 +49,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['partner_activations', 'partner_id'],
   ['oauth_clients', 'partner_id'],
   ['oauth_refresh_tokens', 'partner_id'],
+  // oauth_grants partner_id is nullable (NULL between adapter.upsert and the
+  // setGrantBreezeMeta UPDATE during consent). The coverage check only needs
+  // the column name; the policy's `partner_id IS NULL OR ...` clause is
+  // checked by the policy's own qual, not this allowlist.
+  ['oauth_grants', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -82,6 +87,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   'ticket_comments',
   'access_review_items',
   'oauth_authorization_codes',
+  // oauth_sessions: account_id (= users.id) is nullable for anonymous
+  // pre-login Sessions. Policy matches the user-scope-OR-system-scope
+  // pattern of oauth_authorization_codes; the coverage test only checks
+  // that breeze_current_user_id is referenced.
+  'oauth_sessions',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;

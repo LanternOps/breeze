@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthAuthorizationCodes, oauthClients, oauthRefreshTokens } from '../db/schema';
+import {
+  oauthAuthorizationCodes,
+  oauthClients,
+  oauthGrants,
+  oauthRefreshTokens,
+  oauthSessions,
+} from '../db/schema';
 import { revokeJti } from './revocationCache';
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
@@ -12,13 +18,12 @@ type StoredPayload = { payload: OidcPayload; expiresAt: Date | null };
 
 const inMemory = new Map<string, Map<string, StoredPayload>>();
 
-// Side table for Breeze tenancy metadata attached to a Grant. We can't put
-// this on the Grant payload itself because oidc-provider's Grant.IN_PAYLOAD
-// allowlist (lib/models/grant.js) drops unknown fields on save, so anything
-// we set via `grant.breeze = ...` is lost the moment the provider serializes
-// the grant. The map shares the same restart-loses-state model as the
-// in-memory Session/Grant store above, which is acceptable for the MVP:
-// in-flight grants die on restart anyway.
+// Side cache for Breeze tenancy metadata attached to a Grant. oidc-provider's
+// Grant.IN_PAYLOAD allowlist (lib/models/grant.js) drops unknown fields on
+// save, so we can't simply set `grant.breeze = ...`. Historically this map
+// was the only store; now that Grants are persisted to `oauth_grants`, the
+// map is just a fast process-local cache and `setGrantBreezeMeta` ALSO
+// writes the metadata to the DB row so it survives restart.
 type GrantBreezeMeta = { partner_id: string; org_id: string | null };
 type StoredBreezeMeta = { meta: GrantBreezeMeta; expiresAt: Date | null };
 
@@ -33,6 +38,42 @@ export function setGrantBreezeMeta(
     meta,
     expiresAt: ttlSeconds === undefined ? null : new Date(Date.now() + ttlSeconds * 1000),
   });
+  // Persist to DB so a process restart between consent and the first
+  // refresh-token grant doesn't orphan the partner_id. The Grant row is
+  // INSERTed by `BreezeOidcAdapter.upsert` during `grant.save()`, which the
+  // consent route calls immediately before invoking us — so an UPDATE here
+  // hits an existing row. We swallow errors: the in-memory cache is enough
+  // for the auth-code → token exchange that happens in the same process.
+  asSystem(async () => {
+    await db.update(oauthGrants)
+      .set({ partnerId: meta.partner_id, orgId: meta.org_id })
+      .where(eq(oauthGrants.id, grantId));
+  }).catch((err) => {
+    console.error('[oauth] failed to persist Grant breeze meta', { grantId, err });
+  });
+}
+
+export async function getGrantBreezeMetaAsync(
+  grantId: string | undefined | null,
+): Promise<GrantBreezeMeta | undefined> {
+  if (!grantId) return undefined;
+  const cached = getGrantBreezeMeta(grantId);
+  if (cached) return cached;
+  // Cache miss — possibly a different process / post-restart. Fall back to
+  // the DB row, populated by the consent route.
+  try {
+    const row = await asSystem(async () => {
+      const [r] = await db.select({ partnerId: oauthGrants.partnerId, orgId: oauthGrants.orgId })
+        .from(oauthGrants)
+        .where(eq(oauthGrants.id, grantId));
+      return r;
+    });
+    if (!row || !row.partnerId) return undefined;
+    return { partner_id: row.partnerId, org_id: row.orgId };
+  } catch (err) {
+    console.error('[oauth] DB lookup for Grant breeze meta failed', { grantId, err });
+    return undefined;
+  }
 }
 
 export function getGrantBreezeMeta(grantId: string | undefined | null): GrantBreezeMeta | undefined {
@@ -54,29 +95,31 @@ function expiresAtFrom(expiresIn?: number): Date | null {
   return expiresIn === undefined ? null : new Date(Date.now() + expiresIn * 1000);
 }
 
-function requiredPartnerId(payload: OidcPayload): string {
+async function requiredPartnerId(payload: OidcPayload): Promise<string> {
   // First try extra.partner_id (kept for backward compatibility / tests). If
-  // not present, fall back to deriving it from the Grant via the side-table
-  // — the RefreshToken model's IN_PAYLOAD allowlist drops `extra` (only
-  // AccessToken/ClientCredentials carry it), so for tokens minted via the
-  // authorization_code grant the only thing we have to key on is `grantId`.
+  // not present, fall back to deriving it from the Grant via the cache, then
+  // the DB — the RefreshToken model's IN_PAYLOAD allowlist drops `extra`
+  // (only AccessToken/ClientCredentials carry it), so for tokens minted via
+  // the authorization_code grant the only thing we have to key on is
+  // `grantId`. The DB fallback is critical post-restart: a refresh-token
+  // exchange a few minutes after an API redeploy lost the in-memory cache.
   const partnerId = extraField(payload, 'partner_id');
   if (typeof partnerId === 'string' && partnerId.length > 0) {
     return partnerId;
   }
   const grantId = typeof payload.grantId === 'string' ? payload.grantId : undefined;
-  const meta = getGrantBreezeMeta(grantId);
+  const meta = getGrantBreezeMeta(grantId) ?? (await getGrantBreezeMetaAsync(grantId));
   if (meta && meta.partner_id) {
     return meta.partner_id;
   }
   throw new Error('RefreshToken payload missing required partner_id (no extra.partner_id and no grant meta)');
 }
 
-function resolvedOrgId(payload: OidcPayload): string | null {
+async function resolvedOrgId(payload: OidcPayload): Promise<string | null> {
   const fromExtra = extraField(payload, 'org_id');
   if (typeof fromExtra === 'string' && fromExtra.length > 0) return fromExtra;
   const grantId = typeof payload.grantId === 'string' ? payload.grantId : undefined;
-  const meta = getGrantBreezeMeta(grantId);
+  const meta = getGrantBreezeMeta(grantId) ?? (await getGrantBreezeMetaAsync(grantId));
   return meta?.org_id ?? null;
 }
 
@@ -123,17 +166,61 @@ export class BreezeOidcAdapter {
           set: { payload, expiresAt: expiresAt! },
         });
       } else if (this.model === 'RefreshToken') {
+        const [partnerId, orgId] = await Promise.all([
+          requiredPartnerId(payload),
+          resolvedOrgId(payload),
+        ]);
         await db.insert(oauthRefreshTokens).values({
           id,
           userId: stringField(payload, 'accountId'),
           clientId: stringField(payload, 'clientId'),
-          partnerId: requiredPartnerId(payload),
-          orgId: resolvedOrgId(payload),
+          partnerId,
+          orgId,
           payload,
           expiresAt: expiresAt!,
         }).onConflictDoUpdate({
           target: oauthRefreshTokens.id,
           set: { payload, expiresAt: expiresAt!, lastUsedAt: new Date() },
+        });
+      } else if (this.model === 'Session') {
+        // Session.id === Session.jti; uid is a separate, longer-lived alias
+        // used by Session.findByUid during token exchange. accountId is null
+        // for anonymous (pre-login) sessions and gets populated by
+        // session.loginAccount(...). expiresAt is required by the column —
+        // oidc-provider always passes a TTL for Session.save.
+        const uid = typeof payload.uid === 'string' && payload.uid.length > 0
+          ? payload.uid
+          : id;
+        const accountIdRaw = payload.accountId;
+        const accountId = typeof accountIdRaw === 'string' && accountIdRaw.length > 0
+          ? accountIdRaw
+          : null;
+        await db.insert(oauthSessions).values({
+          id,
+          uid,
+          accountId,
+          payload,
+          expiresAt: expiresAt!,
+        }).onConflictDoUpdate({
+          target: oauthSessions.id,
+          set: { uid, accountId, payload, expiresAt: expiresAt!, lastUsedAt: new Date() },
+        });
+      } else if (this.model === 'Grant') {
+        // Grant payload is the IN_PAYLOAD-filtered subset (accountId,
+        // clientId, resources, openid, rejected, rar). partner_id/org_id
+        // are populated by the consent route via setGrantBreezeMeta() —
+        // INSERT them as NULL here and the subsequent UPDATE fills them in.
+        await db.insert(oauthGrants).values({
+          id,
+          accountId: stringField(payload, 'accountId'),
+          clientId: stringField(payload, 'clientId'),
+          partnerId: null,
+          orgId: null,
+          payload,
+          expiresAt: expiresAt!,
+        }).onConflictDoUpdate({
+          target: oauthGrants.id,
+          set: { payload, expiresAt: expiresAt! },
         });
       } else {
         const modelStore = inMemory.get(this.model) ?? new Map<string, StoredPayload>();
@@ -156,6 +243,14 @@ export class BreezeOidcAdapter {
       if (this.model === 'RefreshToken') {
         const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
         return row && !row.revokedAt && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+      }
+      if (this.model === 'Session') {
+        const [row] = await db.select().from(oauthSessions).where(eq(oauthSessions.id, id));
+        return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+      }
+      if (this.model === 'Grant') {
+        const [row] = await db.select().from(oauthGrants).where(eq(oauthGrants.id, id));
+        return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
 
       const stored = inMemory.get(this.model)?.get(id);
@@ -197,6 +292,10 @@ export class BreezeOidcAdapter {
         await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, id));
       } else if (this.model === 'Client') {
         await db.update(oauthClients).set({ disabledAt: new Date() }).where(eq(oauthClients.id, id));
+      } else if (this.model === 'Session') {
+        await db.delete(oauthSessions).where(eq(oauthSessions.id, id));
+      } else if (this.model === 'Grant') {
+        await db.delete(oauthGrants).where(eq(oauthGrants.id, id));
       } else {
         inMemory.get(this.model)?.delete(id);
       }
@@ -249,13 +348,19 @@ export class BreezeOidcAdapter {
   }
 
   async findByUid(uid: string): Promise<OidcPayload | undefined> {
-    // oidc-provider's session-bound models (AuthorizationCode, AccessToken,
-    // RefreshToken) call Session.findByUid(uid) during token issuance to
-    // confirm the session that authorized the grant still exists. We persist
-    // Session payloads in the in-memory map keyed by jti, so we scan the
-    // store for a payload whose `uid` field matches. Sessions are short-
-    // lived (14 days TTL by config) and the store is small, so a linear
-    // scan is acceptable for the MVP.
+    // Session.findByUid is called during token issuance to confirm the
+    // authorizing session still exists. Sessions are persisted to
+    // `oauth_sessions` with a dedicated `uid` index — lookup is a single
+    // indexed query.
+    if (this.model === 'Session') {
+      return asSystem(async () => {
+        const [row] = await db.select().from(oauthSessions).where(eq(oauthSessions.uid, uid));
+        return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+      });
+    }
+    // Fallback for models still in the in-memory store (Interaction,
+    // AccessToken, ReplayDetection, etc.). None of these are typically
+    // looked up by uid in our flow, but keep the scan as a safety net.
     const store = inMemory.get(this.model);
     if (!store) return undefined;
     for (const [, stored] of store) {

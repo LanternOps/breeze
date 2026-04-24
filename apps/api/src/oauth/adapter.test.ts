@@ -150,12 +150,14 @@ describe('BreezeOidcAdapter', () => {
   });
 
   it('round-trips non-persistent models through in-memory fallback', async () => {
-    const payload = { uid: 'session_abc', accountId: 'user_abc' };
-    const adapter = new BreezeOidcAdapter('Session');
+    // Interaction is the canonical short-lived in-memory model after the
+    // Session/Grant DB persistence migration (2026-04-24-oauth-sessions-grants).
+    const payload = { uid: 'interaction_abc', accountId: 'user_abc' };
+    const adapter = new BreezeOidcAdapter('Interaction');
 
-    await adapter.upsert('session_abc', payload, 60);
+    await adapter.upsert('interaction_abc', payload, 60);
 
-    await expect(adapter.find('session_abc')).resolves.toBe(payload);
+    await expect(adapter.find('interaction_abc')).resolves.toBe(payload);
   });
 
   it('returns undefined for unknown ids under DB-backed models', async () => {
