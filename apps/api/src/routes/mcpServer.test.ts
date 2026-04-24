@@ -44,6 +44,12 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
 }));
 
+vi.mock('../middleware/bearerTokenAuth', () => ({
+  bearerTokenAuthMiddleware: async () => {
+    throw new Error('should not be called without a Bearer header');
+  },
+}));
+
 // Test the pure utility functions extracted from mcpServer.ts
 // These are not exported, so we test them via their behavior patterns
 
@@ -201,6 +207,7 @@ describe('MCP bootstrap carve-out', () => {
         c.set('apiKey', {
           id: 'key-1',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           name: 'test',
           keyPrefix: 'brz_test',
           scopes: ['ai:read'],
@@ -259,6 +266,7 @@ describe('MCP bootstrap carve-out', () => {
         c.set('apiKey', {
           id: 'key-1',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           name: 'test',
           keyPrefix: 'brz_test',
           scopes: ['ai:read', 'ai:write'],
@@ -368,6 +376,7 @@ describe('MCP bootstrap carve-out', () => {
         c.set('apiKey', {
           id: 'key-authtool',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           name: 'test',
           keyPrefix: 'brz_test',
           scopes: ['ai:read', 'ai:execute'],

@@ -267,6 +267,7 @@ describe('apiKeyAuth middleware', () => {
     expect(c.get('apiKey')).toMatchObject({
       id: 'key-4',
       orgId: 'org-2',
+      partnerId: null,
       scopes: ['read'],
       rateLimit: 5,
       createdBy: 'user-2'

@@ -1,0 +1,11 @@
+---
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import ConsentForm from '../../components/oauth/ConsentForm';
+
+const uid = Astro.url.searchParams.get('uid');
+if (!uid) return Astro.redirect('/');
+---
+
+<AuthLayout title="Authorize access">
+  <ConsentForm uid={uid} client:only="react" />
+</AuthLayout>

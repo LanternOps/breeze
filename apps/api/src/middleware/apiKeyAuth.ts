@@ -9,7 +9,8 @@ import { getRedis, rateLimiter } from '../services';
 export interface ApiKeyContext {
   apiKey: {
     id: string;
-    orgId: string;
+    orgId: string | null;
+    partnerId: string | null;
     name: string;
     keyPrefix: string;
     scopes: string[];
@@ -173,6 +174,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   c.set('apiKey', {
     id: apiKey.id,
     orgId: apiKey.orgId,
+    partnerId: resolvedPartnerId,
     name: apiKey.name,
     keyPrefix: apiKey.keyPrefix,
     scopes: apiKey.scopes || [],
