@@ -73,7 +73,7 @@ describe('oauthRoutes rate limits', () => {
     expect(rateLimiter).toHaveBeenLastCalledWith(null, 'oauth:register:203.0.113.10', 10, 3600);
   });
 
-  it('keys POST /oauth/token by form client_id when present', async () => {
+  it('keys POST /oauth/token by IP even when client_id is present', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
     const app = await importApp(rateLimiter);
 
@@ -87,7 +87,7 @@ describe('oauthRoutes rate limits', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:token:foo', 60, 60);
+    expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:token:ip:203.0.113.20', 60, 60);
   });
 
   it('keys POST /oauth/token by IP when client_id is missing', async () => {
@@ -105,6 +105,32 @@ describe('oauthRoutes rate limits', () => {
 
     expect(res.status).toBe(200);
     expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:token:ip:203.0.113.30', 60, 60);
+  });
+
+  it('returns 429 on the 61st POST /oauth/token from the same IP', async () => {
+    const rateLimiter = vi.fn(async () => ({
+      allowed: rateLimiter.mock.calls.length < 61,
+      remaining: 0,
+      resetAt,
+    }));
+    const app = await importApp(rateLimiter);
+
+    for (let i = 0; i < 60; i++) {
+      const res = await app.request('/oauth/token', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '203.0.113.35' },
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const res = await app.request('/oauth/token', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '203.0.113.35' },
+    });
+
+    expect(res.status).toBe(429);
+    await expect(res.json()).resolves.toEqual({ error: 'rate_limited' });
+    expect(rateLimiter).toHaveBeenLastCalledWith(null, 'oauth:token:ip:203.0.113.35', 60, 60);
   });
 
   it('keys GET /oauth/auth by IP and rate-limits at 20/minute', async () => {

@@ -23,17 +23,14 @@ if (MCP_OAUTH_ENABLED) {
       windowSeconds = 3600;
       key = `oauth:register:${ip}`;
     } else if (c.req.method === 'POST' && sub === '/token') {
-      let clientId = '';
-      try {
-        const form = await c.req.raw.clone().formData();
-        clientId = String(form.get('client_id') ?? '');
-      } catch {
-        // Non-form token requests fall back to an IP-keyed limit.
-      }
-
+      // Key by IP only. We could key by client_id but that requires reading the
+      // request body, which would drain the underlying Node IncomingMessage
+      // stream and prevent oidc-provider's callback() from parsing the body.
+      // 60/min/IP is sufficient for MVP - burst protection is the goal here,
+      // not per-client granularity.
       limit = 60;
       windowSeconds = 60;
-      key = clientId ? `oauth:token:${clientId}` : `oauth:token:ip:${ip}`;
+      key = `oauth:token:ip:${ip}`;
     } else if ((c.req.method === 'GET' || c.req.method === 'POST') && sub === '/auth') {
       limit = 20;
       windowSeconds = 60;
