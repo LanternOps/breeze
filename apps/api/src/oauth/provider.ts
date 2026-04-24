@@ -97,6 +97,24 @@ export async function getProvider(): Promise<Provider> {
       breeze_tenant: ['partner_id', 'org_id'],
     },
     extraTokenClaims: buildExtraTokenClaims,
+    // Tell the provider its endpoints sit under /oauth so it sets cookies
+    // with the right path. Without this, _interaction_resume's path would
+    // be /auth/<uid> and the browser would never send it back to
+    // /oauth/auth/<uid>, breaking the flow on consent submission.
+    routes: {
+      authorization: '/oauth/auth',
+      backchannel_authentication: '/oauth/backchannel',
+      code_verification: '/oauth/device',
+      device_authorization: '/oauth/device/auth',
+      end_session: '/oauth/session/end',
+      introspection: '/oauth/token/introspection',
+      jwks: '/oauth/jwks',
+      pushed_authorization_request: '/oauth/par',
+      registration: '/oauth/reg',
+      revocation: '/oauth/token/revocation',
+      token: '/oauth/token',
+      userinfo: '/oauth/me',
+    },
     interactions: {
       url: (_ctx: any, interaction: any) => `/oauth/consent?uid=${interaction.uid}`,
     },

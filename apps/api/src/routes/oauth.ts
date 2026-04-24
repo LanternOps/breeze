@@ -51,9 +51,19 @@ if (MCP_OAUTH_ENABLED) {
     const req = c.env.incoming;
     const res = c.env.outgoing;
 
-    // oidc-provider expects issuer-relative paths (/auth, /token, /reg, ...).
+    // The provider is configured with `routes` that already include the
+    // `/oauth` prefix (see provider.ts), so we pass req.url through as-is.
+    // Stripping the prefix here would cause oidc-provider to set Set-Cookie
+    // paths like `/auth/<uid>` that the browser would never send back to our
+    // mounted `/oauth/auth/<uid>` endpoint.
     const originalUrl = req.url ?? '/';
-    req.url = originalUrl.replace(/^\/oauth/, '') || '/';
+
+    // The `x-hono-already-sent` header is @hono/node-server's escape hatch:
+    // when present on the returned Response, the runtime skips its own
+    // writeHead/end on the underlying ServerResponse. Without it we hit
+    // ERR_HTTP_HEADERS_SENT because oidc-provider already wrote the response.
+    const alreadySent = (status: number) =>
+      new Response(null, { status, headers: { 'x-hono-already-sent': '1' } });
 
     return new Promise<Response>((resolve) => {
       const cleanup = () => {
@@ -63,16 +73,16 @@ if (MCP_OAUTH_ENABLED) {
       };
       const onFinish = () => {
         cleanup();
-        resolve(new Response(null, { status: res.statusCode }));
+        resolve(alreadySent(res.statusCode));
       };
       const onClose = () => {
         cleanup();
-        resolve(new Response(null, { status: res.statusCode || 499 }));
+        resolve(alreadySent(res.statusCode || 499));
       };
       const onError = (err: unknown) => {
         cleanup();
         console.error('[oauth] bridge response error', { path: originalUrl, err });
-        resolve(new Response('oauth error', { status: 500 }));
+        resolve(alreadySent(res.statusCode || 500));
       };
       res.on('finish', onFinish);
       res.on('close', onClose);
@@ -82,7 +92,7 @@ if (MCP_OAUTH_ENABLED) {
       } catch (err) {
         cleanup();
         console.error('[oauth] bridge callback threw', { path: originalUrl, err });
-        resolve(new Response('oauth threw', { status: 500 }));
+        resolve(alreadySent(res.statusCode || 500));
       }
     });
   });
