@@ -3,10 +3,15 @@ import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
 import { and, eq } from 'drizzle-orm';
 import { getProvider } from '../oauth/provider';
+import { setGrantBreezeMeta } from '../oauth/adapter';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, partners, partnerUsers, users } from '../db/schema';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+
+// Grant TTL in seconds — must match `ttl.Grant` in oauth/provider.ts so the
+// breeze metadata side-table entry expires no later than the Grant itself.
+const GRANT_TTL_SECONDS = 14 * 24 * 60 * 60;
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -138,8 +143,12 @@ if (MCP_OAUTH_ENABLED) {
       }
     }
 
-    grant.breeze = { partner_id: body.partner_id, org_id: orgId };
     const grantId = await grant.save();
+    // We can't put `breeze` on the Grant payload — oidc-provider's
+    // Grant.IN_PAYLOAD allowlist drops unknown fields on save. Stash the
+    // tenancy metadata in a process-local side table keyed by grantId, then
+    // read it back in `buildExtraTokenClaims` when the access token is minted.
+    setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId }, GRANT_TTL_SECONDS);
 
     await asSystem(async () => {
       await db.update(oauthClients)

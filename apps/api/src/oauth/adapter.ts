@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthAuthorizationCodes, oauthClients, oauthRefreshTokens } from '../db/schema';
+import { revokeJti } from './revocationCache';
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -10,6 +11,40 @@ type OidcPayload = Record<string, unknown>;
 type StoredPayload = { payload: OidcPayload; expiresAt: Date | null };
 
 const inMemory = new Map<string, Map<string, StoredPayload>>();
+
+// Side table for Breeze tenancy metadata attached to a Grant. We can't put
+// this on the Grant payload itself because oidc-provider's Grant.IN_PAYLOAD
+// allowlist (lib/models/grant.js) drops unknown fields on save, so anything
+// we set via `grant.breeze = ...` is lost the moment the provider serializes
+// the grant. The map shares the same restart-loses-state model as the
+// in-memory Session/Grant store above, which is acceptable for the MVP:
+// in-flight grants die on restart anyway.
+type GrantBreezeMeta = { partner_id: string; org_id: string | null };
+type StoredBreezeMeta = { meta: GrantBreezeMeta; expiresAt: Date | null };
+
+const grantBreezeMeta = new Map<string, StoredBreezeMeta>();
+
+export function setGrantBreezeMeta(
+  grantId: string,
+  meta: GrantBreezeMeta,
+  ttlSeconds?: number,
+): void {
+  grantBreezeMeta.set(grantId, {
+    meta,
+    expiresAt: ttlSeconds === undefined ? null : new Date(Date.now() + ttlSeconds * 1000),
+  });
+}
+
+export function getGrantBreezeMeta(grantId: string | undefined | null): GrantBreezeMeta | undefined {
+  if (!grantId) return undefined;
+  const stored = grantBreezeMeta.get(grantId);
+  if (!stored) return undefined;
+  if (stored.expiresAt && stored.expiresAt < new Date()) {
+    grantBreezeMeta.delete(grantId);
+    return undefined;
+  }
+  return stored.meta;
+}
 
 function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
@@ -124,6 +159,15 @@ export class BreezeOidcAdapter {
   }
 
   async destroy(id: string): Promise<void> {
+    // For token models we MUST write to the revocation cache before (or as
+    // part of) destroying the row. oidc-provider 8.x doesn't emit the
+    // `revocation.success` event we previously listened for, so the adapter's
+    // destroy is the only sync hook we have on the revocation path. We look
+    // up the payload here to extract `jti`/`exp` and write the cache entry
+    // with the remaining TTL — bearer auth checks the cache on every request.
+    if (this.model === 'AccessToken' || this.model === 'RefreshToken') {
+      await this.cacheRevocation(id);
+    }
     return asSystem(async () => {
       if (this.model === 'RefreshToken') {
         await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, id));
@@ -133,6 +177,45 @@ export class BreezeOidcAdapter {
         inMemory.get(this.model)?.delete(id);
       }
     });
+  }
+
+  /**
+   * Look up the token's `jti` and `exp` and write a revocation marker that
+   * lives at least until the token would have naturally expired. The id we
+   * receive from oidc-provider is the model id; for AccessToken/RefreshToken
+   * it equals the `jti` claim, but we still read the payload's `exp` (or
+   * fall back to the row's `expiresAt`) to pick a sensible TTL. Failures
+   * are logged but do not block destroy — the DB revocation row is still
+   * authoritative for refresh tokens.
+   */
+  private async cacheRevocation(id: string): Promise<void> {
+    try {
+      let exp: number | undefined;
+      if (this.model === 'RefreshToken') {
+        const row = await asSystem(async () => {
+          const [r] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
+          return r;
+        });
+        if (row) {
+          const payloadExp = (row.payload as { exp?: number } | null)?.exp;
+          exp = typeof payloadExp === 'number' ? payloadExp : Math.floor(row.expiresAt.getTime() / 1000);
+        }
+      } else {
+        // AccessToken lives in the in-memory store; pull exp directly.
+        const stored = inMemory.get(this.model)?.get(id);
+        const payloadExp = (stored?.payload as { exp?: number } | undefined)?.exp;
+        if (typeof payloadExp === 'number') {
+          exp = payloadExp;
+        } else if (stored?.expiresAt) {
+          exp = Math.floor(stored.expiresAt.getTime() / 1000);
+        }
+      }
+      if (exp === undefined) return; // nothing to cache
+      const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
+      await revokeJti(id, ttl);
+    } catch (err) {
+      console.error('[oauth] revocation cache write failed', err);
+    }
   }
 
   async revokeByGrantId(grantId: string): Promise<void> {

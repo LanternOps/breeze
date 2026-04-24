@@ -1,6 +1,6 @@
 import Provider from 'oidc-provider';
 import { OAUTH_COOKIE_SECRET, OAUTH_CONSENT_URL_BASE, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
-import { BreezeOidcAdapter } from './adapter';
+import { BreezeOidcAdapter, getGrantBreezeMeta } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
@@ -13,7 +13,13 @@ export async function buildExtraTokenClaims(
 ): Promise<{ partner_id: string | null; org_id: string | null }> {
   const grant: any = ctx.oidc?.entities?.Grant;
   if (!grant) return { partner_id: null, org_id: null };
-  const meta = grant.breeze ?? {};
+  // The Grant instance's id is on `.jti` (oidc-provider's BaseToken sets jti
+  // on every persisted entity). We can't read meta off `grant.breeze` because
+  // Grant.IN_PAYLOAD doesn't include `breeze`, so unknown fields are dropped
+  // on save and never restored on find. The side-table in adapter.ts is keyed
+  // by that same jti — set in the consent route, read here at token mint.
+  const grantId: string | undefined = grant.jti ?? grant.grantId;
+  const meta = getGrantBreezeMeta(grantId) ?? grant.breeze ?? {};
   return {
     partner_id: meta.partner_id ?? null,
     org_id: meta.org_id ?? null,
@@ -130,7 +136,13 @@ export async function getProvider(): Promise<Provider> {
   });
 
   providerInstance.proxy = true;
-  (providerInstance as any).on('revocation.success', handleRevocationSuccess);
+  // NOTE: oidc-provider 8.x does NOT emit `revocation.success`. We previously
+  // attached `handleRevocationSuccess` here, but the event never fired so
+  // revoked tokens kept passing the bearer middleware until they expired.
+  // Revocation is now wired via the adapter's `destroy()` method (see
+  // adapter.ts), which oidc-provider DOES call on revoke. The
+  // `handleRevocationSuccess` helper is retained because its tests cover the
+  // TTL-clamp logic we want to keep verified.
   // Surface OIDC error events to stderr. These are otherwise swallowed by
   // oidc-provider's debug() logging (only visible with DEBUG=oidc-provider:*),
   // and the JSON error responses sent to clients deliberately omit the
