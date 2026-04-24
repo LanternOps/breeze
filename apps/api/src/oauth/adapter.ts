@@ -55,11 +55,29 @@ function expiresAtFrom(expiresIn?: number): Date | null {
 }
 
 function requiredPartnerId(payload: OidcPayload): string {
+  // First try extra.partner_id (kept for backward compatibility / tests). If
+  // not present, fall back to deriving it from the Grant via the side-table
+  // — the RefreshToken model's IN_PAYLOAD allowlist drops `extra` (only
+  // AccessToken/ClientCredentials carry it), so for tokens minted via the
+  // authorization_code grant the only thing we have to key on is `grantId`.
   const partnerId = extraField(payload, 'partner_id');
-  if (typeof partnerId !== 'string' || partnerId.length === 0) {
-    throw new Error('RefreshToken payload missing required extra.partner_id');
+  if (typeof partnerId === 'string' && partnerId.length > 0) {
+    return partnerId;
   }
-  return partnerId;
+  const grantId = typeof payload.grantId === 'string' ? payload.grantId : undefined;
+  const meta = getGrantBreezeMeta(grantId);
+  if (meta && meta.partner_id) {
+    return meta.partner_id;
+  }
+  throw new Error('RefreshToken payload missing required partner_id (no extra.partner_id and no grant meta)');
+}
+
+function resolvedOrgId(payload: OidcPayload): string | null {
+  const fromExtra = extraField(payload, 'org_id');
+  if (typeof fromExtra === 'string' && fromExtra.length > 0) return fromExtra;
+  const grantId = typeof payload.grantId === 'string' ? payload.grantId : undefined;
+  const meta = getGrantBreezeMeta(grantId);
+  return meta?.org_id ?? null;
 }
 
 function stringField(payload: OidcPayload, key: string): string {
@@ -110,7 +128,7 @@ export class BreezeOidcAdapter {
           userId: stringField(payload, 'accountId'),
           clientId: stringField(payload, 'clientId'),
           partnerId: requiredPartnerId(payload),
-          orgId: (extraField(payload, 'org_id') as string | null) ?? null,
+          orgId: resolvedOrgId(payload),
           payload,
           expiresAt: expiresAt!,
         }).onConflictDoUpdate({
@@ -154,6 +172,12 @@ export class BreezeOidcAdapter {
     return asSystem(async () => {
       if (this.model === 'AuthorizationCode') {
         await db.update(oauthAuthorizationCodes).set({ consumedAt: new Date() }).where(eq(oauthAuthorizationCodes.id, id));
+      } else if (this.model === 'RefreshToken') {
+        // oidc-provider rotates refresh tokens by minting a new one and
+        // calling consume() on the previous. Mark it revoked so
+        // `find()` (which filters on revokedAt IS NULL) returns undefined,
+        // preventing replay of the old token after rotation.
+        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, id));
       }
     });
   }

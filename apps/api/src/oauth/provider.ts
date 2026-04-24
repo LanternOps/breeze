@@ -74,6 +74,22 @@ export async function getProvider(): Promise<Provider> {
       introspectionSigningAlgValues: ['EdDSA', 'RS256'],
       authorizationSigningAlgValues: ['EdDSA', 'RS256'],
     },
+    // oidc-provider's default `issueRefreshToken` returns false unless the
+    // auth code's scopes include `offline_access`. The OIDC core spec then
+    // silently drops `offline_access` from the request scope unless the
+    // request explicitly carries `prompt=consent` (see oidc-provider's
+    // `lib/actions/authorization/check_scope.js` and the `prompt` getter on
+    // OIDCContext — `PARAM_LIST` always contains `'prompt'`, so the gate
+    // simplifies to "did the request send prompt=consent?"). MCP clients in
+    // the wild rarely send `prompt=consent`, so by default they never get a
+    // refresh token, forcing re-consent every 10 minutes when the access
+    // token expires. We override the gate to issue a refresh token whenever
+    // the client is registered for the `refresh_token` grant — DCR-registered
+    // clients default to `['authorization_code', 'refresh_token']` so this
+    // covers everything the MCP installer registers, while still respecting
+    // confidential-client config that explicitly disables refresh.
+    issueRefreshToken: async (_ctx: any, client: any, _code: any) =>
+      client.grantTypeAllowed('refresh_token'),
     features: {
       devInteractions: { enabled: false },
       registration: { enabled: true, initialAccessToken: false },
