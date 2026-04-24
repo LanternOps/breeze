@@ -5,7 +5,20 @@
 :80 {
 	encode zstd gzip
 
-	@api path /api/* /s/* /health /ready /metrics /metrics/* /i/* /activate/setup-intent /activate/complete/webhook
+	@webActivateComplete path /activate/complete
+	handle @webActivateComplete {
+		reverse_proxy host.docker.internal:4321
+	}
+
+	@webActivateRendered {
+		path /activate/*
+		query status=*
+	}
+	handle @webActivateRendered {
+		reverse_proxy host.docker.internal:4321
+	}
+
+	@api path /api/* /s/* /health /ready /metrics /metrics/* /i/* /activate/*
 	handle @api {
 		reverse_proxy host.docker.internal:3001
 	}

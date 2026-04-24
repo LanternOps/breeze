@@ -51,7 +51,15 @@ export async function getProvider(): Promise<Provider> {
     adapter: BreezeOidcAdapter,
     clients: [],
     jwks,
-    cookies: { keys: [OAUTH_COOKIE_SECRET] },
+    cookies: {
+      keys: [OAUTH_COOKIE_SECRET],
+      // Widen the interaction cookie path so the consent UI (`/oauth/consent`)
+      // AND the consent backend (`/api/v1/oauth/interaction/...`) both receive
+      // it. Without this, the browser would scope the cookie to /oauth/consent
+      // only and the API endpoint that resumes the flow would never see it.
+      short: { path: '/' },
+      long: { path: '/' },
+    },
     findAccount,
     enabledJWA: {
       idTokenSigningAlgValues: ['EdDSA', 'RS256'],

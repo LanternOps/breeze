@@ -12,7 +12,8 @@
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
     "db:studio": "turbo run db:studio --filter=@breeze/api",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "clean": "turbo run clean && rm -rf node_modules",
+    "demo:test": "bash scripts/demo-mcp-test.sh"
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.57.1",

@@ -31,8 +31,27 @@
     reverse_proxy billing:3002
   }
 
+  # --- Web activation completion page (exact match — keeps on web) ---
+  @webActivateComplete path /activate/complete
+  handle @webActivateComplete {
+    encode zstd gzip
+    reverse_proxy web:4321
+  }
+
+  # --- Web activation rendered page: /activate/<token>?status=... is the ---
+  # post-redirect landing that the React component renders. The bare    ---
+  # /activate/<token> (no query) is the email-click that hits the API.  ---
+  @webActivateRendered {
+    path /activate/*
+    query status=*
+  }
+  handle @webActivateRendered {
+    encode zstd gzip
+    reverse_proxy web:4321
+  }
+
   # --- API routes (with compression) ---
-  @api path /api/* /s/* /health /ready /metrics/* /i/* /activate/setup-intent /activate/complete/webhook
+  @api path /api/* /s/* /health /ready /metrics/* /i/* /activate/*
   handle @api {
     encode zstd gzip
     reverse_proxy api:3001

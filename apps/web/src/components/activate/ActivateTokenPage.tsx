@@ -65,8 +65,8 @@ export default function ActivateTokenPage({ token, initialStatus }: Props) {
           </div>
           <h2 className="text-lg font-semibold">Email verified</h2>
           <p className="text-sm text-muted-foreground">
-            Add a payment method to finish activating your tenant. This is for identity
-            verification — there is no charge for the free tier (up to 25 devices).
+            One more step — add a payment method to finish activating your tenant.
+            Stripe uses this to verify your identity. You won't be charged now.
           </p>
         </div>
         {error && (

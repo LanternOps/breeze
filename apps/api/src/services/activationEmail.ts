@@ -24,7 +24,7 @@ export function buildActivationEmail({ activationUrl, orgName }: BuildActivation
     ``,
     activationUrl,
     ``,
-    `After clicking, you'll be asked to attach a payment method for identity verification (no charge for free tier).`,
+    `After clicking, you'll be asked to add a payment method. Stripe uses this to verify your identity — you won't be charged now.`,
     ``,
     `— Breeze`,
   ].join('\n');
@@ -32,7 +32,7 @@ export function buildActivationEmail({ activationUrl, orgName }: BuildActivation
     `<p>Welcome to <strong>Breeze</strong>!</p>`,
     `<p>Click the link below to activate <strong>${safeOrg}</strong>'s tenant (link valid 24 hours):</p>`,
     `<p><a href="${escapeHtml(activationUrl)}">${escapeHtml(activationUrl)}</a></p>`,
-    `<p>After clicking, you'll be asked to attach a payment method for identity verification (no charge for free tier).</p>`,
+    `<p>After clicking, you'll be asked to add a payment method. Stripe uses this to verify your identity — you won't be charged now.</p>`,
     `<p>— Breeze</p>`,
   ].join('');
   return { subject, html, text };
