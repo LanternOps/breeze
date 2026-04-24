@@ -17,6 +17,7 @@ import { rateLimiter } from '../services/rate-limit';
 export const oauthRoutes = new Hono<{ Bindings: HttpBindings }>();
 
 if (MCP_OAUTH_ENABLED) {
+  const REVOCATION_BODY_MAX_BYTES = 64 * 1024;
   let cachedRevocationJwks: ReturnType<typeof createLocalJWKSet> | null = null;
 
   async function getRevocationJwks() {
@@ -50,6 +51,10 @@ if (MCP_OAUTH_ENABLED) {
       limit = 60;
       windowSeconds = 60;
       key = `oauth:token:ip:${ip}`;
+    } else if (c.req.method === 'POST' && sub === '/token/revocation') {
+      limit = 60;
+      windowSeconds = 60;
+      key = `oauth:revocation:ip:${ip}`;
     } else if ((c.req.method === 'GET' || c.req.method === 'POST') && sub === '/auth') {
       limit = 20;
       windowSeconds = 60;
@@ -63,6 +68,42 @@ if (MCP_OAUTH_ENABLED) {
 
     return next();
   });
+
+  async function readClonedBodyWithLimit(req: Request, maxBytes: number): Promise<string | null> {
+    const contentLength = req.headers.get('content-length');
+    if (contentLength) {
+      const parsed = Number.parseInt(contentLength, 10);
+      if (Number.isFinite(parsed) && parsed > maxBytes) {
+        return null;
+      }
+    }
+
+    const clone = req.clone();
+    if (!clone.body) {
+      return '';
+    }
+
+    const reader = clone.body.getReader();
+    const decoder = new TextDecoder();
+    let bytesRead = 0;
+    let out = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytesRead += value.byteLength;
+        if (bytesRead > maxBytes) {
+          return null;
+        }
+        out += decoder.decode(value, { stream: true });
+      }
+      out += decoder.decode();
+      return out;
+    } finally {
+      reader.releaseLock();
+    }
+  }
 
   // JWT access-token revocation pre-handler.
   //
@@ -90,7 +131,10 @@ if (MCP_OAUTH_ENABLED) {
     let params: URLSearchParams;
     let token: string | null;
     try {
-      const raw = await c.req.raw.clone().text();
+      const raw = await readClonedBodyWithLimit(c.req.raw, REVOCATION_BODY_MAX_BYTES);
+      if (raw === null) {
+        return c.json({ error: 'invalid_request', error_description: 'revocation request body too large' }, 413);
+      }
       params = new URLSearchParams(raw);
       token = params.get('token');
     } catch (err) {

@@ -19,10 +19,7 @@
 -- future query that filters by org_id should still respect it. So we add
 -- `breeze_has_org_access(org_id)` as an alternative satisfaction branch:
 -- if the row has an org_id and the caller has access to that org, they
--- can see the row. Combined with the existing partner/user/system checks,
--- this is strictly more permissive in expression but never broader in
--- practice (the partner axis is required to see the org rows anyway via
--- breeze_has_org_access's own implementation).
+-- can see the row. NULL partner rows remain system-only bootstrap rows.
 --
 -- We re-create each policy with an OR-extended predicate. Idempotent.
 
@@ -45,20 +42,19 @@ DO $$ BEGIN
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- oauth_grants: was system-OR-(partner_id IS NULL)-OR-partner-access; add org-axis.
+-- oauth_grants: was system-OR-partner-access; add org-axis. NULL partner rows
+-- are bootstrap-only and remain visible only through the system branch.
 DROP POLICY IF EXISTS oauth_grants_partner_access ON oauth_grants;
 DO $$ BEGIN
   CREATE POLICY oauth_grants_partner_access ON oauth_grants
     FOR ALL TO breeze_app
     USING (
       breeze_current_scope() = 'system'
-      OR partner_id IS NULL
       OR breeze_has_partner_access(partner_id)
       OR (org_id IS NOT NULL AND breeze_has_org_access(org_id))
     )
     WITH CHECK (
       breeze_current_scope() = 'system'
-      OR partner_id IS NULL
       OR breeze_has_partner_access(partner_id)
       OR (org_id IS NOT NULL AND breeze_has_org_access(org_id))
     );

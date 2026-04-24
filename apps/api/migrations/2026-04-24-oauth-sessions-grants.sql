@@ -13,10 +13,8 @@
 --   uid text indexed for Session.findByUid (called during token issuance to
 --     confirm the authorizing session still exists).
 --   account_id nullable — Sessions are created BEFORE login (anonymous, then
---     mutated with loginAccount(...)). Mirrors oauth_authorization_codes RLS:
---     user-scope OR system-scope, since the adapter writes from a system
---     context (runOutsideDbContext + withSystemDbAccessContext) but the
---     consent UI reads from the authenticated user's request scope.
+--     mutated with loginAccount(...)). Anonymous/bootstrap rows are only
+--     visible to system scope; user scope can only see rows bound to that user.
 --
 -- Grants:
 --   id text PK = Grant.jti.
@@ -26,8 +24,8 @@
 --     resources, openid, rejected, rar) + our `breeze` blob inline (oidc-
 --     provider's IN_PAYLOAD stripping is bypassed because we own the storage
 --     here — we hand-write the Drizzle insert).
---   RLS: partner-axis with system-bypass, matching the auth-code shape so the
---     adapter can write/read from system context.
+--   RLS: partner-axis with system-bypass so the adapter can write/read from
+--     system context. NULL partner rows are bootstrap-only and system-scoped.
 --
 -- Idempotent. Safe to re-run.
 
@@ -69,8 +67,8 @@ ALTER TABLE oauth_grants   FORCE ROW LEVEL SECURITY;
 DO $$ BEGIN
   CREATE POLICY oauth_sessions_user_access ON oauth_sessions
     FOR ALL TO breeze_app
-    USING (account_id IS NULL OR account_id = breeze_current_user_id() OR breeze_current_scope() = 'system')
-    WITH CHECK (account_id IS NULL OR account_id = breeze_current_user_id() OR breeze_current_scope() = 'system');
+    USING (breeze_current_scope() = 'system' OR account_id = breeze_current_user_id())
+    WITH CHECK (breeze_current_scope() = 'system' OR account_id = breeze_current_user_id());
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -78,12 +76,10 @@ DO $$ BEGIN
     FOR ALL TO breeze_app
     USING (
       breeze_current_scope() = 'system'
-      OR partner_id IS NULL
       OR breeze_has_partner_access(partner_id)
     )
     WITH CHECK (
       breeze_current_scope() = 'system'
-      OR partner_id IS NULL
       OR breeze_has_partner_access(partner_id)
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;

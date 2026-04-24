@@ -136,6 +136,24 @@ describe('oauthRoutes rate limits', () => {
     expect(rateLimiter).toHaveBeenLastCalledWith(null, 'oauth:token:ip:203.0.113.35', 60, 60);
   });
 
+  it('rate-limits POST /oauth/token/revocation by IP', async () => {
+    const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
+    const app = await importApp(rateLimiter);
+
+    const res = await app.request('/oauth/token/revocation', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-forwarded-for': '203.0.113.37',
+      },
+      body: new URLSearchParams({ token: 'opaque-token', client_id: 'client-1' }),
+    });
+
+    expect(res.status).toBe(429);
+    await expect(res.json()).resolves.toEqual({ error: 'rate_limited' });
+    expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:revocation:ip:203.0.113.37', 60, 60);
+  });
+
   it('keys GET /oauth/auth by IP and rate-limits at 20/minute', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
     const app = await importApp(rateLimiter);

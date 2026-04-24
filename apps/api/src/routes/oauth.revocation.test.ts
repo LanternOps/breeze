@@ -76,6 +76,13 @@ const post = (app: Hono, body: Record<string, string>) =>
     body: new URLSearchParams(body),
   });
 
+const postRaw = (app: Hono, body: string) =>
+  app.request('/oauth/token/revocation', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+
 describe('POST /oauth/token/revocation pre-handler — JWT signature gating', () => {
   beforeEach(() => {
     clearEnv();
@@ -180,6 +187,20 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     const res = await post(h.app, { token, client_id: 'client-A' });
 
     expect(res.status).toBe(503);
+  });
+
+  it('rejects oversized revocation bodies before provider bridge or cache writes', async () => {
+    const h = await importHarness();
+    const oversized = `token=${'a'.repeat(70 * 1024)}&client_id=client-A`;
+
+    const res = await postRaw(h.app, oversized);
+
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('invalid_request');
+    expect(h.providerCalled()).toBe(0);
+    expect(h.revokeJti).not.toHaveBeenCalled();
+    expect(h.revokeGrant).not.toHaveBeenCalled();
   });
 
   it('falls through to bridge for opaque (non three-part) refresh tokens', async () => {
