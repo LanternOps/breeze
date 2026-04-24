@@ -9,7 +9,13 @@ import {
   oauthRefreshTokens,
   oauthSessions,
 } from '../db/schema';
-import { revokeJti } from './revocationCache';
+import { revokeGrant, revokeJti } from './revocationCache';
+
+// Grant-revocation marker TTL must outlive the longest-lived access token
+// minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
+// provider.ts (we'd import it but provider.ts already imports from this
+// file, and pulling in the whole provider module here would cycle).
+const GRANT_REVOCATION_TTL_SECONDS = 600;
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -337,6 +343,7 @@ export class BreezeOidcAdapter {
   private async cacheRevocation(id: string): Promise<void> {
     try {
       let exp: number | undefined;
+      let grantId: string | undefined;
       if (this.model === 'RefreshToken') {
         const row = await asSystem(async () => {
           const [r] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
@@ -345,6 +352,15 @@ export class BreezeOidcAdapter {
         if (row) {
           const payloadExp = (row.payload as { exp?: number } | null)?.exp;
           exp = typeof payloadExp === 'number' ? payloadExp : Math.floor(row.expiresAt.getTime() / 1000);
+          // RefreshToken payload carries grantId — cache the grant-wide
+          // marker too so every access JWT minted from this grant is
+          // immediately rejected by bearer middleware. Without this the
+          // access tokens (separate jtis) would survive until natural
+          // 10-minute expiry.
+          const payloadGrantId = (row.payload as { grantId?: string } | null)?.grantId;
+          if (typeof payloadGrantId === 'string' && payloadGrantId.length > 0) {
+            grantId = payloadGrantId;
+          }
         }
       } else {
         // AccessToken lives in the in-memory store; pull exp directly.
@@ -359,12 +375,22 @@ export class BreezeOidcAdapter {
       if (exp === undefined) return; // nothing to cache
       const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
       await revokeJti(id, ttl);
+      if (grantId) {
+        await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
+      }
     } catch (err) {
       console.error('[oauth] revocation cache write failed', err);
     }
   }
 
   async revokeByGrantId(grantId: string): Promise<void> {
+    // Mark the grant revoked in the cache FIRST so any in-flight bearer
+    // checks immediately reject. Then mark every refresh token revoked in
+    // the DB (so the next refresh-token grant exchange fails with
+    // "invalid_grant" rather than minting a fresh access token).
+    await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS).catch((err) => {
+      console.error('[oauth] grant revocation cache write failed', err);
+    });
     return asSystem(async () => {
       await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(sql`payload->>'grantId' = ${grantId}`);
     });

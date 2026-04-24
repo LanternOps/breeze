@@ -7,12 +7,17 @@ import { revokeJti } from './revocationCache';
 
 let providerInstance: Provider | null = null;
 
+// Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
+// grant-revocation cache marker (see revocationCache.revokeGrant) so the
+// marker outlives every JWT derived from the grant.
+export const ACCESS_TOKEN_TTL_SECONDS = 600;
+
 export async function buildExtraTokenClaims(
   ctx: any,
   _token: any,
-): Promise<{ partner_id: string | null; org_id: string | null }> {
+): Promise<{ partner_id: string | null; org_id: string | null; grant_id: string | null }> {
   const grant: any = ctx.oidc?.entities?.Grant;
-  if (!grant) return { partner_id: null, org_id: null };
+  if (!grant) return { partner_id: null, org_id: null, grant_id: null };
   // The Grant instance's id is on `.jti` (oidc-provider's BaseToken sets jti
   // on every persisted entity). We can't read meta off `grant.breeze` because
   // Grant.IN_PAYLOAD doesn't include `breeze`, so unknown fields are dropped
@@ -30,6 +35,11 @@ export async function buildExtraTokenClaims(
   return {
     partner_id: meta.partner_id ?? null,
     org_id: meta.org_id ?? null,
+    // Surface the Grant id as a top-level JWT claim so bearer middleware can
+    // check it against the grant-revocation cache. Without this, revoking a
+    // refresh token (or deleting a connected app) would not invalidate the
+    // ~10-minute access tokens already minted from the same grant.
+    grant_id: grantId ?? null,
   };
 }
 
@@ -109,7 +119,7 @@ export async function getProvider(): Promise<Provider> {
         getResourceServerInfo: (_ctx: any, resource: string) => ({
           scope: 'mcp:read mcp:write',
           accessTokenFormat: 'jwt' as const,
-          accessTokenTTL: 600,
+          accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
           audience: resource,
           jwt: { sign: { alg: 'EdDSA' as const } },
         }),
@@ -121,7 +131,7 @@ export async function getProvider(): Promise<Provider> {
     // dropped `plain`); pass only `required`.
     pkce: { required: () => true },
     ttl: {
-      AccessToken: 600,
+      AccessToken: ACCESS_TOKEN_TTL_SECONDS,
       AuthorizationCode: 600,
       RefreshToken: 60 * 24 * 60 * 60,
       Session: 14 * 24 * 60 * 60,

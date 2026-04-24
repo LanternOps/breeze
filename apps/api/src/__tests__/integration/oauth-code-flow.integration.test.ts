@@ -330,6 +330,141 @@ describe.skipIf(!SHOULD_RUN)('OAuth 2.1 code flow end-to-end', () => {
     expect(mcpAfterRevoke.status).toBe(401);
   }, 60_000);
 
+  it('revoking one access token kills every sibling access JWT under the same Grant', async () => {
+    // Defect 1 (2026-04-24): previously, POST /oauth/token/revocation with
+    // a token only revoked that one jti. A client holding multiple access
+    // tokens from the same Grant (e.g. via refresh-token rotation, or
+    // multiple workers) could keep using the un-revoked siblings until
+    // natural ~10-min expiry — wrong for "Revoke" UX.
+    //
+    // Fix: the JWT revocation pre-handler in routes/oauth.ts AND the
+    // adapter's destroy()/revokeByGrantId paths now write a grant-wide
+    // marker into Redis. Bearer middleware checks both the per-jti marker
+    // AND the per-grant marker; either match → 401.
+    //
+    // Test plan: mint two access tokens for the same grant by running the
+    // initial code exchange + a refresh-token exchange. Revoke ONE of
+    // them via /oauth/token/revocation. Both should now fail.
+    const baseUrl = live.url;
+
+    const partner = await createPartner({ name: `OAuth Grant Revoke ${Date.now()}` });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, email: `grantrevoke-${Date.now()}@example.com` });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const dashboardJwt = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: false,
+    });
+
+    const redirectUri = 'https://example.com/cb-grant';
+    const client = await dcr(baseUrl, redirectUri);
+    const verifier = b64url(randomBytes(32));
+    const challenge = b64url(createHash('sha256').update(verifier).digest());
+    const authParams = new URLSearchParams({
+      response_type: 'code',
+      client_id: client.client_id,
+      redirect_uri: redirectUri,
+      scope: 'openid offline_access mcp:read mcp:write',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      resource: process.env.OAUTH_RESOURCE_URL!,
+      state: 'grant-revoke-test',
+    });
+    const authRes = await fetch(`${baseUrl}/oauth/auth?${authParams}`, { redirect: 'manual' });
+    const uid = new URL(authRes.headers.get('location') ?? '', baseUrl).searchParams.get('uid');
+    const cookieJar = (authRes.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
+
+    const consentRes = await fetch(`${baseUrl}/api/v1/oauth/interaction/${uid}/consent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dashboardJwt}` },
+      body: JSON.stringify({ partner_id: partner.id, approve: true }),
+    });
+    const consentBody = await consentRes.json() as { redirectTo: string };
+    const resumeRes = await fetch(consentBody.redirectTo, { redirect: 'manual', headers: { cookie: cookieJar } });
+    const code = new URL(resumeRes.headers.get('location') ?? '').searchParams.get('code');
+
+    const tokenRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: code!,
+        client_id: client.client_id,
+        code_verifier: verifier,
+        redirect_uri: redirectUri,
+        resource: process.env.OAUTH_RESOURCE_URL!,
+      }),
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokenBody = await tokenRes.json() as { access_token: string; refresh_token: string };
+
+    // Mint a sibling access token by exchanging the refresh token. Both
+    // tokens share the same grant_id but have distinct jtis.
+    const refreshRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: tokenBody.refresh_token,
+        client_id: client.client_id,
+        resource: process.env.OAUTH_RESOURCE_URL!,
+      }),
+    });
+    expect(refreshRes.status).toBe(200);
+    const refreshBody = await refreshRes.json() as { access_token: string };
+
+    // Sanity: both access tokens carry the SAME grant_id (without it the
+    // bearer middleware has no way to consult the grant-revocation cache).
+    const claimsA = decodeJwt(tokenBody.access_token);
+    const claimsB = decodeJwt(refreshBody.access_token);
+    const grantA = (claimsA as { grant_id?: unknown }).grant_id;
+    const grantB = (claimsB as { grant_id?: unknown }).grant_id;
+    expect(typeof grantA).toBe('string');
+    expect(grantB).toBe(grantA);
+    expect(claimsA.jti).not.toBe(claimsB.jti);
+
+    // Both tokens work to begin with.
+    for (const tok of [tokenBody.access_token, refreshBody.access_token]) {
+      const r = await fetch(`${baseUrl}/api/v1/mcp/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      expect(r.status).toBe(200);
+    }
+
+    // Revoke ONLY the FIRST access token. The JWT revocation pre-handler
+    // in routes/oauth.ts caches the jti AND the grant_id marker.
+    const revokeRes = await fetch(`${baseUrl}/oauth/token/revocation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: tokenBody.access_token,
+        token_type_hint: 'access_token',
+        client_id: client.client_id,
+      }),
+    });
+    expect(revokeRes.status).toBe(200);
+
+    // (We could also assert the FIRST access token returns 401 — but that
+    // is the per-jti revocation path, already covered by the main test.)
+
+    // The SECOND access token (whose jti was NEVER touched) must now also
+    // be rejected — proves the bearer middleware consulted the grant-wide
+    // marker, not just the per-jti cache.
+    const siblingAfter = await fetch(`${baseUrl}/api/v1/mcp/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${refreshBody.access_token}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(siblingAfter.status).toBe(401);
+  }, 60_000);
+
   it('mints an access token whose signature verifies against /.well-known/jwks.json', async () => {
     // Sanity check the discovery + JWKS endpoints. If this fails the bearer
     // middleware's JWKS cache would be the wrong shape.

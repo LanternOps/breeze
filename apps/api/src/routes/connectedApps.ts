@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth';
 import { db } from '../db';
 import { oauthClients, oauthRefreshTokens } from '../db/schema';
-import { revokeJti } from '../oauth/revocationCache';
+import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 import { MCP_OAUTH_ENABLED } from '../config/env';
 
 export const connectedAppsRoutes = new Hono();
@@ -57,19 +57,43 @@ if (MCP_OAUTH_ENABLED) {
       .where(and(eq(oauthRefreshTokens.clientId, clientId), eq(oauthRefreshTokens.partnerId, partnerId)));
 
     const now = new Date();
+    // Track unique grant ids so we only write each grant marker once per
+    // delete (a connected app may have many active refresh tokens, all
+    // pointing at the same Grant after rotation).
+    const seenGrants = new Set<string>();
+    // Grant-revocation marker TTL must outlive every access JWT minted under
+    // the grant. Mirrors ACCESS_TOKEN_TTL_SECONDS in oauth/provider.ts.
+    const ACCESS_TOKEN_TTL_SECONDS = 600;
+
     for (const token of tokens) {
       await db.update(oauthRefreshTokens)
         .set({ revokedAt: now })
         .where(eq(oauthRefreshTokens.id, token.id));
 
-      const jti = (token.payload as { jti?: string } | null)?.jti;
-      if (!jti) continue;
+      const payload = token.payload as { jti?: string; grantId?: string } | null;
+      const jti = payload?.jti;
+      const grantId = payload?.grantId;
 
-      const ttl = Math.ceil((new Date(token.expiresAt).getTime() - Date.now()) / 1000);
-      try {
-        await revokeJti(jti, Math.max(ttl, 1));
-      } catch (err) {
-        console.error('[oauth] connected-app revocation cache write failed', err);
+      if (jti) {
+        const ttl = Math.ceil((new Date(token.expiresAt).getTime() - Date.now()) / 1000);
+        try {
+          await revokeJti(jti, Math.max(ttl, 1));
+        } catch (err) {
+          console.error('[oauth] connected-app jti revocation cache write failed', err);
+        }
+      }
+
+      // Mark the entire grant revoked too so any access JWTs already in
+      // flight (separate jtis derived from the same grant) are immediately
+      // rejected by bearer middleware. Without this the access tokens
+      // would survive until natural 10-minute expiry.
+      if (grantId && !seenGrants.has(grantId)) {
+        seenGrants.add(grantId);
+        try {
+          await revokeGrant(grantId, ACCESS_TOKEN_TTL_SECONDS);
+        } catch (err) {
+          console.error('[oauth] connected-app grant revocation cache write failed', err);
+        }
       }
     }
 

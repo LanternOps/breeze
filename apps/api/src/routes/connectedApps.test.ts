@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   select: vi.fn(),
   update: vi.fn(),
   revokeJti: vi.fn(async () => undefined),
+  // revokeGrant is called in addition to revokeJti so that revoking a
+  // connected app immediately kills every in-flight access JWT minted from
+  // the same Grant (without waiting for natural 10-minute expiry).
+  revokeGrant: vi.fn(async () => undefined),
   eq: vi.fn((left: unknown, right: unknown) => ({ op: 'eq', left, right })),
   and: vi.fn((...conditions: unknown[]) => ({ op: 'and', conditions })),
 }));
@@ -29,6 +33,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../oauth/revocationCache', () => ({
   revokeJti: mocks.revokeJti,
+  revokeGrant: mocks.revokeGrant,
 }));
 
 function resetAuth(partnerId: string | null = 'current-partner') {
@@ -229,11 +234,43 @@ describe('connectedAppsRoutes', () => {
 
     expect(res.status).toBe(204);
     expect(revokeUpdate.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
+    // The log prefix is now scoped to which cache write failed — jti or
+    // grant — because the DELETE handler writes both markers (jti for the
+    // specific refresh token + grant for every access JWT under that grant).
     expect(errorSpy).toHaveBeenCalledWith(
-      '[oauth] connected-app revocation cache write failed',
+      '[oauth] connected-app jti revocation cache write failed',
       expect.any(Error)
     );
     errorSpy.mockRestore();
+  });
+
+  it('cache-revokes the entire Grant (deduped) for every refresh token with grantId', async () => {
+    // Two refresh tokens share grant-A (rotated), one is grant-B, one has
+    // no grantId. We expect revokeGrant to be called exactly twice (one per
+    // unique grant) — the dedup matters because rotation can produce many
+    // refresh-token rows for the same grant and we don't want to thrash
+    // Redis with redundant SETs.
+    queueSelect([{ id: 'client-1', disabledAt: null }], 'limit');
+    queueUpdate();
+    queueSelect([
+      { id: 'rt-1', payload: { jti: 'jti-1', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-2', payload: { jti: 'jti-2', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-3', payload: { jti: 'jti-3', grantId: 'grant-B' }, expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-4', payload: { jti: 'jti-4' }, expiresAt: new Date(Date.now() + 60_000) },
+    ]);
+    queueUpdate();
+    queueUpdate();
+    queueUpdate();
+    queueUpdate();
+
+    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(204);
+    expect(mocks.revokeGrant).toHaveBeenCalledTimes(2);
+    expect(mocks.revokeGrant).toHaveBeenCalledWith('grant-A', expect.any(Number));
+    expect(mocks.revokeGrant).toHaveBeenCalledWith('grant-B', expect.any(Number));
   });
 
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {

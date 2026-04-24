@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
 import { OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { withDbAccessContext } from '../db';
-import { isJtiRevoked } from '../oauth/revocationCache';
+import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 
 interface OAuthApiKeyContext {
   id: string;
@@ -66,7 +66,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!auth.startsWith('Bearer ')) throw new HTTPException(401, { message: 'missing bearer token' });
 
   const token = auth.slice(7);
-  let payload: JWTPayload & { partner_id?: string | null; org_id?: string | null; scope?: string };
+  let payload: JWTPayload & {
+    partner_id?: string | null;
+    org_id?: string | null;
+    grant_id?: string | null;
+    scope?: string;
+  };
 
   try {
     const result: JWTVerifyResult = await jwtVerify(token, getJwks(), {
@@ -89,6 +94,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   }
 
   if (typeof payload.jti === 'string' && await isJtiRevoked(payload.jti)) {
+    throw new HTTPException(401, { message: 'token revoked' });
+  }
+  // Grant-wide revocation: when a refresh token is revoked or a connected app
+  // is deleted, every access JWT minted from the same Grant must die. The
+  // grant_id claim is set by buildExtraTokenClaims (see oauth/provider.ts).
+  if (typeof payload.grant_id === 'string' && await isGrantRevoked(payload.grant_id)) {
     throw new HTTPException(401, { message: 'token revoked' });
   }
   if (!payload.partner_id || !payload.sub) {

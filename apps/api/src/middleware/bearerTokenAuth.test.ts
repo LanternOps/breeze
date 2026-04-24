@@ -25,6 +25,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../oauth/revocationCache', () => ({
   isJtiRevoked: vi.fn().mockResolvedValue(false),
+  isGrantRevoked: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('jose', async () => {
@@ -40,7 +41,7 @@ vi.mock('jose', async () => {
 
 import { importJWK, jwtVerify, type JWK } from 'jose';
 import { withDbAccessContext } from '../db';
-import { isJtiRevoked } from '../oauth/revocationCache';
+import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { generateTestKeypair, signTestJwt, type TestKeypair } from '../oauth/testHelpers';
 import { _resetJwksCacheForTests, bearerTokenAuthMiddleware } from './bearerTokenAuth';
 
@@ -100,6 +101,7 @@ describe('bearerTokenAuthMiddleware', () => {
     envState.issuer = issuer;
     envState.resourceUrl = audience;
     vi.mocked(isJtiRevoked).mockResolvedValue(false);
+    vi.mocked(isGrantRevoked).mockResolvedValue(false);
   });
 
   it('fails fast when OAuth issuer and resource URL are not configured', async () => {
@@ -183,6 +185,25 @@ describe('bearerTokenAuthMiddleware', () => {
 
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'token revoked');
     expect(isJtiRevoked).toHaveBeenCalledWith('revoked-jti');
+  });
+
+  it('rejects a valid token whose Grant has been revoked, even if the jti itself is not revoked', async () => {
+    // The grant-wide revocation path is what makes "Revoke" on a connected
+    // app or POST /oauth/token/revocation with a refresh token actually kill
+    // every in-flight access JWT minted under the same Grant. Without this
+    // check the access tokens would survive until natural ~10-minute expiry.
+    vi.mocked(isJtiRevoked).mockResolvedValue(false);
+    vi.mocked(isGrantRevoked).mockResolvedValue(true);
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      jti: 'still-valid-jti',
+      grant_id: 'revoked-grant',
+    });
+
+    await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'token revoked');
+    expect(isGrantRevoked).toHaveBeenCalledWith('revoked-grant');
   });
 
   it('rejects a token missing partner_id', async () => {

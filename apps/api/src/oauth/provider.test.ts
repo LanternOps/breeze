@@ -10,6 +10,7 @@ describe('buildExtraTokenClaims', () => {
     await expect(buildExtraTokenClaims({ oidc: { entities: {} } }, {})).resolves.toEqual({
       partner_id: null,
       org_id: null,
+      grant_id: null,
     });
   });
 
@@ -17,30 +18,35 @@ describe('buildExtraTokenClaims', () => {
     await expect(buildExtraTokenClaims({ oidc: { entities: { Grant: {} } } }, {})).resolves.toEqual({
       partner_id: null,
       org_id: null,
+      grant_id: null,
     });
   });
 
-  it('returns tenant claims from grant.breeze', async () => {
+  it('returns tenant claims from grant.breeze and the grant id from grant.jti', async () => {
     await expect(
       buildExtraTokenClaims(
-        { oidc: { entities: { Grant: { breeze: { partner_id: 'p1', org_id: 'o1' } } } } },
+        { oidc: { entities: { Grant: { jti: 'grant-1', breeze: { partner_id: 'p1', org_id: 'o1' } } } } },
         {},
       ),
-    ).resolves.toEqual({ partner_id: 'p1', org_id: 'o1' });
+    ).resolves.toEqual({ partner_id: 'p1', org_id: 'o1', grant_id: 'grant-1' });
   });
 
-  it('returns null for missing partial tenant claims', async () => {
+  it('returns null for missing partial tenant claims (still surfaces grant_id)', async () => {
     await expect(
-      buildExtraTokenClaims({ oidc: { entities: { Grant: { breeze: { partner_id: 'p1' } } } } }, {}),
-    ).resolves.toEqual({ partner_id: 'p1', org_id: null });
+      buildExtraTokenClaims({ oidc: { entities: { Grant: { jti: 'grant-2', breeze: { partner_id: 'p1' } } } } }, {}),
+    ).resolves.toEqual({ partner_id: 'p1', org_id: null, grant_id: 'grant-2' });
   });
 
-  it('does not project any other grant fields', async () => {
+  it('does not project any other grant fields beyond partner_id, org_id, grant_id', async () => {
+    // grant_id is now also surfaced (added 2026-04-24 so bearer middleware can
+    // check the grant-revocation cache and reject every access JWT minted
+    // under a revoked grant). Aside from that the projection stays narrow.
     const claims = await buildExtraTokenClaims(
       {
         oidc: {
           entities: {
             Grant: {
+              jti: 'grant-3',
               breeze: { partner_id: 'p1', org_id: 'o1', role: 'admin' },
               accountId: 'user-1',
             },
@@ -50,8 +56,8 @@ describe('buildExtraTokenClaims', () => {
       {},
     );
 
-    expect(claims).toEqual({ partner_id: 'p1', org_id: 'o1' });
-    expect(Object.keys(claims).sort()).toEqual(['org_id', 'partner_id']);
+    expect(claims).toEqual({ partner_id: 'p1', org_id: 'o1', grant_id: 'grant-3' });
+    expect(Object.keys(claims).sort()).toEqual(['grant_id', 'org_id', 'partner_id']);
   });
 });
 

@@ -3,7 +3,7 @@ import type { HttpBindings } from '@hono/node-server';
 import { decodeJwt } from 'jose';
 import { getProvider } from '../oauth/provider';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
-import { revokeJti } from '../oauth/revocationCache';
+import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 // Import getRedis/rateLimiter from their specific modules (NOT the services
 // barrel) to avoid pulling in the rest of services/index.ts at module load —
 // barrel re-exports include modules with side effects (eventBus,
@@ -93,6 +93,16 @@ if (MCP_OAUTH_ENABLED) {
       if (!jti || !exp) return next();
       const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
       await revokeJti(jti, ttl);
+      // Revoking an access JWT should also kill every sibling access token
+      // minted from the same grant. Without this, a client that holds two
+      // active access tokens for the same grant (e.g. one in the helper,
+      // one in a worker) could continue using the un-revoked one.
+      const grantId = (payload as { grant_id?: unknown }).grant_id;
+      if (typeof grantId === 'string' && grantId.length > 0) {
+        await revokeGrant(grantId, ttl).catch((err) => {
+          console.warn('[oauth] grant revocation cache write failed (continuing)', err);
+        });
+      }
       return c.body(null, 200);
     } catch (err) {
       console.warn('[oauth] revocation pre-handler error (continuing to bridge)', err);
