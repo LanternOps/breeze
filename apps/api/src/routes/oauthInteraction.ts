@@ -102,60 +102,81 @@ if (MCP_OAUTH_ENABLED) {
     });
     if (!hasAccess) throw new HTTPException(403, { message: 'not a member of this partner' });
 
-    // The provider may emit multiple prompts in sequence (login → consent).
-    // Build the result based on which one we're responding to. The UI
-    // submits a single Approve; if the resume yields another prompt, the
-    // consent page reloads and the user clicks again.
-    const promptName = details.prompt.name as string;
-    const result: Record<string, unknown> = {};
-
-    if (promptName === 'login') {
-      // Login prompt: the provider just needs to know which account is
-      // logged in for this OIDC session. No Grant required yet.
-      result.login = { accountId: userId };
-    } else if (promptName === 'consent') {
-      // Consent prompt: build a Grant with all missing scopes (per
-      // promptDetails.missingOIDCScope and missingResourceScopes), bind
-      // it to the chosen partner via grant.breeze, then submit grantId.
-      const grant = new (provider.Grant as any)({
-        accountId: userId,
-        clientId: details.params.client_id as string,
-      });
-      const promptDetails = (details.prompt.details as any) ?? {};
-      const missingOidcScopes = (promptDetails.missingOIDCScope as string[] | undefined)
-        ?? (promptDetails.scopes?.new as string[] | undefined)
-        ?? [];
-      if (missingOidcScopes.length) grant.addOIDCScope(missingOidcScopes.join(' '));
-
-      const missingResourceScopes = (promptDetails.missingResourceScopes as Record<string, string[]> | undefined) ?? {};
-      for (const [res, scopes] of Object.entries(missingResourceScopes)) {
-        grant.addResourceScope(res, scopes.join(' '));
-      }
-      // Defensive fallback when prompt didn't list the resource explicitly.
-      if (resource && !missingResourceScopes[resource]) {
-        grant.addResourceScope(resource, 'mcp:read mcp:write');
-      }
-
-      grant.breeze = { partner_id: body.partner_id, org_id: orgId };
-      const grantId = await grant.save();
-
-      await asSystem(async () => {
-        await db.update(oauthClients)
-          .set({ partnerId: body.partner_id })
-          .where(eq(oauthClients.id, details.params.client_id as string));
-      });
-
-      result.consent = { grantId };
-    } else {
-      throw new HTTPException(400, { message: `unsupported prompt type: ${promptName}` });
+    const app = (provider as any).app;
+    const koaCtx = typeof app.createContext === 'function'
+      ? app.createContext(c.env.incoming, c.env.outgoing)
+      : app.context(c.env.incoming, c.env.outgoing);
+    const sessionCookieName = (provider as any).cookieName('session');
+    const existingSessionUid = koaCtx.cookies.get(sessionCookieName, { signed: true });
+    let session = existingSessionUid
+      ? await (provider as any).Session.findByUid(existingSessionUid)
+      : null;
+    if (!session) {
+      session = new (provider as any).Session({});
     }
+    if (!session.accountId) {
+      if (typeof session.loginAccount === 'function') {
+        session.loginAccount({ accountId: userId });
+      } else {
+        session.accountId = userId;
+      }
+    }
+    await session.save(14 * 24 * 60 * 60);
+    koaCtx.cookies.set(
+      sessionCookieName,
+      session.uid,
+      { signed: true, path: '/', httpOnly: true, sameSite: 'lax', overwrite: true },
+    );
+
+    const grant = new (provider as any).Grant({
+      accountId: userId,
+      clientId: details.params.client_id as string,
+    });
+    const promptDetails = (details.prompt.details as any) ?? {};
+    const missingOidcScopes =
+      (promptDetails.missingOIDCScope as string[] | undefined) ??
+      (promptDetails.scopes?.new as string[] | undefined) ??
+      [];
+    if (missingOidcScopes.length) grant.addOIDCScope(missingOidcScopes.join(' '));
+
+    const missingResourceScopes =
+      (promptDetails.missingResourceScopes as Record<string, string[]> | undefined) ?? {};
+    for (const [res, scopes] of Object.entries(missingResourceScopes)) {
+      grant.addResourceScope(res, scopes.join(' '));
+    }
+    // Defensive fallback when prompt didn't list the resource explicitly.
+    if (resource && !missingResourceScopes[resource]) {
+      grant.addResourceScope(resource, 'mcp:read mcp:write');
+    }
+
+    const requestedScopes = (details.params.scope as string | undefined)?.split(' ') ?? [];
+    const oidcOnly = requestedScopes.filter((scope) => ['openid', 'offline_access'].includes(scope));
+    if (oidcOnly.length) grant.addOIDCScope(oidcOnly.join(' '));
+    if (resource) {
+      const requestedResourceScopes = requestedScopes.filter((scope) => scope.startsWith('mcp:'));
+      if (requestedResourceScopes.length) {
+        grant.addResourceScope(resource, requestedResourceScopes.join(' '));
+      }
+    }
+
+    grant.breeze = { partner_id: body.partner_id, org_id: orgId };
+    const grantId = await grant.save();
+
+    await asSystem(async () => {
+      await db.update(oauthClients)
+        .set({ partnerId: body.partner_id })
+        .where(eq(oauthClients.id, details.params.client_id as string));
+    });
 
     // We can't use provider.interactionResult(req, res, ...) here for the
     // same reason we don't use interactionDetails(): it reads the UID from
     // the _interaction cookie, which can lag the URL by one step in a
     // multi-prompt flow (login → consent). Set the result on the
     // interaction directly and return the canonical resume URL.
-    (details as any).result = result;
+    (details as any).result = {
+      login: { accountId: userId },
+      consent: { grantId },
+    };
     await (details as any).save((details as any).exp - Math.floor(Date.now() / 1000));
     const redirectTo = `${OAUTH_ISSUER}/oauth/auth/${details.uid}`;
     return c.json({ redirectTo });
