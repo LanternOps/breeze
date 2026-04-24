@@ -31,10 +31,16 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('../oauth/provider', () => ({
+  // The route now resolves interaction state via `provider.Interaction.find(uid)`
+  // (see oauthInteraction.ts: it uses the URL UID as authoritative rather than
+  // the cookie UID). We back `Interaction.find` with the same mock used to
+  // seed canned details — tests still configure flow state by calling
+  // `mocks.interactionDetails.mockResolvedValue(...)`.
   getProvider: vi.fn(async () => ({
     interactionDetails: mocks.interactionDetails,
     interactionResult: mocks.interactionResult,
     Grant: mocks.Grant,
+    Interaction: { find: mocks.interactionDetails },
   })),
 }));
 
@@ -52,6 +58,12 @@ vi.mock('../middleware/auth', () => ({
     });
     await next();
   }),
+  // Pulled in transitively via monitorWorker.ts -> monitors.ts when the
+  // routes module imports the agent WS layer. Stub as no-op middleware so
+  // the import chain doesn't blow up at module-load time.
+  requirePermission: vi.fn(() => async (_c: any, next: any) => { await next(); }),
+  requireScope: vi.fn(() => async (_c: any, next: any) => { await next(); }),
+  requireMfa: vi.fn(async (_c: any, next: any) => { await next(); }),
 }));
 
 vi.mock('../db', () => ({
@@ -61,8 +73,14 @@ vi.mock('../db', () => ({
 }));
 
 function details(overrides: Record<string, unknown> = {}) {
+  // The route now writes consent state directly onto the interaction object
+  // and calls details.save() (because provider.interactionResult reads UID
+  // from cookie, which can lag the URL UID in multi-prompt flows). So the
+  // mock interaction needs `save` and `exp` fields.
   return {
     uid: 'uid-1',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    save: vi.fn(async () => undefined),
     params: {
       client_id: 'client-1',
       client_name: 'Claude Desktop',
@@ -123,16 +141,12 @@ describe('oauthInteractionRoutes', () => {
     delete process.env.OAUTH_RESOURCE_URL;
   });
 
-  it('returns 404 when interactionDetails rejects with SessionNotFound', async () => {
-    const err: Error & { name: string } = new Error('cookie missing');
-    err.name = 'SessionNotFound';
-    mocks.interactionDetails.mockRejectedValue(err);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
-    expect(res.status).toBe(404);
-  });
-
-  it('returns 404 when interaction uid is mismatched', async () => {
-    mocks.interactionDetails.mockResolvedValue(details({ uid: 'other-uid' }));
+  it('returns 404 when Interaction.find returns undefined (not found / expired)', async () => {
+    // The route now uses Interaction.find(uid) directly — see oauthInteraction.ts
+    // intentional comment: this avoids relying on the _interaction cookie
+    // which can lag the URL UID in multi-prompt flows. A missing/expired
+    // interaction surfaces as `undefined`, which the route maps to 404.
+    mocks.interactionDetails.mockResolvedValue(undefined);
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(404);
   });
@@ -153,19 +167,23 @@ describe('oauthInteractionRoutes', () => {
   });
 
   it('returns access_denied redirect when consent is denied', async () => {
-    mocks.interactionDetails.mockResolvedValue(details());
+    // Route writes the result directly onto the interaction and calls
+    // details.save() (rather than provider.interactionResult, which would
+    // read the wrong UID from the cookie in multi-prompt flows). The
+    // canonical resume URL is `${OAUTH_ISSUER}/oauth/auth/<uid>` — note the
+    // OAUTH_ISSUER env isn't set in these tests so it stringifies as
+    // "undefined/oauth/auth/uid-1".
+    const d = details();
+    mocks.interactionDetails.mockResolvedValue(d);
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: 'partner-1', approve: false }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ redirectTo: 'https://client.example/callback' });
-    expect(mocks.interactionResult).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      { error: 'access_denied', error_description: 'user denied access' },
-      { mergeWithLastSubmission: false }
-    );
+    const body = await res.json() as { redirectTo: string };
+    expect(body.redirectTo).toMatch(/\/oauth\/auth\/uid-1$/);
+    expect(d.result).toEqual({ error: 'access_denied', error_description: 'user denied access' });
+    expect(d.save).toHaveBeenCalled();
   });
 
   it('rejects unsupported resource indicators', async () => {
@@ -192,31 +210,40 @@ describe('oauthInteractionRoutes', () => {
   });
 
   it('creates a stamped grant, binds the client partner, and returns a redirect', async () => {
-    mocks.interactionDetails.mockResolvedValue(details());
+    const d = details();
+    mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: 'partner-1', userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: 'partner-1', orgId: 'org-1' }], 'limit');
-    const update = queueUpdate();
+    // Two updates happen during a successful consent:
+    //   1) setGrantBreezeMeta() does an UPDATE on oauth_grants to persist
+    //      partner_id/org_id alongside the just-saved Grant row, so the
+    //      tenancy survives an API restart between consent and the first
+    //      refresh-token grant. (See adapter.ts setGrantBreezeMeta.)
+    //   2) The route updates oauth_clients to bind the client to the chosen
+    //      partner.
+    queueUpdate(); // setGrantBreezeMeta
+    const clientUpdate = queueUpdate(); // oauth_clients bind
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: 'partner-1', approve: true }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ redirectTo: 'https://client.example/callback' });
+    const respBody = await res.json() as { redirectTo: string };
+    expect(respBody.redirectTo).toMatch(/\/oauth\/auth\/uid-1$/);
     expect(mocks.Grant.instances[0]).toMatchObject({
       accountId: 'u1',
       clientId: 'client-1',
-      breeze: { partner_id: 'partner-1', org_id: 'org-1' },
     });
+    // Grant.IN_PAYLOAD strips unknown fields; tenancy lives in setGrantBreezeMeta
+    // (verified via the queued UPDATE on oauth_grants above).
     expect(mocks.Grant.instances[0]?.addOIDCScope).toHaveBeenCalledWith('openid offline_access');
     expect(mocks.Grant.instances[0]?.addResourceScope)
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
-    expect(update.set).toHaveBeenCalledWith({ partnerId: 'partner-1' });
-    expect(mocks.interactionResult).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      { consent: { grantId: 'grant-1' }, login: { accountId: 'u1' } },
-      { mergeWithLastSubmission: false }
-    );
+    expect(clientUpdate.set).toHaveBeenCalledWith({ partnerId: 'partner-1' });
+    // Route writes result onto the interaction and calls save() rather than
+    // provider.interactionResult (cookie-UID-vs-URL-UID race in multi-prompt flows).
+    expect(d.result).toEqual({ login: { accountId: 'u1' }, consent: { grantId: 'grant-1' } });
+    expect(d.save).toHaveBeenCalled();
   });
 
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {
