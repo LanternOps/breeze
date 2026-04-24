@@ -62,6 +62,8 @@ export default function ConnectedAppsList() {
         return;
       }
       await load();
+    } catch (err) {
+      setStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Network error during revoke' });
     } finally {
       setRevoking(null);
     }

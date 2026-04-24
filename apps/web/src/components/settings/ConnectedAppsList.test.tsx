@@ -130,4 +130,16 @@ describe('ConnectedAppsList', () => {
 
     expect(await screen.findByText(/something exploded/)).toBeTruthy();
   });
+
+  it('surfaces a network error mid-revoke (rejected fetch) instead of bubbling', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ clients: sampleApps }))
+      .mockRejectedValueOnce(new Error('connection reset'));
+
+    render(<ConnectedAppsList />);
+    const revokeBtn = (await screen.findAllByRole('button', { name: /Revoke/ }))[0];
+    fireEvent.click(revokeBtn);
+
+    expect(await screen.findByText(/connection reset/)).toBeTruthy();
+  });
 });
