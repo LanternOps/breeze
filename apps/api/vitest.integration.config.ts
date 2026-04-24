@@ -15,6 +15,11 @@ export default defineConfig({
       // level and cannot coexist with setup.ts opening a real postgres
       // pool. It has its own dedicated runner at `vitest.config.rls.ts`.
       'src/__tests__/integration/rls.integration.test.ts',
+      // rls-coverage.integration.test.ts is a read-only pg_catalog inspection.
+      // It MUST NOT be hooked to setup.ts because setup.ts TRUNCATEs core
+      // tables on beforeEach — see vitest.config.rls-coverage.ts for its
+      // dedicated runner.
+      'src/__tests__/integration/rls-coverage.integration.test.ts',
       // auth.integration.test.ts has multiple pre-existing broken tests
       // that only surfaced now that setup.ts actually applies schema
       // via autoMigrate. The legacy /auth/register endpoint is a no-op,

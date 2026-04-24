@@ -36,36 +36,75 @@ process.env.NODE_ENV = 'test';
 // Safety guard: cleanupDatabase() runs TRUNCATE CASCADE on core tenant tables
 // (users, partners, organizations, sites, devices, sessions, ...) on beforeEach.
 // Running integration tests against a non-test database will wipe real data —
-// this has happened before. Refuse to proceed unless the database name is
-// explicitly allowlisted as a test DB. Override with BREEZE_ALLOW_NON_TEST_DB=1
-// only if you know what you're doing (e.g., a one-off diagnostic run that does
-// not call cleanupDatabase).
-const ALLOWED_TEST_DB_NAMES = new Set(['breeze_test']);
+// this has happened before. Multiple defenses, all of which must pass before
+// any postgres pool is opened OR any TRUNCATE runs:
+//
+//   1. Database name must be in the allowlist (default: 'breeze_test', plus
+//      anything ending in '_test' so per-feature test DBs work).
+//   2. Hostname must be local (localhost / 127.0.0.1 / breeze-postgres-test).
+//   3. Port must NOT be the default dev port (5432) — test stack uses 5433.
+//   4. Either NODE_ENV=test or BREEZE_TEST_DB_URL is explicitly set to the
+//      same URL as DATABASE_URL (operator opt-in), to make it impossible to
+//      accidentally wipe a dev DB by sourcing the wrong .env.
+//
+// The previous BREEZE_ALLOW_NON_TEST_DB=1 escape hatch has been removed: it
+// existed for "diagnostic runs that don't call cleanupDatabase", but no
+// in-tree caller actually uses that path, and the hatch made the wipe
+// possible with a single env flip.
+const ALLOWED_TEST_DB_NAME_RE = /^breeze_test(_[a-z0-9]+)?$/;
+const FORBIDDEN_PORTS = new Set(['5432']); // default dev/prod postgres port
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'breeze-postgres-test', 'postgres-test']);
 
-function extractDbName(connectionUrl: string): string {
+function parseDbUrl(connectionUrl: string): { dbName: string; host: string; port: string } | null {
   try {
-    return new URL(connectionUrl).pathname.replace(/^\//, '');
+    const u = new URL(connectionUrl);
+    return {
+      dbName: u.pathname.replace(/^\//, ''),
+      host: u.hostname,
+      port: u.port || '5432',
+    };
   } catch {
-    return '';
+    return null;
   }
 }
 
 function assertTestDatabase(connectionUrl: string, operation: string): void {
-  if (process.env.BREEZE_ALLOW_NON_TEST_DB === '1') {
-    return;
+  const parsed = parseDbUrl(connectionUrl);
+  if (!parsed) {
+    throw new Error(`Integration test ${operation} refused: could not parse connection URL "${connectionUrl}"`);
   }
-  const dbName = extractDbName(connectionUrl);
-  if (!ALLOWED_TEST_DB_NAMES.has(dbName)) {
+  const { dbName, host, port } = parsed;
+  const failures: string[] = [];
+
+  if (!ALLOWED_TEST_DB_NAME_RE.test(dbName)) {
+    failures.push(`database name "${dbName}" must match /^breeze_test(_[a-z0-9]+)?$/`);
+  }
+  if (FORBIDDEN_PORTS.has(port)) {
+    failures.push(`port "${port}" is the default dev/prod postgres port (test stack uses 5433)`);
+  }
+  if (!ALLOWED_HOSTS.has(host)) {
+    failures.push(`host "${host}" is not in the local-test allowlist (${Array.from(ALLOWED_HOSTS).join(', ')})`);
+  }
+
+  // Operator opt-in: even if everything above passes, require either NODE_ENV=test
+  // OR BREEZE_TEST_DB_URL pointing at this same URL. This makes it impossible
+  // to wipe a dev DB by accidentally exporting the wrong DATABASE_URL.
+  const nodeEnvOk = process.env.NODE_ENV === 'test';
+  const explicitOptIn = process.env.BREEZE_TEST_DB_URL === connectionUrl;
+  if (!nodeEnvOk && !explicitOptIn) {
+    failures.push(
+      `neither NODE_ENV=test nor BREEZE_TEST_DB_URL=${connectionUrl} is set (operator opt-in required)`
+    );
+  }
+
+  if (failures.length > 0) {
     throw new Error(
-      `Integration test ${operation} refused: DATABASE_URL points at database "${dbName}", ` +
-      `which is NOT in the allowed test DB list (${Array.from(ALLOWED_TEST_DB_NAMES).join(', ')}). ` +
-      `Integration tests run TRUNCATE CASCADE on core tables on beforeEach — running against a ` +
-      `non-test DB will wipe real data.\n\n` +
-      `To run integration tests locally:\n` +
+      `Integration test ${operation} refused — DATABASE_URL "${connectionUrl}" failed safety checks:\n` +
+      failures.map((f) => `  - ${f}`).join('\n') +
+      `\n\nIntegration tests run TRUNCATE CASCADE on core tables on beforeEach — running against ` +
+      `a non-test DB will wipe real data. To run locally:\n` +
       `  1. Start test containers: docker compose -f docker-compose.test.yml up -d\n` +
-      `  2. Unset any inherited DATABASE_URL so the default takes effect, OR set it explicitly:\n` +
-      `     DATABASE_URL=postgresql://breeze_test:breeze_test@localhost:5433/breeze_test pnpm test:integration\n\n` +
-      `Override (USE WITH EXTREME CARE): BREEZE_ALLOW_NON_TEST_DB=1`
+      `  2. Run: pnpm test:integration (which sets DATABASE_URL to the test stack)\n`
     );
   }
 }
