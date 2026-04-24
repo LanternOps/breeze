@@ -39,3 +39,24 @@ process.env.POSTGRES_PASSWORD ||= 'breeze_test';
 process.env.REDIS_URL ||= 'redis://localhost:6380';
 process.env.JWT_SECRET ||= 'test-jwt-secret-must-be-at-least-32-characters-long';
 process.env.NODE_ENV ||= 'test';
+
+// OAuth defaults for integration tests. The OAuth integration test
+// (oauth-code-flow.integration.test.ts) needs MCP_OAUTH_ENABLED=true plus
+// a deterministic JWKS so the in-process bearer middleware can verify
+// tokens minted by the in-process oidc-provider. The JWK below is a
+// throwaway Ed25519 keypair generated specifically for tests — never use
+// it for real signing.
+process.env.MCP_OAUTH_ENABLED ||= 'true';
+process.env.OAUTH_ISSUER ||= 'http://localhost:3001';
+process.env.OAUTH_RESOURCE_URL ||= 'http://localhost:3001/api/v1/mcp/message';
+process.env.OAUTH_CONSENT_URL_BASE ||= 'http://localhost:3000';
+process.env.OAUTH_COOKIE_SECRET ||= 'test-cookie-secret-must-be-at-least-32-characters-long';
+process.env.OAUTH_JWKS_PRIVATE_JWK ||= JSON.stringify({
+  crv: 'Ed25519',
+  d: 'i65-HB14z0XAmoTR-QqKUWfFXn5UQcNgXyY9vBmY8-A',
+  x: 'hZXoVEnGO7JlnBUvE8Jeb2X2ULW2AvMwt9KDNRQuwEE',
+  kty: 'OKP',
+  kid: 'test-eddsa-key',
+  alg: 'EdDSA',
+  use: 'sig',
+});
