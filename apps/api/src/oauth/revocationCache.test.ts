@@ -13,14 +13,14 @@ describe('revocationCache fail-closed', () => {
   it('returns true when redis.get rejects (Redis hiccup mid-call)', async () => {
     const throwing = { get: vi.fn().mockRejectedValue(new Error('connection lost')) };
     vi.resetModules();
-    vi.doMock('../services', () => ({ getRedis: () => throwing }));
+    vi.doMock('../services/redis', () => ({ getRedis: () => throwing }));
 
     const mod = await import('./revocationCache');
 
     await expect(mod.isJtiRevoked('jti-x')).resolves.toBe(true);
     expect(throwing.get).toHaveBeenCalledOnce();
 
-    vi.doUnmock('../services');
+    vi.doUnmock('../services/redis');
     vi.resetModules();
   });
 });

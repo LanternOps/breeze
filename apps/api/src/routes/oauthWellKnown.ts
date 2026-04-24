@@ -1,19 +1,8 @@
 import { Hono } from 'hono';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
-import { loadJwks } from '../oauth/keys';
+import { loadPublicJwks } from '../oauth/keys';
 
 export const wellKnownRoutes = new Hono();
-
-const PRIVATE_JWK_FIELDS = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'r', 't', 'k'] as const;
-
-function stripPrivateJwkFields(jwk: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(jwk)) {
-    if ((PRIVATE_JWK_FIELDS as readonly string[]).includes(k)) continue;
-    out[k] = v;
-  }
-  return out;
-}
 
 if (MCP_OAUTH_ENABLED) {
   wellKnownRoutes.get('/oauth-authorization-server', (c) => {
@@ -46,9 +35,8 @@ if (MCP_OAUTH_ENABLED) {
   });
 
   wellKnownRoutes.get('/jwks.json', async (c) => {
-    const jwks = await loadJwks();
-    const publicOnly = { keys: jwks.keys.map((k) => stripPrivateJwkFields(k as Record<string, unknown>)) };
+    const publicJwks = await loadPublicJwks();
     c.header('Cache-Control', 'public, max-age=300');
-    return c.json(publicOnly);
+    return c.json(publicJwks);
   });
 }

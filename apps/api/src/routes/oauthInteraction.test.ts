@@ -72,7 +72,14 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
 
-function details(overrides: Record<string, unknown> = {}) {
+function details(overrides: Record<string, unknown> = {}): {
+  uid: string;
+  exp: number;
+  save: ReturnType<typeof vi.fn>;
+  params: { client_id: string; client_name: string; resource: string };
+  prompt: { details: { scopes: { new: string[] } } };
+  result?: unknown;
+} {
   // The route now writes consent state directly onto the interaction object
   // and calls details.save() (because provider.interactionResult reads UID
   // from cookie, which can lag the URL UID in multi-prompt flows). So the

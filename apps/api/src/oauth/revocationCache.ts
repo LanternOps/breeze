@@ -1,4 +1,4 @@
-import { getRedis } from '../services';
+import { getRedis } from '../services/redis';
 
 const KEY = (jti: string) => `oauth:revoked:${jti}`;
 const GRANT_KEY = (grantId: string) => `oauth:revoked:grant:${grantId}`;

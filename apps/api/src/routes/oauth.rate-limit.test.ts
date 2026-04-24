@@ -17,8 +17,10 @@ const resetAt = new Date('2026-04-23T00:00:00.000Z');
 
 const importApp = async (rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 1, resetAt }))) => {
   process.env.MCP_OAUTH_ENABLED = 'true';
-  vi.doMock('../services', () => ({
+  vi.doMock('../services/redis', () => ({
     getRedis: vi.fn(() => null),
+  }));
+  vi.doMock('../services/rate-limit', () => ({
     rateLimiter,
   }));
   vi.doMock('../oauth/provider', () => ({
@@ -43,7 +45,8 @@ describe('oauthRoutes rate limits', () => {
 
   afterEach(() => {
     resetEnv();
-    vi.doUnmock('../services');
+    vi.doUnmock('../services/redis');
+    vi.doUnmock('../services/rate-limit');
     vi.doUnmock('../oauth/provider');
   });
 
@@ -162,8 +165,10 @@ describe('oauthRoutes rate limits', () => {
 
   it('does not attach the middleware when MCP_OAUTH_ENABLED is false', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    vi.doMock('../services', () => ({
+    vi.doMock('../services/redis', () => ({
       getRedis: vi.fn(() => null),
+    }));
+    vi.doMock('../services/rate-limit', () => ({
       rateLimiter,
     }));
     vi.resetModules();
