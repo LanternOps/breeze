@@ -131,5 +131,23 @@ export async function getProvider(): Promise<Provider> {
 
   providerInstance.proxy = true;
   (providerInstance as any).on('revocation.success', handleRevocationSuccess);
+  // Surface OIDC error events to stderr. These are otherwise swallowed by
+  // oidc-provider's debug() logging (only visible with DEBUG=oidc-provider:*),
+  // and the JSON error responses sent to clients deliberately omit the
+  // detail string for security — so without these listeners, on-call has
+  // no way to diagnose a 400/500 from the OAuth endpoints.
+  (providerInstance as any).on('server_error', (_ctx: any, err: any) => {
+    console.error('[oidc-provider] server_error', err?.stack ?? err);
+  });
+  (providerInstance as any).on('authorization.error', (_ctx: any, err: any) => {
+    console.error('[oidc-provider] authorization.error', err?.stack ?? err);
+  });
+  (providerInstance as any).on('grant.error', (_ctx: any, err: any) => {
+    console.error('[oidc-provider] grant.error', {
+      error: err?.error,
+      detail: err?.error_detail,
+      message: err?.message,
+    });
+  });
   return providerInstance;
 }

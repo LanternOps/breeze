@@ -102,32 +102,6 @@ if (MCP_OAUTH_ENABLED) {
     });
     if (!hasAccess) throw new HTTPException(403, { message: 'not a member of this partner' });
 
-    const app = (provider as any).app;
-    const koaCtx = typeof app.createContext === 'function'
-      ? app.createContext(c.env.incoming, c.env.outgoing)
-      : app.context(c.env.incoming, c.env.outgoing);
-    const sessionCookieName = (provider as any).cookieName('session');
-    const existingSessionUid = koaCtx.cookies.get(sessionCookieName, { signed: true });
-    let session = existingSessionUid
-      ? await (provider as any).Session.findByUid(existingSessionUid)
-      : null;
-    if (!session) {
-      session = new (provider as any).Session({});
-    }
-    if (!session.accountId) {
-      if (typeof session.loginAccount === 'function') {
-        session.loginAccount({ accountId: userId });
-      } else {
-        session.accountId = userId;
-      }
-    }
-    await session.save(14 * 24 * 60 * 60);
-    koaCtx.cookies.set(
-      sessionCookieName,
-      session.uid,
-      { signed: true, path: '/', httpOnly: true, sameSite: 'lax', overwrite: true },
-    );
-
     const grant = new (provider as any).Grant({
       accountId: userId,
       clientId: details.params.client_id as string,
@@ -149,13 +123,18 @@ if (MCP_OAUTH_ENABLED) {
       grant.addResourceScope(resource, 'mcp:read mcp:write');
     }
 
-    const requestedScopes = (details.params.scope as string | undefined)?.split(' ') ?? [];
-    const oidcOnly = requestedScopes.filter((scope) => ['openid', 'offline_access'].includes(scope));
-    if (oidcOnly.length) grant.addOIDCScope(oidcOnly.join(' '));
+    // Grant ALL requested scopes at BOTH the OIDC and resource level. The
+    // provider's consent prompt machinery checks `missingOIDCScope` against
+    // the OIDC grant set even for scopes that "logically" belong to a
+    // resource indicator (because they appear in the auth request's
+    // `scope` parameter). Granting them in both places means the consent
+    // prompt is auto-satisfied on resume.
+    const requestedScopes = (details.params.scope as string | undefined)?.split(' ').filter(Boolean) ?? [];
+    if (requestedScopes.length) grant.addOIDCScope(requestedScopes.join(' '));
     if (resource) {
-      const requestedResourceScopes = requestedScopes.filter((scope) => scope.startsWith('mcp:'));
-      if (requestedResourceScopes.length) {
-        grant.addResourceScope(resource, requestedResourceScopes.join(' '));
+      const resourceScopes = requestedScopes.filter((scope) => scope.startsWith('mcp:'));
+      if (resourceScopes.length) {
+        grant.addResourceScope(resource, resourceScopes.join(' '));
       }
     }
 

@@ -21,7 +21,10 @@ export const oauthAuthorizationCodes = pgTable('oauth_authorization_codes', {
   id: text('id').primaryKey(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   clientId: text('client_id').notNull().references(() => oauthClients.id, { onDelete: 'cascade' }),
-  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  // partner_id is nullable: oidc-provider mints auth codes without our
+  // partner concept (it's tracked on the long-lived Grant instead).
+  // See migration 2026-04-24-oauth-auth-codes-partner-nullable.sql.
+  partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
   payload: jsonb('payload').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),

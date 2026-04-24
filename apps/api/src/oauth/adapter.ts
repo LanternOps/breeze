@@ -141,7 +141,22 @@ export class BreezeOidcAdapter {
     });
   }
 
-  async findByUid(_uid: string): Promise<undefined> { return undefined; }
+  async findByUid(uid: string): Promise<OidcPayload | undefined> {
+    // oidc-provider's session-bound models (AuthorizationCode, AccessToken,
+    // RefreshToken) call Session.findByUid(uid) during token issuance to
+    // confirm the session that authorized the grant still exists. We persist
+    // Session payloads in the in-memory map keyed by jti, so we scan the
+    // store for a payload whose `uid` field matches. Sessions are short-
+    // lived (14 days TTL by config) and the store is small, so a linear
+    // scan is acceptable for the MVP.
+    const store = inMemory.get(this.model);
+    if (!store) return undefined;
+    for (const [, stored] of store) {
+      if (stored.expiresAt && stored.expiresAt < new Date()) continue;
+      if ((stored.payload as { uid?: unknown }).uid === uid) return stored.payload;
+    }
+    return undefined;
+  }
 
   async findByUserCode(_code: string): Promise<undefined> { return undefined; }
 }
