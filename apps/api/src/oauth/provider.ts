@@ -1,5 +1,5 @@
 import Provider from 'oidc-provider';
-import { OAUTH_COOKIE_SECRET, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { OAUTH_COOKIE_SECRET, OAUTH_CONSENT_URL_BASE, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { BreezeOidcAdapter } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
@@ -116,7 +116,8 @@ export async function getProvider(): Promise<Provider> {
       userinfo: '/oauth/me',
     },
     interactions: {
-      url: (_ctx: any, interaction: any) => `/oauth/consent?uid=${interaction.uid}`,
+      url: (_ctx: any, interaction: any) =>
+        `${OAUTH_CONSENT_URL_BASE}/oauth/consent?uid=${interaction.uid}`,
     },
   });
 
