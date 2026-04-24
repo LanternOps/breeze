@@ -7,6 +7,32 @@ import { revokeJti } from './revocationCache';
 
 let providerInstance: Provider | null = null;
 
+export async function buildExtraTokenClaims(
+  ctx: any,
+  _token: any,
+): Promise<{ partner_id: string | null; org_id: string | null }> {
+  const grant: any = ctx.oidc?.entities?.Grant;
+  if (!grant) return { partner_id: null, org_id: null };
+  const meta = grant.breeze ?? {};
+  return {
+    partner_id: meta.partner_id ?? null,
+    org_id: meta.org_id ?? null,
+  };
+}
+
+export function handleRevocationSuccess(
+  _ctx: any,
+  token: { jti?: string; exp?: number },
+  deps: { revokeJti: (jti: string, ttl: number) => Promise<void>; now?: () => number } = { revokeJti },
+): void {
+  if (!token.jti || !token.exp) return;
+  const nowMs = deps.now?.() ?? Date.now();
+  const ttl = Math.max(token.exp - Math.floor(nowMs / 1000), 1);
+  deps.revokeJti(token.jti, ttl).catch((err) => {
+    console.error('[oauth] revocation cache write failed', err);
+  });
+}
+
 export async function getProvider(): Promise<Provider> {
   if (providerInstance) return providerInstance;
   if (!OAUTH_COOKIE_SECRET) {
@@ -70,27 +96,13 @@ export async function getProvider(): Promise<Provider> {
       profile: ['name', 'email'],
       breeze_tenant: ['partner_id', 'org_id'],
     },
-    extraTokenClaims: async (ctx: any, _token: any) => {
-      const grant: any = ctx.oidc?.entities?.Grant;
-      if (!grant) return {};
-      const meta = grant.breeze ?? {};
-      return {
-        partner_id: meta.partner_id ?? null,
-        org_id: meta.org_id ?? null,
-      };
-    },
+    extraTokenClaims: buildExtraTokenClaims,
     interactions: {
       url: (_ctx: any, interaction: any) => `/oauth/consent?uid=${interaction.uid}`,
     },
   });
 
   providerInstance.proxy = true;
-  (providerInstance as any).on('revocation.success', (_ctx: any, token: any) => {
-    if (!token.jti || !token.exp) return;
-    const ttl = Math.max(token.exp - Math.floor(Date.now() / 1000), 1);
-    revokeJti(token.jti, ttl).catch((err) => {
-      console.error('[oauth] revocation cache write failed', err);
-    });
-  });
+  (providerInstance as any).on('revocation.success', handleRevocationSuccess);
   return providerInstance;
 }
