@@ -4,7 +4,13 @@ import { decodeJwt } from 'jose';
 import { getProvider } from '../oauth/provider';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { revokeJti } from '../oauth/revocationCache';
-import { getRedis, rateLimiter } from '../services';
+// Import getRedis/rateLimiter from their specific modules (NOT the services
+// barrel) to avoid pulling in the rest of services/index.ts at module load —
+// barrel re-exports include modules with side effects (eventBus,
+// commandQueue, etc.) that hang in unit-test sandboxes lacking Redis. The
+// rate-limit middleware itself only ever runs at request time.
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
 
 export const oauthRoutes = new Hono<{ Bindings: HttpBindings }>();
 
