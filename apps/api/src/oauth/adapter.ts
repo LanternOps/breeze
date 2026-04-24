@@ -5,6 +5,7 @@ import {
   oauthAuthorizationCodes,
   oauthClients,
   oauthGrants,
+  oauthInteractions,
   oauthRefreshTokens,
   oauthSessions,
 } from '../db/schema';
@@ -205,6 +206,22 @@ export class BreezeOidcAdapter {
           target: oauthSessions.id,
           set: { uid, accountId, payload, expiresAt: expiresAt!, lastUsedAt: new Date() },
         });
+      } else if (this.model === 'Interaction') {
+        // Interaction is the short-lived (~1h) record bridging /authorize →
+        // consent UI → resume. Persisted so an API restart mid-flow doesn't
+        // 404 the user with "interaction expired or mismatched". The
+        // interaction's session pointer (payload.session.accountId) starts
+        // null and gets populated after login; the RLS policy checks that
+        // pointer for user-scope access, with a system bypass for the
+        // adapter's writes.
+        await db.insert(oauthInteractions).values({
+          id,
+          payload,
+          expiresAt: expiresAt!,
+        }).onConflictDoUpdate({
+          target: oauthInteractions.id,
+          set: { payload, expiresAt: expiresAt! },
+        });
       } else if (this.model === 'Grant') {
         // Grant payload is the IN_PAYLOAD-filtered subset (accountId,
         // clientId, resources, openid, rejected, rar). partner_id/org_id
@@ -252,6 +269,10 @@ export class BreezeOidcAdapter {
         const [row] = await db.select().from(oauthGrants).where(eq(oauthGrants.id, id));
         return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
+      if (this.model === 'Interaction') {
+        const [row] = await db.select().from(oauthInteractions).where(eq(oauthInteractions.id, id));
+        return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+      }
 
       const stored = inMemory.get(this.model)?.get(id);
       if (!stored) return undefined;
@@ -296,6 +317,8 @@ export class BreezeOidcAdapter {
         await db.delete(oauthSessions).where(eq(oauthSessions.id, id));
       } else if (this.model === 'Grant') {
         await db.delete(oauthGrants).where(eq(oauthGrants.id, id));
+      } else if (this.model === 'Interaction') {
+        await db.delete(oauthInteractions).where(eq(oauthInteractions.id, id));
       } else {
         inMemory.get(this.model)?.delete(id);
       }

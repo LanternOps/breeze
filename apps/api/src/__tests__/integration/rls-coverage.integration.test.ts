@@ -92,6 +92,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // pattern of oauth_authorization_codes; the coverage test only checks
   // that breeze_current_user_id is referenced.
   'oauth_sessions',
+  // oauth_interactions: short-lived OAuth interaction records. Pre-login
+  // interactions have no accountId; once login happens the policy gates
+  // access by (payload->session->accountId)::uuid = breeze_current_user_id().
+  // System-scope bypass covers the adapter writes (runOutsideDbContext).
+  'oauth_interactions',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;

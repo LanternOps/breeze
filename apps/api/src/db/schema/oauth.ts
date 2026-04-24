@@ -71,6 +71,19 @@ export const oauthSessions = pgTable('oauth_sessions', {
   expiresIdx: index('oauth_sessions_expires_idx').on(table.expiresAt),
 }));
 
+// oauth_interactions: short-lived (~1 hour) OAuth interaction records that
+// bridge /authorize, the consent UI, and the post-consent resume. Persisted
+// so an API restart mid-flow doesn't 404 the user. Schema in migration
+// 2026-04-24-oauth-interactions.sql.
+export const oauthInteractions = pgTable('oauth_interactions', {
+  id: text('id').primaryKey(),
+  payload: jsonb('payload').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  expiresIdx: index('oauth_interactions_expires_idx').on(table.expiresAt),
+}));
+
 // oauth_grants: persisted oidc-provider Grants. partner_id/org_id are
 // populated by the consent route; payload carries the rest of the Grant
 // state (resources, openid, rejected, rar) plus our breeze meta inline.

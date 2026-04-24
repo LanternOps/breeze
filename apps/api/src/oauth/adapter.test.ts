@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthAuthorizationCodes, oauthClients, oauthRefreshTokens } from '../db/schema';
+import { oauthAuthorizationCodes, oauthClients, oauthInteractions, oauthRefreshTokens } from '../db/schema';
 import { BreezeOidcAdapter } from './adapter';
 
 vi.mock('../db', () => ({
@@ -149,15 +149,40 @@ describe('BreezeOidcAdapter', () => {
     expect(chain.where).toHaveBeenCalledTimes(1);
   });
 
+  it('persists Interaction rows so consent flows survive API restart', async () => {
+    // Interaction was originally in-memory, which meant a deploy mid-flow
+    // would 404 the user the moment they clicked Approve. 2026-04-24-oauth-interactions
+    // migrated it to a DB-backed model — the upsert below is the hot path that
+    // runs on every interaction.save() during /authorize and consent resume.
+    const chain = mockInsertChain();
+    const payload = { uid: 'interaction_abc', params: { client_id: 'client_abc' } };
+
+    await new BreezeOidcAdapter('Interaction').upsert('interaction_abc', payload, 3600);
+
+    expect(insertMock).toHaveBeenCalledWith(oauthInteractions);
+    expect(chain.values).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'interaction_abc',
+      payload,
+      expiresAt: expect.any(Date),
+    }));
+    expect(chain.onConflictDoUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      target: oauthInteractions.id,
+      set: expect.objectContaining({ payload, expiresAt: expect.any(Date) }),
+    }));
+  });
+
   it('round-trips non-persistent models through in-memory fallback', async () => {
-    // Interaction is the canonical short-lived in-memory model after the
-    // Session/Grant DB persistence migration (2026-04-24-oauth-sessions-grants).
-    const payload = { uid: 'interaction_abc', accountId: 'user_abc' };
-    const adapter = new BreezeOidcAdapter('Interaction');
+    // Interaction was migrated to DB persistence in 2026-04-24-oauth-interactions.
+    // The in-memory fallback now covers the remaining oidc-provider models we
+    // don't write to Postgres (e.g. AccessToken — JWTs are self-validating
+    // with revocation cached separately, and ReplayDetection — short-lived
+    // nonce dedupe whose only requirement is process-local memory).
+    const payload = { jti: 'access_abc', accountId: 'user_abc' };
+    const adapter = new BreezeOidcAdapter('AccessToken');
 
-    await adapter.upsert('interaction_abc', payload, 60);
+    await adapter.upsert('access_abc', payload, 60);
 
-    await expect(adapter.find('interaction_abc')).resolves.toBe(payload);
+    await expect(adapter.find('access_abc')).resolves.toBe(payload);
   });
 
   it('returns undefined for unknown ids under DB-backed models', async () => {
