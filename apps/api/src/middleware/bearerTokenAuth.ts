@@ -8,6 +8,7 @@ import { isJtiRevoked } from '../oauth/revocationCache';
 interface OAuthApiKeyContext {
   id: string;
   orgId: string | null;
+  partnerId: string | null;
   name: string;
   keyPrefix: string;
   scopes: string[];
@@ -68,6 +69,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   (c.set as (key: 'apiKey', value: OAuthApiKeyContext) => void)('apiKey', {
     id: `oauth:${typeof payload.jti === 'string' ? payload.jti : 'no-jti'}`,
     orgId: payload.org_id ?? null,
+    partnerId: payload.partner_id,
     name: 'OAuth bearer',
     keyPrefix: 'oauth',
     scopes: (payload.scope ?? '').split(' ').filter(Boolean),

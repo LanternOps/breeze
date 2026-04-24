@@ -213,6 +213,7 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:org-token-jti',
       orgId,
+      partnerId,
       name: 'OAuth bearer',
       keyPrefix: 'oauth',
       scopes: ['mcp:read', 'mcp:write'],
@@ -250,6 +251,7 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:partner-token-jti',
       orgId: null,
+      partnerId,
       name: 'OAuth bearer',
       keyPrefix: 'oauth',
       scopes: ['mcp:read'],

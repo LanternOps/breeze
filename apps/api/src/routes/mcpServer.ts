@@ -24,7 +24,7 @@ import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
-import { devices, alerts, scripts, automations, organizations, partners } from '../db/schema';
+import { devices, alerts, scripts, automations, partners } from '../db/schema';
 import { eq, and, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -482,7 +482,7 @@ async function handleJsonRpc(
   auth: AuthContext,
   scopes: string[],
   scopeState: 'readonly' | 'full' = 'full',
-  apiKey?: { id: string; orgId: string; scopeState: 'readonly' | 'full' },
+  apiKey?: { id: string; orgId: string | null; scopeState: 'readonly' | 'full' },
   c?: Context,
 ): Promise<JsonRpcResponse> {
   try {
@@ -688,7 +688,7 @@ async function handleToolsCall(
   auth: AuthContext,
   scopes: string[],
   scopeState: 'readonly' | 'full' = 'full',
-  apiKey?: { id: string; orgId: string; scopeState: 'readonly' | 'full' },
+  apiKey?: { id: string; orgId: string | null; scopeState: 'readonly' | 'full' },
   c?: Context,
 ): Promise<JsonRpcResponse> {
   const toolName = params.name as string;
@@ -858,7 +858,7 @@ async function dispatchBootstrapAuthTool(
   auth: AuthContext,
   scopes: string[],
   scopeState: 'readonly' | 'full',
-  apiKey: { id: string; orgId: string; scopeState: 'readonly' | 'full' } | undefined,
+  apiKey: { id: string; orgId: string | null; scopeState: 'readonly' | 'full' } | undefined,
   c: Context | undefined,
 ): Promise<JsonRpcResponse> {
   // Readonly-scope backstop — authTools are tier-3 mutations.
@@ -910,11 +910,11 @@ async function dispatchBootstrapAuthTool(
     return jsonRpcError(id, -32602, 'Invalid arguments', parsed.error.flatten());
   }
 
-  if (!apiKey || !auth.partnerId) {
+  if (!apiKey || !apiKey.orgId || !auth.partnerId) {
     return jsonRpcError(
       id,
       -32603,
-      'Bootstrap authTool requires an API key with a resolvable partner.',
+      'Bootstrap authTool requires an API key with a resolvable partner and organization.',
     );
   }
 
@@ -1142,50 +1142,44 @@ function jsonRpcError(id: string | number | null, code: number, message: string,
 }
 
 /**
- * Build a minimal AuthContext from an API key.
- * API keys are always org-scoped (no partner/system access).
- * Resolves the org's partnerId so partner-level users (who may lack a direct
- * organizationUsers record) can still pass RBAC checks via their partnerUsers role.
+ * Build a minimal AuthContext from an API key or OAuth-backed API key context.
+ * API keys remain org-scoped; OAuth bearer tokens may be partner-scoped when
+ * they carry a partner_id without an org_id.
  */
-async function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: string; createdBy: string }): Promise<AuthContext> {
-  const orgId = apiKey.orgId;
+async function buildAuthFromApiKey(apiKey: {
+  id: string;
+  orgId: string | null;
+  partnerId: string | null;
+  name: string;
+  createdBy: string;
+}): Promise<AuthContext> {
+  const user = {
+    id: apiKey.createdBy,
+    email: `apikey-${apiKey.name}@breeze.local`,
+    name: `API Key: ${apiKey.name}`
+  };
 
-  // Look up the org's partner so getUserPermissions can fall back to
-  // partnerUsers. Distinguish "row not found" from "DB threw" — a thrown
-  // error means we can't safely assume partnerId is null; re-throw so the
-  // request-level error handler returns a clean 500 instead of a misleading
-  // downstream permissions error (e.g. paymentGate's "requires a resolvable
-  // partner" message, which only makes sense for the row-not-found case).
-  let partnerId: string | null = null;
-  try {
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-    partnerId = org?.partnerId ?? null;
-  } catch (err) {
-    console.error(
-      '[MCP] DB error resolving partnerId for org (mcp_partner_lookup_failed)',
-      { orgId, error: err instanceof Error ? err.message : String(err) },
-    );
-    throw new Error(
-      `mcp_partner_lookup_failed: failed to resolve partner for org ${orgId}`,
-    );
+  if (apiKey.orgId) {
+    return {
+      user,
+      token: {} as AuthContext['token'],
+      partnerId: apiKey.partnerId,
+      orgId: apiKey.orgId,
+      scope: 'organization',
+      accessibleOrgIds: [apiKey.orgId],
+      orgCondition: (orgIdColumn) => eq(orgIdColumn, apiKey.orgId!),
+      canAccessOrg: (checkOrgId) => checkOrgId === apiKey.orgId
+    };
   }
 
   return {
-    user: {
-      id: apiKey.createdBy,
-      email: `apikey-${apiKey.name}@breeze.local`,
-      name: `API Key: ${apiKey.name}`
-    },
+    user,
     token: {} as AuthContext['token'],
-    partnerId,
-    orgId,
-    scope: 'organization',
-    accessibleOrgIds: [orgId],
-    orgCondition: (orgIdColumn) => eq(orgIdColumn, orgId),
-    canAccessOrg: (checkOrgId) => checkOrgId === orgId
+    partnerId: apiKey.partnerId,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds: null,
+    orgCondition: () => undefined,
+    canAccessOrg: () => false
   };
 }

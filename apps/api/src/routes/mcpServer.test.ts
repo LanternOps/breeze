@@ -207,6 +207,7 @@ describe('MCP bootstrap carve-out', () => {
         c.set('apiKey', {
           id: 'key-1',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           name: 'test',
           keyPrefix: 'brz_test',
           scopes: ['ai:read'],
@@ -265,6 +266,7 @@ describe('MCP bootstrap carve-out', () => {
         c.set('apiKey', {
           id: 'key-1',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           name: 'test',
           keyPrefix: 'brz_test',
           scopes: ['ai:read', 'ai:write'],
@@ -374,6 +376,7 @@ describe('MCP bootstrap carve-out', () => {
         c.set('apiKey', {
           id: 'key-authtool',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           name: 'test',
           keyPrefix: 'brz_test',
           scopes: ['ai:read', 'ai:execute'],

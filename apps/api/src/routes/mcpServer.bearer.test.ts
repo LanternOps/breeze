@@ -4,11 +4,15 @@ import { Hono } from 'hono';
 const mocks = vi.hoisted(() => ({
   bearerTokenAuthMiddleware: vi.fn(),
   apiKeyAuthMiddleware: vi.fn(),
+  executeTool: vi.fn(),
+  getToolDefinitions: vi.fn(() => []),
+  getToolTier: vi.fn((_: string): number | undefined => undefined),
 }));
 
 const setApiKeyContext = (c: any) => {
   c.set('apiKey', {
     id: 'key-1', orgId: 'org-1', name: 'test', keyPrefix: 'brz_test',
+    partnerId: 'partner-1',
     scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1', scopeState: 'full',
   });
   c.set('apiKeyOrgId', 'org-1');
@@ -37,7 +41,9 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../services/aiTools', () => ({
-  getToolDefinitions: () => [], executeTool: vi.fn(), getToolTier: () => undefined,
+  getToolDefinitions: mocks.getToolDefinitions,
+  executeTool: mocks.executeTool,
+  getToolTier: mocks.getToolTier,
 }));
 
 vi.mock('../services/aiGuardrails', () => ({
@@ -69,6 +75,20 @@ async function postToolsList(headers: Record<string, string> = {}) {
   });
 }
 
+async function postToolsCall(headers: Record<string, string> = {}) {
+  const { app } = await appWithMcpRoutes();
+  return app.request('/mcp/message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'inspect_scope', arguments: {} },
+    }),
+  });
+}
+
 describe('mcpServer bearer auth routing', () => {
   beforeEach(() => {
     clearEnv();
@@ -82,6 +102,9 @@ describe('mcpServer bearer auth routing', () => {
       setApiKeyContext(c);
       return next();
     });
+    mocks.getToolDefinitions.mockReturnValue([]);
+    mocks.getToolTier.mockReturnValue(undefined);
+    mocks.executeTool.mockResolvedValue('{}');
   });
 
   afterEach(() => clearEnv());
@@ -116,6 +139,40 @@ describe('mcpServer bearer auth routing', () => {
     expect(res.status).toBe(200);
     expect(mocks.bearerTokenAuthMiddleware).toHaveBeenCalledTimes(1);
     expect(mocks.apiKeyAuthMiddleware).not.toHaveBeenCalled();
+  });
+
+  it('builds partner-scope auth for Bearer context without org_id', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      c.set('apiKey', {
+        id: 'oauth:jti-1',
+        orgId: null,
+        partnerId: 'partner-1',
+        name: 'OAuth bearer',
+        keyPrefix: 'oauth',
+        scopes: ['ai:read'],
+        rateLimit: 1000,
+        createdBy: 'user-1',
+        scopeState: 'full',
+      });
+      return next();
+    });
+    mocks.getToolTier.mockReturnValue(1);
+    mocks.executeTool.mockResolvedValue('ok');
+
+    const res = await postToolsCall({ Authorization: 'Bearer foo' });
+
+    expect(res.status).toBe(200);
+    expect(mocks.executeTool).toHaveBeenCalledWith(
+      'inspect_scope',
+      {},
+      expect.objectContaining({
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-1',
+        accessibleOrgIds: null,
+      }),
+    );
   });
 
   it('still allows the bootstrap carve-out with no auth headers', async () => {
