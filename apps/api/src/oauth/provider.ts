@@ -4,6 +4,7 @@ import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from '
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
+import { ERROR_IDS, logOauthError } from './log';
 
 let providerInstance: Provider | null = null;
 
@@ -27,14 +28,29 @@ export async function buildExtraTokenClaims(
   // First try the in-memory cache (warm path: same process as consent), then
   // fall back to the DB row for refresh-token grants that span an API
   // restart between consent and the next token exchange.
-  const meta =
-    getGrantBreezeMeta(grantId) ??
-    (await getGrantBreezeMetaAsync(grantId)) ??
-    grant.breeze ??
-    {};
+  const cached = getGrantBreezeMeta(grantId);
+  const meta = cached ?? (await getGrantBreezeMetaAsync(grantId)) ?? grant.breeze;
+  // Invariant: no null-claim JWT EVER leaves the server. If a grant_id is
+  // present (the only case that produces a real access token), we must be
+  // able to resolve its tenancy — otherwise bearer middleware would later
+  // reject every request with a confusing 401 and the JWT itself would be
+  // unreachable to refresh. Throw here so token mint fails with
+  // `server_error` (surfaced by the `server_error` event listener below)
+  // and the client can retry; better an immediate hard failure than a
+  // silently broken token.
+  if (grantId && (!meta || !meta.partner_id)) {
+    const err = new Error(`OAuth grant meta missing for grant_id=${grantId}`);
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_GRANT_META_LOOKUP_FAILED,
+      message: 'extraTokenClaims could not resolve grant meta; refusing to mint null-claim JWT',
+      err,
+      context: { grantId },
+    });
+    throw err;
+  }
   return {
-    partner_id: meta.partner_id ?? null,
-    org_id: meta.org_id ?? null,
+    partner_id: meta?.partner_id ?? null,
+    org_id: meta?.org_id ?? null,
     // Surface the Grant id as a top-level JWT claim so bearer middleware can
     // check it against the grant-revocation cache. Without this, revoking a
     // refresh token (or deleting a connected app) would not invalidate the
@@ -66,6 +82,13 @@ export async function getProvider(): Promise<Provider> {
   }
   if (!OAUTH_RESOURCE_URL) {
     throw new Error('OAUTH_RESOURCE_URL is required when MCP_OAUTH_ENABLED is true (typically `${OAUTH_ISSUER}/mcp/server`)');
+  }
+  if (!OAUTH_CONSENT_URL_BASE) {
+    throw new Error(
+      'OAUTH_CONSENT_URL_BASE is required when MCP_OAUTH_ENABLED is true. ' +
+      'For a single-origin deployment this should equal OAUTH_ISSUER; for cross-origin dev ' +
+      'set it to the web app origin that hosts /oauth/consent (e.g. http://localhost:4321).',
+    );
   }
 
   const jwks = await loadJwks();
@@ -182,16 +205,28 @@ export async function getProvider(): Promise<Provider> {
   // detail string for security — so without these listeners, on-call has
   // no way to diagnose a 400/500 from the OAuth endpoints.
   (providerInstance as any).on('server_error', (_ctx: any, err: any) => {
-    console.error('[oidc-provider] server_error', err?.stack ?? err);
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_PROVIDER_SERVER_ERROR,
+      message: 'oidc-provider server_error',
+      err,
+    });
   });
   (providerInstance as any).on('authorization.error', (_ctx: any, err: any) => {
-    console.error('[oidc-provider] authorization.error', err?.stack ?? err);
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_PROVIDER_AUTHORIZATION_ERROR,
+      message: 'oidc-provider authorization.error',
+      err,
+    });
   });
   (providerInstance as any).on('grant.error', (_ctx: any, err: any) => {
-    console.error('[oidc-provider] grant.error', {
-      error: err?.error,
-      detail: err?.error_detail,
-      message: err?.message,
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_PROVIDER_GRANT_ERROR,
+      message: 'oidc-provider grant.error',
+      err,
+      context: {
+        error: err?.error,
+        detail: err?.error_detail,
+      },
     });
   });
   return providerInstance;

@@ -220,27 +220,23 @@ describe('connectedAppsRoutes', () => {
     expect(await res.text()).toBe('');
   });
 
-  it('does not fail DELETE when cache jti revocation fails', async () => {
+  it('fails DELETE with 503 when the jti revocation cache write fails', async () => {
+    // After the security-review fix, cache write failures must propagate as
+    // 5xx. Silently returning 204 told the client "disconnected" while the
+    // access JWT would keep validating until natural expiry (~10 min) —
+    // partial revoke is a critical security gap.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     mocks.revokeJti.mockRejectedValueOnce(new Error('redis down'));
     queueSelect([{ id: 'client-1', disabledAt: null }], 'limit');
     queueUpdate();
     queueSelect([{ id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) }]);
-    const revokeUpdate = queueUpdate();
+    queueUpdate();
 
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
 
-    expect(res.status).toBe(204);
-    expect(revokeUpdate.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
-    // The log prefix is now scoped to which cache write failed — jti or
-    // grant — because the DELETE handler writes both markers (jti for the
-    // specific refresh token + grant for every access JWT under that grant).
-    expect(errorSpy).toHaveBeenCalledWith(
-      '[oauth] connected-app jti revocation cache write failed',
-      expect.any(Error)
-    );
+    expect(res.status).toBe(503);
     errorSpy.mockRestore();
   });
 

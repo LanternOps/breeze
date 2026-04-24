@@ -5,6 +5,7 @@ import { authMiddleware } from '../middleware/auth';
 import { db } from '../db';
 import { oauthClients, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
+import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { MCP_OAUTH_ENABLED } from '../config/env';
 
 export const connectedAppsRoutes = new Hono();
@@ -74,12 +75,25 @@ if (MCP_OAUTH_ENABLED) {
       const jti = payload?.jti;
       const grantId = payload?.grantId;
 
+      // Cache writes MUST propagate failures. The DB row above marks the
+      // refresh token revoked (so future refresh-grant exchanges fail), but
+      // the cache is the only signal that kills sibling access JWTs already
+      // minted under the grant before their natural expiry. If the cache
+      // write fails we MUST surface a 503 so the operator/user knows the
+      // app is only partially disconnected — better a hard error than a
+      // silent residual-access window.
       if (jti) {
         const ttl = Math.ceil((new Date(token.expiresAt).getTime() - Date.now()) / 1000);
         try {
           await revokeJti(jti, Math.max(ttl, 1));
         } catch (err) {
-          console.error('[oauth] connected-app jti revocation cache write failed', err);
+          logOauthError({
+            errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+            message: 'connected-app jti revocation cache write failed',
+            err,
+            context: { jti, clientId },
+          });
+          throw new HTTPException(503, { message: 'revocation cache unavailable' });
         }
       }
 
@@ -92,7 +106,13 @@ if (MCP_OAUTH_ENABLED) {
         try {
           await revokeGrant(grantId, ACCESS_TOKEN_TTL_SECONDS);
         } catch (err) {
-          console.error('[oauth] connected-app grant revocation cache write failed', err);
+          logOauthError({
+            errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+            message: 'connected-app grant revocation cache write failed',
+            err,
+            context: { grantId, clientId },
+          });
+          throw new HTTPException(503, { message: 'revocation cache unavailable' });
         }
       }
     }

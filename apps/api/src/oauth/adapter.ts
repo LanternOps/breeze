@@ -10,6 +10,7 @@ import {
   oauthSessions,
 } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
+import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
 
 // Grant-revocation marker TTL must outlive the longest-lived access token
 // minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
@@ -36,11 +37,11 @@ type StoredBreezeMeta = { meta: GrantBreezeMeta; expiresAt: Date | null };
 
 const grantBreezeMeta = new Map<string, StoredBreezeMeta>();
 
-export function setGrantBreezeMeta(
+export async function setGrantBreezeMeta(
   grantId: string,
   meta: GrantBreezeMeta,
   ttlSeconds?: number,
-): void {
+): Promise<void> {
   grantBreezeMeta.set(grantId, {
     meta,
     expiresAt: ttlSeconds === undefined ? null : new Date(Date.now() + ttlSeconds * 1000),
@@ -49,15 +50,31 @@ export function setGrantBreezeMeta(
   // refresh-token grant doesn't orphan the partner_id. The Grant row is
   // INSERTed by `BreezeOidcAdapter.upsert` during `grant.save()`, which the
   // consent route calls immediately before invoking us — so an UPDATE here
-  // hits an existing row. We swallow errors: the in-memory cache is enough
-  // for the auth-code → token exchange that happens in the same process.
-  asSystem(async () => {
-    await db.update(oauthGrants)
-      .set({ partnerId: meta.partner_id, orgId: meta.org_id })
-      .where(eq(oauthGrants.id, grantId));
-  }).catch((err) => {
-    console.error('[oauth] failed to persist Grant breeze meta', { grantId, err });
-  });
+  // hits an existing row. Await the write before the consent route resumes
+  // the interaction so the Grant metadata is durable across an immediate
+  // process restart.
+  try {
+    await asSystem(async () => {
+      await db.update(oauthGrants)
+        .set({ partnerId: meta.partner_id, orgId: meta.org_id })
+        .where(eq(oauthGrants.id, grantId));
+    });
+  } catch (err) {
+    // The Grant row already exists at this point (saved by oidc-provider's
+    // grant.save() in the consent route immediately before this call), but
+    // its partner_id/org_id columns are NULL. If we don't propagate this
+    // failure the consent route will resume the interaction and an access
+    // JWT will be minted with `partner_id: null` — bearer middleware then
+    // rejects every request with a confusing 401. Fail closed: throw so
+    // the consent endpoint returns 500 and the user can retry.
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_GRANT_META_PERSIST_FAILED,
+      message: 'Failed to persist Grant breeze meta to oauth_grants',
+      err,
+      context: { grantId },
+    });
+    throw err;
+  }
 }
 
 export async function getGrantBreezeMetaAsync(
@@ -67,20 +84,32 @@ export async function getGrantBreezeMetaAsync(
   const cached = getGrantBreezeMeta(grantId);
   if (cached) return cached;
   // Cache miss — possibly a different process / post-restart. Fall back to
-  // the DB row, populated by the consent route.
+  // the DB row, populated by the consent route. We deliberately do NOT
+  // catch DB errors here: callers (`requiredPartnerId`, `buildExtraTokenClaims`)
+  // need to distinguish "no row" (DB returned undefined → grant has no
+  // tenancy) from "lookup failed" (Postgres unavailable → we don't know).
+  // Silently degrading to "missing partner_id" would mint a JWT with
+  // `partner_id: null` that bearer middleware rejects with a confusing 401,
+  // and worse, mask infrastructure failures behind auth errors.
+  let row;
   try {
-    const row = await asSystem(async () => {
+    row = await asSystem(async () => {
       const [r] = await db.select({ partnerId: oauthGrants.partnerId, orgId: oauthGrants.orgId })
         .from(oauthGrants)
         .where(eq(oauthGrants.id, grantId));
       return r;
     });
-    if (!row || !row.partnerId) return undefined;
-    return { partner_id: row.partnerId, org_id: row.orgId };
   } catch (err) {
-    console.error('[oauth] DB lookup for Grant breeze meta failed', { grantId, err });
-    return undefined;
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_GRANT_META_LOOKUP_FAILED,
+      message: 'DB lookup for Grant breeze meta failed',
+      err,
+      context: { grantId },
+    });
+    throw err;
   }
+  if (!row || !row.partnerId) return undefined;
+  return { partner_id: row.partnerId, org_id: row.orgId };
 }
 
 export function getGrantBreezeMeta(grantId: string | undefined | null): GrantBreezeMeta | undefined {
@@ -336,9 +365,14 @@ export class BreezeOidcAdapter {
    * lives at least until the token would have naturally expired. The id we
    * receive from oidc-provider is the model id; for AccessToken/RefreshToken
    * it equals the `jti` claim, but we still read the payload's `exp` (or
-   * fall back to the row's `expiresAt`) to pick a sensible TTL. Failures
-   * are logged but do not block destroy — the DB revocation row is still
-   * authoritative for refresh tokens.
+   * fall back to the row's `expiresAt`) to pick a sensible TTL.
+   *
+   * Failures THROW. For AccessToken there is no DB row at all — the cache
+   * is the only revocation signal, so a silently-dropped write means the
+   * JWT keeps validating until natural expiry. For RefreshToken the DB row
+   * is authoritative for refresh-grant exchanges, but the cache is still
+   * the only mechanism that kills sibling access JWTs minted from the same
+   * grant before their ~10-minute expiry. Either way, fail closed.
    */
   private async cacheRevocation(id: string): Promise<void> {
     try {
@@ -351,7 +385,11 @@ export class BreezeOidcAdapter {
         });
         if (row) {
           const payloadExp = (row.payload as { exp?: number } | null)?.exp;
-          exp = typeof payloadExp === 'number' ? payloadExp : Math.floor(row.expiresAt.getTime() / 1000);
+          if (typeof payloadExp === 'number') {
+            exp = payloadExp;
+          } else if (row.expiresAt instanceof Date) {
+            exp = Math.floor(row.expiresAt.getTime() / 1000);
+          }
           // RefreshToken payload carries grantId — cache the grant-wide
           // marker too so every access JWT minted from this grant is
           // immediately rejected by bearer middleware. Without this the
@@ -379,7 +417,13 @@ export class BreezeOidcAdapter {
         await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
       }
     } catch (err) {
-      console.error('[oauth] revocation cache write failed', err);
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+        message: 'Revocation cache write failed during destroy()',
+        err,
+        context: { model: this.model, id },
+      });
+      throw err;
     }
   }
 
@@ -388,9 +432,20 @@ export class BreezeOidcAdapter {
     // checks immediately reject. Then mark every refresh token revoked in
     // the DB (so the next refresh-token grant exchange fails with
     // "invalid_grant" rather than minting a fresh access token).
-    await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS).catch((err) => {
-      console.error('[oauth] grant revocation cache write failed', err);
-    });
+    try {
+      await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
+    } catch (err) {
+      // Without the cache write the DB `revokedAt` update below is purely
+      // informational — sibling access JWTs minted under this grant would
+      // continue to validate until natural expiry. Fail closed.
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+        message: 'Grant-wide revocation cache write failed in revokeByGrantId',
+        err,
+        context: { grantId },
+      });
+      throw err;
+    }
     return asSystem(async () => {
       await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(sql`payload->>'grantId' = ${grantId}`);
     });
@@ -402,20 +457,40 @@ export class BreezeOidcAdapter {
     // `oauth_sessions` with a dedicated `uid` index — lookup is a single
     // indexed query.
     if (this.model === 'Session') {
-      return asSystem(async () => {
+      const found = await asSystem(async () => {
         const [row] = await db.select().from(oauthSessions).where(eq(oauthSessions.uid, uid));
         return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       });
+      if (!found) {
+        logOauthDebug({
+          errorId: ERROR_IDS.OAUTH_SESSION_NOT_FOUND_BY_UID,
+          message: 'Session.findByUid returned no row',
+          context: { model: this.model, uidPrefix: uid.slice(0, 8) },
+        });
+      }
+      return found;
     }
     // Fallback for models still in the in-memory store (Interaction,
     // AccessToken, ReplayDetection, etc.). None of these are typically
     // looked up by uid in our flow, but keep the scan as a safety net.
     const store = inMemory.get(this.model);
-    if (!store) return undefined;
+    if (!store) {
+      logOauthDebug({
+        errorId: ERROR_IDS.OAUTH_SESSION_NOT_FOUND_BY_UID,
+        message: 'findByUid in-memory store empty (post-restart?)',
+        context: { model: this.model, uidPrefix: uid.slice(0, 8) },
+      });
+      return undefined;
+    }
     for (const [, stored] of store) {
       if (stored.expiresAt && stored.expiresAt < new Date()) continue;
       if ((stored.payload as { uid?: unknown }).uid === uid) return stored.payload;
     }
+    logOauthDebug({
+      errorId: ERROR_IDS.OAUTH_SESSION_NOT_FOUND_BY_UID,
+      message: 'findByUid scanned in-memory store, no match',
+      context: { model: this.model, uidPrefix: uid.slice(0, 8) },
+    });
     return undefined;
   }
 

@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
-import { decodeJwt } from 'jose';
+import { createLocalJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { getProvider } from '../oauth/provider';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
+import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { loadPublicJwks } from '../oauth/keys';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
+import { ERROR_IDS, logOauthError } from '../oauth/log';
 // Import getRedis/rateLimiter from their specific modules (NOT the services
 // barrel) to avoid pulling in the rest of services/index.ts at module load —
 // barrel re-exports include modules with side effects (eventBus,
@@ -15,10 +17,19 @@ import { rateLimiter } from '../services/rate-limit';
 export const oauthRoutes = new Hono<{ Bindings: HttpBindings }>();
 
 if (MCP_OAUTH_ENABLED) {
+  let cachedRevocationJwks: ReturnType<typeof createLocalJWKSet> | null = null;
+
+  async function getRevocationJwks() {
+    if (!cachedRevocationJwks) {
+      cachedRevocationJwks = createLocalJWKSet(await loadPublicJwks());
+    }
+    return cachedRevocationJwks;
+  }
+
   oauthRoutes.use('*', async (c, next) => {
     const ip =
       c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-      c.env.incoming?.socket?.remoteAddress ??
+      c.env?.incoming?.socket?.remoteAddress ??
       'unknown';
     const sub = c.req.path.replace(/^\/oauth/, '');
 
@@ -60,11 +71,9 @@ if (MCP_OAUTH_ENABLED) {
   // fails, the adapter's destroy() never fires, and the Redis revocation
   // cache stays empty — revoked JWTs keep working until natural expiry.
   //
-  // We sniff the request body BEFORE the oidc-provider bridge runs, decode
-  // the JWT (no signature check — accept tokens whose key has rotated; iss +
-  // jti are sufficient identification for an opt-in revocation), and write
-  // the revocation cache ourselves. The bridge then runs normally to produce
-  // the spec-compliant 200 response.
+  // We sniff the request body BEFORE the oidc-provider bridge runs, verify
+  // JWT access tokens locally, and write the revocation cache ourselves.
+  // The bridge then runs normally for opaque refresh tokens.
   //
   // We read via `c.req.raw.clone()` so the underlying Node IncomingMessage
   // stream isn't drained — the bridge needs to re-read the body in callback()
@@ -78,36 +87,111 @@ if (MCP_OAUTH_ENABLED) {
   // and confusing for clients that follow up with the cache check above.
   oauthRoutes.use('/token/revocation', async (c, next) => {
     if (c.req.method !== 'POST') return next();
+    let params: URLSearchParams;
+    let token: string | null;
     try {
       const raw = await c.req.raw.clone().text();
-      const params = new URLSearchParams(raw);
-      const token = params.get('token');
-      if (!token) return next();
-      // Skip non-JWTs (opaque refresh tokens) — those go through the adapter's
-      // destroy() path correctly.
-      if (token.split('.').length !== 3) return next();
-      const payload = decodeJwt(token);
-      if (payload.iss !== OAUTH_ISSUER) return next();
-      const jti = typeof payload.jti === 'string' ? payload.jti : null;
-      const exp = typeof payload.exp === 'number' ? payload.exp : null;
-      if (!jti || !exp) return next();
-      const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
-      await revokeJti(jti, ttl);
-      // Revoking an access JWT should also kill every sibling access token
-      // minted from the same grant. Without this, a client that holds two
-      // active access tokens for the same grant (e.g. one in the helper,
-      // one in a worker) could continue using the un-revoked one.
-      const grantId = (payload as { grant_id?: unknown }).grant_id;
-      if (typeof grantId === 'string' && grantId.length > 0) {
-        await revokeGrant(grantId, ttl).catch((err) => {
-          console.warn('[oauth] grant revocation cache write failed (continuing)', err);
-        });
-      }
-      return c.body(null, 200);
+      params = new URLSearchParams(raw);
+      token = params.get('token');
     } catch (err) {
-      console.warn('[oauth] revocation pre-handler error (continuing to bridge)', err);
+      // Body unreadable (rare; malformed transfer-encoding etc). Let the
+      // bridge respond — it will produce the spec-compliant error.
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_BODY_PARSE,
+        message: 'Revocation body parse failed; falling through to bridge',
+        err,
+      });
+      return next();
     }
-    return next();
+    if (!token) return next();
+    // Skip non-JWTs (opaque refresh tokens) — those go through the adapter's
+    // destroy() path correctly.
+    if (token.split('.').length !== 3) return next();
+
+    let payload: JWTPayload & { client_id?: string; azp?: string; grant_id?: unknown };
+    try {
+      const result = await jwtVerify(token, await getRevocationJwks(), {
+        issuer: OAUTH_ISSUER,
+        audience: OAUTH_RESOURCE_URL,
+        algorithms: ['EdDSA'],
+      });
+      payload = result.payload as typeof payload;
+    } catch (err) {
+      // Signature / claim verification failed. CRITICAL: do NOT write the
+      // revocation cache here — otherwise an attacker could revoke any
+      // user's token by forging unsigned JWTs with their jti/grant_id.
+      // Fall through to the oidc-provider bridge which will produce the
+      // spec-compliant unauthenticated response without leaking which
+      // tokens exist.
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_VERIFY_FAILED,
+        message: 'Revocation JWT verify failed; falling through to bridge',
+        err,
+      });
+      return next();
+    }
+
+    // Client binding: a client may only revoke its own tokens. Without this,
+    // any DCR client could revoke any other client's tokens just by knowing
+    // (or guessing) the jti / grant_id. Since DCR clients are public
+    // (token_endpoint_auth_method=none), this binding via the JWT's own
+    // client_id claim is the strongest authorization available here.
+    const requestClientId = params.get('client_id');
+    const tokenClientId = typeof payload.client_id === 'string' ? payload.client_id
+      : typeof payload.azp === 'string' ? payload.azp
+      : null;
+    if (!requestClientId || !tokenClientId || tokenClientId !== requestClientId) {
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CLIENT_BINDING,
+        message: 'Revocation client_id mismatch; falling through to bridge',
+        context: {
+          requestClientId,
+          tokenClientIdPresent: Boolean(tokenClientId),
+        },
+      });
+      return next();
+    }
+
+    const jti = typeof payload.jti === 'string' ? payload.jti : null;
+    const exp = typeof payload.exp === 'number' ? payload.exp : null;
+    if (!jti || !exp) return next();
+    const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
+
+    // Cache writes MUST propagate failures as 5xx — silently swallowing a
+    // Redis-down condition would tell the client "revoked" while the bearer
+    // middleware (which fails closed on Redis error) would still accept the
+    // token until natural expiry, defeating revocation. Better to surface
+    // the outage so the caller retries.
+    try {
+      await revokeJti(jti, ttl);
+    } catch (err) {
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+        message: 'Revocation jti cache write failed in pre-handler',
+        err,
+        context: { jti },
+      });
+      return c.json({ error: 'server_error', error_description: 'revocation cache unavailable' }, 503);
+    }
+    // Revoking an access JWT should also kill every sibling access token
+    // minted from the same grant. Without this, a client that holds two
+    // active access tokens for the same grant (e.g. one in the helper,
+    // one in a worker) could continue using the un-revoked one.
+    const grantId = (payload as { grant_id?: unknown }).grant_id;
+    if (typeof grantId === 'string' && grantId.length > 0) {
+      try {
+        await revokeGrant(grantId, ttl);
+      } catch (err) {
+        logOauthError({
+          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+          message: 'Revocation grant cache write failed in pre-handler',
+          err,
+          context: { grantId },
+        });
+        return c.json({ error: 'server_error', error_description: 'revocation cache unavailable' }, 503);
+      }
+    }
+    return c.body(null, 200);
   });
 
   oauthRoutes.all('/*', async (c) => {
@@ -146,7 +230,12 @@ if (MCP_OAUTH_ENABLED) {
       };
       const onError = (err: unknown) => {
         cleanup();
-        console.error('[oauth] bridge response error', { path: originalUrl, err });
+        logOauthError({
+          errorId: ERROR_IDS.OAUTH_BRIDGE_RESPONSE_ERROR,
+          message: 'oidc-provider bridge response error',
+          err,
+          context: { path: originalUrl },
+        });
         resolve(alreadySent(res.statusCode || 500));
       };
       res.on('finish', onFinish);
@@ -156,7 +245,12 @@ if (MCP_OAUTH_ENABLED) {
         callback(req, res);
       } catch (err) {
         cleanup();
-        console.error('[oauth] bridge callback threw', { path: originalUrl, err });
+        logOauthError({
+          errorId: ERROR_IDS.OAUTH_BRIDGE_CALLBACK_THREW,
+          message: 'oidc-provider bridge callback threw synchronously',
+          err,
+          context: { path: originalUrl },
+        });
         resolve(alreadySent(res.statusCode || 500));
       }
     });

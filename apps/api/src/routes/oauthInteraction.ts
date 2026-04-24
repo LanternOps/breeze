@@ -8,6 +8,7 @@ import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, partners, partnerUsers, users } from '../db/schema';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { ERROR_IDS, logOauthError } from '../oauth/log';
 
 // Grant TTL in seconds — must match `ttl.Grant` in oauth/provider.ts so the
 // breeze metadata side-table entry expires no later than the Grant itself.
@@ -33,7 +34,12 @@ async function interactionDetails(provider: Awaited<ReturnType<typeof getProvide
   try {
     details = await (provider as any).Interaction.find(uid);
   } catch (err) {
-    console.error('[oauth] Interaction.find failed unexpectedly', { uid, err });
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_INTERACTION_FIND_FAILED,
+      message: 'Interaction.find failed unexpectedly',
+      err,
+      context: { uid },
+    });
     throw new HTTPException(500, { message: 'failed to load interaction' });
   }
   if (!details) {
@@ -146,9 +152,21 @@ if (MCP_OAUTH_ENABLED) {
     const grantId = await grant.save();
     // We can't put `breeze` on the Grant payload — oidc-provider's
     // Grant.IN_PAYLOAD allowlist drops unknown fields on save. Stash the
-    // tenancy metadata in a process-local side table keyed by grantId, then
-    // read it back in `buildExtraTokenClaims` when the access token is minted.
-    setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId }, GRANT_TTL_SECONDS);
+    // tenancy metadata in a process-local side table keyed by grantId and in
+    // the Grant DB row, then read it back in `buildExtraTokenClaims` when the
+    // access token is minted.
+    //
+    // Fail closed: if persistence fails the Grant row exists with NULL
+    // partner_id, and resuming the flow would mint a JWT with `partner_id:
+    // null` that bearer middleware rejects. The Grant.save() above is
+    // recoverable on a retry click since the auth code is short-lived.
+    try {
+      await setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId }, GRANT_TTL_SECONDS);
+    } catch {
+      // setGrantBreezeMeta already logs with errorId. Surface a generic 500
+      // to the consent client; they can retry.
+      throw new HTTPException(500, { message: 'failed to persist grant metadata' });
+    }
 
     await asSystem(async () => {
       await db.update(oauthClients)
