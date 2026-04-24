@@ -28,6 +28,35 @@ export function _resetJwksCacheForTests() {
   cachedJwks = null;
 }
 
+/**
+ * Map OAuth scopes (mcp:read / mcp:write — what Claude.ai/ChatGPT request via
+ * DCR) to the internal ai:* scope vocabulary the MCP route handlers were built
+ * around. Without this, every OAuth-authed MCP call fails the `ai:read` gate
+ * in routes/mcpServer.ts even though the OAuth grant already scoped the token
+ * for MCP use. We additively keep the original mcp:* scopes so future code
+ * paths can branch on the OAuth vocabulary if needed.
+ *
+ * Mapping intent:
+ *   mcp:read  → ai:read       (tools/list, read-only tool calls)
+ *   mcp:write → ai:read, ai:write, ai:execute (write-tier mutations)
+ *
+ * `ai:execute_admin` is intentionally NOT granted via OAuth — it gates the
+ * most destructive operations and remains API-key-only by policy.
+ */
+function expandOAuthScopes(oauthScopes: string[]): string[] {
+  const out = new Set<string>(oauthScopes);
+  for (const s of oauthScopes) {
+    if (s === 'mcp:read') {
+      out.add('ai:read');
+    } else if (s === 'mcp:write') {
+      out.add('ai:read');
+      out.add('ai:write');
+      out.add('ai:execute');
+    }
+  }
+  return Array.from(out);
+}
+
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
     throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
@@ -66,13 +95,16 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'token missing required claims' });
   }
 
+  const oauthScopes = (payload.scope ?? '').split(' ').filter(Boolean);
+  const effectiveScopes = expandOAuthScopes(oauthScopes);
+
   (c.set as (key: 'apiKey', value: OAuthApiKeyContext) => void)('apiKey', {
     id: `oauth:${typeof payload.jti === 'string' ? payload.jti : 'no-jti'}`,
     orgId: payload.org_id ?? null,
     partnerId: payload.partner_id,
     name: 'OAuth bearer',
     keyPrefix: 'oauth',
-    scopes: (payload.scope ?? '').split(' ').filter(Boolean),
+    scopes: effectiveScopes,
     rateLimit: 1000,
     createdBy: payload.sub,
     scopeState: 'full' as const,
