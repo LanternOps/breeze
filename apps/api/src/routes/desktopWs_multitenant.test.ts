@@ -45,6 +45,31 @@ vi.mock('./agentWs', () => ({
   isAgentConnected: vi.fn(() => true)
 }));
 
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
+vi.mock('./remote/helpers', () => ({
+  logSessionAudit: vi.fn(async () => undefined),
+  getIceServers: vi.fn(() => []),
+}));
+
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
@@ -173,7 +198,8 @@ describe('desktopWs — multi-tenant isolation', () => {
       agentId: AGENT_ID,
       hostname: 'test-host',
       osType: 'windows',
-      status: 'online'
+      status: 'online',
+      orgId: 'org-test-1'
     };
 
     vi.mocked(db.select)

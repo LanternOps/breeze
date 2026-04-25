@@ -11,6 +11,9 @@ import { getIceServers, logSessionAudit } from './remote/helpers';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
+import { getTrustedClientIp } from '../services/clientIp';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
@@ -56,10 +59,22 @@ interface DesktopSession {
   agentId: string;
   userId: string;
   deviceId: string;
+  orgId: string;
   startedAt: Date;
   pingInterval?: ReturnType<typeof setInterval>;
   lastPongAt: number;
+  // E2: token-bucket for input events (60 events/sec).
+  inputTokens: number;
+  inputLastRefillMs: number;
+  inputOverageLogged: boolean;
+  // E2: audit summary counters
+  inputEvents: number;
+  frameBytes: number;
 }
+
+// E2: desktop input event token bucket (60 events/sec/session).
+const DESKTOP_INPUT_TOKENS_PER_SEC = 60;
+const DESKTOP_INPUT_BUCKET_CAPACITY = 60;
 
 const activeDesktopSessions = new Map<string, DesktopSession>();
 
@@ -81,41 +96,23 @@ setInterval(() => {
   }
 }, 60_000);
 
-// In-memory sliding window rate limiter for user WS upgrades
-const USER_WS_RATE_WINDOW_MS = 60_000;
-const USER_WS_RATE_MAX_CONNECTIONS = 10;
-const userDesktopWsConnTimestamps = new Map<string, number[]>();
+// E1: Redis-backed sliding window rate limiter for user WS upgrades.
+// Decision: fail closed on Redis outage (matches `rateLimiter` helper default).
+// Rationale: viewer/operator-initiated WS — users can retry; an open door
+// during a Redis blip is a bigger risk than a temporary 4029.
+const USER_WS_RATE_LIMIT = 10;
+const USER_WS_RATE_WINDOW_SECONDS = 60;
 
-function isUserDesktopWsRateLimited(userId: string): boolean {
-  const now = Date.now();
-  const cutoff = now - USER_WS_RATE_WINDOW_MS;
-  let timestamps = userDesktopWsConnTimestamps.get(userId);
-
-  if (timestamps) {
-    timestamps = timestamps.filter(t => t > cutoff);
-  } else {
-    timestamps = [];
-  }
-
-  if (timestamps.length >= USER_WS_RATE_MAX_CONNECTIONS) {
-    userDesktopWsConnTimestamps.set(userId, timestamps);
-    return true;
-  }
-
-  timestamps.push(now);
-  userDesktopWsConnTimestamps.set(userId, timestamps);
-  return false;
+async function isUserDesktopWsRateLimited(userId: string): Promise<boolean> {
+  const redis = getRedis();
+  const result = await rateLimiter(
+    redis,
+    `desktopws:conn:${userId}`,
+    USER_WS_RATE_LIMIT,
+    USER_WS_RATE_WINDOW_SECONDS
+  );
+  return !result.allowed;
 }
-
-// Periodic cleanup of stale rate-limit entries
-setInterval(() => {
-  const cutoff = Date.now() - USER_WS_RATE_WINDOW_MS * 2;
-  for (const [userId, timestamps] of userDesktopWsConnTimestamps) {
-    if (timestamps.length === 0 || timestamps[timestamps.length - 1]! < cutoff) {
-      userDesktopWsConnTimestamps.delete(userId);
-    }
-  }
-}, 120_000);
 
 const desktopConnectExchangeSchema = z.object({
   sessionId: z.string().min(1),
@@ -309,138 +306,203 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
-      console.log(`Desktop WebSocket onOpen for session ${sessionId}`);
-      await validationPromise;
+      // E3: track validation/setup progress so the catch block can clean up
+      // any partial state (session entry, frame callback, ping interval, DB row).
+      let validated = false;
+      let pingInterval: ReturnType<typeof setInterval> | null = null;
+      let sessionStored = false;
+      let frameCallbackRegistered = false;
 
-      if (!validationResult || !validationResult.valid) {
-        console.warn(`Desktop WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AUTH_FAILED',
-          message: validationResult?.error || 'Authentication failed'
-        }));
-        ws.close(4001, 'Authentication failed');
-        return;
-      }
+      try {
+        console.log(`Desktop WebSocket onOpen for session ${sessionId}`);
+        await validationPromise;
 
-      const { session, device, userId } = validationResult;
-      if (!session || !device || !userId) {
-        ws.close(4001, 'Invalid session data');
-        return;
-      }
-
-      if (!isAgentConnected(device.agentId)) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AGENT_OFFLINE',
-          message: 'Agent is not connected via WebSocket'
-        }));
-        ws.close(4002, 'Agent offline');
-        return;
-      }
-
-      // Rate limit user WS connections
-      if (isUserDesktopWsRateLimited(userId)) {
-        console.warn(`Desktop WebSocket rate limited for user ${userId}`);
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'RATE_LIMITED',
-          message: 'Too many connection attempts'
-        }));
-        ws.close(4029, 'Rate limited');
-        return;
-      }
-
-      // Store the desktop session
-      const now = Date.now();
-      activeDesktopSessions.set(sessionId, {
-        userWs: ws,
-        agentId: device.agentId,
-        userId,
-        deviceId: device.id,
-        startedAt: new Date(),
-        lastPongAt: now,
-      });
-
-      // Register frame callback — relay binary JPEG frames directly to viewer
-      registerDesktopFrameCallback(sessionId, (data: Uint8Array) => {
-        try {
-          // Copy into a fresh ArrayBuffer to satisfy WSContext.send() type
-          const buf = new ArrayBuffer(data.byteLength);
-          new Uint8Array(buf).set(data);
-          ws.send(buf);
-        } catch (error) {
-          console.error(`Failed to send desktop frame to session ${sessionId}:`, error);
+        if (!validationResult || !validationResult.valid) {
+          console.warn(`Desktop WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'AUTH_FAILED',
+            message: validationResult?.error || 'Authentication failed'
+          }));
+          ws.close(4001, 'Authentication failed');
+          return;
         }
-      });
 
-      // Update session status (system scope — WS auth bypasses JWT middleware)
-      await withSystemDbAccessContext(() =>
-        db.update(remoteSessions)
-          .set({ status: 'active', startedAt: new Date() })
-          .where(eq(remoteSessions.id, sessionId))
-      );
+        const { session, device, userId } = validationResult;
+        if (!session || !device || !userId) {
+          ws.close(4001, 'Invalid session data');
+          return;
+        }
 
-      // Send desktop_stream_start command to agent
-      const startCommand = {
-        id: `desk-start-${sessionId}`,
-        type: 'desktop_stream_start',
-        payload: {
+        if (!isAgentConnected(device.agentId)) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'AGENT_OFFLINE',
+            message: 'Agent is not connected via WebSocket'
+          }));
+          ws.close(4002, 'Agent offline');
+          return;
+        }
+
+        // E1: Redis-backed rate limit user WS connections (fail-closed)
+        if (await isUserDesktopWsRateLimited(userId)) {
+          console.warn(`Desktop WebSocket rate limited for user ${userId}`);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'RATE_LIMITED',
+            message: 'Too many connection attempts'
+          }));
+          ws.close(4029, 'Rate limited');
+          return;
+        }
+
+        // All validation passed — safe to touch DB state for this session
+        validated = true;
+
+        // Store the desktop session
+        const now = Date.now();
+        activeDesktopSessions.set(sessionId, {
+          userWs: ws,
+          agentId: device.agentId,
+          userId,
+          deviceId: device.id,
+          orgId: device.orgId,
+          startedAt: new Date(),
+          lastPongAt: now,
+          inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
+          inputLastRefillMs: now,
+          inputOverageLogged: false,
+          inputEvents: 0,
+          frameBytes: 0,
+        });
+        sessionStored = true;
+
+        // Register frame callback — relay binary JPEG frames directly to viewer
+        registerDesktopFrameCallback(sessionId, (data: Uint8Array) => {
+          try {
+            // Copy into a fresh ArrayBuffer to satisfy WSContext.send() type
+            const buf = new ArrayBuffer(data.byteLength);
+            new Uint8Array(buf).set(data);
+            const sess = activeDesktopSessions.get(sessionId);
+            if (sess) {
+              sess.frameBytes += data.byteLength;
+            }
+            ws.send(buf);
+          } catch (error) {
+            console.error(`Failed to send desktop frame to session ${sessionId}:`, error);
+          }
+        });
+        frameCallbackRegistered = true;
+
+        // Update session status (system scope — WS auth bypasses JWT middleware)
+        await withSystemDbAccessContext(() =>
+          db.update(remoteSessions)
+            .set({ status: 'active', startedAt: new Date() })
+            .where(eq(remoteSessions.id, sessionId))
+        );
+
+        // Send desktop_stream_start command to agent
+        const startCommand = {
+          id: `desk-start-${sessionId}`,
+          type: 'desktop_stream_start',
+          payload: {
+            sessionId,
+            quality: 60,
+            scaleFactor: 1.0,
+            maxFps: 15
+          }
+        };
+
+        const sent = sendCommandToAgent(device.agentId, startCommand);
+        if (!sent) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'AGENT_SEND_FAILED',
+            message: 'Failed to send start command to agent'
+          }));
+          return;
+        }
+
+        // Send connected message to viewer
+        ws.send(JSON.stringify({
+          type: 'connected',
           sessionId,
-          quality: 60,
-          scaleFactor: 1.0,
-          maxFps: 15
-        }
-      };
-
-      const sent = sendCommandToAgent(device.agentId, startCommand);
-      if (!sent) {
-        ws.send(JSON.stringify({
-          type: 'error',
-          code: 'AGENT_SEND_FAILED',
-          message: 'Failed to send start command to agent'
+          device: {
+            hostname: device.hostname,
+            osType: device.osType
+          }
         }));
-        return;
-      }
 
-      // Send connected message to viewer
-      ws.send(JSON.stringify({
-        type: 'connected',
-        sessionId,
-        device: {
-          hostname: device.hostname,
-          osType: device.osType
-        }
-      }));
+        // Start server-side ping/pong for stale connection detection
+        pingInterval = setInterval(() => {
+          const deskSess = activeDesktopSessions.get(sessionId);
+          if (!deskSess) {
+            if (pingInterval) clearInterval(pingInterval);
+            return;
+          }
+          const elapsed = Date.now() - deskSess.lastPongAt;
+          if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
+            console.warn(`Desktop session ${sessionId} pong timeout (${elapsed}ms), closing`);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close(4008, 'Pong timeout');
+            return;
+          }
+          try {
+            ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+          } catch (err) {
+            console.warn(`[DesktopWs] Ping send failed for session ${sessionId}, cleaning up`, err);
+            if (pingInterval) clearInterval(pingInterval);
+          }
+        }, PING_INTERVAL_MS);
 
-      // Start server-side ping/pong for stale connection detection
-      const pingInterval = setInterval(() => {
-        const deskSess = activeDesktopSessions.get(sessionId);
-        if (!deskSess) {
-          clearInterval(pingInterval);
-          return;
+        const currentSession = activeDesktopSessions.get(sessionId);
+        if (currentSession) {
+          currentSession.pingInterval = pingInterval;
         }
-        const elapsed = Date.now() - deskSess.lastPongAt;
-        if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
-          console.warn(`Desktop session ${sessionId} pong timeout (${elapsed}ms), closing`);
+
+        console.log(`Desktop session ${sessionId} connected for device ${device.hostname}`);
+      } catch (error) {
+        // E3: mirror terminalWs.ts onOpen cleanup on early throw.
+        console.error(`[DesktopWs] onOpen failed for session ${sessionId}:`, error);
+
+        if (pingInterval) {
           clearInterval(pingInterval);
-          ws.close(4008, 'Pong timeout');
-          return;
         }
+        if (sessionStored) {
+          const partial = activeDesktopSessions.get(sessionId);
+          if (partial?.pingInterval) {
+            clearInterval(partial.pingInterval);
+          }
+          activeDesktopSessions.delete(sessionId);
+        }
+        if (frameCallbackRegistered) {
+          unregisterDesktopFrameCallback(sessionId);
+        }
+
+        // Best-effort: mark DB session as failed — only if auth/validation already passed.
+        if (validated) {
+          try {
+            await withSystemDbAccessContext(() =>
+              db.update(remoteSessions)
+                .set({ status: 'failed', endedAt: new Date() })
+                .where(eq(remoteSessions.id, sessionId))
+            );
+          } catch (dbError) {
+            console.error(`[DesktopWs] Failed to update session ${sessionId} status to failed:`, dbError);
+          }
+        }
+
         try {
-          ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
-        } catch (err) {
-          console.warn(`[DesktopWs] Ping send failed for session ${sessionId}, cleaning up`, err);
-          clearInterval(pingInterval);
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: 'INTERNAL_ERROR',
+            message: 'Desktop session setup failed'
+          }));
+          ws.close(1011, 'internal_error');
+        } catch (closeError) {
+          console.error(`[DesktopWs] Failed to close WS after onOpen error for session ${sessionId}:`, closeError);
         }
-      }, PING_INTERVAL_MS);
-
-      const currentSession = activeDesktopSessions.get(sessionId);
-      if (currentSession) {
-        currentSession.pingInterval = pingInterval;
       }
-
-      console.log(`Desktop session ${sessionId} connected for device ${device.hostname}`);
     },
 
     onMessage: async (event: MessageEvent, ws: WSContext) => {
@@ -473,6 +535,28 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
 
         switch (message.type) {
           case 'input': {
+            // E2: token-bucket rate limit (60 events/sec). On breach, drop
+            // the excess but keep the session open — a stuck mouse should
+            // not kill an active remote-control session. Log the first overage.
+            const nowMs = Date.now();
+            const elapsedMs = Math.max(0, nowMs - desktopSession.inputLastRefillMs);
+            const refill = (elapsedMs / 1000) * DESKTOP_INPUT_TOKENS_PER_SEC;
+            desktopSession.inputTokens = Math.min(
+              DESKTOP_INPUT_BUCKET_CAPACITY,
+              desktopSession.inputTokens + refill
+            );
+            desktopSession.inputLastRefillMs = nowMs;
+
+            if (desktopSession.inputTokens < 1) {
+              if (!desktopSession.inputOverageLogged) {
+                console.warn(`Desktop session ${sessionId} input rate-limited (token bucket empty)`);
+                desktopSession.inputOverageLogged = true;
+              }
+              break; // drop event, keep session open
+            }
+            desktopSession.inputTokens -= 1;
+            desktopSession.inputEvents += 1;
+
             const sent = sendCommandToAgent(desktopSession.agentId, {
               id: `desk-input-${Date.now()}`,
               type: 'desktop_input',
@@ -557,6 +641,24 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
             .set({ status: 'disconnected', endedAt, durationSeconds })
             .where(eq(remoteSessions.id, sessionId))
         );
+
+        // E2: write a session summary audit row on close.
+        try {
+          await logSessionAudit(
+            'desktop.session.summary',
+            desktopSession.userId,
+            desktopSession.orgId,
+            {
+              sessionId,
+              deviceId: desktopSession.deviceId,
+              inputEvents: desktopSession.inputEvents,
+              frameBytes: desktopSession.frameBytes,
+              durationMs: endedAt.getTime() - desktopSession.startedAt.getTime(),
+            }
+          );
+        } catch (auditErr) {
+          console.error(`[DesktopWs] Failed to write session summary for ${sessionId}:`, auditErr);
+        }
 
         console.log(`Desktop session ${sessionId} disconnected (duration: ${durationSeconds}s)`);
       }
@@ -785,7 +887,7 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         access.user.id,
         access.device.orgId,
         { sessionId, type: access.session.type, via: 'viewer_token' },
-        c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+        getTrustedClientIp(c, 'unknown')
       );
 
       if (!access.device.agentId) {

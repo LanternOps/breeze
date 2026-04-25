@@ -39,6 +39,27 @@ vi.mock('./agentWs', () => ({
   isAgentConnected: vi.fn(() => true)
 }));
 
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
+vi.mock('./remote/helpers', () => ({
+  logSessionAudit: vi.fn(async () => undefined),
+  getIceServers: vi.fn(() => []),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
@@ -167,7 +188,8 @@ describe('terminalWs — multi-tenant isolation', () => {
       agentId: AGENT_ID,
       hostname: 'test-host',
       osType: 'linux',
-      status: 'online'
+      status: 'online',
+      orgId: 'org-test-1'
     };
 
     vi.mocked(db.select)
