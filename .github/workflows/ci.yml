@@ -308,6 +308,7 @@ jobs:
       - name: Create .env
         run: |
           cat > .env <<'EOF'
+          BREEZE_VERSION=ci-smoke
           POSTGRES_PASSWORD=smoketest
           REDIS_PASSWORD=ci-smoke-redis-pw
           JWT_SECRET=ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
