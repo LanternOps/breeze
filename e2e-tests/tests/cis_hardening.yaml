@@ -40,7 +40,10 @@ tests:
               selector: "h2"
               contains: "CIS Hardening"
           - assert:
-              selector: "p"
+              # Bare `p` matched the sidebar version banner ("Web 0.x · API 0.x")
+              # because that hydrates above the page subtitle. Pin to the p
+              # adjacent to the page heading.
+              selector: "h2 + p"
               contains: "Configuration baselines, compliance scoring, and remediation tracking."
 
       - id: verify_summary_cards

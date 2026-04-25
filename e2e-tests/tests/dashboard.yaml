@@ -29,13 +29,16 @@ tests:
 
       - id: verify_dashboard_heading
         action: ui
-        description: "Verify main Dashboard heading renders"
+        description: "Verify main dashboard heading renders"
         playwright:
-          - waitFor: "text=Dashboard"
+          # h1 was renamed from "Dashboard" → "Welcome" — match the
+          # current copy. The other "text=Dashboard" waitFors below
+          # still match the sidebar nav link, which kept its label.
+          - waitFor: "h1:has-text('Welcome')"
             timeout: 10000
           - assert:
               selector: "h1"
-              contains: "Dashboard"
+              contains: "Welcome"
 
       - id: verify_stat_cards
         action: ui
