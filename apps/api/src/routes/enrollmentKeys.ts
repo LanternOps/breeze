@@ -13,6 +13,7 @@ import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
+import { getTrustedClientIp } from '../services/clientIp';
 import {
   buildMacosInstallerZip, buildWindowsInstallerZip,
   fetchRegularMsi, fetchMacosPkg, fetchMacosInstallerAppZip,
@@ -1293,25 +1294,33 @@ async function serveInstaller(
   rawToken: string,
   cleanupOnFailure = false,
 ): Promise<Response> {
-  const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
+  // Use getTrustedClientIp so spoofed `X-Forwarded-For` from untrusted
+  // clients does not let an attacker open unlimited rate-limit buckets.
+  // The 'unknown' fallback bucket is intentional fail-safe behavior:
+  // multiple unknown-IP requests share one bucket and rate-limit together.
+  const ip = getTrustedClientIp(c, 'unknown');
 
-  // Rate limit by IP (10 per minute)
+  // Rate limit by IP (10 per minute). Fail CLOSED on Redis errors —
+  // an attacker who can DoS Redis must NOT be able to disable the
+  // limiter on this public endpoint.
   try {
     const { getRedis } = await import('../services');
     const { rateLimiter } = await import('../services/rate-limit');
     const redis = getRedis();
+    if (!redis) {
+      console.error('[public-installer] rate-limit unavailable: redis client missing');
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
     const rateResult = await rateLimiter(redis, `public-installer:${ip}`, 10, 60);
     if (!rateResult.allowed) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
   } catch (err) {
-    // Fail open for downloads (keep installers working during Redis outages),
-    // but log so the outage is visible in ops dashboards — otherwise rate
-    // limiting is silently disabled across the whole public endpoint.
     console.error(
-      '[public-installer] rate-limit check skipped:',
+      '[public-installer] rate-limit check failed (failing closed):',
       err instanceof Error ? err.message : err,
     );
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
   // Validate key is still usable

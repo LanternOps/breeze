@@ -404,6 +404,24 @@ describe('devPush routes', () => {
       expect(body.error).toContain('not found or expired');
     });
 
+    it('M-H2: 404 path does NOT log the raw download token', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const RAW = 'super-secret-download-token-123';
+      const res = await app.request(`/dev/push/download/${RAW}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer agent-token' },
+      });
+      // 404 path doesn't log here, but verify nothing leaked the raw token.
+      expect(res.status).toBe(404);
+      const allArgs = errSpy.mock.calls.flat().map((a) =>
+        typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })()
+      );
+      for (const s of allArgs) {
+        expect(s).not.toContain(RAW);
+      }
+      errSpy.mockRestore();
+    });
+
     it('should return 401 when no Authorization header', async () => {
       // We need to first push a binary so there is a pending download
       // but since the download map is in-memory and the guard middleware runs first,

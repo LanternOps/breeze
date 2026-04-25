@@ -232,7 +232,7 @@ app.use(
   secureHeaders({
     // Override defaults to match Breeze security policy:
     // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-    strictTransportSecurity: 'max-age=31536000; includeSubDomains',
+    strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
     // - X-Frame-Options: DENY (default is SAMEORIGIN)
     xFrameOptions: 'DENY',
     // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)

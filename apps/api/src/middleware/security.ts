@@ -25,17 +25,52 @@ interface SecurityMiddlewareOptions {
   cspReportUri?: string;
   /** Override CSP_ALLOW_UNSAFE_INLINE for testing. Defaults to process.env.CSP_ALLOW_UNSAFE_INLINE */
   allowUnsafeInline?: string;
+  /** Override CSP_CONNECT_HOSTS (comma-separated) for testing. */
+  cspConnectHosts?: string;
+}
+
+/**
+ * Builds the `connect-src` directive value.
+ *
+ * In production: tightens to same-origin plus an explicit allowlist of WSS
+ * hosts. An XSS in the dashboard cannot exfiltrate to `ws://attacker.com/`.
+ * Hosts come from `CSP_CONNECT_HOSTS` (comma-separated, e.g.
+ * `wss://*.2breeze.app,wss://us.2breeze.app`). If not configured, falls back
+ * to `wss://*.2breeze.app` — known production wildcard for Breeze regions.
+ *
+ * In non-production: keeps `ws: wss:` open so localhost / docker dev origins
+ * keep working.
+ */
+function buildConnectSrc(
+  nodeEnv: string | undefined,
+  cspConnectHosts: string | undefined,
+): string {
+  const isProd = nodeEnv === 'production';
+  if (!isProd) {
+    return "connect-src 'self' ws: wss:";
+  }
+  const configured = (cspConnectHosts ?? '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0);
+  const hosts = configured.length > 0 ? configured : ['wss://*.2breeze.app'];
+  return `connect-src 'self' ${hosts.join(' ')}`;
 }
 
 export function securityMiddleware(options?: SecurityMiddlewareOptions): MiddlewareHandler {
+  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV;
   const forceHttps = options?.forceHttps ?? process.env.FORCE_HTTPS;
   const cspReportUri = options?.cspReportUri ?? process.env.CSP_REPORT_URI;
-  const allowUnsafeInline = options?.allowUnsafeInline ?? process.env.CSP_ALLOW_UNSAFE_INLINE;
+  const allowUnsafeInlineRaw = options?.allowUnsafeInline ?? process.env.CSP_ALLOW_UNSAFE_INLINE;
+  const cspConnectHosts = options?.cspConnectHosts ?? process.env.CSP_CONNECT_HOSTS;
   const normalized = forceHttps?.trim().toLowerCase();
   const isForceHttps = normalized === 'true' || normalized === '1';
   // Strict by default; only allow inline script/style when explicitly enabled.
-  const unsafeInlineNormalized = allowUnsafeInline?.trim().toLowerCase();
-  const isUnsafeInlineAllowed = unsafeInlineNormalized === 'true' || unsafeInlineNormalized === '1';
+  // CSP_ALLOW_UNSAFE_INLINE has NO effect in production — refusing to
+  // weaken CSP in prod even if the env var is mis-set.
+  const unsafeInlineNormalized = allowUnsafeInlineRaw?.trim().toLowerCase();
+  const isUnsafeInlineRequested = unsafeInlineNormalized === 'true' || unsafeInlineNormalized === '1';
+  const isUnsafeInlineAllowed = nodeEnv !== 'production' && isUnsafeInlineRequested;
 
   // Pre-build the CSP header value (it doesn't change per-request)
   const cspDirectives = [
@@ -44,7 +79,7 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
     isUnsafeInlineAllowed ? "style-src 'self' 'unsafe-inline'" : "style-src 'self'",
     "img-src 'self' data: blob:",
     "font-src 'self'",
-    "connect-src 'self' ws: wss:",
+    buildConnectSrc(nodeEnv, cspConnectHosts),
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
