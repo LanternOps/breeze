@@ -16,7 +16,7 @@ tests:
         description: "Navigate to forgot password page"
         playwright:
           - goto: "/forgot-password"
-          - waitFor: "text=Breeze RMM"
+          - waitFor: "input#email"
             timeout: 15000
 
       - id: verify_form_elements
@@ -103,10 +103,10 @@ tests:
               selector: "h2"
               contains: "Invalid Link"
           - assert:
-              selector: "p.text-sm"
+              selector: ".bg-card p.text-sm"
               contains: "invalid or has expired"
           - assert:
-              selector: "a[href='/forgot-password']"
+              selector: ".bg-card a[href='/forgot-password']"
               contains: "Request a new link"
 
   - id: reset_password_with_token
@@ -180,7 +180,7 @@ tests:
         description: "Navigate to the partner registration page"
         playwright:
           - goto: "/register-partner"
-          - waitFor: "text=Register your company"
+          - waitFor: "input#companyName"
             timeout: 15000
 
       - id: verify_all_fields_present
@@ -300,7 +300,7 @@ tests:
               selector: "h2"
               contains: "Invalid Link"
           - assert:
-              selector: "p.text-sm"
+              selector: ".bg-card p.text-sm"
               contains: "invite link is invalid or has expired"
 
   - id: accept_invite_with_token

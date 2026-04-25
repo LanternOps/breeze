@@ -40,7 +40,10 @@ tests:
         action: ui
         description: "Logout via user menu"
         playwright:
-          - click: "button[aria-haspopup='true']"
+          # Use title="Account menu" to disambiguate from the Theme menu —
+          # both buttons have aria-haspopup="true" and Theme is rendered
+          # first, so a generic selector picks the wrong dropdown.
+          - click: "button[title='Account menu']"
           - waitFor: "button:has-text('Sign out')"
             timeout: 5000
           - click: "button:has-text('Sign out')"

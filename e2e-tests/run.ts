@@ -10,7 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import yaml from 'yaml';
 import dotenv from 'dotenv';
 
@@ -42,6 +42,7 @@ const args = process.argv.slice(2);
 const options: CLIOptions = {
   test: '',
   tags: [],
+  excludeTags: [],
   nodes: [],
   dryRun: false,
   mode: 'live',
@@ -58,6 +59,9 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--tags':
       options.tags = (args[++i] ?? '').split(',').filter(Boolean);
+      break;
+    case '--exclude-tags':
+      options.excludeTags = (args[++i] ?? '').split(',').filter(Boolean);
       break;
     case '--nodes':
     case '-n':
@@ -102,6 +106,7 @@ Usage: npx tsx run.ts [options]
 Options:
   --test, -t <id>        Run specific test by ID
   --tags <tags>          Run tests matching tags (comma-separated)
+  --exclude-tags <tags>  Skip tests matching tags (comma-separated)
   --nodes, -n <nodes>    Run only on specific nodes (comma-separated)
   --dry-run, -d          Show what would run without executing
   --mode <mode>          Execution mode: live | simulate (default: live)
@@ -152,6 +157,11 @@ if (options.test) {
 if (options.tags.length > 0) {
   testsToRun = testsToRun.filter((t) => t.tags?.some((tag) => options.tags.includes(tag)));
 }
+if (options.excludeTags.length > 0) {
+  testsToRun = testsToRun.filter(
+    (t) => !t.tags?.some((tag) => options.excludeTags.includes(tag)),
+  );
+}
 if (options.nodes.length > 0) {
   testsToRun = testsToRun.filter((t) => t.nodes.some((node) => options.nodes.includes(node)));
 }
@@ -172,6 +182,31 @@ if (options.mode === 'live') {
     }
   }
 }
+
+// Push session-disrupting tests (anything tagged auth/login/logout, plus
+// any test whose steps explicitly invoke logout-related selectors) to the
+// END of the run. Their fresh-login + logout actions invalidate the
+// shared browser session, forcing every subsequent test to re-login —
+// running them last lets the bulk of the suite reuse the cached cookie.
+function isSessionDisrupting(t: any): boolean {
+  const disruptingTags = new Set(['auth', 'login', 'logout', 'session']);
+  if (Array.isArray(t.tags) && t.tags.some((tag: string) => disruptingTags.has(tag))) {
+    return true;
+  }
+  // Heuristic: any step that clicks a Sign out button or expects /login
+  // redirect after click is destroying the session.
+  return Array.isArray(t.steps) && t.steps.some((s: any) => {
+    const pw = Array.isArray(s.playwright) ? s.playwright : [];
+    return pw.some((a: any) => {
+      const click = typeof a?.click === 'string' ? a.click : '';
+      return /sign[\s-]?out|logout/i.test(click);
+    });
+  });
+}
+testsToRun = [
+  ...testsToRun.filter((t) => !isSessionDisrupting(t)),
+  ...testsToRun.filter(isSessionDisrupting),
+];
 
 // --- Display ---
 
@@ -228,10 +263,19 @@ if (options.mode === 'simulate') {
 
 function clearRateLimits(): void {
   try {
-    execSync(
-      `docker exec breeze-redis redis-cli EVAL "local total = 0; for _,pat in ipairs({'login:*','global:*'}) do local keys = redis.call('KEYS',pat); for _,k in ipairs(keys) do redis.call('DEL',k) end; total = total + #keys end; return total" 0`,
-      { stdio: 'ignore', timeout: 5000 }
+    // The dev/prod Redis container is `--requirepass`-protected. Without
+    // -a/--no-auth-warning the EVAL silently NOAUTHs and the rate-limit
+    // counters keep accumulating, so logins start 401-ing partway through
+    // the suite and the rest of the tests time out on `page.waitForURL`.
+    const args = ['exec', 'breeze-redis', 'redis-cli'];
+    const pw = process.env.REDIS_PASSWORD;
+    if (pw) args.push('-a', pw, '--no-auth-warning');
+    args.push(
+      'EVAL',
+      "local total = 0; for _,pat in ipairs({'login:*','global:*'}) do local keys = redis.call('KEYS',pat); for _,k in ipairs(keys) do redis.call('DEL',k) end; total = total + #keys end; return total",
+      '0',
     );
+    execFileSync('docker', args, { stdio: 'ignore', timeout: 5000 });
   } catch { /* Redis not available — skip */ }
 }
 
