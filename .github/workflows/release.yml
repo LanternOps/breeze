@@ -837,11 +837,25 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
-          xcrun notarytool submit build/installer-notarize.zip \
+          submit_output=$(xcrun notarytool submit build/installer-notarize.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+            --wait --timeout 30m)
+          echo "$submit_output"
+          submission_id=$(echo "$submit_output" | awk '/^[[:space:]]*id:/ {print $2; exit}')
+          status=$(echo "$submit_output" | awk '/^[[:space:]]*status:/ {print $2; exit}')
+          if [ "$status" != "Accepted" ]; then
+            echo "::error::Notarization failed with status '$status' (submission $submission_id)"
+            if [ -n "$submission_id" ]; then
+              echo "--- xcrun notarytool log $submission_id ---"
+              xcrun notarytool log "$submission_id" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+            fi
+            exit 1
+          fi
           xcrun stapler staple "build/Breeze Installer.app"
           xcrun stapler validate "build/Breeze Installer.app"
           spctl -a -t exec -vv "build/Breeze Installer.app"
