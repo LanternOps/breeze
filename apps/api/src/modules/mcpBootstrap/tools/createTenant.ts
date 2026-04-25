@@ -149,7 +149,12 @@ async function issueBootstrapSecret(partnerId: string): Promise<string> {
     updated = await db
       .update(partners)
       .set({
-        settings: sql`coalesce(${partners.settings}, '{}'::jsonb) || jsonb_build_object(${BOOTSTRAP_SECRET_SETTINGS_KEY}, ${secretHash})`,
+        // Explicit ::text casts: jsonb_build_object takes "any" arguments,
+        // so the planner can't infer the parameter types when both args are
+        // bound parameters (postgres-js `prepare` errors with "could not
+        // determine data type of parameter $1"). Both values are JS strings,
+        // so ::text is lossless.
+        settings: sql`coalesce(${partners.settings}, '{}'::jsonb) || jsonb_build_object(${BOOTSTRAP_SECRET_SETTINGS_KEY}::text, ${secretHash}::text)`,
       })
       .where(eq(partners.id, partnerId))
       .returning({ id: partners.id });

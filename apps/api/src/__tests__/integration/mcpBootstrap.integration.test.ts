@@ -139,10 +139,15 @@ describe('MCP bootstrap integration', () => {
       const created = await readToolResult(res);
       expect(created).toMatchObject({ activation_status: 'pending_email' });
       expect(created.tenant_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(typeof created.bootstrap_secret).toBe('string');
       const tenantId: string = created.tenant_id;
+      const bootstrapSecret: string = created.bootstrap_secret;
 
       // Step 2: verify_tenant → pending_email -----------------------------------
-      res = await rpcCall(app, { name: 'verify_tenant', arguments: { tenant_id: tenantId } });
+      res = await rpcCall(app, {
+        name: 'verify_tenant',
+        arguments: { tenant_id: tenantId, bootstrap_secret: bootstrapSecret },
+      });
       expect(await readToolResult(res)).toEqual({ status: 'pending_email' });
 
       // Step 3: simulate email click (direct DB writes) -------------------------
@@ -158,7 +163,10 @@ describe('MCP bootstrap integration', () => {
         .where(eq(partnerActivations.partnerId, tenantId));
 
       // Step 4: verify_tenant → pending_payment (mints readonly api_key) -------
-      res = await rpcCall(app, { name: 'verify_tenant', arguments: { tenant_id: tenantId } });
+      res = await rpcCall(app, {
+        name: 'verify_tenant',
+        arguments: { tenant_id: tenantId, bootstrap_secret: bootstrapSecret },
+      });
       const afterEmail = await readToolResult(res);
       expect(afterEmail.status).toBe('pending_payment');
       expect(afterEmail.scope).toBe('readonly');
@@ -192,7 +200,10 @@ describe('MCP bootstrap integration', () => {
       }
 
       // Step 6: verify_tenant → active -----------------------------------------
-      res = await rpcCall(app, { name: 'verify_tenant', arguments: { tenant_id: tenantId } });
+      res = await rpcCall(app, {
+        name: 'verify_tenant',
+        arguments: { tenant_id: tenantId, bootstrap_secret: bootstrapSecret },
+      });
       const afterPayment = await readToolResult(res);
       expect(afterPayment.status).toBe('active');
       expect(afterPayment.scope).toBe('full');
