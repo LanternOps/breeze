@@ -12,7 +12,7 @@ import { createAuditLogAsync } from '../../services/auditService';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
-import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
+import { DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from '../../services/corsOrigins';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
   REFRESH_COOKIE_NAME,
@@ -161,7 +161,14 @@ export function getAllowedOrigins(): Set<string> {
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
 
-  return new Set<string>([...DEFAULT_ALLOWED_ORIGINS, ...configuredOrigins]);
+  // Gate dev-only origins on environment, mirroring corsOrigins.ts.
+  // In production, do NOT merge localhost defaults unless
+  // CORS_INCLUDE_DEFAULT_ORIGINS=true is explicitly set.
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const includeDefaults = shouldIncludeDefaultOrigins(nodeEnv);
+  const defaults = includeDefaults ? DEFAULT_ALLOWED_ORIGINS : [];
+
+  return new Set<string>([...defaults, ...configuredOrigins]);
 }
 
 export function isAllowedOrigin(origin: string): boolean {
