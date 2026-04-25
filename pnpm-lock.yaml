@@ -134,8 +134,8 @@ importers:
         specifier: ^8
         version: 8.8.1
       otplib:
-        specifier: ^13.1.0
-        version: 13.1.0
+        specifier: ^13.4.0
+        version: 13.4.0
       pg:
         specifier: ^8.13.1
         version: 8.16.3
@@ -2655,8 +2655,8 @@ packages:
   '@network-utils/vendor-lookup@1.0.12':
     resolution: {integrity: sha512-iBCFDdbYOyfqm9rjCRptzmFJgBe8k4BqW0/2d+po9PP/jkZmTpst+k6vt4QVt3yVd6DP95vRJG7wtGUJEgrmzw==}
 
-  '@noble/hashes@2.0.1':
-    resolution: {integrity: sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw==}
+  '@noble/hashes@2.2.0':
+    resolution: {integrity: sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==}
     engines: {node: '>= 20.19.0'}
 
   '@nodable/entities@2.1.0':
@@ -2913,23 +2913,23 @@ packages:
   '@oslojs/encoding@1.1.0':
     resolution: {integrity: sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ==}
 
-  '@otplib/core@13.1.0':
-    resolution: {integrity: sha512-bMCuRi5U4m86JnKiijEPTyM1KQlmanlcg/uleTCo4ewtqsYgnIvdNqIOUA6x1cS4X+U9XalmX6zF1N4ddZBdoA==}
+  '@otplib/core@13.4.0':
+    resolution: {integrity: sha512-JqOGcvZQi2wIkEQo8f3/iAjstavpXy6gouIDMHygjNuH6Q0FjbHOiXMdcE94RwfgDNMABhzwUmvaPsxvgm9NYw==}
 
-  '@otplib/hotp@13.1.0':
-    resolution: {integrity: sha512-lqeRLsUwpJ5l4RzhgSOw5uNmY19RayIf3SBnghHnP7uPhA0VccgaVzfk7QliiCkClkhyTpx4T+DTrgdnseOXEg==}
+  '@otplib/hotp@13.4.0':
+    resolution: {integrity: sha512-MJjE0x06mn2ptymz5qZmQveb+vWFuaIftqE0b5/TZZqUOK7l97cV8lRTmid5BpAQMwJDNLW6RnYxGeCRiNdekw==}
 
-  '@otplib/plugin-base32-scure@13.1.0':
-    resolution: {integrity: sha512-bCyIZd9vZ4qoBErW4LzdyI1L3naKLGY1GuxseriN/Pb4gKlOXKpSmP6i/XK6E1CpQ1GtAd7P6TkcP9CyNDIFWg==}
+  '@otplib/plugin-base32-scure@13.4.0':
+    resolution: {integrity: sha512-/t9YWJmMbB8bF5z8mXrBZc2FXBe8B/3hG5FhWr9K8cFwFhyxScbPysmZe8s1UTzSA6N+s8Uv8aIfCtVXPNjJWw==}
 
-  '@otplib/plugin-crypto-noble@13.1.0':
-    resolution: {integrity: sha512-/8mIOQSK08gccqpgGK6cW45he0YRL/eSl4QVSfLlaXhtBJZz78UEr/gnzIhIy9ftVgS9jZDsSDMWnozCasQYww==}
+  '@otplib/plugin-crypto-noble@13.4.0':
+    resolution: {integrity: sha512-KrvE4m7Zv+TT1944HzgqFJWJpKb6AyoxDbvhPStmBqdMlv5Gekb80d66cuFRL08kkPgJ5gXUSb5SFpYeB+bACg==}
 
-  '@otplib/totp@13.1.0':
-    resolution: {integrity: sha512-mEukKW8gxb8pEGL2VPu5zcOwH3lAXTrC6VLo7uhNpn83q9/BTFqDP8m47eygq7kz1MHSDSdL5xbbHJh8OfXY0g==}
+  '@otplib/totp@13.4.0':
+    resolution: {integrity: sha512-dK+vl0f0ekzf6mCENRI9AKS2NJUC7OjI3+X8e7QSnhQ2WM7I+i4PGpb3QxKi5hxjTtwVuoZwXR2CFtXdcRtNdQ==}
 
-  '@otplib/uri@13.1.0':
-    resolution: {integrity: sha512-uSUzIa5F1TSUsHXSUA8xUkYaeYGXyFDq1mpPzQ2eGa+KzDBgw24GLJini2G/VGNjpNth6Q92GuAbcZQ29U0QUA==}
+  '@otplib/uri@13.4.0':
+    resolution: {integrity: sha512-x1ozBa5bPbdZCrrTL/HK21qchiK7jYElTu+0ft22abeEhiLYgH1+SIULvOcVk3CK8YwF4kdcidvkq4ciejucJA==}
 
   '@pagefind/darwin-arm64@1.5.2':
     resolution: {integrity: sha512-MXpI+7HsAdPkvJ0gk9xj9g541BCqBZOBbdwj9g6lB5LCj6kSV6nqDSjzcAJwvOsfu0fjwvC8hQU+ecfhp+MpiQ==}
@@ -3351,8 +3351,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@scure/base@2.0.0':
-    resolution: {integrity: sha512-3E1kpuZginKkek01ovG8krQ0Z44E3DHPjc5S2rjJw9lZn3KSQOs8S7wqikF/AH7iRanHypj85uGyxk0XAyC37w==}
+  '@scure/base@2.2.0':
+    resolution: {integrity: sha512-b8XEupJibegiXV+tDUseI8oLQc8ei3d/4Jkb2RpbHh3MfE054ov3uIz2dhFkB3FI8iwYkEh0gGCApkrYggkPNg==}
 
   '@selderee/plugin-htmlparser2@0.11.0':
     resolution: {integrity: sha512-P33hHGdldxGabLFjPPpaTxVolMrzrcegejx+0GxjrIb9Zv48D8yAIA/QTDR2dFl7Uz7urX8aX6+5bCZslr+gWQ==}
@@ -7863,8 +7863,8 @@ packages:
     resolution: {integrity: sha512-5b6Y85tPxZZ7QytO+BQzysW31HJku27cRIlkbAXaNx+BdcVi+LlRFmVXzeF6a7JCwJpyw5c4b+YSVImQIrBpuQ==}
     engines: {node: '>=10'}
 
-  otplib@13.1.0:
-    resolution: {integrity: sha512-QQ8tHgo6j1yo4Jpq5yOGmqpyYbgmjGOBoNZKMLTzZ2sdGKJ4GUN/7P557/5Ti9GNUH/WMsnToQ2gqmPtI1hz0Q==}
+  otplib@13.4.0:
+    resolution: {integrity: sha512-RUcYcRMCgRWhUE/XabRppXpUwCwaWBNHe5iPXhdvP8wwDGpGpsIf/kxX/ec3zFsOaM1Oq8lEhUqDwk6W7DHkwg==}
 
   p-cancelable@3.0.0:
     resolution: {integrity: sha512-mlVgR3PGuzlo0MmTdk4cXqXWlwQDLnONTAg6sm62XkMJEiRxN3GL3SffkYvqwonbkJBcrI7Uvv5Zh9yjvn2iUw==}
@@ -12681,7 +12681,7 @@ snapshots:
 
   '@network-utils/vendor-lookup@1.0.12': {}
 
-  '@noble/hashes@2.0.1': {}
+  '@noble/hashes@2.2.0': {}
 
   '@nodable/entities@2.1.0': {}
 
@@ -13001,32 +13001,32 @@ snapshots:
 
   '@oslojs/encoding@1.1.0': {}
 
-  '@otplib/core@13.1.0': {}
+  '@otplib/core@13.4.0': {}
 
-  '@otplib/hotp@13.1.0':
+  '@otplib/hotp@13.4.0':
     dependencies:
-      '@otplib/core': 13.1.0
-      '@otplib/uri': 13.1.0
+      '@otplib/core': 13.4.0
+      '@otplib/uri': 13.4.0
 
-  '@otplib/plugin-base32-scure@13.1.0':
+  '@otplib/plugin-base32-scure@13.4.0':
     dependencies:
-      '@otplib/core': 13.1.0
-      '@scure/base': 2.0.0
+      '@otplib/core': 13.4.0
+      '@scure/base': 2.2.0
 
-  '@otplib/plugin-crypto-noble@13.1.0':
+  '@otplib/plugin-crypto-noble@13.4.0':
     dependencies:
-      '@noble/hashes': 2.0.1
-      '@otplib/core': 13.1.0
+      '@noble/hashes': 2.2.0
+      '@otplib/core': 13.4.0
 
-  '@otplib/totp@13.1.0':
+  '@otplib/totp@13.4.0':
     dependencies:
-      '@otplib/core': 13.1.0
-      '@otplib/hotp': 13.1.0
-      '@otplib/uri': 13.1.0
+      '@otplib/core': 13.4.0
+      '@otplib/hotp': 13.4.0
+      '@otplib/uri': 13.4.0
 
-  '@otplib/uri@13.1.0':
+  '@otplib/uri@13.4.0':
     dependencies:
-      '@otplib/core': 13.1.0
+      '@otplib/core': 13.4.0
 
   '@pagefind/darwin-arm64@1.5.2':
     optional: true
@@ -13638,7 +13638,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.1':
     optional: true
 
-  '@scure/base@2.0.0': {}
+  '@scure/base@2.2.0': {}
 
   '@selderee/plugin-htmlparser2@0.11.0':
     dependencies:
@@ -19650,14 +19650,14 @@ snapshots:
       wcwidth: 1.0.1
     optional: true
 
-  otplib@13.1.0:
+  otplib@13.4.0:
     dependencies:
-      '@otplib/core': 13.1.0
-      '@otplib/hotp': 13.1.0
-      '@otplib/plugin-base32-scure': 13.1.0
-      '@otplib/plugin-crypto-noble': 13.1.0
-      '@otplib/totp': 13.1.0
-      '@otplib/uri': 13.1.0
+      '@otplib/core': 13.4.0
+      '@otplib/hotp': 13.4.0
+      '@otplib/plugin-base32-scure': 13.4.0
+      '@otplib/plugin-crypto-noble': 13.4.0
+      '@otplib/totp': 13.4.0
+      '@otplib/uri': 13.4.0
 
   p-cancelable@3.0.0: {}
 
