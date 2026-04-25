@@ -335,40 +335,65 @@ userRoutes.get('/me', async (c) => {
 });
 
 // Update current user's profile
-userRoutes.patch('/me', async (c) => {
+const updateMeSchema = z
+  .object({
+    name: z.string().min(1).max(255).optional(),
+    email: z.string().email().max(255).optional(),
+    avatarUrl: z
+      .string()
+      .url()
+      .max(2048)
+      .refine((u) => /^https?:/i.test(u), { message: 'avatarUrl must be an http(s) URL' })
+      .nullable()
+      .optional(),
+    preferences: z
+      .union([
+        z.record(z.string().max(64), z.unknown()),
+        z.null(),
+      ])
+      .optional(),
+  })
+  .strict();
+
+userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json();
+  const body = c.req.valid('json');
 
   const updates: { name?: string; email?: string; avatarUrl?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
     updatedAt: new Date()
   };
 
-  if (body.name && typeof body.name === 'string') {
+  if (body.name) {
     updates.name = body.name.slice(0, 255);
   }
 
-  if (body.avatarUrl !== undefined) {
+  if (body.avatarUrl !== undefined && body.avatarUrl !== null) {
     updates.avatarUrl = body.avatarUrl;
   }
 
   if (body.preferences !== undefined) {
     if (body.preferences !== null && typeof body.preferences === 'object') {
+      // Cap serialized size to defend against arbitrarily-large free-form blobs.
+      const serialized = JSON.stringify(body.preferences);
+      if (serialized.length > 64 * 1024) {
+        return c.json({ error: 'preferences payload too large (64KB max)' }, 400);
+      }
+      const prefs = body.preferences as Record<string, unknown>;
       const validThemes = ['light', 'dark', 'system'];
-      if (body.preferences.theme && !validThemes.includes(body.preferences.theme)) {
+      if (
+        typeof prefs.theme === 'string'
+        && !validThemes.includes(prefs.theme)
+      ) {
         return c.json({ error: 'Invalid theme value. Must be light, dark, or system.' }, 400);
       }
-      updates.preferences = body.preferences;
+      updates.preferences = prefs;
     } else if (body.preferences === null) {
       updates.preferences = undefined;
     }
   }
 
-  if (body.email && typeof body.email === 'string') {
+  if (body.email) {
     const normalizedEmail = body.email.toLowerCase().trim().slice(0, 255);
-    // Basic email format validation
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return c.json({ error: 'Invalid email format' }, 400);
-    }
     // Check uniqueness
     const [existing] = await db
       .select({ id: users.id })

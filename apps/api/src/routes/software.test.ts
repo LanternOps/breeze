@@ -124,6 +124,35 @@ describe('software routes', () => {
     });
   });
 
+  describe('POST /software/deploy validation', () => {
+    it('rejects empty body with 400 (missing softwareId)', async () => {
+      const res = await app.request('/software/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({})
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects non-UUID softwareId with 400', async () => {
+      const res = await app.request('/software/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ softwareId: 'not-a-uuid', version: '1.0.0' })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects missing version with 400', async () => {
+      const res = await app.request('/software/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ softwareId: '11111111-1111-1111-1111-111111111111' })
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
 });
 
 describe('computeSoftwareDeploymentAggregateStatus', () => {

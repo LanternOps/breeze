@@ -10,6 +10,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { getTrustedClientIp } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
 import {
   AutomationValidationError,
@@ -844,7 +845,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     automation,
     triggeredBy: 'webhook',
     details: {
-      sourceIp: c.req.header('x-forwarded-for') ?? c.req.header('cf-connecting-ip') ?? 'unknown',
+      sourceIp: getTrustedClientIp(c, 'unknown'),
       userAgent: c.req.header('user-agent') ?? 'unknown',
       payload,
     },

@@ -102,6 +102,34 @@ describe('integration compatibility routes', () => {
     expect(test.status).toBe(200);
   });
 
+  it('rejects oversized integration payload (>16KB) with 400', async () => {
+    const huge = 'x'.repeat(20 * 1024);
+    const res = await app.request('/integrations/slack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ workspaceName: 'Acme', blob: huge })
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects non-object JSON bodies with 400', async () => {
+    const res = await app.request('/integrations/slack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(['not', 'an', 'object'])
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects malformed JSON body with 400', async () => {
+    const res = await app.request('/integrations/slack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: '{not-json'
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('supports psa read/write/test compatibility', async () => {
     const initial = await app.request('/integrations/psa', {
       method: 'GET',
