@@ -95,7 +95,12 @@ vi.mock('../jobs/monitorWorker', () => ({
 }));
 
 vi.mock('../services/redis', () => ({
-  isRedisAvailable: vi.fn(() => false)
+  isRedisAvailable: vi.fn(() => false),
+  getRedis: vi.fn(() => null)
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 5, resetAt: new Date() })
 }));
 
 vi.mock('../services/eventBus', () => ({
@@ -112,13 +117,14 @@ vi.mock('../services/restoreResultPersistence', () => ({
 }));
 
 import { db } from '../db';
-import { createAgentWsHandlers } from './agentWs';
+import { createAgentWsHandlers, createAgentWsRoutes } from './agentWs';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
 import { getActiveTerminalSession, handleTerminalOutput } from './terminalWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
+import { rateLimiter } from '../services/rate-limit';
 
 function wsMock() {
   return {
@@ -589,5 +595,140 @@ describe('agent websocket command results', () => {
 
     expect(vi.mocked(enqueueSnmpPollResults)).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // H5: malformed term-* command_result is dropped without DB call
+  it('drops malformed term-* command_result without touching DB (H5)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Invalid status value — schema rejects before any DB lookup
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'term-start-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'totally-not-a-real-status',
+        result: { sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    // No ack on malformed fast-path messages — they are silently dropped after warn.
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Dropping malformed term-command_result'));
+    warnSpy.mockRestore();
+  });
+
+  it('drops malformed terminal_output without invoking handleTerminalOutput (H5)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Missing required `data` field
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'terminal_output',
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+      })
+    } as any, ws as any);
+
+    expect(vi.mocked(handleTerminalOutput)).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Dropping malformed terminal_output'));
+    warnSpy.mockRestore();
+  });
+
+  // M-D1: 10 cross-tenant drops within 5 min triggers warn
+  it('emits cross-tenant probe warning after threshold drops (M-D1)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-malicious', preValidatedAgent);
+    const ws = wsMock();
+
+    // Owner mismatch: session belongs to a DIFFERENT agent
+    vi.mocked(getActiveTerminalSession).mockReturnValue({
+      agentId: 'other-agent',
+      userId: 'user-1',
+      deviceId: 'device-other',
+      startedAt: new Date(),
+      lastPongAt: Date.now(),
+      userWs: wsMock() as any,
+    } as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Send 10 schema-passing-but-ownership-failing terminal_output messages.
+    for (let i = 0; i < 10; i += 1) {
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'terminal_output',
+          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          data: 'probe',
+        })
+      } as any, ws as any);
+    }
+
+    // The probe-pattern warning is emitted exactly once after the threshold.
+    const probeWarnings = warnSpy.mock.calls.filter(call =>
+      typeof call[0] === 'string' && call[0].includes('cross-tenant probe pattern')
+    );
+    expect(probeWarnings.length).toBe(1);
+    expect(probeWarnings[0]?.[0]).toContain('agent=agent-malicious');
+    expect(probeWarnings[0]?.[0]).toContain('drops=10');
+    warnSpy.mockRestore();
+  });
+
+  // H4: connection without Bearer header returns 401 (and rejects ?token=)
+  describe('H4 — agent WS auth', () => {
+    function makeStubUpgrade() {
+      // Stub upgradeWebSocket so route mounting doesn't require a real WS.
+      // If middleware lets the request through, this is what runs.
+      return (_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 });
+    }
+
+    it('rejects connection without Authorization: Bearer header', async () => {
+      const app = createAgentWsRoutes(makeStubUpgrade());
+      const res = await app.request('/00000000-0000-4000-8000-000000000000/ws');
+      expect(res.status).toBe(401);
+    });
+
+    it('does NOT accept token via ?token= query param (H4 fallback removed)', async () => {
+      const app = createAgentWsRoutes(makeStubUpgrade());
+      const res = await app.request('/00000000-0000-4000-8000-000000000000/ws?token=brz_should_be_ignored');
+      // Without a Bearer header we reject as 401 even when ?token= is supplied.
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // M-D2: rate limiter calls the Redis helper with the expected key/limit
+  it('M-D2 rate limiter delegates to Redis sliding-window helper', async () => {
+    const { getRedis } = await import('../services/redis');
+    // Pretend Redis is available so the helper is consulted (not in-memory fallback).
+    const fakeRedis = {} as any;
+    vi.mocked(getRedis).mockReturnValueOnce(fakeRedis);
+
+    const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
+    await app.request('/agent-xyz/ws');
+
+    expect(rateLimiter).toHaveBeenCalledWith(
+      fakeRedis,
+      'agentws:conn:agent-xyz',
+      6,
+      60
+    );
+  });
+
+  it('M-D2 rejects with 429 when Redis rate-limit helper returns not allowed', async () => {
+    const { getRedis } = await import('../services/redis');
+    vi.mocked(getRedis).mockReturnValueOnce({} as any);
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
+    const res = await app.request('/agent-overlimit/ws');
+    expect(res.status).toBe(429);
   });
 });
