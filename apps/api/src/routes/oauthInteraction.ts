@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthClients, partners, partnerUsers, users } from '../db/schema';
+import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users } from '../db/schema';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -271,39 +271,51 @@ if (MCP_OAUTH_ENABLED) {
       throw new HTTPException(500, { message: 'failed to persist grant metadata' });
     }
 
-    // H2: bind partner_id ONLY on the FIRST partner that consents. The same
-    // DCR `client_id` is shared across tenants (e.g. Claude.ai registers
-    // once, every Breeze partner uses the same row). Unconditional UPDATE
-    // would let the most-recent consenting partner stomp the row's binding,
-    // breaking the connected-apps UI for every other partner that already
-    // installed it. The grants/refresh tokens themselves are still correctly
-    // partitioned by `oauth_grants.partner_id` / `oauth_refresh_tokens.partner_id`,
-    // so the auth surface is unaffected.
+    // H2 proper fix: record the (client, partner) relationship in the
+    // `oauth_client_partner_grants` join table instead of stomping the
+    // single-winner `oauth_clients.partner_id` column. A DCR client_id is
+    // shared across every Breeze partner (Claude.ai registers once; every
+    // tenant reuses the same row), so each partner needs its own visibility
+    // + revocation record. INSERT-on-conflict-do-update: first consent
+    // creates the row; subsequent consents bump `last_consented_at`.
     //
-    // TODO(security): the proper long-term fix is a join table
-    // `oauth_client_partner_grants(client_id, partner_id, first_consented_at)`
-    // so each (client, partner) pair has its own visibility/revocation row.
-    // Tracked in the OAuth security audit doc.
+    // TODO(security, post-transition): once we've confirmed no callers
+    // still rely on `oauth_clients.partner_id` for authorization, drop the
+    // column in a follow-up migration. The adapter already writes NULL
+    // there on DCR and the consent route no longer touches it.
     const clientIdForUpdate = details.params.client_id as string;
-    const updateResult = await asSystem(async () => {
-      const rows = await db.update(oauthClients)
-        .set({ partnerId: body.partner_id })
-        .where(and(
-          eq(oauthClients.id, clientIdForUpdate),
-          isNull(oauthClients.partnerId),
-        ))
-        .returning({ id: oauthClients.id });
+    const insertResult = await asSystem(async () => {
+      const rows = await db.insert(oauthClientPartnerGrants)
+        .values({ clientId: clientIdForUpdate, partnerId: body.partner_id })
+        .onConflictDoUpdate({
+          target: [oauthClientPartnerGrants.clientId, oauthClientPartnerGrants.partnerId],
+          set: { lastConsentedAt: new Date() },
+        })
+        .returning({
+          firstConsentedAt: oauthClientPartnerGrants.firstConsentedAt,
+          lastConsentedAt: oauthClientPartnerGrants.lastConsentedAt,
+        });
       return rows;
     });
-    const partnerBound = updateResult.length > 0;
-    // LOW: emit an audit-log entry so cross-tenant contention on shared DCR
-    // client rows is observable. `partner_bound` is the first-consent path,
-    // `partner_bind_skipped` is the (expected, but visibility-relevant)
-    // case where another partner had already claimed the row.
+    // First-consent detection: onConflictDoUpdate always returns a row, so
+    // we distinguish "newly inserted" vs. "conflict-updated" by comparing
+    // firstConsentedAt and lastConsentedAt — a fresh INSERT produces two
+    // equal timestamps (both default to now()), whereas a conflict-update
+    // bumps only `lastConsentedAt`.
+    const grantRow = insertResult[0];
+    const partnerGrantRecorded =
+      !!grantRow &&
+      grantRow.firstConsentedAt.getTime() === grantRow.lastConsentedAt.getTime();
+    // LOW: emit an audit-log entry so cross-tenant activity on shared DCR
+    // client rows is observable. `partner_grant_recorded` is the first
+    // consent from this partner, `partner_grant_refreshed` is a re-consent
+    // (e.g. the app was revoked and the user re-authorized it).
     try {
       writeRouteAudit(c as any, {
         orgId: orgId,
-        action: partnerBound ? 'oauth.client.partner_bound' : 'oauth.client.partner_bind_skipped',
+        action: partnerGrantRecorded
+          ? 'oauth.client.partner_grant_recorded'
+          : 'oauth.client.partner_grant_refreshed',
         resourceType: 'oauth_client',
         resourceId: clientIdForUpdate,
         details: {
@@ -317,7 +329,7 @@ if (MCP_OAUTH_ENABLED) {
       // fails. Surface to stderr/Sentry via the existing OAuth logger.
       logOauthError({
         errorId: ERROR_IDS.OAUTH_PROVIDER_SERVER_ERROR,
-        message: 'Failed to write partner-bind audit event',
+        message: 'Failed to write partner-grant audit event',
         err,
         context: { clientId: clientIdForUpdate, partnerId: body.partner_id },
       });

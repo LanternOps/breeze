@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   auth: {} as any,
   select: vi.fn(),
   update: vi.fn(),
+  delete: vi.fn(),
   revokeJti: vi.fn(async () => undefined),
   // revokeGrant is called in addition to revokeJti so that revoking a
   // connected app immediately kills every in-flight access JWT minted from
@@ -28,7 +29,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: { select: mocks.select, update: mocks.update },
+  db: { select: mocks.select, update: mocks.update, delete: mocks.delete },
 }));
 
 vi.mock('../oauth/revocationCache', () => ({
@@ -52,9 +53,14 @@ function resetAuth(partnerId: string | null = 'current-partner') {
 function queueSelect(rows: unknown[], mode: 'where' | 'limit' = 'where') {
   const limit = vi.fn(async () => rows);
   const where = mode === 'limit' ? vi.fn(() => ({ limit })) : vi.fn(async () => rows);
-  const from = vi.fn(() => ({ where }));
+  // The GET handler uses .from(...).innerJoin(...).where(...). The DELETE
+  // handler uses .from(...).where(...).limit(...) and .from(...).where(...).
+  // Expose innerJoin returning the same { where } so a single helper covers
+  // both shapes.
+  const innerJoin = vi.fn(() => ({ where }));
+  const from = vi.fn(() => ({ where, innerJoin }));
   mocks.select.mockImplementationOnce(() => ({ from }));
-  return { from, where, limit };
+  return { from, where, limit, innerJoin };
 }
 
 function queueUpdate() {
@@ -62,6 +68,12 @@ function queueUpdate() {
   const set = vi.fn(() => ({ where }));
   mocks.update.mockImplementationOnce(() => ({ set }));
   return { set, where };
+}
+
+function queueDelete() {
+  const where = vi.fn(async () => []);
+  mocks.delete.mockImplementationOnce(() => ({ where }));
+  return { where };
 }
 
 async function loadApp(enabled = true) {
@@ -173,9 +185,11 @@ describe('connectedAppsRoutes', () => {
     });
   });
 
-  it('filters GET clients by partner id', async () => {
+  it('filters GET clients by partner id (via the join table)', async () => {
     queueSelect([]);
     await (await loadApp()).request('/api/v1/settings/connected-apps');
+    // After the H2 proper fix, the partner filter is on
+    // `oauth_client_partner_grants.partner_id`, not `oauth_clients.partner_id`.
     expect(mocks.eq).toHaveBeenCalledWith(expect.objectContaining({ name: 'partner_id' }), 'current-partner');
   });
 
@@ -188,18 +202,23 @@ describe('connectedAppsRoutes', () => {
     expect(await res.json()).toEqual({ message: 'partner scope required' });
     expect(mocks.select).not.toHaveBeenCalled();
     expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.delete).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when deleting a missing client', async () => {
+  it('returns 404 when this partner has no join row for the client', async () => {
+    // Lookup is now against oauth_client_partner_grants — a missing row means
+    // either the client doesn't exist or another partner installed it but
+    // this one didn't. Either way, return 404 without touching anything.
     queueSelect([], 'limit');
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-missing', {
       method: 'DELETE',
     });
     expect(res.status).toBe(404);
     expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.delete).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when deleting a client owned by another partner', async () => {
+  it('returns 404 when deleting a client where another partner has the join row', async () => {
     queueSelect([], 'limit');
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/other-client', {
       method: 'DELETE',
@@ -208,9 +227,13 @@ describe('connectedAppsRoutes', () => {
     expect(mocks.eq).toHaveBeenCalledWith(expect.objectContaining({ name: 'partner_id' }), 'current-partner');
   });
 
-  it('disables the client, revokes refresh tokens, and cache-revokes token jtis', async () => {
-    queueSelect([{ id: 'client-1', disabledAt: null }], 'limit');
-    const disableUpdate = queueUpdate();
+  it('removes the join row, revokes refresh tokens, and cache-revokes token jtis', async () => {
+    // Fix for H2 follow-up: deleting a connected app must NOT disable the
+    // shared `oauth_clients` row (other partners may still rely on it).
+    // Instead, drop this partner's join row and revoke this partner's
+    // refresh tokens.
+    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
+    const joinDelete = queueDelete();
     queueSelect([
       { id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) },
       { id: 'rt-2', payload: {}, expiresAt: new Date(Date.now() + 60_000) },
@@ -225,7 +248,9 @@ describe('connectedAppsRoutes', () => {
     });
 
     expect(res.status).toBe(204);
-    expect(disableUpdate.set).toHaveBeenCalledWith({ disabledAt: expect.any(Date) });
+    // No update on oauth_clients — the row stays for other partners.
+    expect(mocks.update).toHaveBeenCalledTimes(3); // 3 refresh-token revokes only
+    expect(joinDelete.where).toHaveBeenCalled();
     expect(revokeUpdate1.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
     expect(revokeUpdate2.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
     expect(revokeUpdate3.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
@@ -234,8 +259,17 @@ describe('connectedAppsRoutes', () => {
     expect(mocks.revokeJti).toHaveBeenCalledWith('jti-3', 1);
   });
 
-  it('returns 204 for an already-disabled client without updating disabled_at', async () => {
-    queueSelect([{ id: 'client-1', disabledAt: new Date('2026-04-20T12:00:00.000Z') }], 'limit');
+  it('does not touch oauth_clients on revoke (other partners may still need the shared row)', async () => {
+    // Two-partner scenario: Partner A revokes; Partner B's join row should
+    // be untouched. We can't fully observe Partner B's row in this unit
+    // test (mocks are scoped by call), but we CAN assert the route never
+    // calls db.update against oauth_clients. The test below queues only
+    // the join select + the join delete + an empty token list — if the
+    // route tried to flip oauth_clients.disabled_at, mocks.update would
+    // be invoked once with no queueUpdate ready (and the test would error
+    // on the unmocked chain).
+    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
+    queueDelete();
     queueSelect([]);
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
@@ -245,8 +279,8 @@ describe('connectedAppsRoutes', () => {
   });
 
   it('returns 204 No Content for a successful delete', async () => {
-    queueSelect([{ id: 'client-1', disabledAt: null }], 'limit');
-    queueUpdate();
+    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
+    queueDelete();
     queueSelect([]);
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
@@ -262,8 +296,8 @@ describe('connectedAppsRoutes', () => {
     // partial revoke is a critical security gap.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     mocks.revokeJti.mockRejectedValueOnce(new Error('redis down'));
-    queueSelect([{ id: 'client-1', disabledAt: null }], 'limit');
-    queueUpdate();
+    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
+    queueDelete();
     queueSelect([{ id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) }]);
     queueUpdate();
 
@@ -281,8 +315,8 @@ describe('connectedAppsRoutes', () => {
     // unique grant) — the dedup matters because rotation can produce many
     // refresh-token rows for the same grant and we don't want to thrash
     // Redis with redundant SETs.
-    queueSelect([{ id: 'client-1', disabledAt: null }], 'limit');
-    queueUpdate();
+    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
+    queueDelete();
     queueSelect([
       { id: 'rt-1', payload: { jti: 'jti-1', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
       { id: 'rt-2', payload: { jti: 'jti-2', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
