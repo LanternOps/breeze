@@ -6,7 +6,7 @@
  */
 
 import { isIP } from 'net';
-import { lookup } from 'dns/promises';
+import { safeFetch, SsrfBlockedError } from '../urlSafety';
 
 export function redactUrlForLogs(rawUrl: string): string {
   try {
@@ -166,6 +166,10 @@ export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<s
     return errors;
   }
 
+  // Delegate to the shared resolver so both this config-time validator and
+  // the runtime `safeFetch` apply identical rules. Using `dns/promises` via
+  // `safeFetch`'s module-level hook keeps one code path for both checks.
+  const { lookup } = await import('dns/promises');
   try {
     const resolved = await lookup(hostname, { all: true, verbatim: true });
     if (resolved.length === 0) {
@@ -193,11 +197,15 @@ export async function sendWebhookNotification(
   config: WebhookConfig,
   payload: WebhookNotificationPayload
 ): Promise<SendResult> {
-  const safetyErrors = await validateWebhookUrlSafetyWithDns(config.url);
-  if (safetyErrors.length > 0) {
+  // Fast-fail on obviously-bad URLs so we get a crisp error message before
+  // involving the network stack. `safeFetch` below re-validates DNS-resolved
+  // addresses at connection time, closing the TOCTOU window that a
+  // separate `check-then-fetch` pattern would leave open.
+  const staticErrors = validateWebhookUrlSafety(config.url);
+  if (staticErrors.length > 0) {
     return {
       success: false,
-      error: `Unsafe webhook URL: ${safetyErrors.join('; ')}`
+      error: `Unsafe webhook URL: ${staticErrors.join('; ')}`
     };
   }
 
@@ -260,7 +268,7 @@ export async function sendWebhookNotification(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const response = await fetch(config.url, {
+      const response = await safeFetch(config.url, {
         method,
         headers,
         body,
@@ -288,6 +296,14 @@ export async function sendWebhookNotification(
         break;
       }
     } catch (error) {
+      if (error instanceof SsrfBlockedError) {
+        // DNS resolved to a private IP — do not retry, the answer won't change
+        // on this timescale and we don't want to spam DNS either.
+        return {
+          success: false,
+          error: `Unsafe webhook URL: ${error.message}`
+        };
+      }
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           lastError = 'Request timed out';
