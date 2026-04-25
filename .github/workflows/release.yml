@@ -716,7 +716,11 @@ jobs:
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
           if [ -z "$APPLE_INSTALLER_IDENTITY" ]; then
-            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg signing"
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::APPLE_INSTALLER_IDENTITY required for tag releases (productsign would silently skip, shipping unsigned .pkgs that fail downstream Installer.app notarization)"
+              exit 1
+            fi
+            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg signing (non-tag build)"
             exit 0
           fi
           for pkg in staging/*.pkg; do
@@ -735,7 +739,11 @@ jobs:
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
           if [ -z "$APPLE_INSTALLER_IDENTITY" ]; then
-            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg notarization"
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::APPLE_INSTALLER_IDENTITY required for tag releases (.pkgs would skip notarization and fail downstream Installer.app notarization)"
+              exit 1
+            fi
+            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg notarization (non-tag build)"
             exit 0
           fi
           for pkg in staging/*.pkg; do
