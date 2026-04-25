@@ -621,6 +621,54 @@ describe('oauthInteractionRoutes', () => {
     expect(await res.json()).toEqual({ message: 'invalid_scope' });
   });
 
+  it('H3: login-prompt fallback grants params.scope when prompt.details is empty', async () => {
+    // First-visit single-step flow: oidc-provider has issued a `login`
+    // prompt but not yet a `consent` prompt, so `prompt.details` is empty.
+    // The consent UI in this state is rendered from `details.params.scope`,
+    // so the H3 displayed-scope check must fall back to the request param.
+    // Without this fallback the consent POST would 400 on every fresh
+    // login+consent cycle (regression caught by the OAuth integration test
+    // in CI smoke).
+    const d = details({
+      session: undefined,
+      prompt: { name: 'login', details: {} },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueUpdate(); // setGrantBreezeMeta on oauth_grants
+    queueInsertGrantReturning({ firstConsented: true });
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(mocks.Grant.instances[0]?.addOIDCScope)
+      .toHaveBeenCalledWith('openid offline_access mcp:read mcp:write');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
+  });
+
+  it('GET /interaction/:uid: login-prompt fallback returns scopes from params', async () => {
+    // Mirror of the POST fallback: the GET endpoint serving the consent UI
+    // must surface the requested scopes when prompt.details is empty,
+    // otherwise the user sees a blank consent screen.
+    const d = details({
+      session: { accountId: 'u1' },
+      lastSubmission: { accountId: 'u1' },
+      prompt: { name: 'login', details: {} },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme' }]);
+    queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scopes: string[] };
+    expect(body.scopes).toEqual(['openid', 'offline_access', 'mcp:read', 'mcp:write']);
+  });
+
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {
     const res = await request(await loadApp(false), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(404);

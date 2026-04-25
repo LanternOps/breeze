@@ -147,13 +147,24 @@ if (MCP_OAUTH_ENABLED) {
       (typeof (details.params as any).client_name === 'string' && (details.params as any).client_name) ||
       clientId;
 
+    // On a first-visit single-step flow the prompt is `login`, and
+    // `prompt.details.scopes.new` doesn't exist yet — fall back to the
+    // request's scope param so the consent UI still renders the scopes
+    // the user is being asked to approve. Same rationale as the
+    // `displayedScopeSet` fallback in POST /consent below.
+    const promptScopesNew = ((details.prompt.details as any)?.scopes?.new ?? []) as string[];
+    const requestScopes =
+      (details.params.scope as string | undefined)?.split(' ').filter(Boolean) ?? [];
+    const displayScopes =
+      promptScopesNew.length > 0 ? promptScopesNew : requestScopes;
+
     return c.json({
       uid: details.uid,
       client: {
         client_id: clientId,
         client_name: clientName,
       },
-      scopes: ((details.prompt.details as any)?.scopes?.new ?? []) as string[],
+      scopes: displayScopes,
       resource: resource ?? null,
       partners: memberships,
     });
@@ -234,6 +245,22 @@ if (MCP_OAUTH_ENABLED) {
       ...((promptDetails.missingOIDCScope as string[] | undefined) ?? []),
       ...Object.values(missingResourceScopes).flat(),
     ]);
+    // When the interaction is in the `login` prompt (the single-step
+    // login+consent flow this route handles, where the user has no prior
+    // OIDC session), oidc-provider hasn't generated consent metadata yet —
+    // `prompt.details` is empty. The consent UI in that state is rendered
+    // from `details.params.scope` itself (see the GET `/interaction/:uid`
+    // handler above, and `apps/web/src/components/oauth/ConsentForm.tsx`),
+    // so falling back to the request's scope param here matches what the
+    // user actually saw on screen. The H3 invariant — "don't grant a scope
+    // the consent UI didn't display" — still holds because the request
+    // scope passed through oidc-provider's `scopes` whitelist before this
+    // point. Without this fallback, the security check 400s on every
+    // first-visit consent (regression caught by the OAuth integration
+    // test in CI smoke).
+    if (displayedScopeSet.size === 0 && (details.prompt as any)?.name === 'login') {
+      for (const s of requestedScopes) displayedScopeSet.add(s);
+    }
     const grantedScopes = requestedScopes.filter((s) => displayedScopeSet.has(s));
     if (requestedScopes.length > 0 && grantedScopes.length === 0) {
       throw new HTTPException(400, { message: 'invalid_scope' });
