@@ -58,7 +58,10 @@ describe('requirePaymentMethod', () => {
       expect((e as PaymentRequiredError).code).toBe('PAYMENT_REQUIRED');
       expect((e as PaymentRequiredError).remediation).toEqual({
         tool: 'attach_payment_method',
-        args: { tenant_id: 'p1' },
+        args: {
+          tenant_id: 'p1',
+          bootstrap_secret: '<bootstrap_secret returned by create_tenant>',
+        },
       });
     }
   });

@@ -1,5 +1,11 @@
 import Provider from 'oidc-provider';
-import { OAUTH_COOKIE_SECRET, OAUTH_CONSENT_URL_BASE, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import {
+  OAUTH_COOKIE_SECRET,
+  OAUTH_CONSENT_URL_BASE,
+  OAUTH_DCR_ENABLED,
+  OAUTH_ISSUER,
+  OAUTH_RESOURCE_URL,
+} from '../config/env';
 import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
@@ -12,6 +18,7 @@ let providerInstance: Provider | null = null;
 // grant-revocation cache marker (see revocationCache.revokeGrant) so the
 // marker outlives every JWT derived from the grant.
 export const ACCESS_TOKEN_TTL_SECONDS = 600;
+export const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
 
 export async function buildExtraTokenClaims(
   ctx: any,
@@ -29,7 +36,7 @@ export async function buildExtraTokenClaims(
   // fall back to the DB row for refresh-token grants that span an API
   // restart between consent and the next token exchange.
   const cached = getGrantBreezeMeta(grantId);
-  const meta = cached ?? (await getGrantBreezeMetaAsync(grantId)) ?? grant.breeze;
+  const meta = cached ?? grant.breeze ?? (await getGrantBreezeMetaAsync(grantId));
   // Invariant: no null-claim JWT EVER leaves the server. If a grant_id is
   // present (the only case that produces a real access token), we must be
   // able to resolve its tenancy — otherwise bearer middleware would later
@@ -59,17 +66,30 @@ export async function buildExtraTokenClaims(
   };
 }
 
-export function handleRevocationSuccess(
-  _ctx: any,
+export async function handleRevocationSuccess(
+  ctx: any,
   token: { jti?: string; exp?: number },
   deps: { revokeJti: (jti: string, ttl: number) => Promise<void>; now?: () => number } = { revokeJti },
-): void {
+): Promise<void> {
   if (!token.jti || !token.exp) return;
   const nowMs = deps.now?.() ?? Date.now();
   const ttl = Math.max(token.exp - Math.floor(nowMs / 1000), 1);
-  deps.revokeJti(token.jti, ttl).catch((err) => {
-    console.error('[oauth] revocation cache write failed', err);
-  });
+  // Await the cache write and rethrow on failure so oidc-provider returns
+  // a 5xx — fire-and-forget swallowed Redis outages, leaving the operator
+  // with no signal that revocation had stopped working.
+  try {
+    await deps.revokeJti(token.jti, ttl);
+  } catch (err) {
+    const clientId = (ctx?.oidc?.client?.clientId as string | undefined)
+      ?? (ctx?.oidc?.entities?.Client?.clientId as string | undefined);
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+      message: 'Revocation cache write failed in handleRevocationSuccess',
+      err,
+      context: { jti: token.jti, clientId },
+    });
+    throw err;
+  }
 }
 
 export async function getProvider(): Promise<Provider> {
@@ -108,11 +128,11 @@ export async function getProvider(): Promise<Provider> {
     },
     findAccount,
     enabledJWA: {
-      idTokenSigningAlgValues: ['EdDSA', 'RS256'],
-      requestObjectSigningAlgValues: ['EdDSA', 'RS256'],
-      userinfoSigningAlgValues: ['EdDSA', 'RS256'],
-      introspectionSigningAlgValues: ['EdDSA', 'RS256'],
-      authorizationSigningAlgValues: ['EdDSA', 'RS256'],
+      idTokenSigningAlgValues: ['EdDSA'],
+      requestObjectSigningAlgValues: ['EdDSA'],
+      userinfoSigningAlgValues: ['EdDSA'],
+      introspectionSigningAlgValues: ['EdDSA'],
+      authorizationSigningAlgValues: ['EdDSA'],
     },
     // oidc-provider's default `issueRefreshToken` returns false unless the
     // auth code's scopes include `offline_access`. The OIDC core spec then
@@ -132,15 +152,15 @@ export async function getProvider(): Promise<Provider> {
       client.grantTypeAllowed('refresh_token'),
     features: {
       devInteractions: { enabled: false },
-      registration: { enabled: true, initialAccessToken: false },
-      registrationManagement: { enabled: true },
+      registration: { enabled: OAUTH_DCR_ENABLED, initialAccessToken: false },
+      registrationManagement: { enabled: OAUTH_DCR_ENABLED },
       revocation: { enabled: true },
       introspection: { enabled: true },
       resourceIndicators: {
         enabled: true,
         defaultResource: () => OAUTH_RESOURCE_URL,
         getResourceServerInfo: (_ctx: any, resource: string) => ({
-          scope: 'mcp:read mcp:write',
+          scope: 'mcp:read mcp:write mcp:execute',
           accessTokenFormat: 'jwt' as const,
           accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
           audience: resource,
@@ -149,14 +169,14 @@ export async function getProvider(): Promise<Provider> {
         useGrantedResource: (_ctx: any, _model: any) => true,
       },
     },
-    scopes: ['openid', 'offline_access', 'mcp:read', 'mcp:write'],
+    scopes: ['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute'],
     // S256 is the only PKCE method supported in oidc-provider v8 (the spec
     // dropped `plain`); pass only `required`.
     pkce: { required: () => true },
     ttl: {
       AccessToken: ACCESS_TOKEN_TTL_SECONDS,
       AuthorizationCode: 600,
-      RefreshToken: 60 * 24 * 60 * 60,
+      RefreshToken: REFRESH_TOKEN_TTL_SECONDS,
       Session: 14 * 24 * 60 * 60,
       Interaction: 60 * 60,
       Grant: 14 * 24 * 60 * 60,

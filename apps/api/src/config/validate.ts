@@ -86,6 +86,8 @@ const envSchema = z
     CORS_ALLOWED_ORIGINS: z.string().optional(),
     FORCE_HTTPS: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
+    AGENT_ENROLLMENT_SECRET: z.string().optional(),
+    ENROLLMENT_KEY_PEPPER: z.string().optional(),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -134,6 +136,53 @@ PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
           message:
             'JWT_SECRET must be at least 32 characters in production. Generate a strong random secret (e.g. openssl rand -base64 64).',
         });
+      }
+
+      const agentEnrollmentSecret = data.AGENT_ENROLLMENT_SECRET?.trim();
+      if (!agentEnrollmentSecret) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AGENT_ENROLLMENT_SECRET'],
+          message:
+            'AGENT_ENROLLMENT_SECRET must be set in production. Generate a strong random secret (e.g. openssl rand -base64 32).',
+        });
+      } else {
+        if (looksInsecure(agentEnrollmentSecret)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AGENT_ENROLLMENT_SECRET'],
+            message:
+              'AGENT_ENROLLMENT_SECRET is set to an insecure default/placeholder value. Generate a strong random secret (e.g. openssl rand -base64 32).',
+          });
+        }
+        if (agentEnrollmentSecret.length < 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AGENT_ENROLLMENT_SECRET'],
+            message:
+              'AGENT_ENROLLMENT_SECRET must be at least 32 characters in production when configured. Generate a strong random secret (e.g. openssl rand -base64 32).',
+          });
+        }
+      }
+
+      const enrollmentKeyPepper = data.ENROLLMENT_KEY_PEPPER?.trim();
+      if (enrollmentKeyPepper) {
+        if (looksInsecure(enrollmentKeyPepper)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['ENROLLMENT_KEY_PEPPER'],
+            message:
+              'ENROLLMENT_KEY_PEPPER is set to an insecure default/placeholder value. Generate a strong random secret (e.g. openssl rand -base64 32).',
+          });
+        }
+        if (enrollmentKeyPepper.length < 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['ENROLLMENT_KEY_PEPPER'],
+            message:
+              'ENROLLMENT_KEY_PEPPER must be at least 32 characters in production when configured. Generate a strong random secret (e.g. openssl rand -base64 32).',
+          });
+        }
       }
 
       if (!data.CORS_ALLOWED_ORIGINS || data.CORS_ALLOWED_ORIGINS.trim() === '*') {
@@ -202,15 +251,9 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       });
     }
 
-    // Warn if agent enrollment relies only on enrollment keys. This is valid,
-    // but operators should know they are not using the optional shared-secret gate.
-    if (!env.AGENT_ENROLLMENT_SECRET || env.AGENT_ENROLLMENT_SECRET.trim() === '') {
-      warnings.push({
-        key: 'AGENT_ENROLLMENT_SECRET',
-        message:
-          '[SECURITY WARNING] AGENT_ENROLLMENT_SECRET is not configured. In production, enrollment will be blocked unless a per-key secret hash is set. Set AGENT_ENROLLMENT_SECRET to add a deployment-wide second factor.',
-      });
-    }
+    // (AGENT_ENROLLMENT_SECRET is now a hard error in production — see the
+    // schema superRefine. No warning needed here; the validator throws if
+    // it's missing or weak.)
   }
 
   // Warn about optional secrets that look insecure
@@ -269,6 +312,8 @@ export function validateConfig(): AppConfig {
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
     FORCE_HTTPS: env.FORCE_HTTPS,
     TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
+    AGENT_ENROLLMENT_SECRET: env.AGENT_ENROLLMENT_SECRET,
+    ENROLLMENT_KEY_PEPPER: env.ENROLLMENT_KEY_PEPPER,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     NODE_ENV: env.NODE_ENV,

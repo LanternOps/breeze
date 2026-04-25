@@ -103,12 +103,14 @@ describe('connectedAppsRoutes', () => {
         metadata: { client_name: 'Claude Desktop', redirect_uris: ['https://secret.example/cb'] },
         createdAt: new Date('2026-04-20T12:00:00.000Z'),
         lastUsedAt: new Date('2026-04-22T12:00:00.000Z'),
+        disabledAt: null,
       },
       {
         clientId: 'client-2',
         metadata: {},
         createdAt: new Date('2026-04-21T12:00:00.000Z'),
         lastUsedAt: null,
+        disabledAt: null,
       },
     ]);
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
@@ -136,6 +138,39 @@ describe('connectedAppsRoutes', () => {
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ clients: [] });
+  });
+
+  it('omits disabled clients from the connected app list', async () => {
+    queueSelect([
+      {
+        clientId: 'client-1',
+        metadata: { client_name: 'Revoked app' },
+        createdAt: new Date('2026-04-20T12:00:00.000Z'),
+        lastUsedAt: null,
+        disabledAt: new Date('2026-04-23T12:00:00.000Z'),
+      },
+      {
+        clientId: 'client-2',
+        metadata: { client_name: 'Active app' },
+        createdAt: new Date('2026-04-21T12:00:00.000Z'),
+        lastUsedAt: null,
+        disabledAt: null,
+      },
+    ]);
+
+    const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      clients: [
+        {
+          client_id: 'client-2',
+          client_name: 'Active app',
+          created_at: '2026-04-21T12:00:00.000Z',
+          last_used_at: null,
+        },
+      ],
+    });
   });
 
   it('filters GET clients by partner id', async () => {

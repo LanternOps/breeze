@@ -14,7 +14,7 @@ import { partners } from '../../db/schema';
  */
 export class PaymentRequiredError extends Error {
   code = 'PAYMENT_REQUIRED' as const;
-  remediation: { tool: string; args: { tenant_id: string } };
+  remediation: { tool: string; args: { tenant_id: string; bootstrap_secret: string } };
 
   constructor(public partnerId: string) {
     super(
@@ -23,7 +23,10 @@ export class PaymentRequiredError extends Error {
     this.name = 'PaymentRequiredError';
     this.remediation = {
       tool: 'attach_payment_method',
-      args: { tenant_id: partnerId },
+      args: {
+        tenant_id: partnerId,
+        bootstrap_secret: '<bootstrap_secret returned by create_tenant>',
+      },
     };
   }
 }

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
+import { createHash } from 'node:crypto';
 import { createLocalJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { getProvider } from '../oauth/provider';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { MCP_OAUTH_ENABLED, OAUTH_DCR_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { loadPublicJwks } from '../oauth/keys';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
@@ -13,12 +14,30 @@ import { ERROR_IDS, logOauthError } from '../oauth/log';
 // rate-limit middleware itself only ever runs at request time.
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import { getTrustedClientIp } from '../services/clientIp';
 
 export const oauthRoutes = new Hono<{ Bindings: HttpBindings }>();
 
 if (MCP_OAUTH_ENABLED) {
   const REVOCATION_BODY_MAX_BYTES = 64 * 1024;
+  const TOKEN_BODY_MAX_BYTES = 64 * 1024;
+  const REGISTRATION_BODY_MAX_BYTES = 64 * 1024;
+  const OAUTH_ALLOWED_DCR_SCOPES = new Set(['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute']);
+  const OAUTH_ALLOWED_DCR_GRANT_TYPES = new Set(['authorization_code', 'refresh_token']);
+  const OAUTH_ALLOWED_DCR_RESPONSE_TYPES = new Set(['code']);
+  const OAUTH_ALLOWED_DCR_TOKEN_AUTH_METHODS = new Set(['none']);
+  const OAUTH_REJECTED_DCR_METADATA = [
+    'jwks',
+    'jwks_uri',
+    'request_uris',
+    'sector_identifier_uri',
+    'software_statement',
+  ];
   let cachedRevocationJwks: ReturnType<typeof createLocalJWKSet> | null = null;
+
+  function rateLimitKeyPart(value: string): string {
+    return createHash('sha256').update(value).digest('hex').slice(0, 32);
+  }
 
   async function getRevocationJwks() {
     if (!cachedRevocationJwks) {
@@ -28,26 +47,21 @@ if (MCP_OAUTH_ENABLED) {
   }
 
   oauthRoutes.use('*', async (c, next) => {
-    const ip =
-      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-      c.env?.incoming?.socket?.remoteAddress ??
-      'unknown';
+    const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown');
     const sub = c.req.path.replace(/^\/oauth/, '');
+    const isRegistrationPath = sub === '/reg' || sub.startsWith('/reg/');
+    const hasRegistrationBody =
+      isRegistrationPath && (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH');
 
     let limit = 0;
     let windowSeconds = 0;
     let key = '';
 
-    if (c.req.method === 'POST' && sub === '/reg') {
+    if (isRegistrationPath && (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH' || c.req.method === 'DELETE')) {
       limit = 10;
       windowSeconds = 3600;
       key = `oauth:register:${ip}`;
     } else if (c.req.method === 'POST' && sub === '/token') {
-      // Key by IP only. We could key by client_id but that requires reading the
-      // request body, which would drain the underlying Node IncomingMessage
-      // stream and prevent oidc-provider's callback() from parsing the body.
-      // 60/min/IP is sufficient for MVP - burst protection is the goal here,
-      // not per-client granularity.
       limit = 60;
       windowSeconds = 60;
       key = `oauth:token:ip:${ip}`;
@@ -66,8 +80,239 @@ if (MCP_OAUTH_ENABLED) {
       if (!result.allowed) return c.json({ error: 'rate_limited' }, 429);
     }
 
+    if (isRegistrationPath && !OAUTH_DCR_ENABLED) {
+      return c.json({ error: 'registration_disabled' }, 404);
+    }
+
+    if (hasRegistrationBody) {
+      const raw = await readClonedBodyWithLimit(c.req.raw, REGISTRATION_BODY_MAX_BYTES);
+      if (raw === null) {
+        return c.json({ error: 'invalid_client_metadata', error_description: 'registration request body too large' }, 413);
+      }
+      if (raw.trim().length > 0) {
+        let metadata: Record<string, unknown>;
+        try {
+          metadata = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          // Reject malformed JSON outright — silently treating an
+          // unparseable body as `{}` would let oidc-provider's bridge run
+          // with no metadata at all, producing a confusing 400 from the
+          // bridge instead of the precise client-facing error here.
+          return c.json({
+            error: 'invalid_client_metadata',
+            error_description: 'malformed JSON',
+          }, 400);
+        }
+
+        const redirectUris = metadata.redirect_uris;
+        if (Array.isArray(redirectUris) && redirectUris.length > 10) {
+          return c.json({
+            error: 'invalid_client_metadata',
+            error_description: 'too many redirect_uris; maximum is 10',
+          }, 400);
+        }
+
+        if (typeof metadata.client_name === 'string' && metadata.client_name.length > 128) {
+          return c.json({
+            error: 'invalid_client_metadata',
+            error_description: 'client_name too long; maximum is 128 characters',
+          }, 400);
+        }
+
+        for (const key of OAUTH_REJECTED_DCR_METADATA) {
+          if (metadata[key] !== undefined) {
+            return c.json({
+              error: 'invalid_client_metadata',
+              error_description: `${key} is not supported`,
+            }, 400);
+          }
+        }
+
+        const tokenEndpointAuthMethod = metadata.token_endpoint_auth_method;
+        if (
+          typeof tokenEndpointAuthMethod === 'string' &&
+          !OAUTH_ALLOWED_DCR_TOKEN_AUTH_METHODS.has(tokenEndpointAuthMethod)
+        ) {
+          return c.json({
+            error: 'invalid_client_metadata',
+            error_description: 'token_endpoint_auth_method must be none',
+          }, 400);
+        }
+
+        const grantTypes = metadata.grant_types;
+        if (Array.isArray(grantTypes)) {
+          const unsupportedGrant = grantTypes.find((grant) =>
+            typeof grant !== 'string' || !OAUTH_ALLOWED_DCR_GRANT_TYPES.has(grant),
+          );
+          if (unsupportedGrant !== undefined) {
+            return c.json({
+              error: 'invalid_client_metadata',
+              error_description: `unsupported grant_type: ${String(unsupportedGrant)}`,
+            }, 400);
+          }
+        }
+
+        const responseTypes = metadata.response_types;
+        if (Array.isArray(responseTypes)) {
+          const unsupportedResponse = responseTypes.find((response) =>
+            typeof response !== 'string' || !OAUTH_ALLOWED_DCR_RESPONSE_TYPES.has(response),
+          );
+          if (unsupportedResponse !== undefined) {
+            return c.json({
+              error: 'invalid_client_metadata',
+              error_description: `unsupported response_type: ${String(unsupportedResponse)}`,
+            }, 400);
+          }
+        }
+
+        if (typeof metadata.scope === 'string') {
+          const unknownScopes = metadata.scope.split(/\s+/).filter((scope) =>
+            scope.length > 0 && !OAUTH_ALLOWED_DCR_SCOPES.has(scope),
+          );
+          if (unknownScopes.length > 0) {
+            return c.json({
+              error: 'invalid_client_metadata',
+              error_description: `unsupported scope: ${unknownScopes[0]}`,
+            }, 400);
+          }
+        }
+      }
+    }
+
+    if (c.req.method === 'POST' && sub === '/token') {
+      // Pre-buffer the body into `incoming.rawBody` so the oidc-provider
+      // bridge (which reads from the underlying Node IncomingMessage, not
+      // the Web Request stream) can replay it. @hono/node-server's
+      // request.js exposes a `rawBody` Buffer branch specifically for this.
+      // Without pre-buffering, draining `c.req.raw` here would leave the
+      // socket empty and the bridge would hang or fail. See finding #1.
+      //
+      // In unit tests Hono's `app.request()` runs without a real Node
+      // IncomingMessage, so we fall back to the Web Request body clone
+      // path used elsewhere; production traffic goes through the Node
+      // path and gets `rawBody` set for the bridge to replay.
+      const incoming = c.env?.incoming as
+        | (NodeJS.ReadableStream & { headers?: Record<string, unknown>; rawBody?: Buffer })
+        | undefined;
+      const hasNodeStream = !!incoming && typeof (incoming as any).on === 'function';
+      let buf: Buffer;
+      try {
+        if (hasNodeStream) {
+          buf = await readRawBodyToBuffer(incoming!, TOKEN_BODY_MAX_BYTES);
+          (incoming as unknown as { rawBody?: Buffer }).rawBody = buf;
+        } else {
+          const raw = await readClonedBodyWithLimit(c.req.raw, TOKEN_BODY_MAX_BYTES);
+          if (raw === null) {
+            return c.json({ error: 'invalid_request', error_description: 'token request body too large' }, 413);
+          }
+          buf = Buffer.from(raw, 'utf8');
+        }
+      } catch (err) {
+        if (err instanceof BodyTooLargeError) {
+          return c.json({ error: 'invalid_request', error_description: 'token request body too large' }, 413);
+        }
+        // Fail loud: legitimate clients don't send malformed bodies, and a
+        // silent fallthrough would let attackers bypass per-client RL by
+        // sending bodies designed to fail parsing. See finding #3.
+        logOauthError({
+          errorId: ERROR_IDS.OAUTH_TOKEN_BODY_READ_FAILED,
+          message: 'Failed to buffer token request body for per-client rate limit',
+          err,
+        });
+        return c.json({ error: 'invalid_request', error_description: 'token request body unreadable' }, 400);
+      }
+      const contentType = c.req.header('content-type') ?? '';
+      let clientId: string | null = null;
+      const raw = buf.toString('utf8');
+      if (/application\/x-www-form-urlencoded/i.test(contentType) || !contentType) {
+        try {
+          clientId = new URLSearchParams(raw).get('client_id');
+        } catch {
+          clientId = null;
+        }
+      } else if (/application\/json/i.test(contentType)) {
+        // Token endpoint per RFC 6749 is form-urlencoded; clients sending
+        // JSON are non-conformant. Don't crash on parse — fall through to
+        // IP-only RL but log so per-client RL bypass via JSON is visible.
+        try {
+          const parsed = JSON.parse(raw) as { client_id?: unknown };
+          if (typeof parsed.client_id === 'string') clientId = parsed.client_id;
+        } catch (err) {
+          logOauthError({
+            errorId: ERROR_IDS.OAUTH_TOKEN_BODY_READ_FAILED,
+            message: 'Token body JSON parse failed; falling back to IP-only rate limit',
+            err,
+          });
+        }
+      }
+      if (clientId) {
+        const result = await rateLimiter(
+          getRedis(),
+          `oauth:token:client:${rateLimitKeyPart(clientId)}`,
+          30,
+          60,
+        );
+        if (!result.allowed) return c.json({ error: 'rate_limited' }, 429);
+      }
+    }
+
     return next();
   });
+
+  class BodyTooLargeError extends Error {
+    constructor() {
+      super('body too large');
+      this.name = 'BodyTooLargeError';
+    }
+  }
+
+  /**
+   * Read the underlying Node IncomingMessage body into a Buffer up to
+   * `maxBytes`, throwing `BodyTooLargeError` on overflow. Used to pre-buffer
+   * the token endpoint body once so we can both (a) parse client_id for
+   * per-client rate limiting and (b) hand the raw bytes to the oidc-provider
+   * bridge via `incoming.rawBody`. See finding #1.
+   */
+  async function readRawBodyToBuffer(
+    incoming: { headers?: Record<string, unknown>; on?: any; once?: any } | undefined,
+    maxBytes: number,
+  ): Promise<Buffer> {
+    if (!incoming || typeof (incoming as any).on !== 'function') {
+      // No Node stream (e.g. Hono in-memory test request). Fall back to the
+      // Web Request body via the surrounding Hono Context — but we don't
+      // have that handle here, so callers that pass `undefined` accept an
+      // empty buffer. Tests that exercise the rawBody path mount through
+      // the Node-server test harness which DOES expose `incoming`.
+      return Buffer.alloc(0);
+    }
+    const contentLengthRaw = (incoming as any).headers?.['content-length'];
+    if (typeof contentLengthRaw === 'string') {
+      const parsed = Number.parseInt(contentLengthRaw, 10);
+      if (Number.isFinite(parsed) && parsed > maxBytes) {
+        throw new BodyTooLargeError();
+      }
+    }
+    return await new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      const onData = (chunk: Buffer) => {
+        total += chunk.byteLength;
+        if (total > maxBytes) {
+          (incoming as any).removeListener?.('data', onData);
+          (incoming as any).removeListener?.('end', onEnd);
+          (incoming as any).removeListener?.('error', onError);
+          reject(new BodyTooLargeError());
+          return;
+        }
+        chunks.push(chunk);
+      };
+      const onEnd = () => resolve(Buffer.concat(chunks));
+      const onError = (err: Error) => reject(err);
+      (incoming as any).on('data', onData);
+      (incoming as any).once('end', onEnd);
+      (incoming as any).once('error', onError);
+    });
+  }
 
   async function readClonedBodyWithLimit(req: Request, maxBytes: number): Promise<string | null> {
     const contentLength = req.headers.get('content-length');

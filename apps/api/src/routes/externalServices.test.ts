@@ -75,6 +75,12 @@ describe('externalServicesRoutes', () => {
   });
 
   const app = () => new Hono().route('/', externalServicesRoutes);
+  const parseFetchJsonBody = (callIndex = 0) => {
+    const init = fetchMock.mock.calls[callIndex]?.[1] as RequestInit | undefined;
+    expect(init).toBeDefined();
+    expect(typeof init?.body).toBe('string');
+    return JSON.parse(init!.body as string);
+  };
 
   describe('POST /billing/portal', () => {
     it('503 when BREEZE_BILLING_URL unset', async () => {
@@ -104,7 +110,7 @@ describe('externalServicesRoutes', () => {
         'http://billing/portal-sessions',
         expect.objectContaining({ method: 'POST' })
       );
-      const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body as string);
+      const body = parseFetchJsonBody();
       expect(body).toEqual({ partner_id: 'partner-1', return_url: 'https://example.com/back' });
       // Rate limit key is scoped to user id
       expect(rateLimiterMock).toHaveBeenCalledWith(
@@ -222,7 +228,7 @@ describe('externalServicesRoutes', () => {
         body: JSON.stringify({ subject: 'hi', message: 'help' }),
       });
       expect(res.status).toBe(200);
-      const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body as string);
+      const body = parseFetchJsonBody();
       expect(body).toEqual({
         partner_id: 'partner-1',
         from_email: 'u@example.com',

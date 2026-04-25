@@ -25,6 +25,13 @@ vi.mock('../../../db', () => ({
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     }),
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'partner-1' }]),
+        }),
+      }),
+    }),
   },
 }));
 
@@ -34,6 +41,10 @@ vi.mock('../../../db/schema', () => ({
     partnerId: 'partnerActivations.partnerId',
     tokenHash: 'partnerActivations.tokenHash',
     expiresAt: 'partnerActivations.expiresAt',
+  },
+  partners: {
+    id: 'partners.id',
+    settings: 'partners.settings',
   },
 }));
 
@@ -65,6 +76,13 @@ describe('create_tenant', () => {
     vi.mocked(findRecentMcpPartnerByAdminEmail).mockResolvedValue(null);
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'partner-1' }]),
+        }),
+      }),
     } as any);
   });
 
@@ -105,7 +123,12 @@ describe('create_tenant', () => {
       { org_name: 'Acme', admin_email: 'alex@acme.com', admin_name: 'Alex', region: 'us' },
       ctx,
     );
-    expect(r).toEqual({ tenant_id: 'partner-1', activation_status: 'pending_email' });
+    expect(r).toEqual({
+      tenant_id: 'partner-1',
+      activation_status: 'pending_email',
+      bootstrap_secret: expect.any(String),
+    });
+    expect(r.bootstrap_secret).toHaveLength(64);
     expect(createPartner).toHaveBeenCalledWith(
       expect.objectContaining({
         orgName: 'Acme',
@@ -115,6 +138,7 @@ describe('create_tenant', () => {
         origin: { mcp: true, ip: '1.2.3.4', userAgent: 'Claude' },
       }),
     );
+    expect(db.update).toHaveBeenCalled();
     expect(db.insert).toHaveBeenCalled();
     expect(sendActivationEmail).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -144,11 +168,59 @@ describe('create_tenant', () => {
       { org_name: 'Acme', admin_email: 'alex@acme.com', admin_name: 'Alex', region: 'us' },
       ctx,
     );
-    expect(r).toEqual({ tenant_id: 'partner-1', activation_status: 'pending_email' });
+    expect(r).toEqual({
+      tenant_id: 'partner-1',
+      activation_status: 'pending_email',
+      bootstrap_secret: expect.any(String),
+    });
     expect(createPartner).not.toHaveBeenCalled();
+    expect(db.update).toHaveBeenCalled();
     expect(db.insert).toHaveBeenCalled();
     expect(sendActivationEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'alex@acme.com', partnerId: 'partner-1' }),
     );
+  });
+
+  it('throws BOOTSTRAP_SECRET_PERSIST_FAILED and does not leak secret when db.update throws', async () => {
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockRejectedValue(new Error('connection lost')),
+        }),
+      }),
+    } as any);
+
+    await expect(
+      createTenantTool.handler(
+        { org_name: 'Acme', admin_email: 'alex@acme.com', admin_name: 'Alex', region: 'us' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      code: 'BOOTSTRAP_SECRET_PERSIST_FAILED',
+      message: expect.stringContaining('connection lost'),
+    });
+    // Activation email must not be sent if the secret never persisted.
+    expect(sendActivationEmail).not.toHaveBeenCalled();
+  });
+
+  it('throws BOOTSTRAP_SECRET_PERSIST_FAILED when update affects 0 rows (RLS / missing partner)', async () => {
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as any);
+
+    await expect(
+      createTenantTool.handler(
+        { org_name: 'Acme', admin_email: 'alex@acme.com', admin_name: 'Alex', region: 'us' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      code: 'BOOTSTRAP_SECRET_PERSIST_FAILED',
+      message: expect.stringContaining('0 rows'),
+    });
+    expect(sendActivationEmail).not.toHaveBeenCalled();
   });
 });

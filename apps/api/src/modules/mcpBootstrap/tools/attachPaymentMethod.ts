@@ -3,10 +3,16 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../../db';
 import { partners } from '../../../db/schema';
 import { BillingError, getBreezeBillingClient } from '../../../services/breezeBillingClient';
+import { rateLimiter } from '../../../services/rate-limit';
+import { getRedis } from '../../../services/redis';
 import type { BootstrapTool } from '../types';
 import { BootstrapError } from '../types';
+import { isBootstrapSecretValid } from '../bootstrapSecret';
 
-const inputSchema = z.object({ tenant_id: z.string().uuid() });
+const inputSchema = z.object({
+  tenant_id: z.string().uuid(),
+  bootstrap_secret: z.string().min(32).max(128),
+});
 
 type AttachOutput = {
   setup_url: string | null;
@@ -19,25 +25,53 @@ export const attachPaymentMethodTool: BootstrapTool<z.infer<typeof inputSchema>,
     name: 'attach_payment_method',
     description: [
       'Return a Stripe Checkout URL (mode=setup) where the admin can attach a payment method for identity verification. No charge; this is KYC that unlocks tenant mutations.',
+      'Requires the tenant_id and bootstrap_secret returned by create_tenant.',
       'Flow: (1) surface the setup_url to the user with the next_steps text verbatim, (2) STOP and wait for the user to confirm they completed Stripe, (3) resume polling verify_tenant (~30s intervals) until it returns { status: "active" }. When status flips to active, follow next_steps from verify_tenant — it covers both the OAuth connector setup (Claude.ai / ChatGPT / Cursor) and the X-API-Key alternative for HTTP/CLI callers.',
       'Idempotent: if a payment method is already attached, returns { setup_url: null, already_attached: true } without calling the billing service.',
       'Call this whenever a mutating tool returns PAYMENT_REQUIRED, or proactively after verify_tenant returns { status: "pending_payment" }.',
       'Always relay the next_steps field to the user verbatim. Do not paraphrase — it contains the exact instructions (test card, expected timing) the user needs.',
+      'Rate limit: 10 requests per hour per tenant_id.',
     ].join(' '),
     inputSchema,
   },
-  handler: async (input): Promise<AttachOutput> => {
+  handler: async (input, ctx): Promise<AttachOutput> => {
+    // IP-based rate limit fires on EVERY attempt (including unauth/wrong-secret).
+    // Prevents secret-guessing DoS without burning the legitimate tenant's budget.
+    const redis = getRedis();
+    const ip = ctx?.ip ?? 'unknown';
+    const ipRl = await rateLimiter(redis, `mcp:attach_payment:ip:${ip}`, 30, 60);
+    if (!ipRl.allowed) {
+      throw new BootstrapError(
+        'RATE_LIMITED',
+        `Per-IP payment setup rate limit exceeded. Try again after ${ipRl.resetAt.toISOString()}.`,
+      );
+    }
+
     const [partner] = await db
       .select({
         id: partners.id,
         emailVerifiedAt: partners.emailVerifiedAt,
         paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+        settings: partners.settings,
       })
       .from(partners)
       .where(eq(partners.id, input.tenant_id))
       .limit(1);
 
     if (!partner) throw new BootstrapError('UNKNOWN_TENANT', 'Tenant not found.');
+    if (!isBootstrapSecretValid(partner.settings, input.bootstrap_secret)) {
+      throw new BootstrapError('INVALID_BOOTSTRAP_SECRET', 'Invalid bootstrap secret for this tenant.');
+    }
+
+    // Tenant-keyed rate limit ONLY runs after secret validation — wrong-secret
+    // attempts cannot burn the legitimate tenant's 10/hour budget.
+    const rl = await rateLimiter(redis, `mcp:attach_payment:tenant:${input.tenant_id}`, 10, 3600);
+    if (!rl.allowed) {
+      throw new BootstrapError(
+        'RATE_LIMITED',
+        `Payment setup rate limit exceeded for this tenant. Try again after ${rl.resetAt.toISOString()}.`,
+      );
+    }
     if (!partner.emailVerifiedAt) {
       throw new BootstrapError(
         'EMAIL_NOT_VERIFIED',

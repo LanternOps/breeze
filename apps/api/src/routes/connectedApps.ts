@@ -22,15 +22,18 @@ if (MCP_OAUTH_ENABLED) {
       metadata: oauthClients.metadata,
       createdAt: oauthClients.createdAt,
       lastUsedAt: oauthClients.lastUsedAt,
+      disabledAt: oauthClients.disabledAt,
     }).from(oauthClients).where(eq(oauthClients.partnerId, partnerId));
 
     return c.json({
-      clients: rows.map((r) => ({
-        client_id: r.clientId,
-        client_name: ((r.metadata as { client_name?: string } | null)?.client_name) ?? r.clientId,
-        created_at: r.createdAt,
-        last_used_at: r.lastUsedAt,
-      })),
+      clients: rows
+        .filter((r) => !r.disabledAt)
+        .map((r) => ({
+          client_id: r.clientId,
+          client_name: ((r.metadata as { client_name?: string } | null)?.client_name) ?? r.clientId,
+          created_at: r.createdAt,
+          last_used_at: r.lastUsedAt,
+        })),
     });
   });
 

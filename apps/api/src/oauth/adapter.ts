@@ -294,7 +294,45 @@ export class BreezeOidcAdapter {
       }
       if (this.model === 'RefreshToken') {
         const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
-        return row && !row.revokedAt && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+        if (!row) return undefined;
+        if (row.revokedAt) {
+          const payload = row.payload as { grantId?: string; clientId?: string; accountId?: string } | null;
+          const grantId = typeof payload?.grantId === 'string' ? payload.grantId : undefined;
+          logOauthError({
+            errorId: ERROR_IDS.OAUTH_REFRESH_TOKEN_REUSE,
+            message: 'Revoked refresh token lookup detected',
+            context: {
+              token_hash: sha256(id).slice(0, 16),
+              client_id: row.clientId,
+              partner_id: row.partnerId,
+              user_id: row.userId,
+              grant_id: grantId,
+            },
+          });
+          // Refresh-token reuse is the canonical signal that a token
+          // family has been compromised. Revoke the entire grant family
+          // (all sibling access JWTs and refresh tokens) immediately —
+          // logging alone leaves a window where the attacker continues
+          // to use already-minted access tokens until natural expiry.
+          if (grantId) {
+            try {
+              await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
+            } catch (err) {
+              logOauthError({
+                errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+                message: 'Grant-wide revocation cache write failed on refresh-token reuse',
+                err,
+                context: { grantId },
+              });
+              // Don't throw — surfacing 500 here would mask the reuse
+              // detection from the client (oidc-provider would map the
+              // throw to a generic server_error). The DB row remains
+              // marked revoked so subsequent token exchanges still fail.
+            }
+          }
+          return undefined;
+        }
+        return row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'Session') {
         const [row] = await db.select().from(oauthSessions).where(eq(oauthSessions.id, id));

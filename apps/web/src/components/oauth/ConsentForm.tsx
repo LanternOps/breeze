@@ -25,13 +25,18 @@ type ViewState =
 
 const SCOPE_LABELS: Record<string, string> = {
   'mcp:read': 'Read your fleet data (devices, alerts, scripts, automations)',
-  'mcp:write': 'Run actions on your fleet (execute scripts, create alerts, manage devices)',
+  'mcp:write': 'Make non-destructive changes in your fleet (tags, alerts, configuration)',
+  'mcp:execute': 'Run high-risk actions on devices (commands, scripts, remote operations)',
   openid: 'Confirm your identity',
   offline_access: 'Stay connected without re-signing in (refresh tokens)',
 };
 
 function describeScope(scope: string): string {
   return SCOPE_LABELS[scope] ?? scope;
+}
+
+function isHighRiskScope(scope: string): boolean {
+  return scope === 'mcp:execute';
 }
 
 function loginRedirectTarget(uid: string): string {
@@ -214,8 +219,15 @@ function ScopeList({ scopes }: { scopes: string[] }) {
       <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
         {items.map((scope) => (
           <li key={scope} className="flex items-start gap-2">
-            <span aria-hidden="true" className="mt-1 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-500" />
-            <span>{describeScope(scope)}</span>
+            <span
+              aria-hidden="true"
+              className={`mt-1 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
+                isHighRiskScope(scope) ? 'bg-red-500' : 'bg-emerald-500'
+              }`}
+            />
+            <span className={isHighRiskScope(scope) ? 'font-medium text-red-700' : undefined}>
+              {describeScope(scope)}
+            </span>
           </li>
         ))}
       </ul>

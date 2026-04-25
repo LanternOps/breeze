@@ -4,11 +4,13 @@ const loadEnv = async () => import('./env');
 
 const OAUTH_ENV_KEYS = [
   'MCP_OAUTH_ENABLED',
+  'OAUTH_DCR_ENABLED',
   'OAUTH_ISSUER',
   'OAUTH_RESOURCE_URL',
   'OAUTH_JWKS_PRIVATE_JWK',
   'OAUTH_JWKS_PUBLIC_JWK',
   'OAUTH_COOKIE_SECRET',
+  'NODE_ENV',
 ] as const;
 
 const clearOauthEnv = () => {
@@ -43,6 +45,25 @@ describe('config env', () => {
     process.env.MCP_OAUTH_ENABLED = 'foo';
     const mod = await loadEnv();
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
+  });
+
+  it('defaults OAUTH_DCR_ENABLED to true outside production', async () => {
+    process.env.NODE_ENV = 'development';
+    const mod = await loadEnv();
+    expect(mod.OAUTH_DCR_ENABLED).toBe(true);
+  });
+
+  it('defaults OAUTH_DCR_ENABLED to false in production', async () => {
+    process.env.NODE_ENV = 'production';
+    const mod = await loadEnv();
+    expect(mod.OAUTH_DCR_ENABLED).toBe(false);
+  });
+
+  it('allows OAUTH_DCR_ENABLED to opt in explicitly in production', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.OAUTH_DCR_ENABLED = 'true';
+    const mod = await loadEnv();
+    expect(mod.OAUTH_DCR_ENABLED).toBe(true);
   });
 
   it('defaults OAUTH_ISSUER and OAUTH_RESOURCE_URL to empty strings', async () => {

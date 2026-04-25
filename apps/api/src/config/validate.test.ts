@@ -26,6 +26,11 @@ const validEnv = {
   APP_ENCRYPTION_KEY: 'x9y8z7w6v5u4t3s2r1q0p9o8n7m6l5k4j3i2h1g0f9e8d7c6b5a4',
   MFA_ENCRYPTION_KEY: 'k4j3i2h1g0f9e8d7c6b5a4x9y8z7w6v5u4t3s2r1q0p9o8n7m6l5',
   NODE_ENV: 'development',
+  // Production-required (now mandatory in prod). Provide a strong random
+  // value here so the suite's many "production happy-path" tests don't trip
+  // the new fail-loud check; tests that assert the missing-secret throw
+  // override this explicitly.
+  AGENT_ENROLLMENT_SECRET: 'prod-test-agent-enrollment-secret-32-chars-min-strong-random',
 };
 
 describe('validateConfig', () => {
@@ -218,6 +223,94 @@ describe('validateConfig', () => {
       );
     });
     warnSpy.mockRestore();
+  });
+
+  it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      AGENT_ENROLLMENT_SECRET: 'too-short',
+    }, () => {
+      expect(() => validateConfig()).toThrow('AGENT_ENROLLMENT_SECRET');
+    });
+  });
+
+  it('rejects placeholder AGENT_ENROLLMENT_SECRET in production when configured', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      AGENT_ENROLLMENT_SECRET: 'your-enrollment-secret-change-in-production',
+    }, () => {
+      expect(() => validateConfig()).toThrow('AGENT_ENROLLMENT_SECRET');
+    });
+  });
+
+  it('rejects missing AGENT_ENROLLMENT_SECRET in production (fail-loud)', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      AGENT_ENROLLMENT_SECRET: '',
+    }, () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(() => validateConfig()).toThrow('AGENT_ENROLLMENT_SECRET');
+      warnSpy.mockRestore();
+    });
+  });
+
+  it('allows missing AGENT_ENROLLMENT_SECRET in development', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'development',
+      AGENT_ENROLLMENT_SECRET: '',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('development');
+      // withEnv writes '' (not undefined) into the env. The validator
+      // accepts both in dev — assert the validator did not throw.
+      expect(config.AGENT_ENROLLMENT_SECRET ?? '').toBe('');
+    });
+  });
+
+  it('rejects short ENROLLMENT_KEY_PEPPER in production when configured', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      ENROLLMENT_KEY_PEPPER: 'short-pepper',
+    }, () => {
+      expect(() => validateConfig()).toThrow('ENROLLMENT_KEY_PEPPER');
+    });
+  });
+
+  it('rejects placeholder ENROLLMENT_KEY_PEPPER in production when configured', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      ENROLLMENT_KEY_PEPPER: 'generate-a-random-hex-string-for-production',
+    }, () => {
+      expect(() => validateConfig()).toThrow('ENROLLMENT_KEY_PEPPER');
+    });
+  });
+
+  it('allows missing ENROLLMENT_KEY_PEPPER in production so APP_ENCRYPTION_KEY can be used as fallback', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('production');
+    });
   });
 
   it('logs FORCE_HTTPS warning in production', () => {

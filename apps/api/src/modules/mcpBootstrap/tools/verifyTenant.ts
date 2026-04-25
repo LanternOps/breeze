@@ -14,8 +14,12 @@ import { mintApiKey } from '../../../services/apiKeys';
 import type { BootstrapTool } from '../types';
 import { BootstrapError } from '../types';
 import { recordActivationTransition } from '../metrics';
+import { isBootstrapSecretValid } from '../bootstrapSecret';
 
-const inputSchema = z.object({ tenant_id: z.string().uuid() });
+const inputSchema = z.object({
+  tenant_id: z.string().uuid(),
+  bootstrap_secret: z.string().min(32).max(128),
+});
 
 type VerifyOutput =
   | { status: 'pending_email' }
@@ -27,7 +31,7 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
   definition: {
     name: 'verify_tenant',
     description: [
-      'Check the activation status of a tenant created via create_tenant. Poll this tool at ~30 second intervals until { status: "active" }.',
+      'Check the activation status of a tenant created via create_tenant. Requires the tenant_id and bootstrap_secret returned by create_tenant. Poll this tool at ~30 second intervals until { status: "active" }.',
       'Returns one of:',
       '- { status: "pending_email" } — admin has not clicked the activation link yet.',
       '- { status: "pending_payment", api_key, scope: "readonly", next_steps } — email verified; a readonly API key is minted on the first poll after verification. Call attach_payment_method to unlock mutations. (api_key is for backwards-compatible HTTP/CLI callers — Claude.ai/ChatGPT/Cursor should follow `next_steps` and use the OAuth connector flow instead.)',
@@ -51,6 +55,7 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
         id: partners.id,
         emailVerifiedAt: partners.emailVerifiedAt,
         paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+        settings: partners.settings,
       })
       .from(partners)
       .where(eq(partners.id, input.tenant_id))
@@ -58,6 +63,9 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
 
     if (!partner) {
       throw new BootstrapError('UNKNOWN_TENANT', 'Tenant not found.');
+    }
+    if (!isBootstrapSecretValid(partner.settings, input.bootstrap_secret)) {
+      throw new BootstrapError('INVALID_BOOTSTRAP_SECRET', 'Invalid bootstrap secret for this tenant.');
     }
 
     // Email not yet verified → either pending_email or expired.
@@ -141,28 +149,20 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
     }
 
     // Upgrade in place on first `active` poll.
-    let didUpgradeThisPoll = false;
     if (partner.paymentMethodAttachedAt && keyRow.scopeState === 'readonly') {
       await db
         .update(apiKeys)
         .set({ scopeState: 'full' })
         .where(eq(apiKeys.id, keyRow.id));
       keyRow = { ...keyRow, scopeState: 'full' };
-      didUpgradeThisPoll = true;
     }
 
     const scope = keyRow.scopeState as 'readonly' | 'full';
     const status = partner.paymentMethodAttachedAt ? 'active' : 'pending_payment';
 
-    // Emit next_steps on state transitions. "First active poll" = either we
-    // just upgraded the key from readonly→full, or the key was minted
-    // directly as full (email + payment already complete on first poll).
-    const firstActiveEncounter = status === 'active' && (didUpgradeThisPoll || (rawKey !== null && scope === 'full'));
-    const firstReadonlyEncounter = status === 'pending_payment' && rawKey !== null;
-
-    const nextSteps = firstActiveEncounter
-      ? 'Tenant active. For Claude.ai / ChatGPT / Cursor (or any MCP client that supports OAuth): add Breeze as a custom connector and approve the OAuth flow in the browser — no API key copy-paste needed; the client receives an access token automatically. For raw HTTP / CLI callers: paste the api_key returned on an earlier poll (same value — scope was upgraded in place) into the X-API-Key header. Either way, re-query tools/list once authenticated to see the full surface (send_deployment_invites, configure_defaults, get_fleet_status, get_fleet_health, and ~30 more). STOP and ask the user to confirm the connector is wired before continuing.'
-      : firstReadonlyEncounter
+    const nextSteps = status === 'active'
+      ? 'Tenant active. For Claude.ai / ChatGPT / Cursor (or any MCP client that supports OAuth): add Breeze as a custom connector and approve the OAuth flow in the browser — no API key copy-paste needed; the client receives an access token automatically. For raw HTTP / CLI callers: paste the api_key returned by this activation flow into the X-API-Key header. Either way, re-query tools/list once authenticated to see the full surface (send_deployment_invites, configure_defaults, get_fleet_status, get_fleet_health, and ~30 more). STOP and ask the user to confirm the connector is wired before continuing.'
+      : status === 'pending_payment'
       ? 'Readonly API key issued. You can use it now for read-only calls, but mutating tools are blocked until a payment method is attached. Call attach_payment_method next — it returns a Stripe Checkout URL you should surface to the user for identity verification. Once the user completes Stripe, verify_tenant will return status=active and fresh next_steps guiding both the OAuth connector flow (Claude.ai / ChatGPT / Cursor) and the X-API-Key header alternative for HTTP/CLI callers.'
       : undefined;
 

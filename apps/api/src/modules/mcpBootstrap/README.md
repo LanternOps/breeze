@@ -24,6 +24,17 @@ leave `MCP_BOOTSTRAP_ENABLED` unset.
 - Routes: `/activate/:token`, `/activate/complete/webhook`, `/i/:short_code`.
 - `PAYMENT_REQUIRED` gate on the mutating authed tools + `set_alert_policy`.
 
+## Bootstrap secret contract
+
+`create_tenant` returns both `tenant_id` and `bootstrap_secret`. The secret is
+shown only once and only its SHA-256 hash is stored in `partners.settings`.
+Unauthenticated follow-on tools must pass both values:
+
+- `verify_tenant({ tenant_id, bootstrap_secret })`
+- `attach_payment_method({ tenant_id, bootstrap_secret })`
+
+This keeps `tenant_id` as a locator, not a bearer authorization secret.
+
 ## Flag-independent (always on)
 
 - `delete_tenant` authed MCP tool.

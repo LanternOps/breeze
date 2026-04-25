@@ -13,6 +13,7 @@ import { ERROR_IDS, logOauthError } from '../oauth/log';
 // Grant TTL in seconds — must match `ttl.Grant` in oauth/provider.ts so the
 // breeze metadata side-table entry expires no later than the Grant itself.
 const GRANT_TTL_SECONDS = 14 * 24 * 60 * 60;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -46,6 +47,28 @@ async function interactionDetails(provider: Awaited<ReturnType<typeof getProvide
     throw new HTTPException(404, { message: 'interaction expired or mismatched' });
   }
   return details;
+}
+
+async function parseConsentBody(c: any): Promise<{ partner_id: string; approve: boolean }> {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    throw new HTTPException(400, { message: 'invalid consent request body' });
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new HTTPException(400, { message: 'invalid consent request body' });
+  }
+  const candidate = body as { partner_id?: unknown; approve?: unknown };
+  if (typeof candidate.approve !== 'boolean') {
+    throw new HTTPException(400, { message: 'approve must be a boolean' });
+  }
+  if (typeof candidate.partner_id !== 'string' || !UUID_RE.test(candidate.partner_id)) {
+    throw new HTTPException(400, { message: 'partner_id must be a valid UUID' });
+  }
+
+  return { partner_id: candidate.partner_id, approve: candidate.approve };
 }
 
 if (MCP_OAUTH_ENABLED) {
@@ -87,7 +110,7 @@ if (MCP_OAUTH_ENABLED) {
       throw new HTTPException(400, { message: 'unsupported resource indicator' });
     }
 
-    const body = await c.req.json<{ partner_id: string; approve: boolean }>();
+    const body = await parseConsentBody(c);
     const userId = c.get('auth').user.id;
 
     if (!body.approve) {
@@ -129,11 +152,6 @@ if (MCP_OAUTH_ENABLED) {
     for (const [res, scopes] of Object.entries(missingResourceScopes)) {
       grant.addResourceScope(res, scopes.join(' '));
     }
-    // Defensive fallback when prompt didn't list the resource explicitly.
-    if (resource && !missingResourceScopes[resource]) {
-      grant.addResourceScope(resource, 'mcp:read mcp:write');
-    }
-
     // Grant ALL requested scopes at BOTH the OIDC and resource level. The
     // provider's consent prompt machinery checks `missingOIDCScope` against
     // the OIDC grant set even for scopes that "logically" belong to a
@@ -144,7 +162,7 @@ if (MCP_OAUTH_ENABLED) {
     if (requestedScopes.length) grant.addOIDCScope(requestedScopes.join(' '));
     if (resource) {
       const resourceScopes = requestedScopes.filter((scope) => scope.startsWith('mcp:'));
-      if (resourceScopes.length) {
+      if (!missingResourceScopes[resource] && resourceScopes.length) {
         grant.addResourceScope(resource, resourceScopes.join(' '));
       }
     }

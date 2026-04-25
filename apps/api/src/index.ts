@@ -1063,6 +1063,10 @@ async function runStartupChecks(): Promise<void> {
   if (REQUIRE_REDIS_ON_STARTUP && !redisOk) {
     throw new Error('Redis is required at startup but is unreachable');
   }
+
+  if (envFlag('MCP_OAUTH_ENABLED', false) && !redisOk) {
+    throw new Error('Redis is required at startup when MCP OAuth is enabled');
+  }
 }
 
 async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {

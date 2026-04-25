@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
+const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
+
 const mocks = vi.hoisted(() => {
   class Grant {
     static instances: Grant[] = [];
@@ -49,7 +51,7 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       user: { id: 'u1', email: 'user@example.com', name: 'User One' },
       token: {},
-      partnerId: 'current-partner',
+      partnerId: '11111111-1111-4111-8111-111111111111',
       orgId: 'current-org',
       scope: 'partner',
       accessibleOrgIds: null,
@@ -76,7 +78,7 @@ function details(overrides: Record<string, unknown> = {}): {
   uid: string;
   exp: number;
   save: ReturnType<typeof vi.fn>;
-  params: { client_id: string; client_name: string; resource: string };
+  params: { client_id: string; client_name: string; resource: string; scope: string };
   prompt: { details: { scopes: { new: string[] } } };
   result?: unknown;
 } {
@@ -92,6 +94,7 @@ function details(overrides: Record<string, unknown> = {}): {
       client_id: 'client-1',
       client_name: 'Claude Desktop',
       resource: 'https://api.example/mcp/server',
+      scope: 'openid offline_access mcp:read mcp:write',
     },
     prompt: { details: { scopes: { new: ['openid', 'offline_access'] } } },
     ...overrides,
@@ -130,6 +133,7 @@ async function loadApp(enabled = true) {
     }
     throw err;
   });
+
   return app;
 }
 
@@ -160,7 +164,7 @@ describe('oauthInteractionRoutes', () => {
 
   it('returns client, scopes, resource, and partner picker data', async () => {
     mocks.interactionDetails.mockResolvedValue(details());
-    queueSelect([{ partnerId: 'partner-1', partnerName: 'Acme MSP' }]);
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json();
     expect(res.status).toBe(200);
@@ -169,7 +173,7 @@ describe('oauthInteractionRoutes', () => {
       client: { client_id: 'client-1', client_name: 'Claude Desktop' },
       scopes: ['openid', 'offline_access'],
       resource: 'https://api.example/mcp/server',
-      partners: [{ partnerId: 'partner-1', partnerName: 'Acme MSP' }],
+      partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }],
     });
   });
 
@@ -184,7 +188,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
-      body: JSON.stringify({ partner_id: 'partner-1', approve: false }),
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: false }),
     });
     expect(res.status).toBe(200);
     const body = await res.json() as { redirectTo: string };
@@ -199,10 +203,40 @@ describe('oauthInteractionRoutes', () => {
     }));
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
-      body: JSON.stringify({ partner_id: 'partner-1', approve: true }),
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ message: 'unsupported resource indicator' });
+  });
+
+  it('rejects malformed consent JSON before membership checks', async () => {
+    mocks.interactionDetails.mockResolvedValue(details());
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: '{',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ message: 'invalid consent request body' });
+    expect(mocks.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects consent bodies with invalid approve or partner_id shape', async () => {
+    mocks.interactionDetails.mockResolvedValue(details());
+
+    const approveRes = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: 'yes' }),
+    });
+    expect(approveRes.status).toBe(400);
+    expect(await approveRes.json()).toEqual({ message: 'approve must be a boolean' });
+
+    const partnerRes = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: 'partner-1', approve: true }),
+    });
+    expect(partnerRes.status).toBe(400);
+    expect(await partnerRes.json()).toEqual({ message: 'partner_id must be a valid UUID' });
   });
 
   it('rejects consent for partners where the user is not a member', async () => {
@@ -210,7 +244,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([], 'limit');
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
-      body: JSON.stringify({ partner_id: 'partner-1', approve: true }),
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ message: 'not a member of this partner' });
@@ -219,8 +253,8 @@ describe('oauthInteractionRoutes', () => {
   it('creates a stamped grant, binds the client partner, and returns a redirect', async () => {
     const d = details();
     mocks.interactionDetails.mockResolvedValue(d);
-    queueSelect([{ partnerId: 'partner-1', userId: 'u1' }], 'limit');
-    queueSelect([{ partnerId: 'partner-1', orgId: 'org-1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     // Two updates happen during a successful consent:
     //   1) setGrantBreezeMeta() does an UPDATE on oauth_grants to persist
     //      partner_id/org_id alongside the just-saved Grant row, so the
@@ -232,7 +266,7 @@ describe('oauthInteractionRoutes', () => {
     const clientUpdate = queueUpdate(); // oauth_clients bind
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
-      body: JSON.stringify({ partner_id: 'partner-1', approve: true }),
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
     expect(res.status).toBe(200);
     const respBody = await res.json() as { redirectTo: string };
@@ -246,11 +280,38 @@ describe('oauthInteractionRoutes', () => {
     expect(mocks.Grant.instances[0]?.addOIDCScope).toHaveBeenCalledWith('openid offline_access');
     expect(mocks.Grant.instances[0]?.addResourceScope)
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
-    expect(clientUpdate.set).toHaveBeenCalledWith({ partnerId: 'partner-1' });
+    expect(clientUpdate.set).toHaveBeenCalledWith({ partnerId: PARTNER_ID });
     // Route writes result onto the interaction and calls save() rather than
     // provider.interactionResult (cookie-UID-vs-URL-UID race in multi-prompt flows).
     expect(d.result).toEqual({ login: { accountId: 'u1' }, consent: { grantId: 'grant-1' } });
     expect(d.save).toHaveBeenCalled();
+  });
+
+  it('does not grant unrequested MCP resource scopes during consent fallback', async () => {
+    const d = details({
+      params: {
+        client_id: 'client-1',
+        client_name: 'Claude Desktop',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid offline_access mcp:read',
+      },
+    });
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueUpdate();
+    queueUpdate();
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .not.toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
   });
 
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {

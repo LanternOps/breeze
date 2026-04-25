@@ -10,7 +10,15 @@ const { closeRedis } = await vi.importActual<typeof import('../services/redis')>
 const { isJtiRevoked, revokeJti } = await vi.importActual<typeof import('./revocationCache')>('./revocationCache');
 
 describe('revocationCache fail-closed', () => {
-  it('returns true when redis.get rejects (Redis hiccup mid-call)', async () => {
+  const oldMcpOauthEnabled = process.env.MCP_OAUTH_ENABLED;
+
+  afterAll(() => {
+    if (oldMcpOauthEnabled === undefined) delete process.env.MCP_OAUTH_ENABLED;
+    else process.env.MCP_OAUTH_ENABLED = oldMcpOauthEnabled;
+  });
+
+  it('returns true (fail-closed) when redis.get rejects and OAuth is enabled', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
     const throwing = { get: vi.fn().mockRejectedValue(new Error('connection lost')) };
     vi.resetModules();
     vi.doMock('../services/redis', () => ({ getRedis: () => throwing }));
@@ -18,7 +26,91 @@ describe('revocationCache fail-closed', () => {
     const mod = await import('./revocationCache');
 
     await expect(mod.isJtiRevoked('jti-x')).resolves.toBe(true);
-    expect(throwing.get).toHaveBeenCalledOnce();
+    await expect(mod.isGrantRevoked('grant-x')).resolves.toBe(true);
+    expect(throwing.get).toHaveBeenCalledTimes(2);
+
+    vi.doUnmock('../services/redis');
+    vi.resetModules();
+  });
+
+  it('returns false when redis.get rejects and OAuth is disabled (no-op posture)', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'false';
+    const throwing = { get: vi.fn().mockRejectedValue(new Error('connection lost')) };
+    vi.resetModules();
+    vi.doMock('../services/redis', () => ({ getRedis: () => throwing }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.isJtiRevoked('jti-x')).resolves.toBe(false);
+    await expect(mod.isGrantRevoked('grant-x')).resolves.toBe(false);
+
+    vi.doUnmock('../services/redis');
+    vi.resetModules();
+  });
+
+  it('returns true (fail-closed) when Redis is missing and OAuth is enabled', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    vi.resetModules();
+    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.isJtiRevoked('jti-y')).resolves.toBe(true);
+    await expect(mod.isGrantRevoked('grant-y')).resolves.toBe(true);
+
+    vi.doUnmock('../services/redis');
+    vi.resetModules();
+  });
+
+  it('returns false when Redis is missing and OAuth is disabled (no-op)', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'false';
+    vi.resetModules();
+    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.isJtiRevoked('jti-z')).resolves.toBe(false);
+    await expect(mod.isGrantRevoked('grant-z')).resolves.toBe(false);
+
+    vi.doUnmock('../services/redis');
+    vi.resetModules();
+  });
+
+  it('rejects jti revocation writes when OAuth is enabled and Redis is missing', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    vi.resetModules();
+    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.revokeJti('jti-missing-redis', 60)).rejects.toThrow(/Redis is required/);
+
+    vi.doUnmock('../services/redis');
+    vi.resetModules();
+  });
+
+  it('rejects grant revocation writes when OAuth is enabled and Redis is missing', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    vi.resetModules();
+    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.revokeGrant('grant-missing-redis', 60)).rejects.toThrow(/Redis is required/);
+
+    vi.doUnmock('../services/redis');
+    vi.resetModules();
+  });
+
+  it('keeps revocation writes as no-ops when OAuth is disabled and Redis is missing', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'false';
+    vi.resetModules();
+    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+
+    const mod = await import('./revocationCache');
+
+    await expect(mod.revokeJti('jti-oauth-disabled', 60)).resolves.toBeUndefined();
+    await expect(mod.revokeGrant('grant-oauth-disabled', 60)).resolves.toBeUndefined();
 
     vi.doUnmock('../services/redis');
     vi.resetModules();

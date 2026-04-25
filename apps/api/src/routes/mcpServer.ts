@@ -30,6 +30,7 @@ import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import { getTrustedClientIp } from '../services/clientIp';
 import type { BootstrapTool } from '../modules/mcpBootstrap/types';
 import { BOOTSTRAP_TOOL_NAMES, BootstrapError } from '../modules/mcpBootstrap/types';
 import { PaymentRequiredError } from '../modules/mcpBootstrap/paymentGate';
@@ -62,10 +63,66 @@ function isExecuteToolAllowedInProd(toolName: string): boolean {
   return mcpExecuteToolAllowlist.has('*') || mcpExecuteToolAllowlist.has(toolName);
 }
 
+function shouldRequireExecuteAdminInProd(): boolean {
+  return process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', true);
+}
+
+const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 1024);
+
 function setWwwAuthenticate(c: Context) {
   if (!MCP_OAUTH_ENABLED) return;
   const resourceUrl = `${OAUTH_ISSUER}/.well-known/oauth-protected-resource`;
   c.header('WWW-Authenticate', `Bearer realm="breeze", resource_metadata="${resourceUrl}"`);
+}
+
+function requestIp(c: Context | undefined): string | null {
+  if (!c) return null;
+  const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown');
+  return ip === 'unknown' ? null : ip;
+}
+
+async function readJsonRpcBodyWithLimit(
+  req: Request,
+  options: { clone: boolean },
+): Promise<{ body?: unknown; tooLarge?: true; parseError?: true }> {
+  const contentLength = req.headers.get('content-length');
+  if (contentLength) {
+    const parsed = Number.parseInt(contentLength, 10);
+    if (Number.isFinite(parsed) && parsed > MCP_MESSAGE_MAX_BODY_BYTES) {
+      return { tooLarge: true };
+    }
+  }
+
+  const source = options.clone ? req.clone() : req;
+  if (!source.body) {
+    return { parseError: true };
+  }
+
+  const reader = source.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let raw = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > MCP_MESSAGE_MAX_BODY_BYTES) {
+        return { tooLarge: true };
+      }
+      raw += decoder.decode(value, { stream: true });
+    }
+    raw += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    return { body: JSON.parse(raw) };
+  } catch {
+    return { parseError: true };
+  }
 }
 
 // ============================================
@@ -194,14 +251,20 @@ async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
 
   // Clone the body so downstream handlers can re-parse.
   let body: any = null;
-  try {
-    body = await c.req.raw.clone().json();
-  } catch {
+  const parsedBody = await readJsonRpcBodyWithLimit(c.req.raw, { clone: true });
+  if (parsedBody.tooLarge) {
+    return c.json(
+      { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Request body too large' } },
+      413,
+    );
+  }
+  if (parsedBody.parseError) {
     return c.json(
       { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: invalid JSON' } },
       400,
     );
   }
+  body = parsedBody.body;
 
   if (body?.method === 'initialize' || body?.method === 'notifications/initialized') {
     return next();
@@ -266,13 +329,18 @@ const MAX_SSE_SESSIONS = 100;
 const MAX_SSE_SESSIONS_PER_KEY = envInt('MCP_MAX_SSE_SESSIONS_PER_KEY', 5);
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; apiKeyId: string; createdAt: number }>();
+function mcpPrincipalKey(apiKey: { id: string; oauthGrantId?: string | null }): string {
+  return apiKey.oauthGrantId ? `oauth-grant:${apiKey.oauthGrantId}` : apiKey.id;
+}
+
+const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; principalKey: string; createdAt: number }>();
 
 mcpServerRoutes.get(
   '/sse',
   requireApiKeyScope('ai:read'),
   async (c) => {
     const apiKey = c.get('apiKey');
+    const principalKey = mcpPrincipalKey(apiKey);
 
     // Rate limit SSE connections in production
     if (process.env.NODE_ENV === 'production') {
@@ -281,7 +349,7 @@ mcpServerRoutes.get(
         return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } }, 503);
       }
       const limit = envInt('MCP_SSE_RATE_LIMIT_PER_MINUTE', 30);
-      const rate = await rateLimiter(redis, `mcp:sse:${apiKey.id}`, limit, 60);
+      const rate = await rateLimiter(redis, `mcp:sse:${principalKey}`, limit, 60);
       if (!rate.allowed) {
         const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
         c.header('Retry-After', String(retryAfter));
@@ -303,7 +371,7 @@ mcpServerRoutes.get(
     }
 
     // Enforce per-API-key session cap to reduce blast radius of a single leaked key.
-    const perKeyCount = Array.from(sseSessionQueues.values()).filter((s) => s.apiKeyId === apiKey.id).length;
+    const perKeyCount = Array.from(sseSessionQueues.values()).filter((s) => s.principalKey === principalKey).length;
     if (perKeyCount >= MAX_SSE_SESSIONS_PER_KEY) {
       return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Too many active MCP sessions for this API key' } }, 429);
     }
@@ -311,7 +379,7 @@ mcpServerRoutes.get(
     const sessionId = crypto.randomUUID();
 
     // Initialize queue for this session with ownership info
-    sseSessionQueues.set(sessionId, { queue: [], apiKeyId: apiKey.id, createdAt: Date.now() });
+    sseSessionQueues.set(sessionId, { queue: [], principalKey, createdAt: Date.now() });
 
     return streamSSE(c, async (stream) => {
       // Send endpoint event so client knows where to POST messages
@@ -373,6 +441,7 @@ mcpServerRoutes.post(
   '/message',
   async (c) => {
     const apiKey = c.get('apiKey'); // undefined when bootstrap carve-out let us through unauthed
+    const principalKey = apiKey ? mcpPrincipalKey(apiKey) : null;
 
     // Rate limit messages in production (only if authed — unauth bootstrap
     // tools are individually rate-limited inside the handlers)
@@ -382,7 +451,7 @@ mcpServerRoutes.post(
         return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } }, 503);
       }
       const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
-      const rate = await rateLimiter(redis, `mcp:msg:${apiKey.id}`, limit, 60);
+      const rate = await rateLimiter(redis, `mcp:msg:${principalKey}`, limit, 60);
       if (!rate.allowed) {
         const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
         c.header('Retry-After', String(retryAfter));
@@ -392,16 +461,22 @@ mcpServerRoutes.post(
 
     const sessionId = c.req.query('sessionId');
 
-    let body: JsonRpcRequest;
-    try {
-      body = await c.req.json<JsonRpcRequest>();
-    } catch {
+    const parsedBody = await readJsonRpcBodyWithLimit(c.req.raw, { clone: false });
+    if (parsedBody.tooLarge) {
+      return c.json({
+        jsonrpc: '2.0' as const,
+        id: null,
+        error: { code: -32600, message: 'Request body too large' }
+      }, 413);
+    }
+    if (parsedBody.parseError) {
       return c.json({
         jsonrpc: '2.0' as const,
         id: null,
         error: { code: -32700, message: 'Parse error: invalid JSON' }
       }, 400);
     }
+    const body = parsedBody.body as JsonRpcRequest;
 
     if (!body.jsonrpc || body.jsonrpc !== '2.0' || !body.method) {
       return c.json({
@@ -455,7 +530,7 @@ mcpServerRoutes.post(
     // If there's an active SSE session, queue the response there (with ownership check)
     if (sessionId) {
       const session = sseSessionQueues.get(sessionId);
-      if (session && session.apiKeyId === apiKey.id) {
+      if (session && session.principalKey === principalKey) {
         session.queue.push(response);
         // Return 202 Accepted — response will come via SSE
         return c.json({ status: 'accepted' }, 202);
@@ -533,7 +608,7 @@ async function handleJsonRpc(
 function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse {
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
-  const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
   const bootstrapNames = new Set<string>(BOOTSTRAP_TOOL_NAMES);
@@ -648,7 +723,7 @@ async function handleBootstrapToolsCall(
   }
 
   const ctx = {
-    ip: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    ip: requestIp(c),
     userAgent: c.req.header('user-agent') ?? null,
     region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
   };
@@ -743,13 +818,16 @@ async function handleToolsCall(
         'This action requires a payment method on file (identity verification, no charge for free tier).',
       remediation: {
         tool: 'attach_payment_method',
-        args: { tenant_id: auth.partnerId },
+        args: {
+          tenant_id: auth.partnerId,
+          bootstrap_secret: '<bootstrap_secret returned by create_tenant>',
+        },
       },
     });
   }
 
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
-  const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
@@ -869,14 +947,16 @@ async function dispatchBootstrapAuthTool(
         'This action requires a payment method on file (identity verification, no charge for free tier).',
       remediation: {
         tool: 'attach_payment_method',
-        args: { tenant_id: auth.partnerId },
+        args: {
+          tenant_id: auth.partnerId,
+          bootstrap_secret: '<bootstrap_secret returned by create_tenant>',
+        },
       },
     });
   }
 
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
-  const requireExecuteAdmin =
-    process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
 
   if (!hasExecute) {
@@ -932,7 +1012,7 @@ async function dispatchBootstrapAuthTool(
   }
 
   const bootstrapCtx = {
-    ip: c?.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    ip: requestIp(c),
     userAgent: c?.req.header('user-agent') ?? null,
     region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
     apiKey: {

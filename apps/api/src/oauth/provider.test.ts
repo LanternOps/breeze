@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildExtraTokenClaims, handleRevocationSuccess } from './provider';
+import { buildExtraTokenClaims, handleRevocationSuccess, REFRESH_TOKEN_TTL_SECONDS } from './provider';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('OAuth token TTL policy', () => {
+  it('keeps refresh tokens aligned with the 14-day Grant/Session lifetime', () => {
+    expect(REFRESH_TOKEN_TTL_SECONDS).toBe(14 * 24 * 60 * 60);
+  });
 });
 
 describe('buildExtraTokenClaims', () => {
@@ -62,59 +68,65 @@ describe('buildExtraTokenClaims', () => {
 });
 
 describe('handleRevocationSuccess', () => {
-  it('does nothing when token.jti is missing', () => {
+  it('does nothing when token.jti is missing', async () => {
     const revokeJti = vi.fn(async () => undefined);
 
-    handleRevocationSuccess({}, { exp: 1_774_000_100 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { exp: 1_774_000_100 }, { revokeJti, now: () => 1_774_000_000_000 });
 
     expect(revokeJti).not.toHaveBeenCalled();
   });
 
-  it('does nothing when token.exp is missing', () => {
+  it('does nothing when token.exp is missing', async () => {
     const revokeJti = vi.fn(async () => undefined);
 
-    handleRevocationSuccess({}, { jti: 'jti-1' }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { jti: 'jti-1' }, { revokeJti, now: () => 1_774_000_000_000 });
 
     expect(revokeJti).not.toHaveBeenCalled();
   });
 
-  it('revokes the jti with the remaining token ttl', () => {
+  it('revokes the jti with the remaining token ttl', async () => {
     const revokeJti = vi.fn(async () => undefined);
 
-    handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_120 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_120 }, { revokeJti, now: () => 1_774_000_000_000 });
 
     expect(revokeJti).toHaveBeenCalledOnce();
     expect(revokeJti).toHaveBeenCalledWith('jti-1', 120);
   });
 
-  it('clamps a past token ttl to one second', () => {
+  it('clamps a past token ttl to one second', async () => {
     const revokeJti = vi.fn(async () => undefined);
 
-    handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_773_999_999 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_773_999_999 }, { revokeJti, now: () => 1_774_000_000_000 });
 
     expect(revokeJti).toHaveBeenCalledWith('jti-1', 1);
   });
 
-  it('clamps a zero token ttl to one second', () => {
+  it('clamps a zero token ttl to one second', async () => {
     const revokeJti = vi.fn(async () => undefined);
 
-    handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_000 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_000 }, { revokeJti, now: () => 1_774_000_000_000 });
 
     expect(revokeJti).toHaveBeenCalledWith('jti-1', 1);
   });
 
-  it('logs but does not throw when the revocation cache write rejects', async () => {
+  it('logs and rethrows when the revocation cache write rejects (operator-visible 5xx)', async () => {
     const err = new Error('redis down');
     const revokeJti = vi.fn(async () => {
       throw err;
     });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    expect(() =>
-      handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_120 }, { revokeJti, now: () => 1_774_000_000_000 }),
-    ).not.toThrow();
-    await Promise.resolve();
+    await expect(
+      handleRevocationSuccess(
+        { oidc: { client: { clientId: 'client-z' } } },
+        { jti: 'jti-1', exp: 1_774_000_120 },
+        { revokeJti, now: () => 1_774_000_000_000 },
+      ),
+    ).rejects.toBe(err);
 
-    expect(consoleError).toHaveBeenCalledWith('[oauth] revocation cache write failed', err);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('OAUTH_REVOCATION_CACHE_WRITE_FAILED'),
+      expect.objectContaining({ jti: 'jti-1', clientId: 'client-z' }),
+    );
   });
 });

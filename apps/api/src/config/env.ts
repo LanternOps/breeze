@@ -6,6 +6,7 @@ function envFlag(name: string, fallback = false): boolean {
 }
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
+export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', process.env.NODE_ENV !== 'production');
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 // Optional override for the consent UI base. Defaults to '' (relative path)

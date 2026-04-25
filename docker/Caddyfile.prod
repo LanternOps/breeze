@@ -16,6 +16,7 @@
 {$CADDY_SITE_ADDRESS::80} {
   # --- SSE / streaming: no compression, no buffering ---
   @streaming {
+    path /api/v1/mcp/sse
     path /api/v1/helper/chat/sessions/*/messages
     path /api/v1/ai/sessions/*/stream
   }

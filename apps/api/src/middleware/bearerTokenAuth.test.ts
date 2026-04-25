@@ -153,6 +153,28 @@ describe('bearerTokenAuthMiddleware', () => {
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), /invalid token:/);
   });
 
+  it('rejects a token missing exp', async () => {
+    // jose's jwtVerify without `requiredClaims` accepts missing exp by
+    // default — but bearer auth pins `algorithms: ['EdDSA']` and treats
+    // `exp` as load-bearing for revocation cache TTLs. Sign a JWT with
+    // no `setExpirationTime` to confirm it's rejected.
+    const { SignJWT, importJWK } = await import('jose');
+    const key = await importJWK(keypair.privateJwk as JWK, 'EdDSA');
+    const token = await new SignJWT({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+    })
+      .setProtectedHeader({ alg: 'EdDSA', kid: keypair.kid })
+      .setIssuer(issuer)
+      .setAudience(audience)
+      .setIssuedAt()
+      .setJti('no-exp-jti')
+      .sign(key);
+
+    await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), /invalid token:/);
+  });
+
   it('rejects an expired token', async () => {
     const token = await mintToken(
       { sub: userId, partner_id: partnerId, org_id: orgId },
@@ -218,7 +240,12 @@ describe('bearerTokenAuthMiddleware', () => {
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'token missing required claims');
   });
 
-  it('sets API key context and runs next inside organization DB context', async () => {
+  it('maps legacy mcp:write to read/write/execute (back-compat through 2026-05-15)', async () => {
+    // Pre-split refresh tokens carried mcp:write expecting ai:execute. We
+    // continue granting ai:execute when mcp:execute is NOT also present so
+    // 14-day live refresh tokens don't silently lose tool execution.
+    const { _resetLegacyMcpWriteWarningsForTests } = await import('./bearerTokenAuth');
+    _resetLegacyMcpWriteWarningsForTests();
     const token = await mintToken({
       sub: userId,
       partner_id: partnerId,
@@ -253,6 +280,46 @@ describe('bearerTokenAuthMiddleware', () => {
       },
       expect.any(Function)
     );
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('maps mcp:execute to internal execute scope', async () => {
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read mcp:write mcp:execute',
+      jti: 'execute-token-jti',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(c.get('apiKey')).toMatchObject({
+      scopes: ['mcp:read', 'mcp:write', 'mcp:execute', 'ai:read', 'ai:write', 'ai:execute'],
+    });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('preserves grant_id for stable MCP session and rate-limit ownership', async () => {
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'access-token-jti',
+      grant_id: 'grant-stable-id',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(c.get('apiKey')).toMatchObject({
+      id: 'oauth:access-token-jti',
+      oauthGrantId: 'grant-stable-id',
+    });
     expect(next).toHaveBeenCalledOnce();
   });
 

@@ -5,7 +5,7 @@ vi.mock('../../../db', () => ({
 }));
 
 vi.mock('../../../db/schema', () => ({
-  partners: { id: 'partners.id', emailVerifiedAt: 'partners.emailVerifiedAt', paymentMethodAttachedAt: 'partners.paymentMethodAttachedAt' },
+  partners: { id: 'partners.id', emailVerifiedAt: 'partners.emailVerifiedAt', paymentMethodAttachedAt: 'partners.paymentMethodAttachedAt', settings: 'partners.settings' },
   partnerActivations: { partnerId: 'partnerActivations.partnerId', expiresAt: 'partnerActivations.expiresAt', consumedAt: 'partnerActivations.consumedAt', createdAt: 'partnerActivations.createdAt' },
   apiKeys: { id: 'apiKeys.id', orgId: 'apiKeys.orgId', status: 'apiKeys.status', scopeState: 'apiKeys.scopeState' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
@@ -28,6 +28,16 @@ import { verifyTenantTool } from './verifyTenant';
 import { db } from '../../../db';
 import { mintApiKey } from '../../../services/apiKeys';
 import { rateLimiter } from '../../../services/rate-limit';
+import { hashBootstrapSecret } from '../bootstrapSecret';
+
+const BOOTSTRAP_SECRET = 'a'.repeat(64);
+const bootstrapSettings = () => ({
+  mcp_bootstrap_secret_hash: hashBootstrapSecret(BOOTSTRAP_SECRET),
+});
+const input = (tenantId = '00000000-0000-4000-8000-000000000001') => ({
+  tenant_id: tenantId,
+  bootstrap_secret: BOOTSTRAP_SECRET,
+});
 
 /**
  * Queue-based select mock: each successive `.limit()` call resolves to the
@@ -57,52 +67,63 @@ describe('verify_tenant', () => {
   it('throws UNKNOWN_TENANT when partner row missing', async () => {
     enqueueSelects([[]]);
     await expect(
-      verifyTenantTool.handler({ tenant_id: '00000000-0000-0000-0000-000000000000' }, {} as any),
+      verifyTenantTool.handler(input('00000000-0000-0000-0000-000000000000'), {} as any),
     ).rejects.toMatchObject({ code: 'UNKNOWN_TENANT' });
   });
 
   it('throws RATE_LIMITED when polling budget exceeded', async () => {
     vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
     await expect(
-      verifyTenantTool.handler({ tenant_id: '00000000-0000-0000-0000-000000000000' }, {} as any),
+      verifyTenantTool.handler(input('00000000-0000-0000-0000-000000000000'), {} as any),
     ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  });
+
+  it('throws INVALID_BOOTSTRAP_SECRET when the secret does not match', async () => {
+    enqueueSelects([
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: null, paymentMethodAttachedAt: null }],
+    ]);
+
+    await expect(
+      verifyTenantTool.handler({ tenant_id: 'p1', bootstrap_secret: 'b'.repeat(64) }, {} as any),
+    ).rejects.toMatchObject({ code: 'INVALID_BOOTSTRAP_SECRET' });
+    expect(mintApiKey).not.toHaveBeenCalled();
   });
 
   it('returns pending_email when activation exists, not consumed, not expired', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: null, paymentMethodAttachedAt: null }], // partner
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: null, paymentMethodAttachedAt: null }], // partner
       [{ expiresAt: new Date(Date.now() + 60_000), consumedAt: null }],     // activation
     ]);
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({ status: 'pending_email' });
   });
 
   it('returns pending_email (no activation row)', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: null, paymentMethodAttachedAt: null }],
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: null, paymentMethodAttachedAt: null }],
       [],
     ]);
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({ status: 'pending_email' });
   });
 
   it('returns expired with remediation when activation lapsed', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: null, paymentMethodAttachedAt: null }],
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: null, paymentMethodAttachedAt: null }],
       [{ expiresAt: new Date(Date.now() - 10_000), consumedAt: null }],
     ]);
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toMatchObject({ status: 'expired', remediation: expect.stringContaining('create_tenant') });
   });
 
   it('mints a readonly key on first pending_payment poll', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }], // partner (verified)
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }], // partner (verified)
       [{ id: 'org-1' }],                                                            // organizations → default org
       [],                                                                          // existingKey by default org → none
       [{ userId: 'user-1' }],                                                       // partnerUsers → admin user
     ]);
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({
       status: 'pending_payment',
       api_key: 'brz_abc123',
@@ -122,11 +143,11 @@ describe('verify_tenant', () => {
 
   it('returns pending_payment with null api_key when key already exists', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }],
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: new Date(), paymentMethodAttachedAt: null }],
       [{ id: 'org-1' }],                          // organizations → default org
       [{ id: 'key-1', scopeState: 'readonly' }], // existingKey (byOrg) found
     ]);
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({
       status: 'pending_payment',
       api_key: null,
@@ -138,7 +159,7 @@ describe('verify_tenant', () => {
 
   it('upgrades readonly → full in place on active transition', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
       [{ id: 'org-1' }],                          // organizations → default org
       [{ id: 'key-1', scopeState: 'readonly' }], // byOrg existing key
     ]);
@@ -146,7 +167,7 @@ describe('verify_tenant', () => {
     const setMock = vi.fn().mockReturnValue({ where: whereMock });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({
       status: 'active',
       api_key: null,
@@ -160,7 +181,7 @@ describe('verify_tenant', () => {
 
   it('returns active/full without update when key is already full', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
       [{ id: 'org-1' }],                    // organizations → default org
       [{ id: 'key-1', scopeState: 'full' }], // byOrg existing key
     ]);
@@ -168,7 +189,7 @@ describe('verify_tenant', () => {
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     } as any);
 
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({
       status: 'active',
       api_key: null,
@@ -180,12 +201,12 @@ describe('verify_tenant', () => {
 
   it('mints a full-scope key when active and no existing key', async () => {
     enqueueSelects([
-      [{ id: 'p1', emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
+      [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
       [{ id: 'org-1' }],          // organizations → default org
       [],                          // byOrg → none
       [{ userId: 'user-1' }],     // partnerUsers → admin user
     ]);
-    const r = await verifyTenantTool.handler({ tenant_id: 'p1' }, {} as any);
+    const r = await verifyTenantTool.handler(input('p1'), {} as any);
     expect(r).toEqual({
       status: 'active',
       api_key: 'brz_abc123',

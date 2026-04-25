@@ -15,6 +15,7 @@ interface OAuthApiKeyContext {
   rateLimit: number;
   createdBy: string;
   scopeState: 'full';
+  oauthGrantId?: string;
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -29,32 +30,79 @@ export function _resetJwksCacheForTests() {
 }
 
 /**
- * Map OAuth scopes (mcp:read / mcp:write — what Claude.ai/ChatGPT request via
- * DCR) to the internal ai:* scope vocabulary the MCP route handlers were built
- * around. Without this, every OAuth-authed MCP call fails the `ai:read` gate
- * in routes/mcpServer.ts even though the OAuth grant already scoped the token
- * for MCP use. We additively keep the original mcp:* scopes so future code
- * paths can branch on the OAuth vocabulary if needed.
+ * Map OAuth scopes (mcp:read / mcp:write / mcp:execute) to the internal ai:*
+ * scope vocabulary the MCP route handlers were built around. Without this,
+ * every OAuth-authed MCP call fails the `ai:read` gate in routes/mcpServer.ts
+ * even though the OAuth grant already scoped the token for MCP use. We
+ * additively keep the original mcp:* scopes so future code paths can branch
+ * on the OAuth vocabulary if needed.
  *
- * Mapping intent:
- *   mcp:read  → ai:read       (tools/list, read-only tool calls)
- *   mcp:write → ai:read, ai:write, ai:execute (write-tier mutations)
+ * Mapping intent (target state):
+ *   mcp:read    → ai:read       (tools/list, read-only tool calls)
+ *   mcp:write   → ai:read, ai:write
+ *   mcp:execute → ai:read, ai:write, ai:execute
  *
  * `ai:execute_admin` is intentionally NOT granted via OAuth — it gates the
  * most destructive operations and remains API-key-only by policy.
+ *
+ * Migration note: live 14-day refresh tokens were issued with `mcp:write`
+ * back when that scope expanded to ai:read+ai:write+ai:execute. Splitting
+ * `mcp:write` and the new `mcp:execute` cleanly would silently strip
+ * `ai:execute` from those in-flight tokens and break MCP tool calls until
+ * the user re-consented. To keep that release boundary clean, `mcp:write`
+ * continues to grant `ai:execute` for one release while we emit a warning
+ * per (process, client_id) — flip the legacy expansion off after
+ * 2026-05-15 once the longest-lived legacy refresh tokens have rotated.
  */
-function expandOAuthScopes(oauthScopes: string[]): string[] {
+const LEGACY_MCP_WRITE_WARNED_CLIENT_IDS = new Set<string>();
+
+function warnLegacyMcpWriteExpansion(clientId: string | undefined): void {
+  const key = clientId ?? '<no-client-id>';
+  if (LEGACY_MCP_WRITE_WARNED_CLIENT_IDS.has(key)) return;
+  LEGACY_MCP_WRITE_WARNED_CLIENT_IDS.add(key);
+  // Lazy import keeps the bearer middleware free of an `oauth/log` dep
+  // chain in the hot path; only loaded the first time a legacy token hits.
+  void import('../oauth/log').then(({ ERROR_IDS, logOauthError }) => {
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_LEGACY_MCP_WRITE_SCOPE_GRANTED_EXECUTE,
+      message: 'Legacy mcp:write scope granted ai:execute (remove after 2026-05-15)',
+      context: { clientId },
+    });
+  }).catch(() => {
+    // log import failure is non-fatal — silent dedupe still applies.
+  });
+}
+
+// TODO(2026-05-15): drop the `ai:execute` line below — by then any live
+// refresh token issued before the scope split will have aged out beyond
+// the 14-day RefreshToken TTL.
+function expandOAuthScopes(oauthScopes: string[], clientId?: string): string[] {
   const out = new Set<string>(oauthScopes);
+  let legacyMcpWriteExpansion = false;
   for (const s of oauthScopes) {
     if (s === 'mcp:read') {
       out.add('ai:read');
     } else if (s === 'mcp:write') {
       out.add('ai:read');
       out.add('ai:write');
+      // Backwards-compat for tokens minted before the scope split — see
+      // file-level migration note.
+      if (!oauthScopes.includes('mcp:execute')) {
+        out.add('ai:execute');
+        legacyMcpWriteExpansion = true;
+      }
+    } else if (s === 'mcp:execute') {
+      out.add('ai:read');
+      out.add('ai:write');
       out.add('ai:execute');
     }
   }
+  if (legacyMcpWriteExpansion) warnLegacyMcpWriteExpansion(clientId);
   return Array.from(out);
+}
+
+export function _resetLegacyMcpWriteWarningsForTests() {
+  LEGACY_MCP_WRITE_WARNED_CLIENT_IDS.clear();
 }
 
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
@@ -78,6 +126,9 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
       issuer: OAUTH_ISSUER,
       audience: OAUTH_RESOURCE_URL,
       algorithms: ['EdDSA'],
+      // Require `exp` — without it the token never expires, defeating
+      // the entire 10-minute access-token lifetime model.
+      requiredClaims: ['exp'],
     });
     payload = result.payload as typeof payload;
   } catch (e) {
@@ -107,7 +158,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   }
 
   const oauthScopes = (payload.scope ?? '').split(' ').filter(Boolean);
-  const effectiveScopes = expandOAuthScopes(oauthScopes);
+  const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'
+    ? (payload as { client_id?: string }).client_id
+    : typeof (payload as { azp?: unknown }).azp === 'string'
+      ? (payload as { azp?: string }).azp
+      : undefined;
+  const effectiveScopes = expandOAuthScopes(oauthScopes, clientIdClaim);
 
   (c.set as (key: 'apiKey', value: OAuthApiKeyContext) => void)('apiKey', {
     id: `oauth:${typeof payload.jti === 'string' ? payload.jti : 'no-jti'}`,
@@ -119,6 +175,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     rateLimit: 1000,
     createdBy: payload.sub,
     scopeState: 'full' as const,
+    ...(typeof payload.grant_id === 'string' ? { oauthGrantId: payload.grant_id } : {}),
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);
 

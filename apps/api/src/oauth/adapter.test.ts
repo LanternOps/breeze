@@ -2,12 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthAuthorizationCodes, oauthClients, oauthInteractions, oauthRefreshTokens } from '../db/schema';
 import { BreezeOidcAdapter } from './adapter';
+import { revokeGrant } from './revocationCache';
 
 vi.mock('../db', () => ({
   db: { insert: vi.fn(), update: vi.fn(), select: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('./revocationCache', () => ({
+  revokeJti: vi.fn(async () => undefined),
+  revokeGrant: vi.fn(async () => undefined),
 }));
 
 const insertMock = vi.mocked(db.insert);
@@ -211,14 +217,33 @@ describe('BreezeOidcAdapter', () => {
     await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBeUndefined();
   });
 
-  it('returns undefined for revoked RefreshToken rows', async () => {
+  it('returns undefined for revoked RefreshToken rows and revokes the whole grant family', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     mockSelectRows([{
-      payload: { accountId: 'user_abc' },
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      payload: { accountId: 'user_abc', grantId: 'grant_abc' },
       revokedAt: new Date(),
       expiresAt: new Date(Date.now() + 60_000),
     }]);
 
     await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('OAUTH_REFRESH_TOKEN_REUSE'),
+      expect.objectContaining({
+        client_id: 'client_abc',
+        partner_id: '00000000-0000-4000-8000-000000000002',
+        user_id: '00000000-0000-4000-8000-000000000001',
+        grant_id: 'grant_abc',
+      }),
+    );
+    // Refresh-token reuse must revoke the entire grant family — without
+    // this, sibling access JWTs minted from the same grant would survive
+    // until natural expiry. See finding #5.
+    expect(vi.mocked(revokeGrant)).toHaveBeenCalledWith('grant_abc', expect.any(Number));
+    consoleError.mockRestore();
   });
 
   it('returns undefined for expired RefreshToken rows', async () => {

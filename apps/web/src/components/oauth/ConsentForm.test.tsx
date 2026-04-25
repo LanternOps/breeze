@@ -40,10 +40,21 @@ describe('ConsentForm', () => {
 
     expect(await screen.findByText(/Claude wants to access your Breeze tenant/)).toBeTruthy();
     expect(screen.getByText(/Read your fleet data/)).toBeTruthy();
-    expect(screen.getByText(/Run actions on your fleet/)).toBeTruthy();
+    expect(screen.getByText(/Make non-destructive changes/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Approve/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Deny/ })).toBeTruthy();
     expect(screen.queryByLabelText(/Connect to which tenant/)).toBeNull();
+  });
+
+  it('shows mcp:execute as a high-risk device action scope', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture({
+      scopes: ['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute'],
+    })));
+    render(<ConsentForm uid="uid-1" />);
+
+    const executeScope = await screen.findByText(/Run high-risk actions on devices/);
+    expect(executeScope).toBeTruthy();
+    expect(executeScope.className).toContain('text-red-700');
   });
 
   it('shows the tenant picker only when more than one partner is available', async () => {
