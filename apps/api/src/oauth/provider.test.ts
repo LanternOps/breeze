@@ -1,5 +1,38 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildExtraTokenClaims, handleRevocationSuccess, REFRESH_TOKEN_TTL_SECONDS } from './provider';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  ALL_MCP_SCOPES,
+  buildExtraTokenClaims,
+  handleRevocationSuccess,
+  REFRESH_TOKEN_TTL_SECONDS,
+  resolveAllowedMcpScopes,
+  resolvePartnerIdForResourceServerInfo,
+} from './provider';
+import { clearPartnerScopePolicyCache } from './partnerScopePolicy';
+
+// Mock the policy module so provider tests stay hermetic — the real
+// lookup touches the DB, which isn't wired up in unit tests.
+vi.mock('./partnerScopePolicy', async () => {
+  const actual = await vi.importActual<typeof import('./partnerScopePolicy')>('./partnerScopePolicy');
+  const policyByPartner = new Map<string, { mcp_allowed_scopes?: string[] }>();
+  return {
+    ...actual,
+    getPartnerScopePolicy: vi.fn(async (partnerId: string) =>
+      policyByPartner.get(partnerId) ?? {},
+    ),
+    clearPartnerScopePolicyCache: vi.fn((partnerId?: string) => {
+      if (partnerId) policyByPartner.delete(partnerId);
+      else policyByPartner.clear();
+    }),
+    // Test-only setter so individual tests can arrange scenarios.
+    __setTestPolicy: (partnerId: string, policy: { mcp_allowed_scopes?: string[] }) => {
+      policyByPartner.set(partnerId, policy);
+    },
+  };
+});
+
+beforeEach(() => {
+  clearPartnerScopePolicyCache();
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -128,5 +161,75 @@ describe('handleRevocationSuccess', () => {
       expect.stringContaining('OAUTH_REVOCATION_CACHE_WRITE_FAILED'),
       expect.objectContaining({ jti: 'jti-1', clientId: 'client-z' }),
     );
+  });
+});
+
+describe('resolvePartnerIdForResourceServerInfo', () => {
+  it('returns partner_id from the Grant entity when present', () => {
+    const id = resolvePartnerIdForResourceServerInfo(
+      { oidc: { entities: { Grant: { jti: 'g1', breeze: { partner_id: 'partner-A', org_id: 'o1' } } } } },
+      {},
+    );
+    expect(id).toBe('partner-A');
+  });
+
+  it('falls back to client.partner_id when Grant is missing', () => {
+    const id = resolvePartnerIdForResourceServerInfo(
+      { oidc: { entities: {} } },
+      { partner_id: 'partner-B' },
+    );
+    expect(id).toBe('partner-B');
+  });
+
+  it('returns null when neither source carries a partner_id', () => {
+    const id = resolvePartnerIdForResourceServerInfo(
+      { oidc: { entities: {} } },
+      {},
+    );
+    expect(id).toBeNull();
+  });
+});
+
+describe('resolveAllowedMcpScopes', () => {
+  it('returns all scopes when partnerId is null', async () => {
+    const { allowed, reduced } = await resolveAllowedMcpScopes(null);
+    expect(allowed).toEqual([...ALL_MCP_SCOPES]);
+    expect(reduced).toBe(false);
+  });
+
+  it('returns all scopes when the partner has no policy (back-compat)', async () => {
+    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-no-policy');
+    expect(allowed).toEqual([...ALL_MCP_SCOPES]);
+    expect(reduced).toBe(false);
+  });
+
+  it('intersects the issuable set with mcp_allowed_scopes', async () => {
+    const mod = await import('./partnerScopePolicy');
+    (mod as unknown as { __setTestPolicy: (p: string, v: { mcp_allowed_scopes: string[] }) => void })
+      .__setTestPolicy('partner-readonly', { mcp_allowed_scopes: ['mcp:read'] });
+
+    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-readonly');
+    expect(allowed).toEqual(['mcp:read']);
+    expect(reduced).toBe(true);
+  });
+
+  it('drops scopes the partner does not allow even if every scope is requested', async () => {
+    const mod = await import('./partnerScopePolicy');
+    (mod as unknown as { __setTestPolicy: (p: string, v: { mcp_allowed_scopes: string[] }) => void })
+      .__setTestPolicy('partner-limited', { mcp_allowed_scopes: ['mcp:read', 'mcp:execute'] });
+
+    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-limited');
+    expect(allowed).toEqual(['mcp:read', 'mcp:execute']);
+    expect(reduced).toBe(true);
+  });
+
+  it('returns an empty list when the policy disallows every known scope', async () => {
+    const mod = await import('./partnerScopePolicy');
+    (mod as unknown as { __setTestPolicy: (p: string, v: { mcp_allowed_scopes: string[] }) => void })
+      .__setTestPolicy('partner-none', { mcp_allowed_scopes: [] });
+
+    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-none');
+    expect(allowed).toEqual([]);
+    expect(reduced).toBe(true);
   });
 });

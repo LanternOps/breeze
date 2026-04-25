@@ -7,6 +7,7 @@ import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS } from '../services/permissions';
 
 export const orgRoutes = new Hono();
@@ -359,6 +360,11 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     return c.json({ error: 'Partner not found' }, 404);
   }
 
+  // Invalidate the OAuth scope-policy cache so a change to
+  // `settings.oauth_scope_policy.mcp_allowed_scopes` takes effect on the
+  // next token mint without waiting for the 60s TTL.
+  clearPartnerScopePolicyCache(partner.id);
+
   const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
   writeRouteAudit(c, {
     orgId: auditOrgId,
@@ -415,6 +421,9 @@ orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWr
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
+
+  // Invalidate the OAuth scope-policy cache (settings may have changed).
+  clearPartnerScopePolicyCache(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
