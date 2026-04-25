@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
+import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, organizations } from '../../db/schema';
 import {
@@ -12,7 +13,8 @@ import {
   generateRecoveryCodes,
   rateLimiter,
   mfaLimiter,
-  getRedis
+  getRedis,
+  verifyPassword
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { authMiddleware } from '../../middleware/auth';
@@ -35,15 +37,73 @@ import {
 
 const { db, withSystemDbAccessContext } = dbModule;
 
+// Body schemas that require a password re-prompt. A stolen access token
+// must not be sufficient to install/remove an MFA factor — these
+// endpoints always re-verify the user's current password against the
+// argon2 hash, rate-limited per user to blunt online password guessing.
+const passwordOnlySchema = z.object({
+  currentPassword: z.string().min(1).max(256)
+});
+const mfaEnableWithPasswordSchema = mfaEnableSchema.extend({
+  currentPassword: z.string().min(1).max(256)
+});
+const mfaDisableSchema = mfaVerifySchema.extend({
+  currentPassword: z.string().min(1).max(256)
+});
+
+// Verify the user's current password and rate-limit by user id. Returns
+// null on success, or a Response on failure (caller must return it).
+async function requirePasswordReprompt(
+  c: any,
+  userId: string,
+  currentPassword: string
+): Promise<Response | null> {
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const rateKey = `mfa:pwd:${userId}`;
+  const rateCheck = await rateLimiter(redis, rateKey, 5, 5 * 60);
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+
+  const [user] = await db
+    .select({ passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!user?.passwordHash) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const valid = await verifyPassword(user.passwordHash, currentPassword);
+  if (!valid) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+  return null;
+}
+
 export const mfaRoutes = new Hono();
 
-// MFA setup (requires auth)
-mfaRoutes.post('/mfa/setup', authMiddleware, async (c) => {
+// MFA setup (requires auth + current-password re-prompt)
+mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
+  const { currentPassword } = c.req.valid('json');
+
+  // Re-verify password before allowing MFA factor installation. A stolen
+  // access token is not sufficient — the user must prove possession of
+  // the password to attach a new TOTP secret.
+  const passwordError = await requirePasswordReprompt(c, auth.user.id, currentPassword);
+  if (passwordError) return passwordError;
 
   // Check if MFA is already enabled
   const [user] = await db
@@ -277,14 +337,21 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   return c.json({ success: true, message: 'MFA enabled successfully' });
 });
 
-// MFA disable (requires auth + current MFA code)
-mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySchema), async (c) => {
+// MFA disable (requires auth + current MFA code + current password)
+mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { code } = c.req.valid('json');
+  const { code, currentPassword } = c.req.valid('json');
+
+  // Re-verify password — defense in depth. The MFA code alone proves
+  // possession of the second factor; the password proves the user is at
+  // the keyboard right now (vs an attacker on a stolen access token who
+  // somehow got an MFA code, e.g. social-engineered SMS).
+  const passwordError = await requirePasswordReprompt(c, auth.user.id, currentPassword);
+  if (passwordError) return passwordError;
 
   // Check org policy — if requireMfa is true, block disable
   if (auth.orgId) {
@@ -391,13 +458,18 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaVerifySchem
 });
 
 // MFA enable compatibility endpoint for frontend settings flow
-mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema), async (c) => {
+mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPasswordSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { code } = c.req.valid('json');
+  const { code, currentPassword } = c.req.valid('json');
+
+  // Re-verify password before flipping mfaEnabled=true on the user row.
+  const passwordError = await requirePasswordReprompt(c, auth.user.id, currentPassword);
+  if (passwordError) return passwordError;
+
   const redis = getRedis();
 
   if (!redis) {

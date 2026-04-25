@@ -190,7 +190,11 @@ describe('GET /activate/:token', () => {
 
     const res = await buildApp().request(`/activate/${RAW_TOKEN}`);
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe(`/activate/${RAW_TOKEN}?status=email_verified`);
+    // C3: redirect must NOT contain the raw token — it lingers in browser
+    // history / proxy logs / referrer headers.
+    const location = res.headers.get('location') ?? '';
+    expect(location).not.toContain(RAW_TOKEN);
+    expect(location).toBe('/activate/complete?partner=p1&status=email_verified');
     // Three updates: activation.consumedAt, partners.emailVerifiedAt, users.status
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ consumedAt: expect.any(Date) }));
     expect(setMock).toHaveBeenCalledWith(
@@ -365,6 +369,10 @@ describe('POST /activate/complete/webhook', () => {
       expect.objectContaining({ paymentMethodAttachedAt: expect.any(Date) }),
     );
     expect(setMock).toHaveBeenCalledWith({ scopeState: 'full' });
+    // M-C1: tombstone must fire — settings -> jsonb minus the secret key
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.anything() }),
+    );
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

@@ -74,6 +74,18 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
 
+// Stub the audit-log writer so we don't need to reach into Postgres just to
+// verify consent flows. The H2/LOW tests below assert the writer is called
+// with the right action string when the partner-id binding succeeds vs. is
+// skipped — we capture invocations on this hoisted mock.
+const auditMocks = vi.hoisted(() => ({
+  writeRouteAudit: vi.fn(),
+}));
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: auditMocks.writeRouteAudit,
+  writeAuditEvent: vi.fn(),
+}));
+
 function details(overrides: Record<string, unknown> = {}): {
   uid: string;
   exp: number;
@@ -121,6 +133,21 @@ function queueUpdate() {
   return { set, where };
 }
 
+/**
+ * Variant of queueUpdate that terminates with `.returning(...)` (drizzle
+ * pattern for fetching back updated rows). The H2 fix uses this to count
+ * how many rows actually got the partner_id bound — `0` rows means another
+ * partner already claimed the row, which switches the audit action from
+ * `oauth.client.partner_bound` to `oauth.client.partner_bind_skipped`.
+ */
+function queueUpdateReturning(rows: unknown[] = []) {
+  const returning = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ returning }));
+  const set = vi.fn(() => ({ where }));
+  mocks.update.mockImplementationOnce(() => ({ set }));
+  return { set, where, returning };
+}
+
 async function loadApp(enabled = true) {
   process.env.MCP_OAUTH_ENABLED = enabled ? 'true' : 'false';
   process.env.OAUTH_RESOURCE_URL = 'https://api.example/mcp/server';
@@ -145,6 +172,7 @@ describe('oauthInteractionRoutes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.Grant.instances.length = 0;
+    auditMocks.writeRouteAudit.mockReset();
   });
 
   afterEach(() => {
@@ -278,7 +306,14 @@ describe('oauthInteractionRoutes', () => {
   });
 
   it('creates a stamped grant, binds the client partner, and returns a redirect', async () => {
-    const d = details();
+    // Realistic prompt detail: oidc-provider populates `scopes.new` with all
+    // scopes the user is being asked to approve for the first time, so a
+    // healthy auth request that asks for `mcp:read mcp:write` will include
+    // those in `scopes.new` too. The H3 fix relies on this — anything in
+    // `params.scope` that ISN'T in the displayed set is dropped.
+    const d = details({
+      prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+    });
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
@@ -288,9 +323,9 @@ describe('oauthInteractionRoutes', () => {
     //      tenancy survives an API restart between consent and the first
     //      refresh-token grant. (See adapter.ts setGrantBreezeMeta.)
     //   2) The route updates oauth_clients to bind the client to the chosen
-    //      partner.
+    //      partner — uses .returning() now (H2: only first partner wins).
     queueUpdate(); // setGrantBreezeMeta
-    const clientUpdate = queueUpdate(); // oauth_clients bind
+    const clientUpdate = queueUpdateReturning([{ id: 'client-1' }]); // oauth_clients bind, 1 row updated
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
@@ -303,11 +338,24 @@ describe('oauthInteractionRoutes', () => {
       clientId: 'client-1',
     });
     // Grant.IN_PAYLOAD strips unknown fields; tenancy lives in setGrantBreezeMeta
-    // (verified via the queued UPDATE on oauth_grants above).
-    expect(mocks.Grant.instances[0]?.addOIDCScope).toHaveBeenCalledWith('openid offline_access');
+    // (verified via the queued UPDATE on oauth_grants above). H3: every
+    // requested scope (openid, offline_access, mcp:read, mcp:write) is
+    // present in `prompt.details.scopes.new`, so the intersection equals the
+    // full request and the OIDC scope set includes them all.
+    expect(mocks.Grant.instances[0]?.addOIDCScope)
+      .toHaveBeenCalledWith('openid offline_access mcp:read mcp:write');
     expect(mocks.Grant.instances[0]?.addResourceScope)
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
     expect(clientUpdate.set).toHaveBeenCalledWith({ partnerId: PARTNER_ID });
+    // LOW: partner-bind audit event is written when the row was first-bound.
+    expect(auditMocks.writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'oauth.client.partner_bound',
+        resourceType: 'oauth_client',
+        resourceId: 'client-1',
+      }),
+    );
     // Route writes result onto the interaction and calls save() rather than
     // provider.interactionResult (cookie-UID-vs-URL-UID race in multi-prompt flows).
     expect(d.result).toEqual({ login: { accountId: 'u1' }, consent: { grantId: 'grant-1' } });
@@ -315,6 +363,8 @@ describe('oauthInteractionRoutes', () => {
   });
 
   it('does not grant unrequested MCP resource scopes during consent fallback', async () => {
+    // Realistic case: client requested mcp:read only, prompt displays only
+    // mcp:read (matches the H3 invariant that grantedScopes ⊆ displayed).
     const d = details({
       params: {
         client_id: 'client-1',
@@ -322,12 +372,13 @@ describe('oauthInteractionRoutes', () => {
         resource: 'https://api.example/mcp/server',
         scope: 'openid offline_access mcp:read',
       },
+      prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read'] } } },
     });
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     queueUpdate();
-    queueUpdate();
+    queueUpdateReturning([{ id: 'client-1' }]);
 
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
@@ -339,6 +390,178 @@ describe('oauthInteractionRoutes', () => {
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read');
     expect(mocks.Grant.instances[0]?.addResourceScope)
       .not.toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
+  });
+
+  // -------------------------------------------------------------------
+  // H1 — Interaction-hijack: consent must be bound to the user who logged
+  // in to start the flow. Without this, anyone with a valid dashboard JWT
+  // could complete a flow another user initiated, binding the resulting
+  // grant (and the access token's partner_id/org_id) to their own tenant.
+  // -------------------------------------------------------------------
+  it('H1: rejects consent POST when interaction.session.accountId belongs to a different user', async () => {
+    // Interaction was initiated and login completed by user `victim-id`;
+    // mock authMiddleware returns `u1`. Even though u1 has a valid dashboard
+    // JWT, they should NOT be able to finish another user's consent flow.
+    const d = details({ session: { accountId: 'victim-id' } } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ message: 'interaction_user_mismatch' });
+    // No grant minted, no DB writes, no audit event.
+    expect(mocks.Grant.instances).toHaveLength(0);
+    expect(auditMocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('H1: rejects GET interaction when session.accountId belongs to a different user', async () => {
+    // Even reading the consent payload (client_name, scopes, partner picker)
+    // leaks information about a victim's flow — fail closed on GET too.
+    const d = details({ session: { accountId: 'victim-id' } } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ message: 'interaction_user_mismatch' });
+  });
+
+  it('H1: rejects second POST when first POST already pinned a different user', async () => {
+    // Pre-login resume edge: session.accountId not yet set, but a previous
+    // POST (by user A) already wrote `lastSubmission.accountId`. The second
+    // POST (by user B = u1 from authMiddleware mock) must be rejected.
+    const d = details({ lastSubmission: { accountId: 'user-a-id' } } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ message: 'interaction_user_mismatch' });
+  });
+
+  it('H1: allows consent when session.accountId equals the dashboard user', async () => {
+    // Happy path: login interaction populated session.accountId = u1, the
+    // same user posts consent. Must succeed.
+    const d = details({
+      session: { accountId: 'u1' },
+      prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueUpdate();
+    queueUpdateReturning([{ id: 'client-1' }]);
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(200);
+    // Pin marker written for follow-up POSTs.
+    expect((d as any).lastSubmission).toEqual({ accountId: 'u1' });
+  });
+
+  // -------------------------------------------------------------------
+  // H2 — Partner-id stomping. Same DCR client_id is shared across tenants;
+  // unconditional UPDATE would let the most recent partner overwrite any
+  // earlier binding. The fix scopes the UPDATE to `partner_id IS NULL`.
+  // -------------------------------------------------------------------
+  it('H2: does not overwrite oauth_clients.partner_id when another partner already claimed it', async () => {
+    const d = details({
+      session: { accountId: 'u1' },
+      prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueUpdate(); // setGrantBreezeMeta on oauth_grants
+    // .returning([]) signals "no rows updated" — i.e. the WHERE clause
+    // (`id = ? AND partner_id IS NULL`) didn't match because partner_id
+    // was already set by a different consenting partner.
+    queueUpdateReturning([]); // oauth_clients update — 0 rows updated
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(200);
+    // LOW: audit event reflects the skip path so cross-tenant contention
+    // on shared DCR rows is observable.
+    expect(auditMocks.writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'oauth.client.partner_bind_skipped',
+        resourceType: 'oauth_client',
+        resourceId: 'client-1',
+      }),
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // H3 — Scope intersection. Granted scopes MUST be a subset of what the
+  // consent UI displayed (prompt.details.scopes.new ∪ scopes.accepted).
+  // -------------------------------------------------------------------
+  it('H3: grants only the intersection of requested ∩ displayed scopes', async () => {
+    // Requested set is larger than displayed set: user is told they're
+    // approving `openid` and `mcp:read`, but params.scope also asks for
+    // `mcp:execute`. The grant must NOT include mcp:execute.
+    const d = details({
+      session: { accountId: 'u1' },
+      params: {
+        client_id: 'client-1',
+        client_name: 'Claude Desktop',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid mcp:read mcp:execute',
+      },
+      prompt: { details: { scopes: { new: ['openid', 'mcp:read'] } } },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueUpdate();
+    queueUpdateReturning([{ id: 'client-1' }]);
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(200);
+    // OIDC scope set: only the intersection.
+    expect(mocks.Grant.instances[0]?.addOIDCScope).toHaveBeenCalledWith('openid mcp:read');
+    expect(mocks.Grant.instances[0]?.addOIDCScope)
+      .not.toHaveBeenCalledWith('openid mcp:read mcp:execute');
+    // Resource scope: only mcp:read (mcp:execute was requested but not
+    // displayed, so it's stripped).
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .not.toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:execute');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .not.toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:execute');
+  });
+
+  it('H3: returns 400 invalid_scope when no requested scope is displayed', async () => {
+    // Pathological case: every requested scope is outside the displayed set.
+    // We refuse rather than silently mint an empty-scope token.
+    const d = details({
+      session: { accountId: 'u1' },
+      params: {
+        client_id: 'client-1',
+        client_name: 'Claude Desktop',
+        resource: 'https://api.example/mcp/server',
+        scope: 'mcp:execute',
+      },
+      prompt: { details: { scopes: { new: ['openid', 'mcp:read'] } } },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ message: 'invalid_scope' });
   });
 
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {

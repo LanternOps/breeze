@@ -90,6 +90,13 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
 }));
 
+// H6: dynamic-import path inside serveInstaller pulls getRedis from '../services'.
+// Provide a controllable mock so we can test fail-closed semantics.
+const mockGetRedis = vi.fn(() => ({} as any));
+vi.mock('../services', () => ({
+  getRedis: () => mockGetRedis(),
+}));
+
 // ============================================================
 // Import after mocks
 // ============================================================
@@ -656,6 +663,125 @@ describe('GET /public-download/:platform', () => {
     );
 
     delete process.env.BINARY_VERSION;
+  });
+});
+
+// ============================================================
+// H6: public installer rate limit — XFF spoofing + fail-closed
+// ============================================================
+
+describe('H6: public-installer rate limit hardening', () => {
+  let app: Hono;
+  const originalEnv = { ...process.env };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
+    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    // Ensure getTrustedClientIp is in production-strict mode by default in
+    // these tests so spoofed XFF is ignored.
+    process.env.NODE_ENV = 'production';
+    process.env.TRUST_PROXY_HEADERS = 'false';
+    mockGetRedis.mockReturnValue({} as any);
+    const { rateLimiter } = await import('../services/rate-limit');
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 9,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    app = new Hono();
+    app.route('/enrollment-keys', publicEnrollmentRoutes);
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  function mockKeyLookup() {
+    const row = makeKeyRow({
+      shortCode: 'pubcode1234',
+      installerPlatform: 'windows',
+      maxUsage: 1,
+      usageCount: 0,
+    });
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+  }
+
+  it('ignores spoofed X-Forwarded-For — buckets share an "unknown" key', async () => {
+    mockKeyLookup();
+    const { rateLimiter } = await import('../services/rate-limit');
+
+    const legacyToken = 'a'.repeat(64);
+    await app.request(
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+      { headers: { 'X-Forwarded-For': '1.2.3.4' } },
+    );
+    mockKeyLookup();
+    await app.request(
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+      { headers: { 'X-Forwarded-For': '5.6.7.8' } },
+    );
+
+    // Both requests must use the SAME bucket key — spoofed XFF must NOT
+    // give the attacker a fresh limit per fake IP.
+    const calls = vi.mocked(rateLimiter).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    const keys = calls.map((c) => c[1] as string);
+    const distinct = new Set(keys);
+    expect(distinct.size).toBe(1);
+    // Confirm we did NOT key off the spoofed IP.
+    for (const k of keys) {
+      expect(k).not.toContain('1.2.3.4');
+      expect(k).not.toContain('5.6.7.8');
+    }
+  });
+
+  it('returns 503 when getRedis() is null (fail closed, NOT 200)', async () => {
+    mockKeyLookup();
+    mockGetRedis.mockReturnValueOnce(null as any);
+
+    const legacyToken = 'a'.repeat(64);
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+    );
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toMatch(/temporarily unavailable/i);
+  });
+
+  it('returns 503 when rateLimiter throws (fail closed, NOT 200)', async () => {
+    mockKeyLookup();
+    const { rateLimiter } = await import('../services/rate-limit');
+    vi.mocked(rateLimiter).mockRejectedValueOnce(new Error('redis disconnected'));
+
+    const legacyToken = 'a'.repeat(64);
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 429 when over the rate limit', async () => {
+    mockKeyLookup();
+    const { rateLimiter } = await import('../services/rate-limit');
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const legacyToken = 'a'.repeat(64);
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+    );
+    expect(res.status).toBe(429);
   });
 });
 

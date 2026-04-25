@@ -69,6 +69,20 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     if (!redis) {
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
+
+    // First, IP-only bucket — guards against credential stuffing where the
+    // attacker rotates email each attempt to keep the per-(IP,email) bucket
+    // fresh. 30 attempts per 5min per IP is well above any legitimate SSO
+    // landing page, but cuts a stuffing run from thousands/min to a trickle.
+    const ipRateKey = `login:ip:${ip}`;
+    const ipRateCheck = await rateLimiter(redis, ipRateKey, 30, 5 * 60);
+    if (!ipRateCheck.allowed) {
+      return c.json({
+        error: 'Too many login attempts. Please try again later.',
+        retryAfter: Math.ceil((ipRateCheck.resetAt.getTime() - Date.now()) / 1000)
+      }, 429);
+    }
+
     const rateKey = `login:${rateLimitClient}:${normalizedEmail}`;
     const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
@@ -122,7 +136,11 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     return c.json(genericAuthError(), 401);
   }
 
-  // Check account status
+  // Check account status. Avoid response-content differentiation here: a
+  // distinct 403 "Account is not active" lets attackers enumerate which
+  // emails are valid + active vs suspended. Return the SAME generic 401
+  // used for invalid creds, but keep the rich audit trail (status, reason)
+  // so ops can still see why a real user was bounced.
   if (user.status !== 'active') {
     void auditUserLoginFailure(c, {
       userId: user.id,
@@ -132,7 +150,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       result: 'denied',
       details: { accountStatus: user.status, method: 'password' }
     });
-    return c.json({ error: 'Account is not active' }, 403);
+    return c.json(genericAuthError(), 401);
   }
 
   // Check if MFA is required

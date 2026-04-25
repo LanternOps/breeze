@@ -1,8 +1,10 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
+import { and, eq, inArray } from 'drizzle-orm';
 import { OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
-import { withDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { organizations, partnerUsers } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 
 interface OAuthApiKeyContext {
@@ -105,6 +107,77 @@ export function _resetLegacyMcpWriteWarningsForTests() {
   LEGACY_MCP_WRITE_WARNED_CLIENT_IDS.clear();
 }
 
+/**
+ * Resolve the actual list of orgs a partner-scope OAuth caller can reach.
+ *
+ * Defense-in-depth: without this, partner-scope OAuth tokens were passing
+ * `accessibleOrgIds: null` to the DB context, which downstream
+ * `auth.orgCondition()` interprets as "system scope, no filter" — meaning the
+ * application-layer SQL filter is removed and we rely entirely on RLS. RLS is
+ * still the primary tenant boundary, but the app-layer filter is a critical
+ * second guard rail for any future code that bypasses the breeze_app role or
+ * loses RLS GUCs (e.g. a worker, a misconfigured pool, a DELETE from a
+ * privileged side-channel).
+ *
+ * This mirrors `computeAccessibleOrgIds` in middleware/auth.ts but is kept
+ * inline here to avoid widening that file's export surface and to keep the
+ * OAuth fast path cohesive. Returns `string[]` (never null) so the resulting
+ * `accessibleOrgIds` always carries an explicit allowlist; an empty list
+ * correctly produces "no rows match" rather than "all rows".
+ *
+ * Pre-auth lookup: this runs BEFORE we set the request's real RLS context,
+ * so partner_users / organizations are queried via withSystemDbAccessContext
+ * — same pattern as auth.ts. The returned list is then used to build the
+ * non-system context the request actually runs under.
+ */
+async function resolvePartnerAccessibleOrgIds(
+  partnerId: string,
+  userId: string,
+): Promise<string[]> {
+  return withSystemDbAccessContext(async () => {
+    const [partnerMembership] = await db
+      .select({
+        orgAccess: partnerUsers.orgAccess,
+        orgIds: partnerUsers.orgIds,
+      })
+      .from(partnerUsers)
+      .where(
+        and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)),
+      )
+      .limit(1);
+
+    if (!partnerMembership) return [];
+    if (partnerMembership.orgAccess === 'none') return [];
+
+    if (partnerMembership.orgAccess === 'selected') {
+      const selected = (partnerMembership.orgIds ?? []).filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (selected.length === 0) return [];
+      const rows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.partnerId, partnerId),
+            inArray(organizations.id, selected),
+          ),
+        );
+      return rows.map((r) => r.id);
+    }
+
+    // orgAccess === 'all' — list every org under this partner.
+    const rows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId));
+    return rows.map((r) => r.id);
+  });
+}
+
+// Exported for unit tests that exercise the partner-scope resolution path.
+export const _resolvePartnerAccessibleOrgIdsForTests = resolvePartnerAccessibleOrgIds;
+
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
     throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
@@ -179,6 +252,15 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);
 
+  // Defense-in-depth: resolve the concrete org allowlist for partner-scope
+  // OAuth tokens BEFORE entering the request DB context. Without this we
+  // were passing `accessibleOrgIds: null`, which downstream code interprets
+  // as "system scope, no filter" — defeating the app-layer org filter and
+  // leaning entirely on RLS. See resolvePartnerAccessibleOrgIds() above.
+  const partnerAccessibleOrgIds = payload.org_id
+    ? null
+    : await resolvePartnerAccessibleOrgIds(payload.partner_id, payload.sub);
+
   await withDbAccessContext(
     payload.org_id
       ? {
@@ -191,7 +273,10 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
       : {
           scope: 'partner',
           orgId: null,
-          accessibleOrgIds: null,
+          // Resolved list (possibly []) — NEVER null for partner-scope tokens.
+          // [] correctly produces "no rows match" (e.g. fresh tenant with no
+          // orgs yet); null would mean "no filter, see everything".
+          accessibleOrgIds: partnerAccessibleOrgIds ?? [],
           accessiblePartnerIds: [payload.partner_id],
           userId: payload.sub,
         },

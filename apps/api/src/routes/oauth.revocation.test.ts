@@ -115,7 +115,12 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     expect(h.revokeGrant).not.toHaveBeenCalled();
   });
 
-  it('does NOT write the cache when client_id binding fails (cross-client revocation attempt)', async () => {
+  it('returns 200 (RFC 7009) without writing the cache when client_id binding fails (M-B2)', async () => {
+    // M-B2: per RFC 7009 §2.2 the revocation endpoint MUST return 200 for
+    // any well-formed request — including one that presents a token the
+    // caller is not authorized to act on. Returning 401/400/599 here used
+    // to leak token validity to a probing client. The cache MUST stay
+    // untouched (the legitimate owner can still use the token).
     const h = await importHarness();
     const tokenForA = await signTestJwt(
       h.privateJwk,
@@ -127,7 +132,26 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     // client B presents A's token claiming themselves as the requester
     const res = await post(h.app, { token: tokenForA, client_id: 'client-B' });
 
-    expect(res.status).toBe(599);
+    expect(res.status).toBe(200);
+    expect(h.revokeJti).not.toHaveBeenCalled();
+    expect(h.revokeGrant).not.toHaveBeenCalled();
+    // Bridge MUST NOT be reached either — a 200 short-circuit is what
+    // prevents the bridge's own 400-leakage on unknown JWTs.
+    expect(h.providerCalled()).toBe(0);
+  });
+
+  it('returns 200 when the request omits client_id entirely (no leak)', async () => {
+    const h = await importHarness();
+    const token = await signTestJwt(
+      h.privateJwk,
+      h.kid,
+      { client_id: 'client-A', jti: randomUUID(), grant_id: 'grant-A' },
+      { issuer: ISSUER, audience: AUDIENCE }
+    );
+
+    const res = await post(h.app, { token });
+
+    expect(res.status).toBe(200);
     expect(h.revokeJti).not.toHaveBeenCalled();
     expect(h.revokeGrant).not.toHaveBeenCalled();
   });

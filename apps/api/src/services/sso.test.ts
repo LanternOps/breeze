@@ -1,12 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   decodeIdToken,
   verifyIdTokenClaims,
+  discoverOIDCConfig,
   type OIDCConfig,
   PROVIDER_PRESETS,
   SAML_PROVIDER_PRESETS,
   ALL_SSO_PRESETS
 } from './sso';
+
+vi.mock('dns/promises', () => ({
+  lookup: vi.fn()
+}));
 
 const baseConfig: OIDCConfig = {
   issuer: 'https://issuer.example.com',
@@ -149,6 +154,103 @@ describe('sso service', () => {
       for (const [key, preset] of Object.entries(SAML_PROVIDER_PRESETS)) {
         expect(ALL_SSO_PRESETS[key]).toBe(preset);
       }
+    });
+  });
+
+  describe('discoverOIDCConfig (SSRF defenses)', () => {
+    const originalFetch = globalThis.fetch;
+    // Keep a reference to the mocked lookup
+    let lookupMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      const dns = await import('dns/promises');
+      lookupMock = dns.lookup as unknown as ReturnType<typeof vi.fn>;
+      lookupMock.mockReset();
+      // By default: fetch would succeed if we got that far. Tests that expect
+      // rejection assert that fetch is NOT called.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          issuer: 'https://issuer.example.com',
+          authorization_endpoint: 'https://issuer.example.com/auth',
+          token_endpoint: 'https://issuer.example.com/token',
+          userinfo_endpoint: 'https://issuer.example.com/userinfo',
+          jwks_uri: 'https://issuer.example.com/jwks',
+        })
+      }) as any;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('rejects hostnames that DNS-resolve to loopback (127.0.0.1)', async () => {
+      lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+      await expect(discoverOIDCConfig('https://attacker.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects hostnames that DNS-resolve to AWS metadata (169.254.169.254)', async () => {
+      lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+      await expect(discoverOIDCConfig('https://metadata-rebind.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects hostnames that resolve to RFC1918 (10.x)', async () => {
+      lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      await expect(discoverOIDCConfig('https://rebind.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects if ANY resolved IP is unsafe (mixed A records)', async () => {
+      lookupMock.mockResolvedValue([
+        { address: '8.8.8.8', family: 4 },
+        { address: '127.0.0.1', family: 4 },
+      ]);
+      await expect(discoverOIDCConfig('https://mixed.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+    });
+
+    it('rejects IPv6 loopback resolutions', async () => {
+      lookupMock.mockResolvedValue([{ address: '::1', family: 6 }]);
+      await expect(discoverOIDCConfig('https://ipv6-loop.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+    });
+
+    it('allows public IPs to proceed to fetch()', async () => {
+      lookupMock.mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
+      const doc = await discoverOIDCConfig('https://issuer.example.com');
+      expect(doc.issuer).toBe('https://issuer.example.com');
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects string-level internal URLs before DNS (localhost literal)', async () => {
+      await expect(discoverOIDCConfig('https://localhost/oidc')).rejects.toThrow(
+        /internal network addresses/
+      );
+      expect(lookupMock).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects HTTP (non-HTTPS) issuers', async () => {
+      await expect(discoverOIDCConfig('http://issuer.example.com')).rejects.toThrow();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('treats unresolvable hostnames as failure', async () => {
+      lookupMock.mockRejectedValue(new Error('ENOTFOUND'));
+      await expect(discoverOIDCConfig('https://no-such-domain.example.com')).rejects.toThrow(
+        /could not be resolved/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
   });
 });

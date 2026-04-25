@@ -1,9 +1,13 @@
 # Breeze RMM - Production Deployment
 # Pull pre-built images from GHCR. No build step required.
 #
+# BREEZE_VERSION must be set in .env — there is NO implicit :latest fallback.
+# Pin to a specific version (e.g. 0.62.23) for reproducible deploys.
+# Mutable tags like `:latest` are intentionally rejected to prevent surprise rollouts.
+#
 # Quick start (see README for full instructions):
 #   git clone https://github.com/LanternOps/breeze.git && cd breeze
-#   cp .env.example .env  # Edit with your secrets and domain
+#   cp .env.example .env  # Edit with your secrets, domain, and BREEZE_VERSION
 #   docker compose up -d
 #   # Then push schema + seed (requires pnpm on host, see README)
 #
@@ -17,7 +21,7 @@ x-healthcheck-defaults: &healthcheck
 
 services:
   binaries-init:
-    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
     pull_policy: always
     container_name: breeze-binaries-init
     volumes:
@@ -51,7 +55,7 @@ services:
       - breeze
 
   api:
-    image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:-latest}
+    image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: breeze-api
     restart: unless-stopped
@@ -92,7 +96,7 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       APP_VERSION: ${BREEZE_VERSION:-dev}
-      BREEZE_VERSION: ${BREEZE_VERSION:-latest}
+      BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
@@ -139,7 +143,7 @@ services:
       - breeze
 
   web:
-    image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:-latest}
+    image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     container_name: breeze-web
     restart: unless-stopped

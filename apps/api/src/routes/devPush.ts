@@ -246,7 +246,8 @@ devPushRoutes.get('/push/download/:token', async (c) => {
     if (err?.code === 'ENOENT') {
       return c.json({ error: 'Binary file not found' }, 404);
     }
-    console.error(`[DevPush] Error streaming binary for token ${token}:`, err);
+    const tokenHash = createHash('sha256').update(token).digest('hex').slice(0, 16);
+    console.error(`[DevPush] Error streaming binary for tokenHash ${tokenHash}:`, err);
     return c.json({ error: 'Failed to stream binary' }, 500);
   }
 });

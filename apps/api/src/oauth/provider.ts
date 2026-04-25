@@ -1,4 +1,5 @@
 import Provider from 'oidc-provider';
+import * as Sentry from '@sentry/node';
 import {
   OAUTH_COOKIE_SECRET,
   OAUTH_CONSENT_URL_BASE,
@@ -10,6 +11,10 @@ import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from '
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
+import { isSentryEnabled } from '../services/sentry';
+import { db } from '../db';
+import { oauthClients } from '../db/schema';
+import { isNull, lt, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
 
 let providerInstance: Provider | null = null;
@@ -19,6 +24,53 @@ let providerInstance: Provider | null = null;
 // marker outlives every JWT derived from the grant.
 export const ACCESS_TOKEN_TTL_SECONDS = 600;
 export const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
+
+// DCR cleanup TTL: a registered OAuth client that has never been used and
+// is not bound to a partner is considered abandoned after this many ms.
+export const DCR_STALE_CLIENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Garbage-collect DCR-registered OAuth clients that were never used.
+ *
+ * M-B5 (audit 2026-04-24): with `OAUTH_DCR_ENABLED=true` and
+ * `initialAccessToken: false`, anyone can call POST /oauth/reg and create
+ * a new client. Without GC, the table grows unbounded and abandoned client
+ * IDs accumulate forever. We delete clients that:
+ *   - were created more than DCR_STALE_CLIENT_TTL_MS ago (default 7 days),
+ *   - have never been used (`last_used_at IS NULL`), AND
+ *   - are not bound to a partner (`partner_id IS NULL`) — partner-bound
+ *     clients represent a deliberate enterprise registration that should
+ *     never be GC'd by time alone.
+ *
+ * Returns the number of rows deleted. Safe to call concurrently — the
+ * SELECT-then-DELETE is a single SQL statement, no locks held across calls.
+ *
+ * SCHEDULING TODO: this helper is currently NOT wired into the BullMQ
+ * worker registry in apps/api/src/index.ts. Adding the worker is a
+ * separate, scheduled change because it touches index.ts (out of scope
+ * for the security-fixes worktree). Operators can call this manually via
+ * an admin script or a cron in the meantime.
+ *
+ * Skipped from this PR (per audit guidance): flipping
+ * `initialAccessToken: true` would require building a dashboard UI for
+ * issuing IATs to partners.
+ */
+export async function cleanupStaleOauthClients(
+  now: Date = new Date(),
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - DCR_STALE_CLIENT_TTL_MS);
+  const deleted = await db
+    .delete(oauthClients)
+    .where(
+      drizzleAnd(
+        lt(oauthClients.createdAt, cutoff),
+        isNull(oauthClients.lastUsedAt),
+        isNull(oauthClients.partnerId),
+      ),
+    )
+    .returning({ id: oauthClients.id });
+  return deleted.length;
+}
 
 export async function buildExtraTokenClaims(
   ctx: any,
@@ -159,13 +211,43 @@ export async function getProvider(): Promise<Provider> {
       resourceIndicators: {
         enabled: true,
         defaultResource: () => OAUTH_RESOURCE_URL,
-        getResourceServerInfo: (_ctx: any, resource: string) => ({
-          scope: 'mcp:read mcp:write mcp:execute',
-          accessTokenFormat: 'jwt' as const,
-          accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
-          audience: resource,
-          jwt: { sign: { alg: 'EdDSA' as const } },
-        }),
+        // SECURITY (M-B3, audit 2026-04-24): the scope returned here is
+        // hardcoded — every tenant gets `mcp:read mcp:write mcp:execute`
+        // regardless of partner-level policy. Per-tenant scope restriction
+        // (e.g. partners that should only ever issue `mcp:read`) is NOT
+        // wired up here yet. The reason this isn't a critical: the Grant's
+        // breeze meta carries partner_id/org_id, and downstream bearer
+        // middleware + AI guardrails enforce per-call permissions, so a
+        // token with `mcp:execute` still cannot reach tools the partner
+        // policy forbids. This finding is about defense-in-depth — not
+        // issuing scopes the partner has explicitly disabled.
+        //
+        // To wire up: read `partners.settings.mcp_allowed_scopes` (jsonb)
+        // and intersect the response. Requires (a) a hot-path DB lookup
+        // here, (b) a per-process cache keyed on partner_id with a short
+        // TTL, and (c) plumbing the partner_id from the Grant into _ctx
+        // (currently the Grant entity is on ctx.oidc.entities.Grant).
+        // Tracked for a follow-up PR; see audit doc.
+        getResourceServerInfo: (_ctx: any, resource: string) => {
+          const scope = 'mcp:read mcp:write mcp:execute';
+          // Sentry breadcrumb so operators can detect over-issuance if a
+          // partner policy is later set in DB but bypassed by this hot path.
+          if (isSentryEnabled()) {
+            Sentry.addBreadcrumb({
+              category: 'oauth.scope',
+              level: 'info',
+              message: 'mcp_scope_issued',
+              data: { resource, scope },
+            });
+          }
+          return {
+            scope,
+            accessTokenFormat: 'jwt' as const,
+            accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
+            audience: resource,
+            jwt: { sign: { alg: 'EdDSA' as const } },
+          };
+        },
         useGrantedResource: (_ctx: any, _model: any) => true,
       },
     },

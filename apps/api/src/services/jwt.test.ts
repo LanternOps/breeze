@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { SignJWT } from 'jose';
 import { createAccessToken, createRefreshToken, verifyToken, createTokenPair } from './jwt';
 
 describe('jwt service', () => {
@@ -63,6 +64,26 @@ describe('jwt service', () => {
       const tamperedToken = token.slice(0, -5) + 'xxxxx';
 
       const decoded = await verifyToken(tamperedToken);
+      expect(decoded).toBeNull();
+    });
+
+    // G2 — explicit HS256-only allowlist
+    it('rejects a token signed with a non-allowlisted alg (G2)', async () => {
+      const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
+      // Sign a token with HS384 — correct issuer/audience but wrong alg.
+      // With an explicit algorithms: ['HS256'] allowlist, jose must reject this.
+      const hs384Token = await new SignJWT({
+        ...testPayload,
+        type: 'access'
+      })
+        .setProtectedHeader({ alg: 'HS384' })
+        .setIssuedAt()
+        .setExpirationTime('15m')
+        .setIssuer('breeze')
+        .setAudience('breeze-api')
+        .sign(secret);
+
+      const decoded = await verifyToken(hs384Token);
       expect(decoded).toBeNull();
     });
   });

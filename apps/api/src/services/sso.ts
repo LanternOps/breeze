@@ -1,4 +1,6 @@
 import { randomBytes, createHash } from 'crypto';
+import { isIP } from 'net';
+import { lookup } from 'dns/promises';
 
 // ============================================
 // Types
@@ -307,12 +309,93 @@ function isInternalUrl(urlStr: string): boolean {
   return false;
 }
 
+/**
+ * Returns true if the IP address (v4 or v6) is in a private, loopback,
+ * link-local, or otherwise unsafe range that should not be reachable from
+ * server-side fetches (SSRF defense).
+ *
+ * Mirrors the policy enforced by `validateWebhookUrlSafetyWithDns` in
+ * services/notificationSenders/webhookSender.ts. Kept inline here to avoid
+ * cross-file refactor scope; TODO: extract into services/urlSafety.ts
+ * once both call sites land.
+ */
+function isPrivateIpAddress(address: string): boolean {
+  const v = isIP(address);
+  if (v === 4) {
+    const parts = address.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
+      return true; // malformed = unsafe
+    }
+    const [a, b, c] = parts as [number, number, number, number];
+    if (a === 10) return true;                                   // 10.0.0.0/8
+    if (a === 127) return true;                                  // loopback
+    if (a === 169 && b === 254) return true;                     // link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;            // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;                     // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true;           // CGNAT
+    if (a === 192 && b === 0 && c === 0) return true;            // IETF protocol assignments
+    if (a === 192 && b === 0 && c === 2) return true;            // TEST-NET-1
+    if (a === 198 && b >= 18 && b <= 19) return true;            // benchmarking
+    if (a === 198 && b === 51 && c === 100) return true;         // TEST-NET-2
+    if (a === 203 && b === 0 && c === 113) return true;          // TEST-NET-3
+    if (a === 0) return true;                                    // 0.0.0.0/8
+    if (a >= 224) return true;                                   // multicast/reserved
+    return false;
+  }
+  if (v === 6) {
+    const norm = address.toLowerCase();
+    if (norm === '::1' || norm === '::') return true;
+    if (norm.startsWith('fc') || norm.startsWith('fd')) return true; // ULA
+    if (norm.startsWith('fe8') || norm.startsWith('fe9') || norm.startsWith('fea') || norm.startsWith('feb')) return true; // link-local fe80::/10
+    if (norm.startsWith('::ffff:')) {
+      const v4 = norm.slice('::ffff:'.length);
+      return isPrivateIpAddress(v4);
+    }
+    return false;
+  }
+  return true; // not a recognizable IP -> treat as unsafe
+}
+
 export async function discoverOIDCConfig(issuer: string): Promise<OIDCDiscoveryDocument> {
   const wellKnownUrl = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
 
-  // SSRF protection: reject internal/private network URLs
+  // SSRF protection layer 1: reject internal/private network URLs (string match)
   if (isInternalUrl(wellKnownUrl)) {
     throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
+  }
+
+  // SSRF protection layer 2: DNS-resolve hostname and reject if any A/AAAA
+  // record points at a private/loopback/link-local range (defeats DNS rebinding
+  // tricks where attacker.com -> 169.254.169.254 / 127.0.0.1 / 10.x).
+  //
+  // TODO: Residual TOCTOU between this lookup and the fetch() below — a
+  // racing-rebind attacker could still flip the answer. The full fix is to
+  // dial via a custom https.Agent against a pre-resolved IP and pass the
+  // hostname only as `servername` for SNI/cert validation. Tracked as a
+  // larger refactor; this check is the first defense layer.
+  let parsed: URL;
+  try {
+    parsed = new URL(wellKnownUrl);
+  } catch {
+    throw new Error('OIDC discovery URL is malformed');
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (isIP(hostname) === 0) {
+    let resolved: { address: string; family: number }[];
+    try {
+      resolved = await lookup(hostname, { all: true, verbatim: true });
+    } catch {
+      throw new Error('OIDC discovery hostname could not be resolved');
+    }
+    if (resolved.length === 0) {
+      throw new Error('OIDC discovery hostname could not be resolved');
+    }
+    const blocked = resolved
+      .map((r) => r.address)
+      .filter((addr) => isPrivateIpAddress(addr));
+    if (blocked.length > 0) {
+      throw new Error('OIDC discovery URL must not resolve to internal network addresses');
+    }
   }
 
   const response = await fetch(wellKnownUrl, {

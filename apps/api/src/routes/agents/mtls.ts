@@ -11,11 +11,21 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSettingsSchema } from '@breeze/shared';
 import { getOrgMtlsSettings, getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
+import { getRedis } from '../../services/redis';
+import { rateLimiter } from '../../services/rate-limit';
 
 export const mtlsRoutes = new Hono();
 
 const deviceIdParamSchema = z.object({ id: z.string().uuid() });
 const orgIdParamSchema = z.object({ orgId: z.string().uuid() });
+
+// E4: per-device renewal cooldowns (Redis sliding window).
+// Short-term: 1 attempt / 30s — prevents agent-restart hammering.
+// Long-term:  1 success / 1h — caps Cloudflare issuance even if a token leaks.
+const MTLS_RENEW_ATTEMPT_LIMIT = 1;
+const MTLS_RENEW_ATTEMPT_WINDOW_SECONDS = 30;
+const MTLS_RENEW_SUCCESS_LIMIT = 1;
+const MTLS_RENEW_SUCCESS_WINDOW_SECONDS = 3600;
 
 // ============================================
 // mTLS Certificate Renewal
@@ -73,6 +83,66 @@ mtlsRoutes.post('/renew-cert', async (c) => {
 
   if (device.status === 'quarantined') {
     return c.json({ error: 'Device quarantined', quarantined: true }, 403);
+  }
+
+  // E4: per-device renewal cooldowns (defense against leaked tokens spamming
+  // Cloudflare issuance). Two layers via the existing sliding-window helper.
+  const redis = getRedis();
+  const attemptResult = await rateLimiter(
+    redis,
+    `mtls:renew:attempt:${device.id}`,
+    MTLS_RENEW_ATTEMPT_LIMIT,
+    MTLS_RENEW_ATTEMPT_WINDOW_SECONDS
+  );
+  if (!attemptResult.allowed) {
+    const retryAfter = Math.max(1, Math.ceil((attemptResult.resetAt.getTime() - Date.now()) / 1000));
+    writeAuditEvent(c, {
+      orgId: device.orgId,
+      actorType: 'agent',
+      actorId: device.agentId,
+      action: 'agent.mtls.renew.denied',
+      resourceType: 'device',
+      resourceId: device.id,
+      result: 'denied',
+      details: { reason: 'attempt_rate_limited', retryAfter },
+    });
+    c.header('Retry-After', String(retryAfter));
+    return c.json({ error: 'Renewal attempt rate limited; retry later' }, 429);
+  }
+
+  // Long-term cap: peek at the success window without consuming a slot
+  // (cost=0 would still record — instead, do a read-only zcard check).
+  if (redis) {
+    try {
+      const successKey = `mtls:renew:success:${device.id}`;
+      const cutoff = Date.now() - MTLS_RENEW_SUCCESS_WINDOW_SECONDS * 1000;
+      await redis.zremrangebyscore(successKey, '-inf', cutoff);
+      const recentSuccessCount = await redis.zcard(successKey);
+      if (recentSuccessCount >= MTLS_RENEW_SUCCESS_LIMIT) {
+        const oldest = await redis.zrange(successKey, 0, 0, 'WITHSCORES');
+        const oldestScore = Array.isArray(oldest) && oldest.length >= 2 ? Number(oldest[1]) : Date.now();
+        const retryAfter = Math.max(
+          1,
+          Math.ceil((oldestScore + MTLS_RENEW_SUCCESS_WINDOW_SECONDS * 1000 - Date.now()) / 1000)
+        );
+        writeAuditEvent(c, {
+          orgId: device.orgId,
+          actorType: 'agent',
+          actorId: device.agentId,
+          action: 'agent.mtls.renew.denied',
+          resourceType: 'device',
+          resourceId: device.id,
+          result: 'denied',
+          details: { reason: 'success_rate_limited', retryAfter },
+        });
+        c.header('Retry-After', String(retryAfter));
+        return c.json({ error: 'Renewal success rate limited; retry later' }, 429);
+      }
+    } catch (err) {
+      // Soft-fail on redis errors here — the attempt limiter (above) already
+      // failed-closed if redis is fully unavailable; if zcard fails we proceed.
+      console.warn('[agents] mTLS success-window check failed:', String(err));
+    }
   }
 
   const cfService = CloudflareMtlsService.fromEnv();
@@ -151,6 +221,19 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     });
   } catch (dbErr) {
     console.error('[agents] failed to persist renewed mTLS cert metadata to DB:', String(dbErr));
+  }
+
+  // E4: record successful renewal in the long-term cooldown window.
+  if (redis) {
+    try {
+      const successKey = `mtls:renew:success:${device.id}`;
+      const nowTs = Date.now();
+      const memberId = `${nowTs}-${Math.random().toString(36).slice(2, 10)}`;
+      await redis.zadd(successKey, nowTs, memberId);
+      await redis.expire(successKey, MTLS_RENEW_SUCCESS_WINDOW_SECONDS);
+    } catch (recordErr) {
+      console.warn('[agents] failed to record mTLS success cooldown:', String(recordErr));
+    }
   }
 
   return c.json({

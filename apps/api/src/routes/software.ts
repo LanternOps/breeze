@@ -961,20 +961,36 @@ softwareRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireSoftwareExecute,
   requireMfa(),
+  zValidator(
+    'json',
+    z.object({
+      softwareId: z.string().uuid(),
+      version: z.string().min(1).max(64),
+      targets: z
+        .object({
+          deviceIds: z.array(z.string().uuid()).max(1000).optional(),
+          siteIds: z.array(z.string().uuid()).max(100).optional(),
+          deviceGroupIds: z.array(z.string().uuid()).max(100).optional(),
+        })
+        .optional(),
+      configuration: z
+        .object({
+          scheduleType: z.enum(['immediate', 'scheduled', 'maintenance_window']).optional(),
+        })
+        .partial()
+        .optional(),
+    })
+  ),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth);
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
 
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const softwareId = body.softwareId;
     const version = body.version;
     const deviceIds = body.targets?.deviceIds ?? [];
     const scheduleType = body.configuration?.scheduleType ?? 'immediate';
-
-    if (!softwareId || !version) {
-      return c.json({ error: 'softwareId and version are required' }, 400);
-    }
 
     // Look up the catalog item + version
     const [catalogItem] = await db.select().from(softwareCatalog)

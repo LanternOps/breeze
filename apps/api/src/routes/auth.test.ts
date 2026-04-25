@@ -363,7 +363,7 @@ describe('auth routes', () => {
       expect(body.retryAfter).toBeDefined();
     });
 
-    it('should return 403 for inactive account', async () => {
+    it('should return generic 401 for inactive account to prevent enumeration (G4)', async () => {
       vi.mocked(rateLimiter).mockResolvedValue({
         allowed: true,
         remaining: 4,
@@ -392,7 +392,38 @@ describe('auth routes', () => {
         })
       });
 
-      expect(res.status).toBe(403);
+      // Must match the invalid-credentials response exactly — differentiating
+      // would let an attacker enumerate suspended accounts.
+      expect(res.status).toBe(401);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid email or password');
+    });
+
+    it('should rate-limit by IP-only bucket before per-(IP,email) bucket (G3)', async () => {
+      // First call (IP bucket) returns not-allowed → 429 with retryAfter, short-circuit
+      vi.mocked(rateLimiter).mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 60000)
+      });
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'anything@example.com',
+          password: 'password123'
+        })
+      });
+
+      expect(res.status).toBe(429);
+      const body = await res.json();
+      expect(body.retryAfter).toBeDefined();
+
+      // Verify IP-keyed limiter was called
+      const calls = vi.mocked(rateLimiter).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      expect(String(calls[0]?.[1] ?? '')).toMatch(/^login:ip:/);
     });
 
     it('should require MFA when enabled', async () => {
@@ -802,13 +833,23 @@ describe('auth routes', () => {
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(verifyMFAToken).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      // Password-reprompt select runs first, then enable's own select
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined)
@@ -821,7 +862,7 @@ describe('auth routes', () => {
           'Authorization': 'Bearer valid-token',
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ code: '123456' })
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' })
       });
 
       expect(res.status).toBe(200);
@@ -829,6 +870,89 @@ describe('auth routes', () => {
       expect(body.success).toBe(true);
       expect(body.recoveryCodes).toEqual(setupRecoveryCodes);
       expect(body.message).toBe('MFA enabled successfully');
+    });
+
+    it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ code: '123456' })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /auth/mfa/enable should return 401 on wrong password (G1)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ code: '123456', currentPassword: 'WrongPass' })
+      });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /auth/mfa/setup should reject missing currentPassword (G1)', async () => {
+      const res = await app.request('/auth/mfa/setup', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /auth/mfa/setup should return 401 on wrong password (G1)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/setup', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ currentPassword: 'WrongPass' })
+      });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /auth/mfa/disable should reject missing currentPassword (G1)', async () => {
+      const res = await app.request('/auth/mfa/disable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ code: '123456' })
+      });
+
+      expect(res.status).toBe(400);
     });
 
     it('POST /auth/mfa/recovery-codes should rotate recovery codes when MFA is enabled', async () => {

@@ -48,6 +48,25 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   }),
 }));
 
+// E1: WS connection rate limiter now goes through Redis/rate-limit.
+// Mock both so existing tests stay allow-by-default.
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
+vi.mock('./remote/helpers', () => ({
+  logSessionAudit: vi.fn(async () => undefined),
+  getIceServers: vi.fn(() => []),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
@@ -165,7 +184,8 @@ function setupSuccessfulValidation(overrides?: { osType?: string }) {
     agentId: AGENT_ID,
     hostname: 'test-host',
     osType: overrides?.osType ?? 'linux',
-    status: 'online'
+    status: 'online',
+    orgId: 'org-test-1'
   };
 
   vi.mocked(db.select)

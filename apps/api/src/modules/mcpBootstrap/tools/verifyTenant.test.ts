@@ -78,6 +78,23 @@ describe('verify_tenant', () => {
     ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 
+  it('M-C2: IP-keyed rate limit fires BEFORE per-tenant + DB lookup', async () => {
+    const resetAt = new Date('2026-04-24T12:00:00.000Z');
+    // First call is the IP-keyed limit — deny.
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt });
+
+    await expect(
+      verifyTenantTool.handler(input('00000000-0000-0000-0000-000000000001'), { ip: '9.9.9.9' } as any),
+    ).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      message: expect.stringContaining('Per-IP'),
+    });
+    // Only the IP-keyed limit was called — tenant limit and DB never reached.
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(rateLimiter).mock.calls[0]![1]).toBe('mcp:verify:ip:9.9.9.9');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it('throws INVALID_BOOTSTRAP_SECRET when the secret does not match', async () => {
     enqueueSelects([
       [{ id: 'p1', settings: bootstrapSettings(), emailVerifiedAt: null, paymentMethodAttachedAt: null }],

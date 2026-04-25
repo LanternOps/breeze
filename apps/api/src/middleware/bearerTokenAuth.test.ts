@@ -19,9 +19,41 @@ vi.mock('../config/env', () => ({
   },
 }));
 
-vi.mock('../db', () => ({
-  withDbAccessContext: vi.fn(async (_context, fn) => fn()),
+// resolvePartnerAccessibleOrgIds queries partner_users + organizations under
+// withSystemDbAccessContext. The `db` mock below feeds a sequence of rows so
+// each call (membership lookup, then org enumeration) gets predictable data.
+// `dbState.next` is the queue; tests push rows in the order the resolver will
+// read them. The resolver runs INSIDE withSystemDbAccessContext, which we
+// stub to a passthrough.
+const dbState = vi.hoisted(() => ({
+  rows: [] as unknown[][],
 }));
+
+vi.mock('../db', () => {
+  function makeChain(rows: unknown[]) {
+    // The production code may end a query at either `.limit(1)` (partner_users
+    // lookup) OR `.where(...)` alone (organizations enumeration). Both must
+    // be thenable/iterable to the same row list for the mock to be correct.
+    const limit = vi.fn(async () => rows);
+    const where = vi.fn(() => {
+      const thenable = Promise.resolve(rows) as Promise<unknown[]> & { limit: typeof limit };
+      thenable.limit = limit;
+      return thenable;
+    });
+    const from = vi.fn(() => ({ where, limit }));
+    return { from };
+  }
+  return {
+    withDbAccessContext: vi.fn(async (_context, fn) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn) => fn()),
+    db: {
+      select: vi.fn(() => {
+        const next = dbState.rows.shift() ?? [];
+        return makeChain(next);
+      }),
+    },
+  };
+});
 
 vi.mock('../oauth/revocationCache', () => ({
   isJtiRevoked: vi.fn().mockResolvedValue(false),
@@ -97,6 +129,7 @@ describe('bearerTokenAuthMiddleware', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    dbState.rows = [];
     _resetJwksCacheForTests();
     envState.issuer = issuer;
     envState.resourceUrl = audience;
@@ -323,7 +356,20 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it('sets partner-scope API key context when org_id is null', async () => {
+  it('sets partner-scope API key context when org_id is null and resolves the partner org allowlist (M-B1)', async () => {
+    // Defense-in-depth: partner-scope tokens used to pass `accessibleOrgIds: null`
+    // to withDbAccessContext, which downstream auth.orgCondition() interprets
+    // as "system, no filter". This regression test pins the new behavior:
+    // we resolve the actual partner→org list (via partner_users + organizations
+    // under system DB context) and pass it through.
+    const orgA = '44444444-4444-4444-8444-444444444444';
+    const orgB = '55555555-5555-5555-8555-555555555555';
+    // Resolver does: SELECT partner_users (membership), then SELECT organizations.
+    dbState.rows = [
+      [{ orgAccess: 'all', orgIds: null }],
+      [{ id: orgA }, { id: orgB }],
+    ];
+
     const token = await mintToken({
       sub: userId,
       partner_id: partnerId,
@@ -352,12 +398,70 @@ describe('bearerTokenAuthMiddleware', () => {
       {
         scope: 'partner',
         orgId: null,
-        accessibleOrgIds: null,
+        accessibleOrgIds: [orgA, orgB],
         accessiblePartnerIds: [partnerId],
         userId,
       },
       expect.any(Function)
     );
     expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('passes [] (not null) for partner-scope tokens whose partner has no orgs (M-B1)', async () => {
+    // Edge case: a brand-new partner with no orgs. Resolver returns []. We
+    // MUST pass [] to withDbAccessContext — passing null would be the
+    // historical "system, no filter" shape that defeats defense-in-depth.
+    dbState.rows = [
+      [{ orgAccess: 'all', orgIds: null }],
+      [],
+    ];
+
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: null,
+      scope: 'mcp:read',
+      jti: 'partner-empty-token-jti',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'partner',
+        accessibleOrgIds: [],
+      }),
+      expect.any(Function)
+    );
+  });
+
+  it('passes [] for partner-scope tokens whose user has no partner_users membership (M-B1)', async () => {
+    // The user is no longer a member of the partner — happens when an admin
+    // revokes membership but a token is mid-flight. Resolver returns []
+    // immediately; the middleware MUST still pass [] (not null) so any
+    // downstream query produces zero rows instead of system-wide.
+    dbState.rows = [[]];
+
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: null,
+      scope: 'mcp:read',
+      jti: 'no-membership-jti',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'partner',
+        accessibleOrgIds: [],
+      }),
+      expect.any(Function)
+    );
   });
 });

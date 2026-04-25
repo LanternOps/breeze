@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { eq, desc, and, ilike, sql, or, gte, lte, SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { auditLogs, users } from '../../db/schema';
@@ -9,21 +11,54 @@ export const eventsRoutes = new Hono();
 
 eventsRoutes.use('*', authMiddleware);
 
+// Bounded enum for event categories — kept intentionally small; new actions
+// fall back to the prefix-derived category but cannot be filtered through the
+// query API unless added here.
+const eventCategoryEnum = z.enum([
+  'device',
+  'agent',
+  'script',
+  'patch',
+  'alert',
+  'policy',
+  'deployment',
+  'backup',
+  'discovery',
+  'automation',
+  'maintenance',
+  'monitoring',
+  'ai',
+  'software',
+  'system',
+]);
+
+const eventsParamSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const eventsQuerySchema = z.object({
+  search: z.string().max(200).optional(),
+  category: eventCategoryEnum.optional(),
+  result: z.enum(['success', 'failure', 'denied']).optional(),
+  initiatedBy: z
+    .enum(['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration'])
+    .optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  page: z.coerce.number().int().min(1).max(10000).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 // GET /devices/:id/events - Get activity feed for a device from audit logs
 eventsRoutes.get(
   '/:id/events',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', eventsParamSchema),
+  zValidator('query', eventsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id')!;
-    const search = c.req.query('search');
-    const category = c.req.query('category');
-    const result = c.req.query('result');
-    const initiatedBy = c.req.query('initiatedBy');
-    const from = c.req.query('from');
-    const to = c.req.query('to');
-    const page = parseInt(c.req.query('page') || '1', 10);
-    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 200);
+    const { id: deviceId } = c.req.valid('param');
+    const { search, category, result, initiatedBy, from, to, page, limit } = c.req.valid('query');
     const offset = (page - 1) * limit;
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -58,18 +93,18 @@ eventsRoutes.get(
     }
 
     if (result) {
-      conditions.push(eq(auditLogs.result, result as 'success' | 'failure' | 'denied'));
+      conditions.push(eq(auditLogs.result, result));
     }
 
     if (initiatedBy) {
-      conditions.push(eq(auditLogs.initiatedBy, initiatedBy as any));
+      conditions.push(eq(auditLogs.initiatedBy, initiatedBy));
     }
 
     if (from) {
-      conditions.push(gte(auditLogs.timestamp, new Date(from)));
+      conditions.push(gte(auditLogs.timestamp, from));
     }
     if (to) {
-      conditions.push(lte(auditLogs.timestamp, new Date(to)));
+      conditions.push(lte(auditLogs.timestamp, to));
     }
 
     const whereClause = and(...conditions);

@@ -44,8 +44,20 @@ export const verifyTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Verify
     ].join(' '),
     inputSchema,
   },
-  handler: async (input): Promise<VerifyOutput> => {
-    const rl = await rateLimiter(getRedis(), `mcp:verify:tenant:${input.tenant_id}`, 60, 60);
+  handler: async (input, ctx): Promise<VerifyOutput> => {
+    const redis = getRedis();
+    // IP-keyed limit fires BEFORE per-tenant — prevents an attacker with a
+    // leaked (tenant_id, bootstrap_secret) pair polling from a botnet at the
+    // legitimate tenant's full per-tenant cap. Mirrors attachPaymentMethod.
+    const ip = ctx?.ip ?? 'unknown';
+    const ipRl = await rateLimiter(redis, `mcp:verify:ip:${ip}`, 20, 60);
+    if (!ipRl.allowed) {
+      throw new BootstrapError(
+        'RATE_LIMITED',
+        `Per-IP polling rate limit exceeded. Try again after ${ipRl.resetAt.toISOString()}.`,
+      );
+    }
+    const rl = await rateLimiter(redis, `mcp:verify:tenant:${input.tenant_id}`, 60, 60);
     if (!rl.allowed) {
       throw new BootstrapError('RATE_LIMITED', 'Polling rate limit exceeded; slow down to ~1 per second.');
     }

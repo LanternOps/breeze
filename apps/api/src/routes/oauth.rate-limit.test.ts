@@ -558,8 +558,8 @@ describe('oauthRoutes rate limits', () => {
     // Drive the stream after the route subscribes. We schedule via
     // setImmediate so listeners are attached first.
     setImmediate(() => {
-      for (const c of dataChunks) listeners.data.forEach((l) => l(c));
-      listeners.end.forEach((l) => l());
+      for (const c of dataChunks) listeners.data?.forEach((l) => l(c));
+      listeners.end?.forEach((l) => l());
     });
 
     const res = await app.request('/oauth/token', {

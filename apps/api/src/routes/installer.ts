@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { and, eq, isNull } from 'drizzle-orm';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { db, withSystemDbAccessContext } from '../db';
 import { installerBootstrapTokens } from '../db/schema/installerBootstrapTokens';
 import { enrollmentKeys, organizations } from '../db/schema/orgs';
@@ -33,6 +33,14 @@ function freshChildExpiresAt(parentExpiresAt: Date): Date | null {
 
 function generateChildEnrollmentKey(): string {
   return randomBytes(32).toString('hex'); // 64-char hex
+}
+
+/**
+ * Returns a short SHA-256 hash of a sensitive token for log correlation.
+ * Never log raw bootstrap tokens — they grant single-use enrollment.
+ */
+function hashTokenForLog(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
 const INVALID_TOKEN_RESPONSE = {
@@ -75,7 +83,7 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
       .limit(1);
 
     if (!row) {
-      console.error('[installer] bootstrap 404', { reason: 'no_row', token, ip });
+      console.error('[installer] bootstrap 404', { reason: 'no_row', tokenHash: hashTokenForLog(token), ip });
       return null;
     }
 

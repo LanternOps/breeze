@@ -32,6 +32,7 @@ vi.mock('../../../db', () => ({
         }),
       }),
     }),
+    select: vi.fn(),
   },
 }));
 
@@ -84,6 +85,15 @@ describe('create_tenant', () => {
         }),
       }),
     } as any);
+    // Default: existing partner is NOT yet active (paymentMethodAttachedAt: null).
+    vi.mocked(db.select).mockImplementation(() => {
+      const chain: any = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([{ id: 'partner-1', paymentMethodAttachedAt: null }]),
+      };
+      return chain as any;
+    });
   });
 
   it('rejects free-provider emails', async () => {
@@ -160,6 +170,29 @@ describe('create_tenant', () => {
         result: 'success',
       }),
     );
+  });
+
+  it('M-C1: rejects with tenant_already_active when reusing an already-activated partner', async () => {
+    vi.mocked(findRecentMcpPartnerByAdminEmail).mockResolvedValueOnce({ id: 'partner-1' });
+    // Override default select mock to surface an activated partner row.
+    vi.mocked(db.select).mockImplementationOnce(() => {
+      const chain: any = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockResolvedValue([
+          { id: 'partner-1', paymentMethodAttachedAt: new Date() },
+        ]),
+      };
+      return chain as any;
+    });
+    await expect(
+      createTenantTool.handler(
+        { org_name: 'Acme', admin_email: 'alex@acme.com', admin_name: 'Alex', region: 'us' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'tenant_already_active' });
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(sendActivationEmail).not.toHaveBeenCalled();
   });
 
   it('is idempotent within 1h on same email + org_name — reuses existing partner and skips createPartner', async () => {

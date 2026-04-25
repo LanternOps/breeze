@@ -75,7 +75,8 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
     const secret = getSecretKey();
     const { payload } = await jwtVerify(token, secret, {
       issuer: 'breeze',
-      audience: 'breeze-api'
+      audience: 'breeze-api',
+      algorithms: ['HS256']
     });
 
     return {
@@ -116,7 +117,8 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
     const secret = getSecretKey();
     const { payload } = await jwtVerify(token, secret, {
       issuer: 'breeze',
-      audience: 'breeze-viewer'
+      audience: 'breeze-viewer',
+      algorithms: ['HS256']
     });
 
     if (payload.purpose !== 'viewer') {

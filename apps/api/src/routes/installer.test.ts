@@ -54,6 +54,30 @@ describe('GET /api/v1/installer/bootstrap/:token', () => {
     expect(await res.json()).toEqual({ error: 'token invalid, expired, or already used' });
   });
 
+  it('M-H1: 404 path NEVER passes raw token to console.error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    } as any);
+
+    const app = makeApp();
+    const RAW = 'ZZZZZZZZZZ';
+    const res = await app.request(`/api/v1/installer/bootstrap/${RAW}`);
+    expect(res.status).toBe(404);
+
+    // Raw token must not appear anywhere in any console.error argument.
+    const allArgs = errSpy.mock.calls.flat().map((a) => {
+      try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); }
+    });
+    for (const s of allArgs) {
+      expect(s).not.toContain(RAW);
+    }
+    // It should still log a tokenHash for correlation.
+    expect(allArgs.some((s) => s.includes('tokenHash'))).toBe(true);
+
+    errSpy.mockRestore();
+  });
+
   it('returns 404 for already-consumed token', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: () => ({

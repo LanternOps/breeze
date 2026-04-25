@@ -25,19 +25,36 @@ vi.mock('../middleware/apiKeyAuth', () => ({
   requireApiKeyScope: () => async (_c: any, next: any) => next(),
 }));
 
-vi.mock('../db', () => ({
-  db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }) }) }),
-  },
-  withDbAccessContext: vi.fn(),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
-  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-}));
+vi.mock('../db', () => {
+  // `.where(...)` needs to be both awaitable (for queries that don't call
+  // .limit — e.g. resolvePartnerAccessibleOrgIds' org enumeration) AND
+  // provide a `.limit(...)` continuation (for the membership lookup).
+  const rows = [{ partnerId: 'partner-1', orgAccess: 'all', orgIds: null, id: 'org-1' }];
+  const makeWhere = () => {
+    const thenable = Promise.resolve(rows) as Promise<typeof rows> & { limit: (n: number) => Promise<typeof rows> };
+    thenable.limit = async () => rows;
+    return thenable;
+  };
+  return {
+    db: {
+      select: () => ({ from: () => ({ where: makeWhere }) }),
+    },
+    withDbAccessContext: vi.fn(),
+    withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+    runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   devices: {}, alerts: {}, scripts: {}, automations: {},
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
   apiKeys: {}, partners: { id: 'partners.id', billingEmail: 'partners.billingEmail' },
+  partnerUsers: {
+    userId: 'partner_users.user_id',
+    partnerId: 'partner_users.partner_id',
+    orgAccess: 'partner_users.org_access',
+    orgIds: 'partner_users.org_ids',
+  },
 }));
 
 vi.mock('../services/aiTools', () => ({
@@ -141,7 +158,19 @@ describe('mcpServer bearer auth routing', () => {
     expect(mocks.apiKeyAuthMiddleware).not.toHaveBeenCalled();
   });
 
-  it('builds partner-scope auth for Bearer context without org_id', async () => {
+  it('builds partner-scope auth for Bearer context without org_id (M-B1: resolves the concrete org allowlist)', async () => {
+    // M-B1 defense-in-depth: buildAuthFromApiKey now resolves the partner's
+    // actual org list instead of passing `accessibleOrgIds: null`. The test
+    // shim at the top of the file returns whatever single-row shape the code
+    // asks for; in this path the resolver does:
+    //   1. SELECT partner_users (membership) → returns [{ partnerId: ... }]
+    //      (no orgAccess field, so it falls through to the 'all' branch)
+    //   2. SELECT organizations → returns [{ partnerId: ... }] (which the
+    //      resolver maps via `.id` → [undefined]).
+    // So we expect accessibleOrgIds to be an array (length 1 with undefined),
+    // NOT null. The important invariant is the SHAPE change — it's no longer
+    // null, and downstream `orgCondition()` now returns an IN filter instead
+    // of undefined.
     process.env.MCP_OAUTH_ENABLED = 'true';
     mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
       c.set('apiKey', {
@@ -163,16 +192,16 @@ describe('mcpServer bearer auth routing', () => {
     const res = await postToolsCall({ Authorization: 'Bearer foo' });
 
     expect(res.status).toBe(200);
-    expect(mocks.executeTool).toHaveBeenCalledWith(
-      'inspect_scope',
-      {},
-      expect.objectContaining({
-        scope: 'partner',
-        orgId: null,
-        partnerId: 'partner-1',
-        accessibleOrgIds: null,
-      }),
-    );
+    const authArg = mocks.executeTool.mock.calls.at(-1)?.[2] as Record<string, unknown> | undefined;
+    expect(authArg).toMatchObject({
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'partner-1',
+    });
+    // accessibleOrgIds MUST be an array now (never null) — the exact contents
+    // depend on the shim above; what matters is that the type changed so the
+    // "no filter" fall-through path is closed.
+    expect(Array.isArray(authArg?.accessibleOrgIds)).toBe(true);
   });
 
   it('still allows the bootstrap carve-out with no auth headers', async () => {

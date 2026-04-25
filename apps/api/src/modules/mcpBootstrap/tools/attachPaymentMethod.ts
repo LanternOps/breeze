@@ -7,7 +7,7 @@ import { rateLimiter } from '../../../services/rate-limit';
 import { getRedis } from '../../../services/redis';
 import type { BootstrapTool } from '../types';
 import { BootstrapError } from '../types';
-import { isBootstrapSecretValid } from '../bootstrapSecret';
+import { isBootstrapSecretValid, tombstoneBootstrapSecret } from '../bootstrapSecret';
 
 const inputSchema = z.object({
   tenant_id: z.string().uuid(),
@@ -79,11 +79,14 @@ export const attachPaymentMethodTool: BootstrapTool<z.infer<typeof inputSchema>,
       );
     }
     if (partner.paymentMethodAttachedAt) {
-      return {
-        setup_url: null,
-        already_attached: true,
-        next_steps: 'Payment method already attached — no action needed. Poll verify_tenant to confirm status=active, then relay its next_steps field.',
-      };
+      // Defense-in-depth: if the partner is already active and the bootstrap
+      // secret hash is still present in settings (e.g. activation happened
+      // out-of-band before the webhook tombstoned it), clear it now.
+      await tombstoneBootstrapSecret(partner.id);
+      throw new BootstrapError(
+        'tenant_already_active',
+        'Tenant already activated. Bootstrap tools cannot be reused once a payment method is attached. Poll verify_tenant with the existing api_key, or use the OAuth connector flow.',
+      );
     }
 
     const base = process.env.PUBLIC_ACTIVATION_BASE_URL;

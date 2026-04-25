@@ -305,6 +305,58 @@ describe('user routes', () => {
     });
   });
 
+  describe('PATCH /users/me validation', () => {
+    beforeEach(() => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-1',
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+    });
+
+    it('rejects avatarUrl with javascript: scheme', async () => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ avatarUrl: 'javascript:alert(1)' })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects invalid email format', async () => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'not-an-email' })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects unknown top-level fields (strict schema)', async () => {
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'ok', role: 'admin' })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects huge preferences payload (>64KB)', async () => {
+      // build ~70KB blob
+      const big = 'x'.repeat(70 * 1024);
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ preferences: { blob: big } })
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('POST /users/:id/role', () => {
     it('should assign a partner role', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
