@@ -13,6 +13,7 @@ import { getEmailService } from '../services/email';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, userRequiresSetup } from './auth/helpers';
+import { revokeUserAccess } from '../services/userSuspension';
 
 export const userRoutes = new Hono();
 
@@ -837,15 +838,48 @@ userRoutes.patch(
       return c.json({ error: 'Failed to update user' }, 500);
     }
 
+    // Suspension hook: when status transitions from active → disabled we must
+    // revoke every outstanding OAuth artifact (refresh tokens, grant cache
+    // markers, jti cache markers) so existing bearer tokens stop working
+    // immediately. Reactivation (→ active) must NOT trigger this branch.
+    // Any transition out of 'active' to a non-active value also qualifies.
+    const becameInactive =
+      data.status !== undefined &&
+      data.status !== 'active' &&
+      record.status === 'active' &&
+      updated.status !== 'active';
+
+    let oauthRevocation: Awaited<ReturnType<typeof revokeUserAccess>> | undefined;
+    if (becameInactive) {
+      try {
+        oauthRevocation = await revokeUserAccess(updated.id);
+      } catch (err) {
+        // Revocation cache failure → the DB rows are still marked revoked
+        // but access JWTs would survive until natural expiry. Treat this as
+        // a hard failure so the operator knows suspension is partial.
+        return c.json(
+          { error: 'Failed to revoke active sessions; suspension is partial. Retry.' },
+          503
+        );
+      }
+    }
+
     writeUserAudit(c, auth, scopeContext, {
-      action: 'user.update',
+      action: becameInactive ? 'user.suspended' : 'user.update',
       resourceId: updated.id,
       resourceName: updated.name,
       details: {
         changedFields: Object.keys(data),
         previousStatus: record.status,
         newStatus: updated.status,
-        scope: scopeContext.scope
+        scope: scopeContext.scope,
+        ...(oauthRevocation
+          ? {
+              grantsRevoked: oauthRevocation.grantsRevoked,
+              refreshTokensRevoked: oauthRevocation.refreshTokensRevoked,
+              jtisRevoked: oauthRevocation.jtisRevoked
+            }
+          : {})
       }
     });
 

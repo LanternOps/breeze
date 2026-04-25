@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, text, uuid, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, uuid, jsonb, timestamp, index, primaryKey } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
 
@@ -15,6 +15,25 @@ export const oauthClients = pgTable('oauth_clients', {
   partnerIdx: index('oauth_clients_partner_idx')
     .on(table.partnerId)
     .where(sql`${table.partnerId} IS NOT NULL`),
+}));
+
+// oauth_client_partner_grants: join table marking which (client, partner)
+// pairs have an active consented relationship. Introduced to replace the
+// single-winner `oauth_clients.partner_id` pointer — a DCR client is shared
+// across partners (same client_id registered once, every tenant that
+// installs reuses it), and each partner needs independent visibility +
+// revocation. The old `oauth_clients.partner_id` column is kept for a
+// transition period (see migration 2026-04-24-oauth-client-partner-grants.sql
+// header for the deprecation TODO) but is no longer written by the consent
+// route.
+export const oauthClientPartnerGrants = pgTable('oauth_client_partner_grants', {
+  clientId: text('client_id').notNull().references(() => oauthClients.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  firstConsentedAt: timestamp('first_consented_at', { withTimezone: true }).defaultNow().notNull(),
+  lastConsentedAt: timestamp('last_consented_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.clientId, table.partnerId] }),
+  partnerIdx: index('oauth_client_partner_grants_partner_idx').on(table.partnerId),
 }));
 
 export const oauthAuthorizationCodes = pgTable('oauth_authorization_codes', {

@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => {
     interactionResult: vi.fn(async () => 'https://client.example/callback'),
     select: vi.fn(),
     update: vi.fn(),
+    insert: vi.fn(),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
   };
@@ -69,7 +70,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: { select: mocks.select, update: mocks.update },
+  db: { select: mocks.select, update: mocks.update, insert: mocks.insert },
   runOutsideDbContext: mocks.runOutsideDbContext,
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
@@ -135,10 +136,8 @@ function queueUpdate() {
 
 /**
  * Variant of queueUpdate that terminates with `.returning(...)` (drizzle
- * pattern for fetching back updated rows). The H2 fix uses this to count
- * how many rows actually got the partner_id bound — `0` rows means another
- * partner already claimed the row, which switches the audit action from
- * `oauth.client.partner_bound` to `oauth.client.partner_bind_skipped`.
+ * pattern for fetching back updated rows). Used for the legacy
+ * `oauth_grants.partner_id` UPDATE in setGrantBreezeMeta and similar.
  */
 function queueUpdateReturning(rows: unknown[] = []) {
   const returning = vi.fn(async () => rows);
@@ -146,6 +145,29 @@ function queueUpdateReturning(rows: unknown[] = []) {
   const set = vi.fn(() => ({ where }));
   mocks.update.mockImplementationOnce(() => ({ set }));
   return { set, where, returning };
+}
+
+/**
+ * Drizzle insert-on-conflict-do-update chain:
+ *   db.insert(table).values(v).onConflictDoUpdate(...).returning(...)
+ *
+ * The H2 proper fix records (client, partner) consent into
+ * `oauth_client_partner_grants`. First-consent vs. re-consent is detected
+ * via the returned firstConsentedAt/lastConsentedAt — pass `firstConsented`
+ * to control which path the route takes (different timestamps signal a
+ * conflict-update; equal timestamps signal a fresh INSERT).
+ */
+function queueInsertGrantReturning(opts: { firstConsented: boolean }) {
+  const now = new Date();
+  const rows = [{
+    firstConsentedAt: opts.firstConsented ? now : new Date(now.getTime() - 60_000),
+    lastConsentedAt: now,
+  }];
+  const returning = vi.fn(async () => rows);
+  const onConflictDoUpdate = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoUpdate }));
+  mocks.insert.mockImplementationOnce(() => ({ values }));
+  return { values, onConflictDoUpdate, returning };
 }
 
 async function loadApp(enabled = true) {
@@ -324,8 +346,11 @@ describe('oauthInteractionRoutes', () => {
     //      refresh-token grant. (See adapter.ts setGrantBreezeMeta.)
     //   2) The route updates oauth_clients to bind the client to the chosen
     //      partner — uses .returning() now (H2: only first partner wins).
-    queueUpdate(); // setGrantBreezeMeta
-    const clientUpdate = queueUpdateReturning([{ id: 'client-1' }]); // oauth_clients bind, 1 row updated
+    queueUpdate(); // setGrantBreezeMeta on oauth_grants
+    // H2 proper fix: consent route INSERTs into oauth_client_partner_grants.
+    // `firstConsented: true` simulates a fresh row (firstConsentedAt ===
+    // lastConsentedAt), which routes to the `partner_grant_recorded` audit.
+    const grantInsert = queueInsertGrantReturning({ firstConsented: true });
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
@@ -346,12 +371,18 @@ describe('oauthInteractionRoutes', () => {
       .toHaveBeenCalledWith('openid offline_access mcp:read mcp:write');
     expect(mocks.Grant.instances[0]?.addResourceScope)
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
-    expect(clientUpdate.set).toHaveBeenCalledWith({ partnerId: PARTNER_ID });
-    // LOW: partner-bind audit event is written when the row was first-bound.
+    // The join-table INSERT carries (clientId, partnerId).
+    expect(grantInsert.values).toHaveBeenCalledWith({
+      clientId: 'client-1',
+      partnerId: PARTNER_ID,
+    });
+    // LOW: a fresh first-consent emits the `partner_grant_recorded` audit;
+    // a re-consent (different firstConsentedAt vs lastConsentedAt) would
+    // emit `partner_grant_refreshed` instead — see the H2 test below.
     expect(auditMocks.writeRouteAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        action: 'oauth.client.partner_bound',
+        action: 'oauth.client.partner_grant_recorded',
         resourceType: 'oauth_client',
         resourceId: 'client-1',
       }),
@@ -378,7 +409,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     queueUpdate();
-    queueUpdateReturning([{ id: 'client-1' }]);
+    queueInsertGrantReturning({ firstConsented: true });
 
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
@@ -450,7 +481,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     queueUpdate();
-    queueUpdateReturning([{ id: 'client-1' }]);
+    queueInsertGrantReturning({ firstConsented: true });
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
@@ -461,11 +492,14 @@ describe('oauthInteractionRoutes', () => {
   });
 
   // -------------------------------------------------------------------
-  // H2 — Partner-id stomping. Same DCR client_id is shared across tenants;
-  // unconditional UPDATE would let the most recent partner overwrite any
-  // earlier binding. The fix scopes the UPDATE to `partner_id IS NULL`.
+  // H2 (proper fix) — `oauth_client_partner_grants` join table replaces
+  // the single-winner `oauth_clients.partner_id` column. Each consenting
+  // partner gets its own (client_id, partner_id) row; re-consent bumps
+  // `last_consented_at` and emits a `partner_grant_refreshed` audit; first
+  // consent emits `partner_grant_recorded`. Both partners independently
+  // visible/revocable in the connected-apps UI.
   // -------------------------------------------------------------------
-  it('H2: does not overwrite oauth_clients.partner_id when another partner already claimed it', async () => {
+  it('H2 (proper fix): a re-consent updates last_consented_at and audits as partner_grant_refreshed', async () => {
     const d = details({
       session: { accountId: 'u1' },
       prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
@@ -474,26 +508,49 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     queueUpdate(); // setGrantBreezeMeta on oauth_grants
-    // .returning([]) signals "no rows updated" — i.e. the WHERE clause
-    // (`id = ? AND partner_id IS NULL`) didn't match because partner_id
-    // was already set by a different consenting partner.
-    queueUpdateReturning([]); // oauth_clients update — 0 rows updated
+    // `firstConsented: false` => firstConsentedAt < lastConsentedAt =>
+    // route classifies this as a re-consent (existing row, conflict-update).
+    queueInsertGrantReturning({ firstConsented: false });
 
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
     expect(res.status).toBe(200);
-    // LOW: audit event reflects the skip path so cross-tenant contention
-    // on shared DCR rows is observable.
     expect(auditMocks.writeRouteAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        action: 'oauth.client.partner_bind_skipped',
+        action: 'oauth.client.partner_grant_refreshed',
         resourceType: 'oauth_client',
         resourceId: 'client-1',
       }),
     );
+  });
+
+  it('H2 (proper fix): two different partners both succeed without stomping each other', async () => {
+    // Partner A consents first. The mocks simulate an INSERT (firstConsentedAt
+    // === lastConsentedAt). The route must record `partner_grant_recorded`
+    // for partner A — and crucially, never UPDATEs `oauth_clients.partner_id`
+    // (we don't queue a queueUpdateReturning for that path), so when partner B
+    // arrives next the legacy single-winner column doesn't get clobbered.
+    const dA = details({
+      session: { accountId: 'u1' },
+      prompt: { details: { scopes: { new: ['openid', 'offline_access'] } } },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(dA);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueUpdate();
+    queueInsertGrantReturning({ firstConsented: true });
+
+    const resA = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+    expect(resA.status).toBe(200);
+    expect(mocks.update).toHaveBeenCalledTimes(1); // only setGrantBreezeMeta
+    // No UPDATE on oauth_clients — the legacy stomping path is gone.
+    expect(mocks.insert).toHaveBeenCalledTimes(1); // only the join-table INSERT
   });
 
   // -------------------------------------------------------------------
@@ -518,7 +575,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     queueUpdate();
-    queueUpdateReturning([{ id: 'client-1' }]);
+    queueInsertGrantReturning({ firstConsented: true });
 
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',

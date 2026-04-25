@@ -11,6 +11,7 @@ import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from '
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
+import { getPartnerScopePolicy } from './partnerScopePolicy';
 import { isSentryEnabled } from '../services/sentry';
 import { db } from '../db';
 import { oauthClients } from '../db/schema';
@@ -118,6 +119,63 @@ export async function buildExtraTokenClaims(
   };
 }
 
+// Master list of MCP scopes this provider knows how to issue. The policy
+// helper intersects this with the partner's allowlist; any scope added to
+// this list must also be added to `scopes:` below.
+export const ALL_MCP_SCOPES = ['mcp:read', 'mcp:write', 'mcp:execute'] as const;
+
+/**
+ * Resolve the partner_id for the current token request. Strategy:
+ *   1. Grant entity's breeze meta (authoritative — set at consent time).
+ *   2. Client row's partner binding (fallback for client_credentials-style
+ *      flows that don't have a Grant).
+ * Returns null when neither source has a partner_id; callers treat that
+ * as "no policy applicable" and fall back to all-scopes (back-compat).
+ */
+export function resolvePartnerIdForResourceServerInfo(
+  ctx: any,
+  client: any,
+): string | null {
+  const grant: any = ctx?.oidc?.entities?.Grant;
+  if (grant) {
+    const grantId: string | undefined = grant.jti ?? grant.grantId;
+    const meta = getGrantBreezeMeta(grantId) ?? grant.breeze;
+    if (meta?.partner_id && typeof meta.partner_id === 'string') {
+      return meta.partner_id;
+    }
+  }
+  // Fall back to the Client entity. Our adapter stores partner binding on
+  // oauth_clients.partner_id; oidc-provider doesn't project that onto the
+  // Client entity by default but our Client metadata carries `partner_id`
+  // where set (see adapter.ts Client projection). Probe a couple of
+  // conventional locations defensively.
+  const fromClient =
+    client?.partner_id ??
+    client?.partnerId ??
+    ctx?.oidc?.client?.partner_id ??
+    ctx?.oidc?.client?.partnerId;
+  if (typeof fromClient === 'string' && fromClient.length > 0) return fromClient;
+  return null;
+}
+
+/**
+ * Apply the partner's scope policy to the set of scopes this provider
+ * would otherwise issue for `resource`. Returns the effective scope
+ * string (space-joined). When no policy is set or the lookup returns
+ * `{}`, this degrades to `allScopes` (current behavior).
+ */
+export async function resolveAllowedMcpScopes(
+  partnerId: string | null,
+  allScopes: readonly string[] = ALL_MCP_SCOPES,
+): Promise<{ allowed: string[]; reduced: boolean }> {
+  if (!partnerId) return { allowed: [...allScopes], reduced: false };
+  const policy = await getPartnerScopePolicy(partnerId);
+  const whitelist = policy.mcp_allowed_scopes;
+  if (!whitelist) return { allowed: [...allScopes], reduced: false };
+  const allowed = allScopes.filter((s) => whitelist.includes(s));
+  return { allowed, reduced: allowed.length < allScopes.length };
+}
+
 export async function handleRevocationSuccess(
   ctx: any,
   token: { jti?: string; exp?: number },
@@ -211,34 +269,49 @@ export async function getProvider(): Promise<Provider> {
       resourceIndicators: {
         enabled: true,
         defaultResource: () => OAUTH_RESOURCE_URL,
-        // SECURITY (M-B3, audit 2026-04-24): the scope returned here is
-        // hardcoded — every tenant gets `mcp:read mcp:write mcp:execute`
-        // regardless of partner-level policy. Per-tenant scope restriction
-        // (e.g. partners that should only ever issue `mcp:read`) is NOT
-        // wired up here yet. The reason this isn't a critical: the Grant's
-        // breeze meta carries partner_id/org_id, and downstream bearer
-        // middleware + AI guardrails enforce per-call permissions, so a
-        // token with `mcp:execute` still cannot reach tools the partner
-        // policy forbids. This finding is about defense-in-depth — not
-        // issuing scopes the partner has explicitly disabled.
-        //
-        // To wire up: read `partners.settings.mcp_allowed_scopes` (jsonb)
-        // and intersect the response. Requires (a) a hot-path DB lookup
-        // here, (b) a per-process cache keyed on partner_id with a short
-        // TTL, and (c) plumbing the partner_id from the Grant into _ctx
-        // (currently the Grant entity is on ctx.oidc.entities.Grant).
-        // Tracked for a follow-up PR; see audit doc.
-        getResourceServerInfo: (_ctx: any, resource: string) => {
-          const scope = 'mcp:read mcp:write mcp:execute';
-          // Sentry breadcrumb so operators can detect over-issuance if a
-          // partner policy is later set in DB but bypassed by this hot path.
+        // M-B3 follow-up (audit 2026-04-24): per-tenant scope policy. If
+        // the partner has `settings.oauth_scope_policy.mcp_allowed_scopes`
+        // set, we intersect it with the issuable scope set; otherwise we
+        // issue all scopes (back-compat). Partner lookup uses a short-TTL
+        // process-local cache (see partnerScopePolicy.ts) so the hot path
+        // is still O(1) after the first call per partner per minute.
+        getResourceServerInfo: async (ctx: any, resource: string, client: any) => {
+          const partnerId = resolvePartnerIdForResourceServerInfo(ctx, client);
+          const { allowed, reduced } = await resolveAllowedMcpScopes(partnerId);
+          const scope = allowed.join(' ');
           if (isSentryEnabled()) {
             Sentry.addBreadcrumb({
               category: 'oauth.scope',
               level: 'info',
               message: 'mcp_scope_issued',
-              data: { resource, scope },
+              data: { resource, scope, partnerId, policyApplied: reduced },
             });
+            if (reduced) {
+              Sentry.addBreadcrumb({
+                category: 'oauth.scope_policy',
+                level: 'info',
+                message: 'mcp_scope_reduced',
+                data: {
+                  partnerId,
+                  resource,
+                  requested: ALL_MCP_SCOPES.join(' '),
+                  allowed: scope,
+                },
+              });
+            }
+          }
+          if (!partnerId) {
+            // Partner could not be resolved — log a breadcrumb so
+            // operators notice if this becomes a common case (policy is
+            // silently bypassed).
+            if (isSentryEnabled()) {
+              Sentry.addBreadcrumb({
+                category: 'oauth.scope_policy',
+                level: 'warning',
+                message: 'mcp_scope_policy_no_partner',
+                data: { resource, clientId: client?.clientId },
+              });
+            }
           }
           return {
             scope,

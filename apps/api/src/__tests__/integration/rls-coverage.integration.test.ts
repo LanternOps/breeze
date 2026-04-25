@@ -48,6 +48,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['partner_users', 'partner_id'],
   ['partner_activations', 'partner_id'],
   ['oauth_clients', 'partner_id'],
+  ['oauth_client_partner_grants', 'partner_id'],
   ['oauth_refresh_tokens', 'partner_id'],
   // oauth_grants partner_id is nullable (NULL between adapter.upsert and the
   // setGrantBreezeMeta UPDATE during consent). The coverage check only needs

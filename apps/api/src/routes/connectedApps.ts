@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { and, eq } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth';
 import { db } from '../db';
-import { oauthClients, oauthRefreshTokens } from '../db/schema';
+import { oauthClients, oauthClientPartnerGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { MCP_OAUTH_ENABLED } from '../config/env';
@@ -17,13 +17,23 @@ if (MCP_OAUTH_ENABLED) {
     const partnerId = c.get('auth').partnerId;
     if (!partnerId) throw new HTTPException(403, { message: 'partner scope required' });
 
+    // Query (client, partner) pairs from the join table — a single DCR
+    // client_id is shared across all consenting partners, so the old
+    // `oauth_clients.partner_id = $partnerId` filter would only show the
+    // FIRST partner that consented and hide the app from everyone else.
     const rows = await db.select({
       clientId: oauthClients.id,
       metadata: oauthClients.metadata,
       createdAt: oauthClients.createdAt,
       lastUsedAt: oauthClients.lastUsedAt,
       disabledAt: oauthClients.disabledAt,
-    }).from(oauthClients).where(eq(oauthClients.partnerId, partnerId));
+    })
+      .from(oauthClients)
+      .innerJoin(
+        oauthClientPartnerGrants,
+        eq(oauthClientPartnerGrants.clientId, oauthClients.id),
+      )
+      .where(eq(oauthClientPartnerGrants.partnerId, partnerId));
 
     return c.json({
       clients: rows
@@ -42,16 +52,29 @@ if (MCP_OAUTH_ENABLED) {
     if (!partnerId) throw new HTTPException(403, { message: 'partner scope required' });
     const clientId = c.req.param('clientId');
 
-    const [row] = await db.select().from(oauthClients)
-      .where(and(eq(oauthClients.id, clientId), eq(oauthClients.partnerId, partnerId)))
+    // Look up the join row, not the client row. A DCR client is shared
+    // across partners; "is this app connected for me?" is answered by the
+    // (client, partner) join, not by `oauth_clients.partner_id` (which
+    // only points at the first consenting partner under the legacy schema).
+    const [row] = await db.select()
+      .from(oauthClientPartnerGrants)
+      .where(and(
+        eq(oauthClientPartnerGrants.clientId, clientId),
+        eq(oauthClientPartnerGrants.partnerId, partnerId),
+      ))
       .limit(1);
     if (!row) return c.body(null, 404);
 
-    if (!row.disabledAt) {
-      await db.update(oauthClients)
-        .set({ disabledAt: new Date() })
-        .where(eq(oauthClients.id, clientId));
-    }
+    // Delete this partner's join row so the app stops appearing in their
+    // connected-apps list. Forces a fresh consent if the user re-authorizes
+    // (safer than leaving the row and letting reconnect skip the consent
+    // screen). We deliberately do NOT touch `oauth_clients.disabled_at` —
+    // other partners may still have active grants on the same DCR client.
+    await db.delete(oauthClientPartnerGrants)
+      .where(and(
+        eq(oauthClientPartnerGrants.clientId, clientId),
+        eq(oauthClientPartnerGrants.partnerId, partnerId),
+      ));
 
     const tokens = await db.select({
       id: oauthRefreshTokens.id,

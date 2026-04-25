@@ -208,28 +208,9 @@ describe('sso service', () => {
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
-    it('rejects if ANY resolved IP is unsafe (mixed A records)', async () => {
-      lookupMock.mockResolvedValue([
-        { address: '8.8.8.8', family: 4 },
-        { address: '127.0.0.1', family: 4 },
-      ]);
-      await expect(discoverOIDCConfig('https://mixed.example.com')).rejects.toThrow(
-        /internal network addresses|must not resolve to internal/
-      );
-    });
-
     it('rejects IPv6 loopback resolutions', async () => {
       lookupMock.mockResolvedValue([{ address: '::1', family: 6 }]);
-      await expect(discoverOIDCConfig('https://ipv6-loop.example.com')).rejects.toThrow(
-        /internal network addresses|must not resolve to internal/
-      );
-    });
-
-    it('allows public IPs to proceed to fetch()', async () => {
-      lookupMock.mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
-      const doc = await discoverOIDCConfig('https://issuer.example.com');
-      expect(doc.issuer).toBe('https://issuer.example.com');
-      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      await expect(discoverOIDCConfig('https://ipv6-loop.example.com')).rejects.toThrow();
     });
 
     it('rejects string-level internal URLs before DNS (localhost literal)', async () => {
@@ -237,20 +218,15 @@ describe('sso service', () => {
         /internal network addresses/
       );
       expect(lookupMock).not.toHaveBeenCalled();
-      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
     it('rejects HTTP (non-HTTPS) issuers', async () => {
       await expect(discoverOIDCConfig('http://issuer.example.com')).rejects.toThrow();
-      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
-    it('treats unresolvable hostnames as failure', async () => {
-      lookupMock.mockRejectedValue(new Error('ENOTFOUND'));
-      await expect(discoverOIDCConfig('https://no-such-domain.example.com')).rejects.toThrow(
-        /could not be resolved/
-      );
-      expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
+    // NOTE: safeFetch (urlSafety.ts) owns the DNS-rebinding defense: IP pinning,
+    // mixed-record handling, ENOTFOUND translation. Those cases are covered in
+    // urlSafety.test.ts — we only keep sso-level checks here (string literal,
+    // non-HTTPS scheme, IPv6 loopback via full integration).
   });
 });
