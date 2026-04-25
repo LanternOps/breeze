@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
-	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.13
+	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.16
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.0
 	github.com/go-ole/go-ole v1.2.6
 	github.com/google/gopacket v1.1.19
