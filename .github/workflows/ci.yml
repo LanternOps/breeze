@@ -362,7 +362,7 @@ jobs:
           POSTGRES_PASSWORD=smoketest
           REDIS_PASSWORD=ci-smoke-redis-pw
           JWT_SECRET=ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
-          AGENT_ENROLLMENT_SECRET=ci-smoke-enrollment-secret
+          AGENT_ENROLLMENT_SECRET=ci-smoke-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
           APP_ENCRYPTION_KEY=ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
           MFA_ENCRYPTION_KEY=ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
           BREEZE_DOMAIN=localhost
