@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
 import { authMiddleware } from '../middleware/auth';
@@ -9,6 +9,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, partners, partnerUsers, users } from '../db/schema';
 import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
+import { writeRouteAudit } from '../services/auditEvents';
 
 // Grant TTL in seconds — must match `ttl.Grant` in oauth/provider.ts so the
 // breeze metadata side-table entry expires no later than the Grant itself.
@@ -49,6 +50,37 @@ async function interactionDetails(provider: Awaited<ReturnType<typeof getProvide
   return details;
 }
 
+/**
+ * Binds the interaction to the dashboard user who is currently posting.
+ *
+ * Threat model: anyone with a valid dashboard JWT could otherwise complete
+ * an OAuth flow that another user initiated — the URL `uid` is the only
+ * authority and the consent UI doesn't verify the initiating account. After
+ * the OIDC login prompt, `details.session.accountId` is normally pinned to
+ * the user that signed in. We:
+ *   1. Reject if `session.accountId` is set AND not equal to the dashboard
+ *      user (that's exactly the cross-user hijack we're guarding against).
+ *   2. Reject if a previous POST already pinned a different `accountId`
+ *      via `lastSubmission` (set below on the success path) — this guards
+ *      against the rare pre-login resume case where the session pointer
+ *      hasn't populated yet but a previous user already started consent.
+ *
+ * Returns nothing on success; throws HTTPException 403 with code
+ * `interaction_user_mismatch` on rejection so the consent UI can surface a
+ * useful error message.
+ */
+function ensureInteractionBoundToUser(details: any, userId: string): void {
+  const sessionAccountId = details.session?.accountId;
+  if (typeof sessionAccountId === 'string' && sessionAccountId !== userId) {
+    throw new HTTPException(403, { message: 'interaction_user_mismatch' });
+  }
+  const lastSubmission = (details as { lastSubmission?: { accountId?: string } }).lastSubmission;
+  const lastAccountId = lastSubmission?.accountId;
+  if (typeof lastAccountId === 'string' && lastAccountId !== userId) {
+    throw new HTTPException(403, { message: 'interaction_user_mismatch' });
+  }
+}
+
 async function parseConsentBody(c: any): Promise<{ partner_id: string; approve: boolean }> {
   let body: unknown;
   try {
@@ -83,6 +115,11 @@ if (MCP_OAUTH_ENABLED) {
     }
 
     const userId = c.get('auth').user.id;
+    // H1: refuse to even reveal the consent payload (client_name, scopes,
+    // partner picker) to a user who didn't initiate the OAuth flow. Without
+    // this an attacker with a valid dashboard JWT could use a leaked URL to
+    // enumerate which client a victim is connecting and prep a follow-up.
+    ensureInteractionBoundToUser(details, userId);
     const clientId = details.params.client_id as string;
     const [memberships, clientRow] = await Promise.all([
       asSystem(() =>
@@ -132,9 +169,18 @@ if (MCP_OAUTH_ENABLED) {
 
     const body = await parseConsentBody(c);
     const userId = c.get('auth').user.id;
+    // H1: bind the interaction to the dashboard user submitting consent. If
+    // the OIDC login prompt already pinned a different accountId on the
+    // session, OR if a previous POST already pinned a different user via
+    // lastSubmission, fail closed with 403. Run BEFORE the deny shortcut so
+    // a malicious second user can't even cancel another user's flow.
+    ensureInteractionBoundToUser(details, userId);
 
     if (!body.approve) {
       (details as any).result = { error: 'access_denied', error_description: 'user denied access' };
+      // Pin the rejecting user so a follow-up POST by a different user
+      // hits the lastSubmission mismatch check above.
+      (details as any).lastSubmission = { accountId: userId };
       await (details as any).save((details as any).exp - Math.floor(Date.now() / 1000));
       return c.json({ redirectTo: `${OAUTH_ISSUER}/oauth/auth/${details.uid}` });
     }
@@ -172,16 +218,35 @@ if (MCP_OAUTH_ENABLED) {
     for (const [res, scopes] of Object.entries(missingResourceScopes)) {
       grant.addResourceScope(res, scopes.join(' '));
     }
-    // Grant ALL requested scopes at BOTH the OIDC and resource level. The
+    // H3: only grant the intersection of (requested) ∩ (displayed). The UI
+    // shows scopes from `prompt.details.scopes.new`; previously-accepted
+    // scopes for this client live in `prompt.details.scopes.accepted`.
+    // Granting anything outside that union would silently expand permissions
+    // beyond what the consent screen shows the user.
+    const requestedScopes = (details.params.scope as string | undefined)?.split(' ').filter(Boolean) ?? [];
+    const displayedScopeSet = new Set<string>([
+      ...((promptDetails.scopes?.new as string[] | undefined) ?? []),
+      ...((promptDetails.scopes?.accepted as string[] | undefined) ?? []),
+      // missingOIDCScope / missingResourceScopes also represent scopes the
+      // provider expected the consent prompt to surface — include them so
+      // we don't accidentally drop scopes the prompt machinery wants
+      // satisfied (otherwise the provider would re-prompt forever).
+      ...((promptDetails.missingOIDCScope as string[] | undefined) ?? []),
+      ...Object.values(missingResourceScopes).flat(),
+    ]);
+    const grantedScopes = requestedScopes.filter((s) => displayedScopeSet.has(s));
+    if (requestedScopes.length > 0 && grantedScopes.length === 0) {
+      throw new HTTPException(400, { message: 'invalid_scope' });
+    }
+    // Grant the intersection at BOTH the OIDC and resource level. The
     // provider's consent prompt machinery checks `missingOIDCScope` against
     // the OIDC grant set even for scopes that "logically" belong to a
     // resource indicator (because they appear in the auth request's
     // `scope` parameter). Granting them in both places means the consent
     // prompt is auto-satisfied on resume.
-    const requestedScopes = (details.params.scope as string | undefined)?.split(' ').filter(Boolean) ?? [];
-    if (requestedScopes.length) grant.addOIDCScope(requestedScopes.join(' '));
+    if (grantedScopes.length) grant.addOIDCScope(grantedScopes.join(' '));
     if (resource) {
-      const resourceScopes = requestedScopes.filter((scope) => scope.startsWith('mcp:'));
+      const resourceScopes = grantedScopes.filter((scope) => scope.startsWith('mcp:'));
       if (!missingResourceScopes[resource] && resourceScopes.length) {
         grant.addResourceScope(resource, resourceScopes.join(' '));
       }
@@ -206,11 +271,57 @@ if (MCP_OAUTH_ENABLED) {
       throw new HTTPException(500, { message: 'failed to persist grant metadata' });
     }
 
-    await asSystem(async () => {
-      await db.update(oauthClients)
+    // H2: bind partner_id ONLY on the FIRST partner that consents. The same
+    // DCR `client_id` is shared across tenants (e.g. Claude.ai registers
+    // once, every Breeze partner uses the same row). Unconditional UPDATE
+    // would let the most-recent consenting partner stomp the row's binding,
+    // breaking the connected-apps UI for every other partner that already
+    // installed it. The grants/refresh tokens themselves are still correctly
+    // partitioned by `oauth_grants.partner_id` / `oauth_refresh_tokens.partner_id`,
+    // so the auth surface is unaffected.
+    //
+    // TODO(security): the proper long-term fix is a join table
+    // `oauth_client_partner_grants(client_id, partner_id, first_consented_at)`
+    // so each (client, partner) pair has its own visibility/revocation row.
+    // Tracked in the OAuth security audit doc.
+    const clientIdForUpdate = details.params.client_id as string;
+    const updateResult = await asSystem(async () => {
+      const rows = await db.update(oauthClients)
         .set({ partnerId: body.partner_id })
-        .where(eq(oauthClients.id, details.params.client_id as string));
+        .where(and(
+          eq(oauthClients.id, clientIdForUpdate),
+          isNull(oauthClients.partnerId),
+        ))
+        .returning({ id: oauthClients.id });
+      return rows;
     });
+    const partnerBound = updateResult.length > 0;
+    // LOW: emit an audit-log entry so cross-tenant contention on shared DCR
+    // client rows is observable. `partner_bound` is the first-consent path,
+    // `partner_bind_skipped` is the (expected, but visibility-relevant)
+    // case where another partner had already claimed the row.
+    try {
+      writeRouteAudit(c as any, {
+        orgId: orgId,
+        action: partnerBound ? 'oauth.client.partner_bound' : 'oauth.client.partner_bind_skipped',
+        resourceType: 'oauth_client',
+        resourceId: clientIdForUpdate,
+        details: {
+          client_id: clientIdForUpdate,
+          partner_id: body.partner_id,
+          user_id: userId,
+        },
+      });
+    } catch (err) {
+      // Audit logging is best-effort; never break the consent flow if it
+      // fails. Surface to stderr/Sentry via the existing OAuth logger.
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_PROVIDER_SERVER_ERROR,
+        message: 'Failed to write partner-bind audit event',
+        err,
+        context: { clientId: clientIdForUpdate, partnerId: body.partner_id },
+      });
+    }
 
     // We can't use provider.interactionResult(req, res, ...) here for the
     // same reason we don't use interactionDetails(): it reads the UID from
@@ -221,6 +332,10 @@ if (MCP_OAUTH_ENABLED) {
       login: { accountId: userId },
       consent: { grantId },
     };
+    // Pin the consenting user so a follow-up POST by a different user
+    // hits the H1 mismatch check on `lastSubmission` even if `details.session`
+    // hasn't been populated yet (rare pre-login resume edge).
+    (details as any).lastSubmission = { accountId: userId };
     await (details as any).save((details as any).exp - Math.floor(Date.now() / 1000));
     const redirectTo = `${OAUTH_ISSUER}/oauth/auth/${details.uid}`;
     return c.json({ redirectTo });
