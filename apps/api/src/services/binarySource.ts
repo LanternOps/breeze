@@ -84,5 +84,7 @@ export function getGithubHelperUrl(os: string): string {
  * Asset is uploaded by the build-macos-installer-app job in release.yml.
  */
 export function getGithubInstallerAppUrl(): string {
-  return `${githubDownloadBase()}/Breeze%20Installer.app.zip`;
+  // GitHub Releases auto-rewrites spaces in attached asset filenames to dots,
+  // so the on-disk artifact "Breeze Installer.app.zip" is served at this URL.
+  return `${githubDownloadBase()}/Breeze.Installer.app.zip`;
 }
