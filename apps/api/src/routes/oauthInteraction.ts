@@ -83,18 +83,38 @@ if (MCP_OAUTH_ENABLED) {
     }
 
     const userId = c.get('auth').user.id;
-    const memberships = await asSystem(() =>
-      db.select({ partnerId: partners.id, partnerName: partners.name })
-        .from(partnerUsers)
-        .innerJoin(partners, eq(partners.id, partnerUsers.partnerId))
-        .where(eq(partnerUsers.userId, userId))
-    );
+    const clientId = details.params.client_id as string;
+    const [memberships, clientRow] = await Promise.all([
+      asSystem(() =>
+        db.select({ partnerId: partners.id, partnerName: partners.name })
+          .from(partnerUsers)
+          .innerJoin(partners, eq(partners.id, partnerUsers.partnerId))
+          .where(eq(partnerUsers.userId, userId))
+      ),
+      asSystem(async () => {
+        const [row] = await db.select({ metadata: oauthClients.metadata })
+          .from(oauthClients)
+          .where(eq(oauthClients.id, clientId))
+          .limit(1);
+        return row;
+      }),
+    ]);
+
+    // Prefer the registered client_name from oauth_clients.metadata (set at
+    // DCR time per RFC 7591). Fall back to the auth-request param if some
+    // client somehow sent one, then to the opaque client_id as a last resort
+    // so the heading never renders blank.
+    const registeredName = (clientRow?.metadata as { client_name?: unknown } | undefined)?.client_name;
+    const clientName =
+      (typeof registeredName === 'string' && registeredName.trim()) ||
+      (typeof (details.params as any).client_name === 'string' && (details.params as any).client_name) ||
+      clientId;
 
     return c.json({
       uid: details.uid,
       client: {
-        client_id: details.params.client_id,
-        client_name: (details.params as any).client_name ?? details.params.client_id,
+        client_id: clientId,
+        client_name: clientName,
       },
       scopes: ((details.prompt.details as any)?.scopes?.new ?? []) as string[],
       resource: resource ?? null,

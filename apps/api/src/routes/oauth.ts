@@ -85,9 +85,47 @@ if (MCP_OAUTH_ENABLED) {
     }
 
     if (hasRegistrationBody) {
-      const raw = await readClonedBodyWithLimit(c.req.raw, REGISTRATION_BODY_MAX_BYTES);
-      if (raw === null) {
-        return c.json({ error: 'invalid_client_metadata', error_description: 'registration request body too large' }, 413);
+      // Pre-buffer the body into `incoming.rawBody` so the oidc-provider
+      // bridge (which reads from the underlying Node IncomingMessage, not
+      // the Web Request stream) can replay it. Mirrors the /token fix:
+      // draining `c.req.raw.clone().body` here also drains the underlying
+      // socket stream under @hono/node-server, leaving the bridge with an
+      // empty body — which oidc-provider reports as `invalid_redirect_uri`
+      // ("redirect_uris is mandatory property") regardless of what was
+      // actually sent.
+      const incoming = c.env?.incoming as
+        | (NodeJS.ReadableStream & { headers?: Record<string, unknown>; rawBody?: Buffer; body?: Buffer })
+        | undefined;
+      const hasNodeStream = !!incoming && typeof (incoming as { on?: unknown }).on === 'function';
+      let raw: string;
+      try {
+        if (hasNodeStream) {
+          const buf = await readRawBodyToBuffer(incoming!, REGISTRATION_BODY_MAX_BYTES);
+          (incoming as unknown as { rawBody?: Buffer }).rawBody = buf;
+          // oidc-provider's selective_body falls back to `req.body` when the
+          // underlying IncomingMessage stream is no longer `readable`. After
+          // we drain via readRawBodyToBuffer, the stream is exhausted, so we
+          // must hand oidc-provider the parsed bytes here. `selective_body`
+          // accepts a Buffer and JSON.parses it for application/json clients.
+          (incoming as unknown as { body?: Buffer }).body = buf;
+          raw = buf.toString('utf8');
+        } else {
+          const out = await readClonedBodyWithLimit(c.req.raw, REGISTRATION_BODY_MAX_BYTES);
+          if (out === null) {
+            return c.json({ error: 'invalid_client_metadata', error_description: 'registration request body too large' }, 413);
+          }
+          raw = out;
+        }
+      } catch (err) {
+        if (err instanceof BodyTooLargeError) {
+          return c.json({ error: 'invalid_client_metadata', error_description: 'registration request body too large' }, 413);
+        }
+        logOauthError({
+          errorId: ERROR_IDS.OAUTH_REGISTRATION_BODY_READ_FAILED,
+          message: 'Failed to buffer registration request body',
+          err,
+        });
+        return c.json({ error: 'invalid_client_metadata', error_description: 'registration request body unreadable' }, 400);
       }
       if (raw.trim().length > 0) {
         let metadata: Record<string, unknown>;
@@ -192,7 +230,7 @@ if (MCP_OAUTH_ENABLED) {
       // path used elsewhere; production traffic goes through the Node
       // path and gets `rawBody` set for the bridge to replay.
       const incoming = c.env?.incoming as
-        | (NodeJS.ReadableStream & { headers?: Record<string, unknown>; rawBody?: Buffer })
+        | (NodeJS.ReadableStream & { headers?: Record<string, unknown>; rawBody?: Buffer; body?: Buffer })
         | undefined;
       const hasNodeStream = !!incoming && typeof (incoming as any).on === 'function';
       let buf: Buffer;
@@ -200,6 +238,11 @@ if (MCP_OAUTH_ENABLED) {
         if (hasNodeStream) {
           buf = await readRawBodyToBuffer(incoming!, TOKEN_BODY_MAX_BYTES);
           (incoming as unknown as { rawBody?: Buffer }).rawBody = buf;
+          // oidc-provider's selective_body falls back to `req.body` once the
+          // IncomingMessage stream is exhausted (see shared/selective_body.js).
+          // Without this, the token endpoint reports "no client authentication
+          // mechanism provided" because client_id is parsed from an empty body.
+          (incoming as unknown as { body?: Buffer }).body = buf;
         } else {
           const raw = await readClonedBodyWithLimit(c.req.raw, TOKEN_BODY_MAX_BYTES);
           if (raw === null) {
@@ -376,13 +419,35 @@ if (MCP_OAUTH_ENABLED) {
     let params: URLSearchParams;
     let token: string | null;
     try {
-      const raw = await readClonedBodyWithLimit(c.req.raw, REVOCATION_BODY_MAX_BYTES);
-      if (raw === null) {
-        return c.json({ error: 'invalid_request', error_description: 'revocation request body too large' }, 413);
+      // Buffer the body via the underlying Node IncomingMessage when present
+      // so the oidc-provider bridge (which reads from the same stream) can
+      // replay it via the `selective_body` `req.body` fallback. Mirrors the
+      // /reg and /token fixes: draining `c.req.raw.clone()` exhausts the
+      // socket and oidc-provider sees an empty body, returning
+      // "no client authentication mechanism provided" for opaque tokens.
+      const incoming = c.env?.incoming as
+        | (NodeJS.ReadableStream & { headers?: Record<string, unknown>; rawBody?: Buffer; body?: Buffer })
+        | undefined;
+      const hasNodeStream = !!incoming && typeof (incoming as { on?: unknown }).on === 'function';
+      let raw: string;
+      if (hasNodeStream) {
+        const buf = await readRawBodyToBuffer(incoming!, REVOCATION_BODY_MAX_BYTES);
+        (incoming as unknown as { rawBody?: Buffer }).rawBody = buf;
+        (incoming as unknown as { body?: Buffer }).body = buf;
+        raw = buf.toString('utf8');
+      } else {
+        const out = await readClonedBodyWithLimit(c.req.raw, REVOCATION_BODY_MAX_BYTES);
+        if (out === null) {
+          return c.json({ error: 'invalid_request', error_description: 'revocation request body too large' }, 413);
+        }
+        raw = out;
       }
       params = new URLSearchParams(raw);
       token = params.get('token');
     } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        return c.json({ error: 'invalid_request', error_description: 'revocation request body too large' }, 413);
+      }
       // Body unreadable (rare; malformed transfer-encoding etc). Let the
       // bridge respond — it will produce the spec-compliant error.
       logOauthError({

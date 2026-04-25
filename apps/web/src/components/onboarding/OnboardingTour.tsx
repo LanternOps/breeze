@@ -56,6 +56,16 @@ export default function OnboardingTour() {
   useEffect(() => {
     if (currentStep < 0 || currentStep >= TOUR_STEPS.length) return;
 
+    // Dismiss the tour on any pointer interaction outside the tooltip card.
+    // The backdrop is pointer-events-none so the underlying page stays
+    // interactive; this listener ensures the first such interaction also
+    // ends (and persists the dismissal of) the tour.
+    const handleOutsidePointer = (e: MouseEvent) => {
+      if (tooltipRef.current?.contains(e.target as Node)) return;
+      handleDismiss();
+    };
+    document.addEventListener('mousedown', handleOutsidePointer, true);
+
     const step = TOUR_STEPS[currentStep];
     let cancelled = false;
 
@@ -85,7 +95,10 @@ export default function OnboardingTour() {
     const target = document.querySelector(step.target);
     if (target) {
       positionTooltip(target);
-      return () => target.classList.remove('tour-highlight');
+      return () => {
+        document.removeEventListener('mousedown', handleOutsidePointer, true);
+        target.classList.remove('tour-highlight');
+      };
     }
 
     // Target not found — retry once after 500ms (async-loaded islands)
@@ -103,6 +116,7 @@ export default function OnboardingTour() {
     return () => {
       cancelled = true;
       clearTimeout(retryTimer);
+      document.removeEventListener('mousedown', handleOutsidePointer, true);
       // Clean up highlight from retry target if it was found
       document.querySelector(step.target)?.classList.remove('tour-highlight');
     };
@@ -134,8 +148,9 @@ export default function OnboardingTour() {
 
   return (
     <>
-      {/* Subtle backdrop */}
-      <div className="fixed inset-0 z-[60] bg-background/40" onClick={handleDismiss} />
+      {/* Subtle backdrop — non-blocking so the page beneath stays interactive.
+          Any mousedown outside the tooltip dismisses the tour (see effect above). */}
+      <div className="pointer-events-none fixed inset-0 z-[60] bg-background/40" />
 
       {/* Tooltip */}
       <div

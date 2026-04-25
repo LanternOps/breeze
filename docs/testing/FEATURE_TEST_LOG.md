@@ -1531,3 +1531,43 @@ The following features were investigated and found to be NOT IMPLEMENTED:
 - macOS agent (v0.5.0) does NOT have CIS handlers — needs rebuild/redeploy
 - Windows agent (Kit, `dev-1772316104`) has CIS handlers and works end-to-end
 - Duplicate baselines from prior E2E runs — no dedup guard on baseline creation
+
+## OAuth/MCP end-to-end (DCR → consent → token → MCP → revoke) — 2026-04-24
+
+**Branch:** `main` (HEAD `7b768267`)
+**Tested by:** Claude
+**Result:** PASS — full flow works after fixing 2 body-drain bugs found mid-test
+
+### What was tested
+- [x] DCR via `POST /oauth/reg` — registers public client (`token_endpoint_auth_method=none`, `id_token_signed_response_alg=EdDSA`)
+- [x] PKCE S256 + resource indicator (`OAUTH_RESOURCE_URL=https://2breeze.app/api/v1/mcp/message`)
+- [x] `GET /oauth/auth` → redirect to `/oauth/consent?uid=...` (with login interstitial when unauthenticated)
+- [x] Login → consent UI → Approve button → redirect to `redirect_uri` with `code` + `state` + `iss`
+- [x] `POST /oauth/token` → `access_token` (EdDSA JWT) + `refresh_token` + `id_token`
+- [x] JWT payload includes `partner_id`, `grant_id`, `jti`, `scope=mcp:read mcp:write mcp:execute`, correct `iss`/`aud`
+- [x] `POST /api/v1/mcp/message` with `Authorization: Bearer <jwt>` → `tools/list` returns full tool catalog
+- [x] `/settings/connected-apps` lists registered clients with `Revoke` button
+- [x] UI revoke → confirm dialog → DB sets `oauth_clients.disabled_at` → bearer-token MCP call now returns `401 token revoked` (Redis JTI cache populated by grant-wide revocation)
+
+### Bugs found and fixed
+1. **`/oauth/reg` body-drain:** pre-handler called `readClonedBodyWithLimit(c.req.raw)`, which under `@hono/node-server` drained the underlying `IncomingMessage`. oidc-provider's `selective_body` then fell through to `req.body` (undefined) and reported `invalid_redirect_uri: redirect_uris is mandatory property` regardless of the actual request body. Fix: mirror the `/token` `rawBody` pattern AND set `incoming.body = buf` so `selective_body`'s fallback finds the parsed bytes. (`apps/api/src/routes/oauth.ts`)
+2. **`/oauth/token` had the same fallback gap:** `incoming.rawBody` was set but `incoming.body` was not, so once the IncomingMessage was exhausted the token endpoint returned `invalid_request: no client authentication mechanism provided`. Fix: also set `incoming.body = buf`.
+3. New `OAUTH_REGISTRATION_BODY_READ_FAILED` error ID added to `apps/api/src/oauth/log.ts`.
+
+### Suspected related (not retested)
+- `/oauth/token/revocation` pre-handler also reads the body via cloned web stream and falls through to the bridge. Same shape — likely broken for non-JWT (opaque-token) clients. Worth a dedicated unit test or quick smoke against a refresh_token before claiming the revocation endpoint is spec-compliant.
+
+### Local DB cleanup performed
+- Dropped + replayed 6 OAuth migrations (drift between local checksums and migration files); see `docs/superpowers/runbooks` if you want a reusable script. No production impact.
+
+### Evidence
+- Auth code captured at `http://localhost:9876/cb?code=...&state=...&iss=https%3A%2F%2F2breeze.app`
+- JWT payload: `{partner_id, org_id:null, grant_id, jti, scope:"mcp:read mcp:write mcp:execute", aud:"https://2breeze.app/api/v1/mcp/message"}`
+- DB after revoke: `oauth_clients.disabled_at IS NOT NULL` for revoked client
+- Post-revoke MCP: `{"error":"token revoked"}` HTTP 401
+
+### Notes
+- Admin password in `.env` (`E2E_ADMIN_PASSWORD`) is stale — actual seed password is `BreezeAdmin123!`. Login via UI failed with `.env` value but works with seed value.
+- Consent UI shows raw `client_id` in the heading instead of `client_name` ("e2e-harness") — minor UX polish item.
+- Two test clients created before the full flow worked are stuck in DB without a `partner_id`. Cleanup or admin tooling could help here.
+- Onboarding tour overlay intercepts pointer events on first visit to settings pages — needed an explicit "Skip tour" click before being able to revoke.

@@ -46,6 +46,28 @@ describe('ConsentForm', () => {
     expect(screen.queryByLabelText(/Connect to which tenant/)).toBeNull();
   });
 
+  it('shows the client_id as a subtitle when client_name differs', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture()));
+    render(<ConsentForm uid="uid-1" />);
+    // Heading is the human-readable client_name; the opaque client_id is
+    // surfaced underneath so reviewers can still verify which OAuth client
+    // is asking — important because client_name is operator-supplied.
+    expect(await screen.findByText(/Claude wants to access your Breeze tenant/)).toBeTruthy();
+    expect(screen.getByText(/Client ID: client_abc/)).toBeTruthy();
+  });
+
+  it('omits the client_id subtitle when client_name fell back to client_id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...interactionFixture(),
+        client: { client_id: 'client_abc', client_name: 'client_abc' },
+      }),
+    );
+    render(<ConsentForm uid="uid-1" />);
+    expect(await screen.findByText(/client_abc wants to access your Breeze tenant/)).toBeTruthy();
+    expect(screen.queryByText(/Client ID:/)).toBeNull();
+  });
+
   it('shows mcp:execute as a high-risk device action scope', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture({
       scopes: ['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute'],

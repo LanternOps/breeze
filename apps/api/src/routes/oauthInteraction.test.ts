@@ -165,6 +165,10 @@ describe('oauthInteractionRoutes', () => {
   it('returns client, scopes, resource, and partner picker data', async () => {
     mocks.interactionDetails.mockResolvedValue(details());
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    // The route now also looks up the registered client metadata from
+    // oauth_clients so the consent UI can show the human-readable
+    // `client_name` instead of the opaque `client_id`.
+    queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json();
     expect(res.status).toBe(200);
@@ -174,6 +178,29 @@ describe('oauthInteractionRoutes', () => {
       scopes: ['openid', 'offline_access'],
       resource: 'https://api.example/mcp/server',
       partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }],
+    });
+  });
+
+  it('falls back to client_id when no client_name is registered', async () => {
+    // Simulates a DCR client that registered without supplying client_name —
+    // we should NOT fall back to the auth-request `client_name` param (which
+    // a malicious client could spoof), and we should NOT render blank. The
+    // opaque client_id is the safe last-resort heading.
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'rxZLeLQMmTDp53sY3sTuv',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid offline_access mcp:read',
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: {} }], 'limit');
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const body = await res.json() as { client: { client_id: string; client_name: string } };
+    expect(res.status).toBe(200);
+    expect(body.client).toEqual({
+      client_id: 'rxZLeLQMmTDp53sY3sTuv',
+      client_name: 'rxZLeLQMmTDp53sY3sTuv',
     });
   });
 

@@ -163,8 +163,14 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   const details = state.details;
   const submitting = state.kind === 'submitting';
 
+  const displayName = details.client.client_name?.trim() || details.client.client_id;
+  const showClientIdSubtitle = displayName !== details.client.client_id;
+
   return (
-    <ConsentShell title={`${details.client.client_name} wants to access your Breeze tenant`}>
+    <ConsentShell
+      title={`${displayName} wants to access your Breeze tenant`}
+      subtitle={showClientIdSubtitle ? `Client ID: ${details.client.client_id}` : undefined}
+    >
       <ScopeList scopes={details.scopes} />
 
       {details.partners.length > 1 && (
@@ -202,10 +208,21 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   );
 }
 
-function ConsentShell({ title, children }: { title?: string; children: React.ReactNode }) {
+function ConsentShell({
+  title,
+  subtitle,
+  children,
+}: {
+  title?: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       {title && <h2 className="text-base font-semibold tracking-tight">{title}</h2>}
+      {subtitle && (
+        <p className="mt-1 font-mono text-xs text-muted-foreground break-all">{subtitle}</p>
+      )}
       <div className={`mt-4 space-y-4 ${title ? '' : 'mt-0'}`}>{children}</div>
     </div>
   );
