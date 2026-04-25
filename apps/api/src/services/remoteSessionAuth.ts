@@ -39,10 +39,36 @@ const REDIS_KEY_PREFIX_WS_TICKET = 'remote:ws_ticket:';
 const REDIS_KEY_PREFIX_DESKTOP_CODE = 'remote:desktop_code:';
 const REDIS_KEY_PREFIX_VNC_CODE = 'vnc-connect:';
 
-function shouldUseRedis(): boolean {
-  // In production SaaS, tickets must be shared across replicas.
-  return (process.env.NODE_ENV ?? 'development') === 'production';
+/**
+ * Decide whether remote-session tickets must live in Redis (shared across
+ * replicas) or can live in process memory.
+ *
+ * Defaults (fail-closed outside dev/test):
+ *   - NODE_ENV=production  → Redis required
+ *   - NODE_ENV=staging     → Redis required (multi-replica safe)
+ *   - NODE_ENV=development → in-memory (devs without Redis still work)
+ *   - NODE_ENV=test        → in-memory (test isolation)
+ *
+ * Explicit override via `WS_TICKETS_REQUIRE_REDIS`:
+ *   - 'true' | '1'  → force Redis (e.g. E2E tests against multi-replica setup)
+ *   - 'false' | '0' → force in-memory (emergency escape hatch when Redis is down)
+ */
+export function shouldUseRedis(): boolean {
+  const explicit = process.env.WS_TICKETS_REQUIRE_REDIS;
+  if (explicit === 'true' || explicit === '1') return true;
+  if (explicit === 'false' || explicit === '0') return false;
+
+  const env = (process.env.NODE_ENV ?? 'development').toLowerCase();
+  return env !== 'development' && env !== 'test';
 }
+
+// Surface the backend decision once at module load so misconfiguration is
+// visible in deploy logs (e.g. staging silently falling back to in-memory).
+console.log(
+  `[remoteSessionAuth] tickets backend: ${shouldUseRedis() ? 'redis' : 'memory'} ` +
+    `(NODE_ENV=${process.env.NODE_ENV ?? 'development'}, ` +
+    `override=${process.env.WS_TICKETS_REQUIRE_REDIS ?? 'unset'})`
+);
 
 function generateSecret(size: number): string {
   return randomBytes(size).toString('base64url');
