@@ -1,6 +1,6 @@
 import type { Config, TestStep, RunnerContext, UiSession, CLIOptions, JsonRpcResponse } from './types.js';
 import { isRecord, resolveEnvString, resolveTemplates, interpolateTemplate, extractStructuredResult, assertExpectations, lookupVar, asNumber, normalizeUrl } from './utils.js';
-import { ensureUiSession, runUiPlaywrightAction, isLoginStep, captureSimulatedExtracts, cachedStorageState, cachedApiToken, setCachedApiToken, setCachedStorageState } from './browser.js';
+import { ensureUiSession, runUiPlaywrightAction, isLoginStep, captureSimulatedExtracts, cachedStorageState, cachedApiToken, setCachedApiToken } from './browser.js';
 
 function buildNodeBaseUrl(host: string, port: number): string {
   const normalizedHost = host.startsWith('http://') || host.startsWith('https://') ? host : `http://${host}`;
@@ -160,24 +160,20 @@ export async function runUiStepLive(
 
   const authTestIds = ['auth_login_logout', 'auth_invalid_login'];
   const isAuthTest = testId ? authTestIds.some(id => testId.startsWith(id)) : false;
+  // Trust the cached cookie. The previous version of this block navigated
+  // to `/` and inspected the URL to verify the session, but that probe
+  // races against the React auth-store rehydration (initial render briefly
+  // sees `isAuthenticated=false` and the route guard redirects to /login),
+  // so the runner would wipe a perfectly good cookie ~80% of the time and
+  // force every test to re-log in. Skipping the probe means each downstream
+  // test simply uses the cached state; if the cookie really is dead, the
+  // first navigation in the test will fail and only that test takes the
+  // hit, instead of cascading the wipe to every subsequent test.
   if (cachedStorageState && isLoginStep(step) && !isAuthTest) {
-    try {
-      const baseUrl = String(context.vars.baseUrl ?? resolveEnvString(config.environment.baseUrl));
-      await session.page.goto(normalizeUrl('/', baseUrl), { waitUntil: 'domcontentloaded', timeout: 10000 });
-      try { await session.page.waitForLoadState('networkidle', { timeout: 3000 }); } catch {}
-      const currentUrl = session.page.url();
-      if (!currentUrl.includes('/login')) {
-        console.log('     [UI] Session still valid — skipping login step');
-        output.live = true;
-        output.loginSkipped = true;
-        return { output, session };
-      }
-      console.log('     [UI] Session expired — clearing cookies and re-logging in');
-      setCachedStorageState(null);
-      try { await session.context.clearCookies(); } catch {}
-    } catch {
-      // Navigation failed — proceed with normal login
-    }
+    console.log('     [UI] Cached session present — skipping login step');
+    output.live = true;
+    output.loginSkipped = true;
+    return { output, session };
   }
 
   for (const action of actions) {

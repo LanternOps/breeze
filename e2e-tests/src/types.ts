@@ -142,6 +142,7 @@ export interface RunnerContext {
 export interface CLIOptions {
   test: string;
   tags: string[];
+  excludeTags: string[];
   nodes: string[];
   dryRun: boolean;
   mode: 'live' | 'simulate';

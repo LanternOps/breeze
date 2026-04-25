@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
 import { apiAcceptInvite, useAuthStore, fetchAndApplyPreferences } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
@@ -6,11 +6,15 @@ import { navigateTo } from '../../lib/navigation';
 export default function AcceptInvitePage() {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const [token] = useState(() => {
-    if (typeof window === 'undefined') return undefined;
+  // Read the token in `useEffect` so SSR + first client render agree on
+  // `undefined` and React doesn't trip a hydration-mismatch error (#418).
+  // Same pattern as ResetPasswordPage.
+  const [token, setToken] = useState<string>();
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('token') ?? undefined;
-  });
+    const tokenParam = params.get('token');
+    if (tokenParam) setToken(tokenParam);
+  }, []);
 
   const handleSubmit = async (values: { password: string }) => {
     if (!token) {
