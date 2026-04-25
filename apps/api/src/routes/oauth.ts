@@ -32,6 +32,13 @@ if (MCP_OAUTH_ENABLED) {
     'request_uris',
     'sector_identifier_uri',
     'software_statement',
+    // LOW-B6 (audit 2026-04-24): `software_id` is opaque, unauthenticated,
+    // and currently unvalidated. A spoofed value could be used to
+    // impersonate known integrations (e.g. "claude-desktop") in any
+    // future UI surface that displays it. We reject it outright; if a
+    // legitimate need arises, gate it behind .uuid() validation and a
+    // partner-trusted IAT flow.
+    'software_id',
   ];
   let cachedRevocationJwks: ReturnType<typeof createLocalJWKSet> | null = null;
 
@@ -490,6 +497,16 @@ if (MCP_OAUTH_ENABLED) {
     // (or guessing) the jti / grant_id. Since DCR clients are public
     // (token_endpoint_auth_method=none), this binding via the JWT's own
     // client_id claim is the strongest authorization available here.
+    //
+    // RFC 7009 §2.2: "The authorization server responds with HTTP status code
+    // 200 if the token has been revoked successfully or if the client
+    // submitted an invalid token." It MUST NOT leak token validity to clients
+    // that aren't authorized to act on the token. So when the JWT is
+    // signature- and claim-valid but `client_id` doesn't match, we short-
+    // circuit with 200 OK and an empty body — same response shape as the
+    // success path. Crucially we do NOT write the revocation cache (the
+    // legitimate owner can still use the token), and we log a probe-detector
+    // breadcrumb so operators can spot enumeration attempts.
     const requestClientId = params.get('client_id');
     const tokenClientId = typeof payload.client_id === 'string' ? payload.client_id
       : typeof payload.azp === 'string' ? payload.azp
@@ -497,13 +514,13 @@ if (MCP_OAUTH_ENABLED) {
     if (!requestClientId || !tokenClientId || tokenClientId !== requestClientId) {
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CLIENT_BINDING,
-        message: 'Revocation client_id mismatch; falling through to bridge',
+        message: 'Revocation client_id mismatch; returning 200 per RFC 7009 (no cache write)',
         context: {
           requestClientId,
           tokenClientIdPresent: Boolean(tokenClientId),
         },
       });
-      return next();
+      return c.body(null, 200);
     }
 
     const jti = typeof payload.jti === 'string' ? payload.jti : null;

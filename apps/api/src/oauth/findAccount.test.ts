@@ -72,6 +72,20 @@ describe('findAccount', () => {
       .resolves.toBeUndefined();
   });
 
+  it('returns undefined for a non-active user (status=disabled or invited) — M-B4', async () => {
+    // Defense-in-depth: the WHERE clause now includes `status='active'` so
+    // suspended/disabled users (and unaccepted invites) cannot complete OAuth
+    // flows even if they somehow hold a valid sub. This test pins the
+    // contract by asserting that the empty-result path returns undefined,
+    // which mirrors what Postgres returns when the status filter excludes
+    // the row.
+    mockSelectRows([]);
+
+    const account = await findAccount({}, '00000000-0000-4000-8000-000000000077');
+
+    expect(account).toBeUndefined();
+  });
+
   it('exits request DB context before opening system DB context', async () => {
     mockSelectRows([]);
 

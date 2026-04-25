@@ -24,8 +24,9 @@ import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
-import { devices, alerts, scripts, automations, partners } from '../db/schema';
-import { eq, and, desc, type SQL } from 'drizzle-orm';
+import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
+import { eq, and, desc, inArray, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getRedis } from '../services/redis';
@@ -1222,9 +1223,60 @@ function jsonRpcError(id: string | number | null, code: number, message: string,
 }
 
 /**
+ * Resolve the concrete org allowlist a partner-scope caller can reach.
+ * Mirrors `computeAccessibleOrgIds` in middleware/auth.ts and
+ * `resolvePartnerAccessibleOrgIds` in middleware/bearerTokenAuth.ts. Kept
+ * inline here to avoid widening auth.ts' export surface; the cost is ~25
+ * duplicated lines, intentionally accepted per CLAUDE.md.
+ *
+ * Pre-auth lookup runs under withSystemDbAccessContext because RLS GUCs for
+ * the request's real scope haven't been set yet.
+ */
+async function resolvePartnerAccessibleOrgIds(
+  partnerId: string,
+  userId: string,
+): Promise<string[]> {
+  return withSystemDbAccessContext(async () => {
+    const [membership] = await db
+      .select({ orgAccess: partnerUsers.orgAccess, orgIds: partnerUsers.orgIds })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)))
+      .limit(1);
+
+    if (!membership) return [];
+    if (membership.orgAccess === 'none') return [];
+
+    if (membership.orgAccess === 'selected') {
+      const selected = (membership.orgIds ?? []).filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (selected.length === 0) return [];
+      const rows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, partnerId), inArray(organizations.id, selected)));
+      return rows.map((r) => r.id);
+    }
+
+    const rows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId));
+    return rows.map((r) => r.id);
+  });
+}
+
+/**
  * Build a minimal AuthContext from an API key or OAuth-backed API key context.
  * API keys remain org-scoped; OAuth bearer tokens may be partner-scoped when
  * they carry a partner_id without an org_id.
+ *
+ * Defense-in-depth fix (M-B1): partner-scope callers used to receive
+ * `accessibleOrgIds: null` + `orgCondition: () => undefined`, which is
+ * the "system, no filter" shape — but `canAccessOrg: () => false`
+ * contradicted that, leaving any code paths that switch on `canAccessOrg`
+ * vs `orgCondition` in inconsistent states. Now we resolve the actual
+ * partner→org list and use a proper inArray filter.
  */
 async function buildAuthFromApiKey(apiKey: {
   id: string;
@@ -1252,14 +1304,33 @@ async function buildAuthFromApiKey(apiKey: {
     };
   }
 
+  // Partner-scope caller (OAuth bearer token, or API key with no orgId).
+  // Resolve the concrete org allowlist so orgCondition / canAccessOrg are
+  // consistent and defense-in-depth filtering works alongside RLS.
+  const accessibleOrgIds = apiKey.partnerId
+    ? await resolvePartnerAccessibleOrgIds(apiKey.partnerId, apiKey.createdBy)
+    : [];
+
+  const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
+    if (accessibleOrgIds.length === 0) {
+      // No accessible orgs — return an impossible condition so any query
+      // using this filter matches no rows. Same pattern as auth.ts.
+      return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
+    }
+    if (accessibleOrgIds.length === 1) {
+      return eq(orgIdColumn, accessibleOrgIds[0]);
+    }
+    return inArray(orgIdColumn, accessibleOrgIds);
+  };
+
   return {
     user,
     token: {} as AuthContext['token'],
     partnerId: apiKey.partnerId,
     orgId: null,
     scope: 'partner',
-    accessibleOrgIds: null,
-    orgCondition: () => undefined,
-    canAccessOrg: () => false
+    accessibleOrgIds,
+    orgCondition,
+    canAccessOrg: (checkOrgId) => accessibleOrgIds.includes(checkOrgId),
   };
 }
