@@ -108,6 +108,56 @@ jobs:
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 
+  # Real-Postgres apply of every migration against an empty database.
+  # Catches ordering bugs (issue #506) and any SQL error the static
+  # autoMigrate.test.ts cannot see. Cheap (~1 min) and blocking on PRs.
+  check-migrations:
+    name: Check Migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze
+          POSTGRES_DB: breeze
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://breeze:breeze@localhost:5432/breeze
+      POSTGRES_PASSWORD: breeze
+      # Seed runs at the end of autoMigrate when users is empty.
+      # Provide non-secret CI values so it doesn't bail on missing env.
+      JWT_SECRET: ci-check-migrations-jwt-secret-not-used-in-prod
+      APP_ENCRYPTION_KEY: ci-check-migrations-app-key-32bytes-padding
+      MFA_ENCRYPTION_KEY: ci-check-migrations-mfa-key-32bytes-padding
+      AGENT_ENROLLMENT_SECRET: ci-check-migrations-agent-enrollment-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations against empty Postgres
+        run: pnpm --filter @breeze/api run check:migrations
+
   test-web:
     name: Test Web
     runs-on: ubuntu-latest

@@ -234,6 +234,15 @@ export async function autoMigrate(): Promise<void> {
       }
     }
 
+    // ── 6b. Ensure the unprivileged `breeze_app` role exists BEFORE applying
+    //        post-baseline migrations. Several migrations declare RLS
+    //        policies with `FOR ALL TO breeze_app`; on a truly fresh DB those
+    //        statements fail with `role "breeze_app" does not exist` if the
+    //        role isn't created first. Idempotent — safe on every run. We
+    //        still call ensureAppRole again at step 7b so any tables created
+    //        in this loop receive the privilege grants.
+    await ensureAppRole();
+
     // ── 7. Apply pending migrations ──────────────────────────────────────
     let appliedCount = 0;
     for (const filename of allFiles) {
@@ -260,10 +269,8 @@ export async function autoMigrate(): Promise<void> {
       console.log('[auto-migrate] All migrations already applied');
     }
 
-    // ── 7b. Ensure unprivileged app role exists, then verify the app
-    //        connection is NOT a superuser. Runs here (and not at general
-    //        startup) because autoMigrate is the one place that already holds
-    //        an admin connection and runs before the main app connects.
+    // ── 7b. Re-run ensureAppRole so any tables created in step 7 receive
+    //        the standard privilege grants. Idempotent.
     await ensureAppRole();
 
     // Resolve the app connection string. Preference order:
