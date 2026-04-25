@@ -79,6 +79,24 @@ export const createTenantTool: BootstrapTool<z.infer<typeof inputSchema>, Create
     const since = new Date(Date.now() - IDEMPOTENCY_WINDOW_MS);
     const existing = await findRecentMcpPartnerByAdminEmail(input.admin_email, input.org_name, since);
     if (existing) {
+      // Refuse to recycle an already-activated partner. Otherwise an attacker
+      // who replays a recent (admin_email, org_name) pair could re-mint a
+      // bootstrap secret and re-take the tenant via attach_payment_method.
+      const [existingRow] = await db
+        .select({
+          id: partners.id,
+          paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+        })
+        .from(partners)
+        .where(eq(partners.id, existing.id))
+        .limit(1);
+      if (existingRow?.paymentMethodAttachedAt) {
+        throw new BootstrapError(
+          'tenant_already_active',
+          'A tenant for this admin_email + org_name was already fully activated. Bootstrap tools cannot be reused; the partner admin must sign in via the web app.',
+        );
+      }
+
       const bootstrapSecret = await issueBootstrapSecret(existing.id);
       await issueActivationToken(existing.id, input.admin_email);
       recordActivationTransition('pending_email');

@@ -152,7 +152,7 @@ describe('attach_payment_method', () => {
     expect(createSetupIntent).not.toHaveBeenCalled();
   });
 
-  it('is idempotent when payment method already attached', async () => {
+  it('rejects with tenant_already_active when payment method already attached and tombstones the secret', async () => {
     enqueueSelects([
       [{
         id: 'p1',
@@ -161,11 +161,17 @@ describe('attach_payment_method', () => {
         paymentMethodAttachedAt: new Date(),
       }],
     ]);
-    const r = await attachPaymentMethodTool.handler(input('p1'), {} as any);
-    expect(r).toMatchObject({ setup_url: null, already_attached: true });
-    expect(r.next_steps).toContain('Payment method already attached');
+    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+    await expect(
+      attachPaymentMethodTool.handler(input('p1'), {} as any),
+    ).rejects.toMatchObject({ code: 'tenant_already_active' });
     expect(createSetupIntent).not.toHaveBeenCalled();
-    expect(db.update).not.toHaveBeenCalled();
+    // Defense-in-depth tombstone fires even though webhook normally clears it.
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.anything() }),
+    );
   });
 
   it('throws INVALID_BOOTSTRAP_SECRET when the secret does not match', async () => {
@@ -233,6 +239,18 @@ describe('attach_payment_method', () => {
       remediation: { retryAfter: '30s' },
     });
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('M-C1: tombstoned partner (settings missing the hash) returns INVALID_BOOTSTRAP_SECRET, not 500', async () => {
+    enqueueSelects([
+      // Settings is `{}` — webhook-tombstoned. The legacy bootstrap_secret no
+      // longer matches anything in storage.
+      [{ id: 'p1', settings: {}, emailVerifiedAt: new Date(), paymentMethodAttachedAt: new Date() }],
+    ]);
+    await expect(
+      attachPaymentMethodTool.handler(input('p1'), {} as any),
+    ).rejects.toMatchObject({ code: 'INVALID_BOOTSTRAP_SECRET' });
+    expect(createSetupIntent).not.toHaveBeenCalled();
   });
 
   it('throws PARTIAL_BILLING_STATE when DB update fails after SetupIntent success', async () => {

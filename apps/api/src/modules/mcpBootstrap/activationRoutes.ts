@@ -15,7 +15,9 @@ import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getBreezeBillingClient } from '../../services/breezeBillingClient';
+import { getTrustedClientIp } from '../../services/clientIp';
 import { recordActivationTransition } from './metrics';
+import { tombstoneBootstrapSecret } from './bootstrapSecret';
 
 /**
  * Activation routes for MCP-provisioned tenants.
@@ -102,7 +104,10 @@ export function mountActivationRoutes(app: Hono): void {
       });
       recordActivationTransition('pending_payment');
 
-      return c.redirect(`/activate/${raw}?status=email_verified`);
+      // Strip the raw token from the redirect URL — even though it's
+      // single-use, embedding it in the post-activation URL leaves it in
+      // browser history, corporate proxy logs, and referrer headers.
+      return c.redirect(`/activate/complete?partner=${row.partnerId}&status=email_verified`);
     });
   });
 
@@ -164,7 +169,7 @@ export function mountActivationRoutes(app: Hono): void {
       // Log the real error server-side with source IP for forensics; return
       // a bare message to the caller so we don't leak internals.
       const message = err instanceof Error ? err.message : String(err);
-      const sourceIp = c.req.header('x-forwarded-for') ?? null;
+      const sourceIp = getTrustedClientIp(c, 'unknown');
       console.error(
         '[stripe-webhook] signature verification failed',
         { error: message, sourceIp },
@@ -306,6 +311,12 @@ export function mountActivationRoutes(app: Hono): void {
         }
       });
 
+      // Tombstone the MCP bootstrap secret now that the partner is fully
+      // activated. After this point bootstrap tools must reject calls — even
+      // a leaked secret (chat history, log scrape) cannot be replayed to
+      // re-take the tenant via attach_payment_method.
+      await tombstoneBootstrapSecret(partner.id);
+
       const paymentOrgId = await resolveDefaultOrgId(partner.id);
       writeAuditEvent({ req: { header: () => undefined } }, {
         orgId: paymentOrgId,
@@ -390,6 +401,9 @@ export function mountActivationRoutes(app: Hono): void {
               );
           }
         });
+        // Mirror the production webhook: tombstone the bootstrap secret on
+        // activation so E2E tests exercise the same post-active state.
+        await tombstoneBootstrapSecret(partnerId);
         return c.json({ ok: true });
       });
     });
