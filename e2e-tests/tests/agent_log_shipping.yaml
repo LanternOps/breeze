@@ -31,6 +31,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       # ── Step 2: Query all diagnostic logs for the device ───────
       - id: query_all_logs

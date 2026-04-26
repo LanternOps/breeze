@@ -26,6 +26,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_peripherals
         action: ui
@@ -61,6 +63,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_peripherals_policies
         action: ui
@@ -134,6 +138,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_peripherals
         action: ui
@@ -170,6 +176,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_peripherals_activity
         action: ui
@@ -241,6 +249,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_sensitive_data
         action: ui
@@ -278,6 +288,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_sensitive_data_dashboard
         action: ui
@@ -332,6 +344,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_sensitive_data_findings
         action: ui
@@ -404,6 +418,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_sensitive_data_scans
         action: ui

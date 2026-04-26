@@ -22,6 +22,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_software_catalog
         action: ui
@@ -63,6 +65,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_catalog
         action: ui
@@ -122,6 +126,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_software_inventory
         action: ui
@@ -175,6 +181,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_software_policies
         action: ui
@@ -222,6 +230,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_catalog
         action: ui
@@ -274,6 +284,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_windows_software_in_logs
         action: api

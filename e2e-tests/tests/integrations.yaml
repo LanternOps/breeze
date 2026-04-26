@@ -24,6 +24,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_webhooks
         action: ui
@@ -72,6 +74,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_webhooks
         action: ui
@@ -179,6 +183,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_webhooks
         action: ui
@@ -225,6 +231,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_psa
         action: ui
@@ -273,6 +281,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_psa
         action: ui
@@ -323,6 +333,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_psa
         action: ui

@@ -23,6 +23,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_cis
         action: ui
@@ -40,10 +42,10 @@ tests:
               selector: "h2"
               contains: "CIS Hardening"
           - assert:
-              # Bare `p` matched the sidebar version banner ("Web 0.x · API 0.x")
-              # because that hydrates above the page subtitle. Pin to the p
-              # adjacent to the page heading.
-              selector: "h2 + p"
+              # Bare `p` and even `h2 + p` get hijacked by the AiChatSidebar
+              # SSR shell (which has its own h2 + "Cmd+Enter to send" p that
+              # renders earlier in DOM order). Pin to the actual content.
+              selector: "p:has-text('Configuration baselines')"
               contains: "Configuration baselines, compliance scoring, and remediation tracking."
 
       - id: verify_summary_cards
@@ -89,6 +91,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_cis
         action: ui
@@ -188,6 +192,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_cis
         action: ui
@@ -266,6 +272,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_cis
         action: ui
@@ -359,6 +367,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_baselines
         action: ui
@@ -441,6 +451,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_baselines
         action: ui
@@ -512,6 +524,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       # Step 1: Create a Windows L1 baseline targeting Kit
       - id: navigate_baselines
@@ -642,6 +656,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       # Step 1: Request remediation via API for a known CIS check on Kit
       - id: request_remediation
@@ -731,6 +747,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_baselines
         action: ui

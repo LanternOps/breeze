@@ -23,6 +23,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_security
         action: ui
@@ -222,6 +224,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_score
         action: ui
@@ -301,6 +305,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_antivirus
         action: ui
@@ -402,6 +408,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_firewall
         action: ui
@@ -475,6 +483,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_encryption
         action: ui
@@ -551,6 +561,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_password_policy
         action: ui
@@ -627,6 +639,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_vulnerabilities
         action: ui
@@ -728,6 +742,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_trends
         action: ui
@@ -824,6 +840,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_recommendations
         action: ui
@@ -910,6 +928,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_admin_audit
         action: ui
@@ -927,7 +947,8 @@ tests:
               selector: "h2"
               contains: "Admin Account Audit"
           - assert:
-              selector: "p"
+              # Bare `p` matches AiChatSidebar's SSR shell first; pin by content.
+              selector: "p:has-text('Privileged account review')"
               contains: "Privileged account review across all devices"
 
       - id: verify_stat_cards
@@ -1010,6 +1031,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_monitoring
         action: ui
@@ -1055,6 +1078,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_peripherals
         action: ui
@@ -1099,6 +1124,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_sensitive_data
         action: ui
@@ -1127,6 +1154,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_audit
         action: ui
@@ -1162,6 +1191,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_score
         action: ui

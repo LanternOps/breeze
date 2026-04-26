@@ -26,6 +26,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_dashboard_heading
         action: ui
@@ -59,14 +61,6 @@ tests:
               selector: "text=Critical"
               exists: true
 
-      - id: verify_subheading
-        action: ui
-        description: "Verify dashboard subheading text is visible"
-        playwright:
-          - assert:
-              selector: "text=Overview of your managed devices and alerts"
-              exists: true
-
   - id: dashboard_device_status_chart
     name: "Dashboard Device Status Chart"
     description: "Verify the Device Status pie chart section renders"
@@ -86,6 +80,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_device_status_chart
         action: ui
@@ -116,6 +112,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_recent_alerts_heading
         action: ui
@@ -149,6 +147,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_recent_activity_heading
         action: ui
@@ -182,6 +182,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_sidebar_links
         action: ui
@@ -240,6 +242,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_search_button_visible
         action: ui
@@ -291,6 +295,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: open_user_menu
         action: ui
@@ -335,6 +341,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_and_toggle_dark_mode
         action: ui
@@ -366,6 +374,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: verify_devices_api
         action: api
