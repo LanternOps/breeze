@@ -69,6 +69,31 @@ describe('renameAppInZip', () => {
     expect(data.toString()).toBe('<plist/>');
   });
 
+  it('preserves Unix permissions (regression: zero-byte .app from mode=0)', async () => {
+    // Source fixture sets BreezeInstaller as 0o755 (executable). Before the
+    // fix, the rewriter passed the raw zip external-attributes uint32 directly
+    // to archiver, which masks down to 0o000 — directories became unreadable
+    // and the user saw an empty / "zero-byte" .app on extraction.
+    const input = await buildFixtureZip('Breeze Installer.app');
+    const out = await renameAppInZip(input, {
+      oldAppName: 'Breeze Installer.app',
+      newAppName: 'Breeze Installer [PERMS01@host.local].app',
+    });
+    const tmp = join(tmpdir(), `installer-zip-perms-${Date.now()}.zip`);
+    await writeFile(tmp, out);
+    try {
+      const z = new StreamZip.async({ file: tmp });
+      const entries = await z.entries();
+      const binary = entries['Breeze Installer [PERMS01@host.local].app/Contents/MacOS/BreezeInstaller'];
+      expect(binary, 'BreezeInstaller entry must exist').toBeTruthy();
+      const binaryMode = (binary.attr >>> 16) & 0o777;
+      expect(binaryMode & 0o100, 'BreezeInstaller must remain executable (owner-x bit)').not.toBe(0);
+      await z.close();
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
   it('throws if no entry matches the old app name', async () => {
     const input = await buildFixtureZip('Different.app');
     await expect(

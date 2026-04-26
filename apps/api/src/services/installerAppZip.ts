@@ -53,11 +53,18 @@ export async function renameAppInZip(
         newPath = opts.newAppName + entry.name.slice(opts.oldAppName.length);
         matched++;
       }
+      // node-stream-zip exposes external file attributes as a raw uint32
+      // (Unix mode is in the high 16 bits, type+mode bits packed). archiver
+      // expects a plain 9-bit Unix permission integer. Passing entry.attr
+      // directly garbles the mode to 0 → unreadable directories ("zero-byte
+      // .app" symptom). Extract perms or fall back to sane defaults.
+      const unixMode = (entry.attr >>> 16) & 0o777;
+      const mode = unixMode || (entry.isDirectory ? 0o755 : 0o644);
       if (entry.isDirectory) {
-        out.append('', { name: newPath, mode: entry.attr });
+        out.append('', { name: newPath, mode });
       } else {
         const data = await reader.entryData(entry.name);
-        out.append(data, { name: newPath, mode: entry.attr });
+        out.append(data, { name: newPath, mode });
       }
     }
     await reader.close();
