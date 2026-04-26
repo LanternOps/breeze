@@ -1,0 +1,231 @@
+# Remote Session E2E Tests
+# Tests remote access functionality (terminal, file transfer)
+
+tests:
+  - id: remote_terminal_session
+    name: "Remote Terminal Session"
+    description: "Establish remote terminal session and execute commands"
+    tags: [remote, terminal, basic]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        description: "Login to Breeze dashboard"
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: navigate_to_device
+        action: ui
+        description: "Navigate to device details"
+        playwright:
+          - goto: "/devices"
+          - click: "tr:has-text('linux')"
+          - waitFor: "[data-testid='device-details']"
+
+      - id: start_terminal
+        action: ui
+        description: "Start remote terminal session"
+        playwright:
+          - click: "button:has-text('Remote Terminal')"
+          - waitFor: "[data-testid='terminal-container']"
+          - waitFor: "[data-testid='terminal-connected']"
+            timeout: 30000
+
+      - id: execute_command
+        action: ui
+        description: "Execute command in terminal"
+        playwright:
+          - type:
+              selector: "[data-testid='terminal-input']"
+              text: "echo 'E2E Test: Hello from remote terminal'"
+          - press: "Enter"
+          - waitFor: "text=E2E Test: Hello from remote terminal"
+
+      - id: verify_session_on_remote
+        action: remote
+        node: linux
+        description: "Verify terminal session from remote perspective"
+        tool: claude_code
+        args:
+          prompt: |
+            Check for active remote terminal sessions:
+            1. Look for PTY sessions: who
+            2. Check Breeze agent logs for terminal session
+            3. Look for "E2E Test" in recent command history or logs
+            4. Return JSON: {
+              activeSession: boolean,
+              sessionType: string,
+              commandExecuted: boolean
+            }
+        expect:
+          activeSession: true
+          commandExecuted: true
+
+      - id: close_terminal
+        action: ui
+        description: "Close terminal session"
+        playwright:
+          - click: "[data-testid='close-terminal']"
+          - waitFor: "[data-testid='terminal-disconnected']"
+
+  - id: remote_file_transfer
+    name: "Remote File Transfer"
+    description: "Upload and download files to/from remote device"
+    tags: [remote, file-transfer, basic]
+    nodes: [linux]
+    timeout: 120000
+    steps:
+      - id: login
+        action: ui
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: navigate_to_files
+        action: ui
+        description: "Navigate to file browser"
+        playwright:
+          - goto: "/devices"
+          - click: "tr:has-text('linux')"
+          - click: "[data-testid='tab-files']"
+          - waitFor: "[data-testid='file-browser']"
+
+      - id: create_test_file_on_remote
+        action: remote
+        node: linux
+        description: "Create a test file on remote"
+        tool: claude_code
+        args:
+          prompt: |
+            Create a test file for download testing:
+            1. Create file: echo "E2E Test File Content - $(date)" > /tmp/e2e-test-download.txt
+            2. Verify it exists: cat /tmp/e2e-test-download.txt
+            3. Return JSON: {created: boolean, path: string, content: string}
+        expect:
+          created: true
+
+      - id: download_file
+        action: ui
+        description: "Download test file"
+        playwright:
+          - fill:
+              "[data-testid='path-input']": "/tmp"
+          - press: "Enter"
+          - waitFor: "tr:has-text('e2e-test-download.txt')"
+          - click: "tr:has-text('e2e-test-download.txt')"
+          - click: "button:has-text('Download')"
+          - waitFor: "text=Download complete"
+
+      - id: upload_file
+        action: ui
+        description: "Upload a test file"
+        playwright:
+          - click: "button:has-text('Upload')"
+          - uploadFile:
+              selector: "[data-testid='file-input']"
+              content: "E2E Upload Test Content"
+              filename: "e2e-test-upload.txt"
+          - click: "button:has-text('Confirm Upload')"
+          - waitFor: "text=Upload complete"
+
+      - id: verify_upload_on_remote
+        action: remote
+        node: linux
+        description: "Verify uploaded file on remote"
+        tool: claude_code
+        args:
+          prompt: |
+            Verify the uploaded test file:
+            1. Check if file exists: ls -la /tmp/e2e-test-upload.txt
+            2. Read contents: cat /tmp/e2e-test-upload.txt
+            3. Return JSON: {exists: boolean, content: string}
+        expect:
+          exists: true
+          content: "E2E Upload Test Content"
+
+      - id: cleanup
+        action: remote
+        node: linux
+        description: "Clean up test files"
+        tool: claude_code
+        args:
+          prompt: |
+            Clean up E2E test files:
+            1. rm -f /tmp/e2e-test-download.txt /tmp/e2e-test-upload.txt
+            2. Return JSON: {cleaned: boolean}
+        optional: true
+
+  - id: remote_session_windows
+    name: "Windows Remote Desktop"
+    description: "Test Windows remote desktop functionality"
+    tags: [remote, rdp, windows]
+    nodes: [windows]
+    timeout: 180000
+    steps:
+      - id: login
+        action: ui
+        playwright:
+          - goto: "/login"
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor: "[data-testid='dashboard']"
+
+      - id: navigate_to_device
+        action: ui
+        playwright:
+          - goto: "/devices"
+          - click: "tr:has-text('windows')"
+          - waitFor: "[data-testid='device-details']"
+
+      - id: check_rdp_available
+        action: remote
+        node: windows
+        description: "Check if RDP is enabled"
+        tool: claude_code
+        args:
+          prompt: |
+            Check if Remote Desktop is enabled on Windows:
+            1. Check registry: Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections
+            2. Check if TermService is running: Get-Service TermService
+            3. Return JSON: {rdpEnabled: boolean, serviceRunning: boolean}
+
+      - id: start_remote_session
+        action: ui
+        description: "Start remote desktop session"
+        playwright:
+          - click: "button:has-text('Remote Desktop')"
+          - waitFor: "[data-testid='remote-desktop-container']"
+          - waitFor: "[data-testid='session-connected']"
+            timeout: 60000
+
+      - id: verify_session_on_windows
+        action: remote
+        node: windows
+        description: "Verify remote session from Windows"
+        tool: claude_code
+        args:
+          prompt: |
+            Check for active remote sessions on Windows:
+            1. Run: qwinsta
+            2. Look for active RDP or Breeze remote sessions
+            3. Check Breeze agent logs for session start
+            4. Return JSON: {activeSessions: number, breezeSession: boolean}
+
+      - id: disconnect
+        action: ui
+        description: "Disconnect remote session"
+        playwright:
+          - click: "[data-testid='disconnect-session']"
+          - waitFor: "[data-testid='session-disconnected']"
