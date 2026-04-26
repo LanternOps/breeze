@@ -29,20 +29,20 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       # ── Step 2: Dashboard heading and subheading ───────────────
       - id: verify_heading
         action: ui
-        description: "Verify Dashboard heading and subheading render"
+        description: "Verify Dashboard heading renders"
         playwright:
-          - waitFor: "text=Dashboard"
+          # h1 was renamed to "Welcome" and the subtitle was removed.
+          - waitFor: "h1:has-text('Welcome')"
             timeout: 10000
           - assert:
               selector: "h1"
-              contains: "Dashboard"
-          - assert:
-              selector: "text=Overview of your managed devices and alerts"
-              exists: true
+              contains: "Welcome"
 
       # ── Step 3: Stat cards (Total Devices, Online, Warnings, Critical)
       - id: verify_stat_cards

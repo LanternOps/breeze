@@ -23,6 +23,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_discovery
         action: ui
@@ -75,6 +77,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_profiles_tab
         action: ui
@@ -104,7 +108,10 @@ tests:
           - fill:
               "input[placeholder='Headquarters scan']": "E2E Test Profile"
           - fill:
-              "textarea[placeholder='10.0.0.0/24\n10.0.1.0/24']": "192.168.1.0/24"
+              # Substring match — the literal placeholder contains a newline,
+              # which YAML preserves and the CSS parser then chokes on
+              # ("Unsupported token BADSTRING").
+              "textarea[placeholder*='10.0.0.0/24']": "192.168.1.0/24"
           - click: "label:has-text('ICMP Ping') input[type='checkbox']"
           - click: "label:has-text('TCP Port Scan') input[type='checkbox']"
 
@@ -145,6 +152,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_profiles_tab
         action: ui
@@ -204,6 +213,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_assets_tab
         action: ui
@@ -243,6 +254,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_changes_tab
         action: ui

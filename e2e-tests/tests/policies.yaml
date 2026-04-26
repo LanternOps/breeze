@@ -23,6 +23,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_policies
         action: ui
@@ -130,6 +132,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_new_policy
         action: ui
@@ -147,7 +151,9 @@ tests:
               selector: "h1"
               contains: "Create Policy"
           - assert:
-              selector: "p"
+              # Bare `p` was hijacked by AiChatSidebar's SSR shell ("Loading...")
+              # which renders earlier in DOM order. Pin to the heading sibling.
+              selector: "h1 + p"
               contains: "Define compliance rules and enforcement behavior."
 
       - id: fill_policy_name_and_description
@@ -275,6 +281,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_policies
         action: ui
@@ -361,6 +369,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_compliance_dashboard
         action: ui
@@ -464,6 +474,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_new_policy
         action: ui
@@ -552,6 +564,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_policies
         action: ui

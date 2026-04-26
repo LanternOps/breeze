@@ -26,13 +26,15 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_audit
         action: ui
         description: "Navigate to Audit Log page and verify heading"
         playwright:
           - goto: "/audit"
-          - waitFor: "text=Audit Log"
+          - waitFor: "text=Audit Trail"
             timeout: 15000
           - waitFor: "text=Track user actions, sensitive operations, and system changes."
 
@@ -76,13 +78,15 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_audit
         action: ui
         description: "Navigate to Audit Log page and wait for loading to complete"
         playwright:
           - goto: "/audit"
-          - waitFor: "text=Audit Log"
+          - waitFor: "text=Audit Trail"
             timeout: 15000
           - waitFor: "button:has-text('Filters')"
             timeout: 20000
@@ -123,7 +127,7 @@ tests:
         description: "Click Apply Filters to submit the filter selection"
         playwright:
           - click: "button:has-text('Apply Filters')"
-          - waitFor: "text=Audit Log"
+          - waitFor: "text=Audit Trail"
             timeout: 10000
 
       - id: verify_clear_button_appears
@@ -137,7 +141,7 @@ tests:
         description: "Click the Clear button to remove all active filters"
         playwright:
           - click: "button:has-text('Clear')"
-          - waitFor: "text=Audit Log"
+          - waitFor: "text=Audit Trail"
             timeout: 5000
 
   - id: audit_log_sorting
@@ -161,13 +165,15 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_audit
         action: ui
         description: "Navigate to Audit Log page and wait for table to load"
         playwright:
           - goto: "/audit"
-          - waitFor: "text=Audit Log"
+          - waitFor: "text=Audit Trail"
             timeout: 15000
           - waitFor: "table"
             timeout: 20000
@@ -217,13 +223,15 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_audit
         action: ui
         description: "Navigate to Audit Log page and wait for entries"
         playwright:
           - goto: "/audit"
-          - waitFor: "text=Audit Log"
+          - waitFor: "text=Audit Trail"
             timeout: 15000
           - waitFor: "tbody tr"
             timeout: 20000
@@ -280,6 +288,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_logs
         action: ui
@@ -351,6 +361,8 @@ tests:
           - waitFor:
               url: "**/"
               timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
 
       - id: navigate_logs
         action: ui
