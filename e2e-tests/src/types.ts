@@ -1,6 +1,6 @@
 export interface TestStep {
   id: string;
-  action: 'ui' | 'remote' | 'api';
+  action: 'ui' | 'remote' | 'api' | 'seed';
   description?: string;
   node?: string;
   tool?: string;
@@ -11,6 +11,17 @@ export interface TestStep {
     path: string;
     query?: Record<string, string>;
     body?: Record<string, unknown>;
+  };
+  /**
+   * For `seed` action steps. Runs a SQL fixture file against local Postgres via
+   * `docker exec breeze-postgres psql`. Path is resolved relative to the
+   * `e2e-tests/` directory. The fixture must be idempotent.
+   */
+  seed?: {
+    sqlFile?: string;
+    container?: string;
+    database?: string;
+    user?: string;
   };
   /** Per-step auth override. Set `'none'` to skip the default Bearer token injection on `api` steps. */
   auth?: 'none' | 'bearer';

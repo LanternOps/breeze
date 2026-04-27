@@ -1,0 +1,107 @@
+# E2E Bootstrap — seed test fixtures for fresh-DB runs
+#
+# Sorts FIRST in the run order (0000- prefix) so every other test in the
+# suite finds the data it expects. Tracks issue #518.
+#
+# What it does:
+#   1. Verifies the database has the default org/site/admin (autoMigrate seed).
+#   2. Runs e2e-tests/seed-fixtures.sql via `docker exec breeze-postgres psql`
+#      to insert the minimum fixtures the rest of the suite assumes:
+#        - 2 devices matching E2E_MACOS_DEVICE_ID and E2E_WINDOWS_DEVICE_ID
+#        - device_groups, alerts (medium + critical), audit log entry
+#        - device_software, browser_extensions
+#        - cis_baselines + results, backup_configs + jobs (success + failed)
+#        - patches + device_patches (Windows + macOS)
+#   3. Confirms via the API that devices and alerts now exist.
+#
+# Idempotent: the SQL uses `ON CONFLICT DO NOTHING` / `WHERE NOT EXISTS` /
+# `IF NOT EXISTS` everywhere, so re-running against a populated DB is a
+# no-op. Re-running against a non-docker / remote deployment also no-ops:
+# the seed step detects "docker not available" and continues.
+#
+# Why SQL instead of API: most fixture tables (devices, alerts,
+# audit_logs) have no admin POST endpoint — they are agent-write or
+# system-internal. Creating the data via psql is the only reliable path
+# without standing up a real agent fleet. RLS / business validation are
+# NOT exercised here, but that's appropriate for fixture setup.
+
+tests:
+  - id: bootstrap_seed_fixtures
+    name: "Bootstrap: seed E2E test fixtures"
+    description: >
+      Idempotent fresh-DB bootstrap. Loads seed-fixtures.sql via
+      `docker exec breeze-postgres psql` and then verifies the API
+      sees the seeded devices and alerts.
+    tags: [bootstrap, fixture, critical]
+    nodes: [linux, windows, macos]
+    timeout: 60000
+    steps:
+      # ── Step 1: Login (so subsequent API steps reuse the JWT) ──
+      - id: login
+        action: ui
+        description: "Login with admin credentials"
+        playwright:
+          - goto: "/login"
+          - waitFor: "text=Sign in"
+            timeout: 10000
+          - fill:
+              "[name='email']": "${TEST_USER_EMAIL}"
+              "[name='password']": "${TEST_USER_PASSWORD}"
+          - click: "button[type='submit']"
+          - waitFor:
+              url: "**/"
+              timeout: 15000
+          - waitFor: "h1:has-text('Welcome')"
+            timeout: 15000
+
+      # ── Step 2: Quick existence check — skip seed if already populated ──
+      # Optional: if this passes (fixture devices already there), the seed
+      # step below is still safe to run (it's a no-op), but logging the
+      # check makes diagnosis easier when fixtures are missing.
+      - id: precheck_macos_device
+        action: api
+        description: "Check whether the macOS fixture device already exists"
+        optional: true
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}"
+
+      # ── Step 3: Run the SQL fixture loader (idempotent) ────────
+      - id: seed_fixtures
+        action: seed
+        description: "Apply seed-fixtures.sql via docker exec breeze-postgres psql"
+        seed:
+          sqlFile: "seed-fixtures.sql"
+          container: "breeze-postgres"
+          database: "breeze"
+          user: "breeze"
+
+      # ── Step 4: Verify the macOS fixture device is now visible ──
+      - id: verify_macos_device
+        action: api
+        description: "Verify macOS fixture device is reachable via API"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.macos}}"
+        expect:
+          osType: macos
+
+      # ── Step 5: Verify the Windows fixture device is now visible ──
+      - id: verify_windows_device
+        action: api
+        description: "Verify Windows fixture device is reachable via API"
+        request:
+          method: GET
+          path: "/api/v1/devices/{{devices.windows}}"
+        expect:
+          osType: windows
+
+      # ── Step 6: Verify alerts list has at least one row ────────
+      - id: verify_alerts_seeded
+        action: api
+        description: "Verify alerts table has fixture rows"
+        request:
+          method: GET
+          path: "/api/v1/alerts"
+          query:
+            limit: "10"

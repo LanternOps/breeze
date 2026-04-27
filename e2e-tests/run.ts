@@ -17,7 +17,7 @@ import dotenv from 'dotenv';
 import type { Config, Test, TestFile, TestResult, CLIOptions, RunnerContext, UiSession } from './src/types.js';
 import { isRecord, resolveEnvString } from './src/utils.js';
 import { closeUiSession, cleanupBrowser } from './src/browser.js';
-import { runUiStepLive, runRemoteStepLive, runApiStepLive, runUiStepSimulated, runRemoteStepSimulated, runApiStepSimulated } from './src/steps.js';
+import { runUiStepLive, runRemoteStepLive, runApiStepLive, runUiStepSimulated, runRemoteStepSimulated, runApiStepSimulated, runSeedStepLive, runSeedStepSimulated } from './src/steps.js';
 import { TestTracker } from './src/tracker.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -361,6 +361,17 @@ async function runTest(test: Test): Promise<TestResult> {
             const apiPath = step.request?.path ?? '';
             console.log(`     [API] ${apiMethod} ${apiPath}`);
             stepOutput = await runApiStepLive(step, context, config, options);
+
+            if (options.verbose) {
+              console.log(`     Result: ${JSON.stringify(stepOutput, null, 2)}`);
+            }
+          }
+        } else if (step.action === 'seed') {
+          if (options.mode === 'simulate') {
+            stepOutput = runSeedStepSimulated(step, context, options);
+          } else {
+            console.log(`     [SEED] Loading fixtures from ${step.seed?.sqlFile ?? 'seed-fixtures.sql'}`);
+            stepOutput = await runSeedStepLive(step, context, config);
 
             if (options.verbose) {
               console.log(`     Result: ${JSON.stringify(stepOutput, null, 2)}`);

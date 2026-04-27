@@ -1,6 +1,13 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import type { Config, TestStep, RunnerContext, UiSession, CLIOptions, JsonRpcResponse } from './types.js';
 import { isRecord, resolveEnvString, resolveTemplates, interpolateTemplate, extractStructuredResult, assertExpectations, lookupVar, asNumber, normalizeUrl } from './utils.js';
 import { ensureUiSession, runUiPlaywrightAction, isLoginStep, captureSimulatedExtracts, cachedStorageState, cachedApiToken, setCachedApiToken } from './browser.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const E2E_DIR = path.resolve(path.dirname(__filename), '..');
 
 function buildNodeBaseUrl(host: string, port: number): string {
   const normalizedHost = host.startsWith('http://') || host.startsWith('https://') ? host : `http://${host}`;
@@ -380,4 +387,65 @@ export function runApiStepSimulated(step: TestStep, context: RunnerContext, opti
     console.log(`     Request: ${JSON.stringify(resolveTemplates(step.request, context.vars), null, 2)}`);
   }
   return { simulated: true };
+}
+
+// --- Seed step (idempotent SQL fixtures via docker exec psql) ---
+
+export async function runSeedStepLive(step: TestStep, _context: RunnerContext, _config: Config): Promise<Record<string, unknown>> {
+  const sqlFileRel = step.seed?.sqlFile ?? 'seed-fixtures.sql';
+  const container = step.seed?.container ?? 'breeze-postgres';
+  const database = step.seed?.database ?? process.env.POSTGRES_DB ?? 'breeze';
+  const dbUser = step.seed?.user ?? process.env.POSTGRES_USER ?? 'breeze';
+
+  const sqlPath = path.isAbsolute(sqlFileRel) ? sqlFileRel : path.join(E2E_DIR, sqlFileRel);
+  if (!fs.existsSync(sqlPath)) {
+    throw new Error(`Seed file not found: ${sqlPath}`);
+  }
+
+  const sql = fs.readFileSync(sqlPath, 'utf-8');
+
+  // docker exec -i <container> psql -U <user> -d <database> -v ON_ERROR_STOP=1 -f -
+  const args = [
+    'exec', '-i', container,
+    'psql', '-U', dbUser, '-d', database,
+    '-v', 'ON_ERROR_STOP=1',
+    '-q',
+    '-f', '-',
+  ];
+
+  try {
+    const stdout = execFileSync('docker', args, {
+      input: sql,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: step.timeout ?? 60000,
+    });
+    const output = stdout.toString().trim();
+    if (output) {
+      for (const line of output.split('\n')) {
+        console.log(`     [SEED] ${line}`);
+      }
+    }
+    return { seeded: true, file: sqlFileRel };
+  } catch (error: any) {
+    const stderr = error?.stderr?.toString?.() ?? '';
+    const stdout = error?.stdout?.toString?.() ?? '';
+    const detail = [stdout, stderr].filter(Boolean).join('\n').trim();
+
+    // Container missing or docker not running → treat as non-fatal so the
+    // bootstrap step doesn't block runs against remote/non-docker deployments.
+    // The downstream tests will fail naturally if the data really isn't there.
+    const benign = /No such container|Cannot connect to the Docker daemon|Is the docker daemon running/i.test(detail);
+    if (benign) {
+      console.log(`     [SEED] Skipping — local docker postgres not available (${detail.split('\n')[0] || 'no detail'})`);
+      return { seeded: false, skipped: true, reason: 'docker-unavailable' };
+    }
+
+    throw new Error(`Seed failed running ${sqlFileRel}: ${detail || error.message}`);
+  }
+}
+
+export function runSeedStepSimulated(step: TestStep, _context: RunnerContext, _options: CLIOptions): Record<string, unknown> {
+  const sqlFile = step.seed?.sqlFile ?? 'seed-fixtures.sql';
+  console.log(`     [SEED] Simulated psql -f ${sqlFile}`);
+  return { simulated: true, seeded: false };
 }
