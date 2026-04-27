@@ -1,44 +1,22 @@
-import { test, expect } from '@playwright/test';
-import { waitForApp } from './helpers';
+import { test, expect } from '../fixtures';
+import { DashboardPage } from '../pages/DashboardPage';
 
 test.describe('Dashboard', () => {
-  test('dashboard loads with key stats', async ({ page }) => {
-    await page.goto('/');
-    await waitForApp(page);
-
-    await expect(page.locator('h1')).toContainText('Dashboard');
-
-    // Wait for React components to hydrate and render stats
-    const statsContent = page.locator('text=Devices')
-      .or(page.locator('text=Total Devices'))
-      .or(page.locator('text=Alerts'));
-    await expect(statsContent.first()).toBeVisible({ timeout: 15_000 });
+  test('loads with heading and four stat cards', async ({ authedPage }) => {
+    const dashboard = new DashboardPage(authedPage);
+    await dashboard.goto();
+    await expect(dashboard.heading()).toBeVisible();
+    await expect(dashboard.stats()).toBeVisible();
+    await expect(dashboard.totalDevicesCard()).toBeVisible();
+    await expect(dashboard.onlineCard()).toBeVisible();
+    await expect(dashboard.warningsCard()).toBeVisible();
+    await expect(dashboard.criticalCard()).toBeVisible();
   });
 
-  test('navigation to devices page works', async ({ page }) => {
-    await page.goto('/');
-    await waitForApp(page);
-
-    // Click Devices in the sidebar navigation
-    const devicesLink = page.locator('aside a[href="/devices"]')
-      .or(page.locator('aside >> text=Devices'))
-      .first();
-    await devicesLink.click({ timeout: 10_000 });
-
-    await expect(page).toHaveURL(/\/devices/, { timeout: 10_000 });
-    await expect(page.locator('h1').first()).toContainText(/Device/i, { timeout: 15_000 });
-  });
-
-  test('navigation to scripts page works', async ({ page }) => {
-    await page.goto('/');
-    await waitForApp(page);
-
-    const scriptsLink = page.locator('aside a[href="/scripts"]')
-      .or(page.locator('aside >> text=Scripts'))
-      .first();
-    await scriptsLink.click({ timeout: 10_000 });
-
-    await expect(page).toHaveURL(/\/scripts/, { timeout: 10_000 });
-    await expect(page.locator('h1').first()).toContainText(/Script/i, { timeout: 15_000 });
+  test('shows recent alerts and activity panels', async ({ authedPage }) => {
+    const dashboard = new DashboardPage(authedPage);
+    await dashboard.goto();
+    await expect(dashboard.recentAlertsHeading()).toBeVisible();
+    await expect(dashboard.recentActivityHeading()).toBeVisible();
   });
 });

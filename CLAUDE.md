@@ -92,7 +92,7 @@ For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE
 - **Web**: Vitest + jsdom — `apps/web/vitest.config.ts`
 - **Agent**: Go standard `testing` package — `go test -race ./...`
 - **Shared**: Vitest — `packages/shared/vitest.config.ts`
-- **E2E**: YAML-driven runner — `e2e-tests/run.ts` with `e2e-tests/tests/*.yaml`
+- **E2E**: Playwright Test (TypeScript), `data-testid` based — `e2e-tests/playwright.config.ts`, specs under `e2e-tests/tests/*.spec.ts`, Page Objects under `e2e-tests/pages/`. Tests query DOM via `data-testid` attributes only (not text/role/CSS) — see `e2e-tests/README.md` for the convention.
 
 ### Test File Placement
 - Place test files **alongside source files**, not in separate directories
@@ -125,7 +125,7 @@ cd agent && go test -race ./...
 cd agent && go test -race ./internal/discovery/...
 
 # E2E
-cd e2e-tests && npx tsx run.ts --mode live
+cd e2e-tests && pnpm test
 ```
 
 ---

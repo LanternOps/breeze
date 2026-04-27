@@ -121,10 +121,10 @@ export default function LoginPage() {
   }
 
   return (
-    <div>
+    <div data-testid="login-page">
       <div className="mb-8">
         <p className="text-sm font-medium text-muted-foreground">Welcome back</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight">Sign in to Breeze</h1>
+        <h1 data-testid="login-heading" className="mt-1 text-2xl font-bold tracking-tight">Sign in to Breeze</h1>
       </div>
 
       {registrationNotice && (
