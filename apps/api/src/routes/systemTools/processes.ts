@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getDeviceWithOrgCheck, getPagination } from './helpers';
 import { deviceIdParamSchema, pidParamSchema, paginationQuerySchema } from './schemas';
 
@@ -134,7 +135,7 @@ processesRoutes.post(
         force,
         result: result.status
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });

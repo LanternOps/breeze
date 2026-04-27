@@ -9,6 +9,7 @@ import { users, partnerUsers, organizationUsers, roles, organizations } from '..
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
@@ -290,7 +291,7 @@ function writeUserAudit(
     resourceId: event.resourceId,
     resourceName: event.resourceName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
@@ -441,7 +442,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       details: {
         changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
       result: 'success'
     });

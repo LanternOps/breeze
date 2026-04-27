@@ -7,6 +7,7 @@ import { apiKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { createHash, randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
 
 export const apiKeyRoutes = new Hono();
@@ -71,7 +72,7 @@ function writeApiKeyAudit(
     resourceId: event.keyId,
     resourceName: event.keyName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });

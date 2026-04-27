@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getDeviceWithOrgCheck, getPagination, asRecord, asString, asOptionalNumber } from './helpers';
 import {
   deviceIdParamSchema,
@@ -311,7 +312,7 @@ scheduledTasksRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
       details: { path },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -356,7 +357,7 @@ scheduledTasksRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
       details: { path },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -401,7 +402,7 @@ scheduledTasksRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
       details: { path },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });

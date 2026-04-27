@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getDeviceWithOrgCheck, asRecord, asString, asNumber } from './helpers';
 import {
   deviceIdParamSchema,
@@ -346,7 +347,7 @@ registryRoutes.put(
         type,
         data: commandData.substring(0, 200)
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -407,7 +408,7 @@ registryRoutes.delete(
         path,
         name: normalizedName
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -463,7 +464,7 @@ registryRoutes.post(
         hive,
         path: normalizedPath
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -519,7 +520,7 @@ registryRoutes.delete(
         hive,
         path: normalizedPath
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });

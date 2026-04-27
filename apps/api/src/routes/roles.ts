@@ -8,6 +8,7 @@ import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, u
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 export const roleRoutes = new Hono();
 
@@ -122,7 +123,7 @@ function writeRoleAudit(
     resourceId: event.roleId,
     resourceName: event.roleName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
