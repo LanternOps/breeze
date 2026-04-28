@@ -85,14 +85,16 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
   return runWithSystemDbAccess(async () => {
 
-    // Block registration until any partner admin has completed initial setup.
-    // Self-hosted only: SaaS deployments (MCP_BOOTSTRAP_ENABLED=true) accept
-    // public self-service signups before any admin exists, so OAuth flows
-    // initiated by external clients (e.g. Claude.ai) can land brand-new users
-    // on /auth and let them register. The self-hosted gate exists because
-    // single-tenant installs need the seeded admin to finish setup before
-    // strangers can create partners.
-    if (process.env.MCP_BOOTSTRAP_ENABLED !== 'true') {
+    // Self-hosted single-tenant installs need the seeded admin to finish
+    // setup before strangers can create partners. SaaS deployments
+    // (MCP_BOOTSTRAP_ENABLED=true) skip the gate so the partner table can
+    // bootstrap from an empty state.
+    if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
+      console.warn('[register-partner] setup-admin gate bypassed (saas mode)', {
+        ip: getClientRateLimitKey(c),
+        userAgent: c.req.header('user-agent'),
+      });
+    } else {
       const [setupAdmin] = await db
         .select({ setupCompletedAt: users.setupCompletedAt })
         .from(users)

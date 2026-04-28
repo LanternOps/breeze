@@ -5,7 +5,6 @@ import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 
 interface PartnerRegisterPageProps {
-  // Post-signup destination when no billing-hook redirect is supplied.
   next?: string;
 }
 

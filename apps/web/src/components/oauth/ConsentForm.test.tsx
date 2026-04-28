@@ -101,13 +101,9 @@ describe('ConsentForm', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 401));
     render(<ConsentForm uid="uid-1" />);
 
-    // The fallback Sign-in link still renders in case navigation is blocked.
-    // It targets /auth so first-time OAuth users without a Breeze account can
-    // sign up via the create-account tab instead of dead-ending on /login.
     const link = (await screen.findByRole('link', { name: /Sign in/ })) as HTMLAnchorElement;
     expect(link.href).toContain('/auth?next=');
     expect(decodeURIComponent(link.href)).toContain('/oauth/consent?uid=uid-1');
-    // And the auto-redirect fired.
     expect(window.location.href).toContain('/auth?next=');
     expect(decodeURIComponent(window.location.href)).toContain('/oauth/consent?uid=uid-1');
   });

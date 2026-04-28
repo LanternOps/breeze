@@ -1,8 +1,9 @@
-// Returns a safe post-auth redirect target derived from a `?next=` query
-// parameter. Only same-origin relative paths are accepted (single leading
-// slash, never `//evil.com`). Prevents open-redirect via crafted OAuth flows.
+// Open-redirect guard for `?next=` query params: only same-origin relative
+// paths (single leading `/`, second char not `/` or `\`). Some browsers
+// historically normalize `\` to `/`, making `/\evil.com` resolvable as a host.
 export function getSafeNext(raw: string | null | undefined, fallback = '/'): string {
   if (!raw) return fallback;
-  if (!raw.startsWith('/') || raw.startsWith('//')) return fallback;
+  if (!raw.startsWith('/')) return fallback;
+  if (raw.length > 1 && (raw[1] === '/' || raw[1] === '\\')) return fallback;
   return raw;
 }

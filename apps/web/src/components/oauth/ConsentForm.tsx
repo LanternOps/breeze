@@ -42,9 +42,7 @@ function isHighRiskScope(scope: string): boolean {
 function loginRedirectTarget(uid: string): string {
   const params = new URLSearchParams({ uid });
   const next = `/oauth/consent?${params.toString()}`;
-  // /auth surfaces both sign-in and create-account tabs; lands first-time
-  // OAuth users (no Breeze account) on a path forward instead of a login
-  // dead-end. /login still works and will fall back to sign-in only.
+  // /auth (not /login) so users without a Breeze account have a signup tab.
   return `/auth?next=${encodeURIComponent(next)}`;
 }
 
@@ -63,9 +61,8 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}`);
         if (cancelled) return;
         if (res.status === 401) {
-          // Auto-navigate to /login so the user lands directly in the sign-in
-          // flow with `next` set to come back here. The unauthenticated state
-          // remains as a fallback in case navigation is blocked (e.g. tests).
+          // Auto-navigate; the unauthenticated state below is a fallback
+          // for cases where navigation is blocked (e.g. tests).
           window.location.href = loginRedirectTarget(uid);
           setState({ kind: 'unauthenticated' });
           return;

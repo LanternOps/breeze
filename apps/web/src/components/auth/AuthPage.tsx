@@ -4,8 +4,6 @@ import PartnerRegisterPage from './PartnerRegisterPage';
 import { getSafeNext } from '../../lib/authNext';
 
 interface AuthPageProps {
-  // Where to send the user after sign-in or signup. Validated to a same-origin
-  // relative path before being passed to the child page.
   next?: string;
 }
 

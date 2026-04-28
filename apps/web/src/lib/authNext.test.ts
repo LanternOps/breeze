@@ -18,6 +18,15 @@ describe('getSafeNext', () => {
     expect(getSafeNext('//evil.com/path')).toBe('/');
   });
 
+  it('rejects backslash-prefixed paths that browsers may normalize to a host', () => {
+    expect(getSafeNext('/\\evil.com')).toBe('/');
+    expect(getSafeNext('/\\\\evil.com')).toBe('/');
+  });
+
+  it('accepts a bare slash', () => {
+    expect(getSafeNext('/')).toBe('/');
+  });
+
   it('rejects absolute URLs (http/https/javascript)', () => {
     expect(getSafeNext('https://evil.com')).toBe('/');
     expect(getSafeNext('http://evil.com')).toBe('/');

@@ -15,9 +15,8 @@ function getRegistrationDisabledNotice(): string | undefined {
 }
 
 interface LoginPageProps {
-  // Where to send the user after a successful login. Falls back to '/' when
-  // omitted. The setup wizard always wins over `next` since the user can't do
-  // anything useful before setup completes; `next` resumes after setup.
+  // The setup wizard always wins over `next` — the user can't do anything
+  // useful before setup completes.
   next?: string;
 }
 
