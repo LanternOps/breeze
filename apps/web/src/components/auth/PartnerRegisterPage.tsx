@@ -2,10 +2,17 @@ import { useState } from 'react';
 import PartnerRegisterForm from './PartnerRegisterForm';
 import { useAuthStore, apiRegisterPartner } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { getSafeNext } from '../../lib/authNext';
 
-export default function PartnerRegisterPage() {
+interface PartnerRegisterPageProps {
+  // Post-signup destination when no billing-hook redirect is supplied.
+  next?: string;
+}
+
+export default function PartnerRegisterPage({ next }: PartnerRegisterPageProps = {}) {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const safeNext = getSafeNext(next);
 
   const login = useAuthStore((state) => state.login);
 
@@ -34,7 +41,7 @@ export default function PartnerRegisterPage() {
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      await navigateTo(result.redirectUrl ?? '/');
+      await navigateTo(result.redirectUrl ?? safeNext);
       return;
     }
 

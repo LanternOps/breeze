@@ -1,0 +1,99 @@
+---
+import '../styles/globals.css';
+import { ClientRouter } from 'astro:transitions';
+import AuthPage from '../components/auth/AuthPage';
+
+const next = Astro.url.searchParams.get('next') ?? undefined;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Breeze RMM - Sign in or create your account" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>Sign in or create account | Breeze RMM</title>
+    <ClientRouter />
+  </head>
+  <body class="min-h-screen bg-background antialiased">
+    <div class="flex min-h-screen">
+
+      <!-- Left branded panel -->
+      <div class="hidden w-[42%] flex-col justify-between bg-[hsl(225,62%,48%)] p-10 text-white md:flex lg:p-14">
+        <div>
+          <div class="flex items-center gap-3">
+            <svg class="h-8 w-8" viewBox="0 0 64 64" fill="none">
+              <path d="M12 22C12 22 20 22 28 22C36 22 40 16 48 16C52 16 54 18 54 20C54 22 52 24 48 24C44 24 42 22 42 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+              <path d="M8 34C8 34 18 34 30 34C42 34 46 28 52 28C55 28 57 30 57 32C57 34 55 36 52 36C48 36 46 34 46 34" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+              <path d="M14 46C14 46 22 46 32 46C40 46 44 40 50 40C53 40 55 42 55 44C55 46 53 48 50 48C46 48 44 46 44 46" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+            </svg>
+            <span class="text-xl font-bold tracking-tight">Breeze</span>
+          </div>
+        </div>
+
+        <div class="space-y-10">
+          <div>
+            <h2 class="text-2xl font-bold leading-snug tracking-tight lg:text-3xl">
+              Effortless endpoint<br />management
+            </h2>
+            <p class="mt-3 text-sm leading-relaxed text-white/70">
+              Sign in or create your account to get started.
+            </p>
+          </div>
+
+          <div class="space-y-5">
+            <div class="flex items-start gap-3">
+              <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10">
+                <svg class="h-4 w-4 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 6.878V6a2.25 2.25 0 0 1 2.25-2.25h7.5A2.25 2.25 0 0 1 18 6v.878m-12 0c.235-.083.487-.128.75-.128h10.5c.263 0 .515.045.75.128m-12 0A2.25 2.25 0 0 0 4.5 9v.878m13.5-3A2.25 2.25 0 0 1 19.5 9v.878m0 0a2.246 2.246 0 0 0-.75-.128H5.25c-.263 0-.515.045-.75.128m15 0A2.25 2.25 0 0 1 21 12v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6c0-1.007.66-1.86 1.573-2.147" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-sm font-semibold text-white/95">10,000+ endpoints</p>
+                <p class="text-xs leading-relaxed text-white/55">Built to handle fleets of any size without breaking a sweat.</p>
+              </div>
+            </div>
+
+            <div class="flex items-start gap-3">
+              <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10">
+                <svg class="h-4 w-4 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-sm font-semibold text-white/95">Real-time monitoring</p>
+                <p class="text-xs leading-relaxed text-white/55">Live telemetry, instant alerts, zero guesswork.</p>
+              </div>
+            </div>
+
+            <div class="flex items-start gap-3">
+              <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10">
+                <svg class="h-4 w-4 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-sm font-semibold text-white/95">AI-powered insights</p>
+                <p class="text-xs leading-relaxed text-white/55">Smart diagnostics and automated remediation at your fingertips.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="text-xs text-white/40">&copy; {new Date().getFullYear()} Breeze RMM</p>
+      </div>
+
+      <!-- Right form panel -->
+      <div class="flex flex-1 items-center justify-center px-6 py-12 sm:px-12">
+        <div class="w-full max-w-md">
+          <AuthPage client:load next={next} />
+        </div>
+      </div>
+
+    </div>
+  </body>
+</html>

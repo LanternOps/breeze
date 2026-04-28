@@ -86,17 +86,23 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
   return runWithSystemDbAccess(async () => {
 
     // Block registration until any partner admin has completed initial setup.
-    // We check partner_users + users rather than a hardcoded email because the
-    // seeded admin may have changed their email during the setup wizard.
-    const [setupAdmin] = await db
-      .select({ setupCompletedAt: users.setupCompletedAt })
-      .from(users)
-      .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
-      .where(sql`${users.setupCompletedAt} IS NOT NULL`)
-      .limit(1);
+    // Self-hosted only: SaaS deployments (MCP_BOOTSTRAP_ENABLED=true) accept
+    // public self-service signups before any admin exists, so OAuth flows
+    // initiated by external clients (e.g. Claude.ai) can land brand-new users
+    // on /auth and let them register. The self-hosted gate exists because
+    // single-tenant installs need the seeded admin to finish setup before
+    // strangers can create partners.
+    if (process.env.MCP_BOOTSTRAP_ENABLED !== 'true') {
+      const [setupAdmin] = await db
+        .select({ setupCompletedAt: users.setupCompletedAt })
+        .from(users)
+        .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .where(sql`${users.setupCompletedAt} IS NOT NULL`)
+        .limit(1);
 
-    if (!setupAdmin) {
-      return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+      if (!setupAdmin) {
+        return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+      }
     }
 
     // Rate limit registration - stricter for partner registration

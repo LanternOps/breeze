@@ -42,7 +42,10 @@ function isHighRiskScope(scope: string): boolean {
 function loginRedirectTarget(uid: string): string {
   const params = new URLSearchParams({ uid });
   const next = `/oauth/consent?${params.toString()}`;
-  return `/login?next=${encodeURIComponent(next)}`;
+  // /auth surfaces both sign-in and create-account tabs; lands first-time
+  // OAuth users (no Breeze account) on a path forward instead of a login
+  // dead-end. /login still works and will fall back to sign-in only.
+  return `/auth?next=${encodeURIComponent(next)}`;
 }
 
 export interface ConsentFormProps {
