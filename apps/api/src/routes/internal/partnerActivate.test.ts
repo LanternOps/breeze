@@ -3,10 +3,22 @@ import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
   update: vi.fn(),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
 vi.mock('../../db', () => ({
   db: { update: mocks.update },
+  runOutsideDbContext: mocks.runOutsideDbContext,
+  withSystemDbAccessContext: mocks.withSystemDbAccessContext,
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
+vi.mock('../../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
 }));
 
 // ---- helpers ---------------------------------------------------------------
@@ -99,8 +111,9 @@ describe('POST /internal/partners/:id/activate', () => {
   });
 
   it('flips status=active and records stripe_customer_id when secret matches', async () => {
-    const { set } = queueUpdateReturning([{ id: 'p1', status: 'active' }]);
-    const res = await app.request('/internal/partners/p1/activate', {
+    const PARTNER_UUID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+    const { set } = queueUpdateReturning([{ id: PARTNER_UUID, status: 'active' }]);
+    const res = await app.request(`/internal/partners/${PARTNER_UUID}/activate`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -109,7 +122,7 @@ describe('POST /internal/partners/:id/activate', () => {
       body: validBody,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: 'p1', status: 'active' });
+    expect(await res.json()).toEqual({ id: PARTNER_UUID, status: 'active' });
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'active',
@@ -119,9 +132,23 @@ describe('POST /internal/partners/:id/activate', () => {
     );
   });
 
+  it('returns 400 when partner id is not a valid UUID', async () => {
+    const res = await app.request('/internal/partners/not-a-uuid/activate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-billing-secret': 'test-secret',
+      },
+      body: validBody,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_partner_id' });
+  });
+
   it('returns 404 when partner does not exist', async () => {
+    const MISSING_UUID = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
     queueUpdateReturning([]); // empty result = no row matched
-    const res = await app.request('/internal/partners/missing/activate', {
+    const res = await app.request(`/internal/partners/${MISSING_UUID}/activate`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

@@ -148,10 +148,11 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     console.error('Failed to update API key usage stats:', err);
   });
 
-  // Resolve the owning partner for this API key's org ONLY for MCP-provisioning
-  // keys. Those keys route through paymentGate, which reads the partners table
-  // (partner-axis RLS) — without the allowlist entry breeze_has_partner_access()
-  // short-circuits to false and the authed caller sees zero rows.
+  // Resolve the owning partner for MCP-provisioning keys only. These keys
+  // operate in the partner-axis RLS context (e.g. reading partner rows during
+  // OAuth bearer token flows). Without the partner ID in accessiblePartnerIds,
+  // breeze_has_partner_access() short-circuits to false and the caller sees
+  // zero rows from partner-scoped tables.
   //
   // Every other API key type has no legitimate need to read partner rows, so
   // we skip the round-trip and keep accessiblePartnerIds empty. This also

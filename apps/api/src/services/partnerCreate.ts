@@ -9,6 +9,7 @@ import {
   organizations,
   sites,
 } from '../db/schema';
+import type { PartnerStatus } from '../db/schema/orgs';
 
 export interface CreatePartnerInput {
   orgName: string;
@@ -23,7 +24,7 @@ export interface CreatePartnerInput {
    * middleware (status !== 'active' → 402) blocks features until
    * breeze-billing flips the partner to 'active' post-payment.
    */
-  status?: 'active' | 'pending' | 'suspended' | 'churned';
+  status?: PartnerStatus;
 }
 
 export interface CreatePartnerResult {

@@ -36,7 +36,7 @@ export interface SendDeploymentInvitesOutput {
 }
 
 const TOOL_DESCRIPTION =
-  'Sends install-link emails to a list of staff. Requires an active tenant. If the tenant is inactive (`partner.status != \'active\'`), the call returns 402 with the configured billing URL the user must visit.';
+  "Sends install-link emails to a list of staff. Requires an active partner. Bearer-token (OAuth) callers will be blocked with 403 PARTNER_INACTIVE if the partner becomes inactive between sessions; X-API-Key callers do not have this check at the tool layer (the per-key revocation flow is the gate there).";
 
 async function sendDeploymentInvitesHandler(
   input: SendInput,

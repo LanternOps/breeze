@@ -12,8 +12,12 @@ export function initMcpBootstrap(): {
     // Create Account → /auth/register-partner (Phase 1) → consent handler
     // redirects inactive partners to BILLING_URL (Phase 2).
     unauthTools: [],
-    // Auth tools require a valid API key AND partner.status === 'active'
-    // (enforced via partnerGuard in dispatchBootstrapAuthTool).
+    // Auth tools require a valid API key OR Bearer token. Partner status
+    // (active vs pending/suspended/churned) is enforced upstream:
+    //   - For Bearer tokens: at the OAuth consent step (oauthInteraction.ts)
+    //     and via partnerGuard middleware on subsequent requests.
+    //   - For X-API-Key: no per-call partner-status check at the tool dispatch
+    //     layer (relies on key revocation as the gate).
     authTools: [sendDeploymentInvitesTool, configureDefaultsTool],
   };
 }

@@ -12,6 +12,7 @@ import {
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
 import { isHosted } from '../../config/env';
+import type { PartnerStatus } from '../../db/schema/orgs';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
 import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
@@ -253,7 +254,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       // If hook overrides the partner status (e.g. to 'pending'), apply it
       const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
-      let effectiveStatus: string = newPartner.status;
+      let effectiveStatus: PartnerStatus = newPartner.status;
 
       if (hookResponse?.status && hookResponse.status !== newPartner.status) {
         if (!VALID_STATUSES.includes(hookResponse.status as any)) {
@@ -277,7 +278,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               .update(partners)
               .set(updateSet)
               .where(eq(partners.id, newPartner.id));
-            effectiveStatus = hookResponse.status;
+            effectiveStatus = hookResponse.status as PartnerStatus;
           } catch (statusErr) {
             console.error('[register-partner] hook-status update failed', {
               partnerId: newPartner.id,
