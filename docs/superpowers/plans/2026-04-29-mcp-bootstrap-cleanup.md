@@ -4,7 +4,7 @@
 
 **Goal:** Replace the MCP bootstrap module (unauth `create_tenant`/`verify_tenant`/`attach_payment_method` + `/activate/<token>` flow) with a single canonical signup that flows through the OAuth Create Account branch on hosted, and is gated on the existing `partners.status` lifecycle.
 
-**Architecture:** Claude.ai's MCP client OAuths at connector-add time, before any tool call. The OAuth login screen offers a **Create Account** branch that routes to the consolidated `/auth/register-partner` endpoint, which always creates a partner row but sets `status = 'trial'` on hosted (`IS_HOSTED=true`) so the existing `partnerGuard` middleware blocks all features until `breeze-billing` flips it to `'active'` via a signed callback. Self-host signups go straight to `'active'`. The bootstrap MCP tools, the unauth carve-out, the `/activate/<token>` flow, and the activation email service are deleted entirely. Stripe never appears in the public repo.
+**Architecture:** Claude.ai's MCP client OAuths at connector-add time, before any tool call. The OAuth login screen offers a **Create Account** branch that routes to the consolidated `/auth/register-partner` endpoint, which always creates a partner row but sets `status = 'pending'` on hosted (`IS_HOSTED=true`) so the existing `partnerGuard` middleware blocks all features until `breeze-billing` flips it to `'active'` via a signed callback. Self-host signups go straight to `'active'`. The bootstrap MCP tools, the unauth carve-out, the `/activate/<token>` flow, and the activation email service are deleted entirely. Stripe never appears in the public repo.
 
 **Tech Stack:** TypeScript (Hono API, Astro/React web), Drizzle ORM on Postgres, `node-oidc-provider` for OAuth 2.1 + DCR, Vitest for tests.
 
@@ -20,13 +20,13 @@ The right design (agreed in chat 2026-04-29) is:
 
 1. ONE signup endpoint (`POST /auth/register-partner`) that the web signup form, the OAuth Create Account branch, and any future programmatic caller all hit.
 2. Tenant status (`partners.status`) is the only "is this account paid" abstraction in the public repo. Stripe code lives in `breeze-billing` (separate repo), which calls back to flip status when payment is verified.
-3. On hosted (`IS_HOSTED=true`), new tenants land at `status='trial'`. The existing `partnerGuard` middleware (`apps/api/src/middleware/partnerGuard.ts:52`) already rejects non-`active` partners. The OAuth consent screen, post-approval, sees `status != 'active'` and redirects to the configured `BILLING_URL` instead of completing the OAuth handshake.
+3. On hosted (`IS_HOSTED=true`), new tenants land at `status='pending'`. The existing `partnerGuard` middleware (`apps/api/src/middleware/partnerGuard.ts:52`) already rejects non-`active` partners. The OAuth consent screen, post-approval, sees `status != 'active'` and redirects to the configured `BILLING_URL` instead of completing the OAuth handshake.
 4. On self-host, new tenants land at `status='active'`. `BILLING_URL` is empty. `partnerGuard` lets them through. No change from today.
 
 ### Existing state — surveyed pre-plan
 
 - **Flag:** `MCP_BOOTSTRAP_ENABLED` (`apps/api/src/config/env.ts:11`) is the de-facto "is this hosted SaaS" flag. Used in `apps/api/src/routes/auth/register.ts` to bypass the setup-admin gate, in `mcpServer.ts` to enable the unauth carve-out, in `index.ts` to mount activation/invite routes, in `services/deleteTenant.ts`, and in `mcpBootstrap/startupCheck.ts`. Plus tests + docs.
-- **Tenant status enum:** `partnerStatusEnum` allows `'active' | 'suspended' | 'trial' | 'churned'` (per `openapi.ts:218`). `partnerGuard` rejects everything except `'active'`.
+- **Tenant status enum:** `partnerStatusEnum` allows `'pending' | 'active' | 'suspended' | 'churned' (matches partner_status DB enum)` (per `openapi.ts:218`). `partnerGuard` rejects everything except `'active'`.
 - **Bootstrap migration:** `apps/api/migrations/2026-04-20-a-mcp-bootstrap-schema.sql` added: `partners.{mcp_origin, mcp_origin_ip, mcp_origin_user_agent, email_verified_at, payment_method_attached_at, stripe_customer_id}`, `api_keys.scope_state`, plus tables `partner_activations` and `deployment_invites`. Per CLAUDE.md, never edit a shipped migration — we'll fix forward with a new one.
 - **OAuth provider:** `node-oidc-provider` instance built in `apps/api/src/oauth/provider.ts`. Mounted at `/oauth/*` (`apps/api/src/index.ts:371`). Interaction UI handlers at `oauthInteractionRoutes` (`apps/api/src/routes/oauthInteraction.ts`). Consent base URL configured via `OAUTH_CONSENT_URL_BASE`.
 
@@ -72,7 +72,7 @@ Phase 8 documents the contract changes that must land in the `breeze-billing` re
 
 **Modified:**
 - `apps/api/src/config/env.ts` — rename `isMcpBootstrapEnabled` → `isHosted`, env var `MCP_BOOTSTRAP_ENABLED` → `IS_HOSTED`. Add `BILLING_URL`.
-- `apps/api/src/routes/auth/register.ts` — set `partner.status='trial'` on hosted, accept `?return_to=oauth&interaction=<uid>` query, return redirect URL accordingly
+- `apps/api/src/routes/auth/register.ts` — set `partner.status='pending'` on hosted, accept `?return_to=oauth&interaction=<uid>` query, return redirect URL accordingly
 - `apps/api/src/routes/oauthInteraction.ts` (or wherever consent post-approval lives) — when `partner.status != 'active'`, redirect to `BILLING_URL?interaction=<uid>` instead of completing
 - `apps/api/src/routes/mcpServer.ts` — drop unauth carve-out, all tools require auth
 - `apps/api/src/index.ts` — drop `mountActivationRoutes` import + mount; update `mountInviteLandingRoutes` import path
@@ -159,7 +159,7 @@ git commit --allow-empty -m "chore: open cleanup/mcp-bootstrap worktree"
 
 ---
 
-## Phase 1 — Rename the SaaS flag and add trial-on-hosted to signup
+## Phase 1 — Rename the SaaS flag and add pending-on-hosted to signup
 
 This phase is purely additive: it changes the env-var name, adds a new behavior to `/auth/register-partner`, and leaves the bootstrap module fully functional. Nothing breaks if Phase 2+ are not yet started.
 
@@ -233,7 +233,7 @@ The flag is no longer about MCP bootstrap (which is going away); it
 distinguishes hosted SaaS from self-host. Same semantics, honest name."
 ```
 
-### Task 1.2: Test that `/register-partner` sets `status='trial'` on hosted
+### Task 1.2: Test that `/register-partner` sets `status='pending'` on hosted
 
 **Files:**
 - Modify: `apps/api/src/routes/auth/register.test.ts` (locate the existing register-partner test block; add a new `describe` for hosted-mode behavior)
@@ -248,7 +248,7 @@ describe('register-partner status on hosted vs self-host', () => {
     vi.resetAllMocks();
   });
 
-  it('creates partner with status=trial when IS_HOSTED=true', async () => {
+  it('creates partner with status=pending when IS_HOSTED=true', async () => {
     process.env.IS_HOSTED = 'true';
     // ... existing register-partner test setup (db mocks, redis mock, etc.)
     const res = await app.request('/register-partner', {
@@ -267,7 +267,7 @@ describe('register-partner status on hosted vs self-host', () => {
     // The response shape currently returns tokens; we also need partner status.
     // For this test, assert via the createPartner mock call args.
     expect(createPartnerSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'trial' }),
+      expect.objectContaining({ status: 'pending' }),
     );
   });
 
@@ -301,7 +301,7 @@ In `apps/api/src/routes/auth/register.ts`, find the `createPartner({...})` call 
 ```ts
 const partner = await createPartner({
   // ...existing fields (name, slug, type, plan, billingEmail, etc.)
-  status: isHosted() ? 'trial' : 'active',
+  status: isHosted() ? 'pending' : 'active',
 });
 ```
 
@@ -329,7 +329,7 @@ Expected: all tests pass.
 
 ```bash
 git add apps/api/src/routes/auth/register.ts apps/api/src/routes/auth/register.test.ts apps/api/src/services/partnerCreate.ts
-git commit -m "feat(api): /register-partner sets status=trial on hosted
+git commit -m "feat(api): /register-partner sets status=pending on hosted
 
 Hosted tenants need to add a payment method via breeze-billing before
 they're usable. Existing partnerGuard (status != 'active' → 402) gates
@@ -385,11 +385,11 @@ Read `apps/api/src/routes/oauthInteraction.test.ts` first to understand the test
 
 ```ts
 describe('consent redirects inactive partners to BILLING_URL', () => {
-  it('returns redirectTo BILLING_URL when partner.status=trial and BILLING_URL is set', async () => {
+  it('returns redirectTo BILLING_URL when partner.status=pending and BILLING_URL is set', async () => {
     process.env.BILLING_URL = 'https://billing.example.com/setup';
-    // Set up: user is a member of partner-x; partner-x.status = 'trial'.
+    // Set up: user is a member of partner-x; partner-x.status = 'pending'.
     // Mock the existing partnerUsers join to return a membership row, AND
-    // the new partners select to return { status: 'trial' }.
+    // the new partners select to return { status: 'pending' }.
     const res = await app.request('/oauth/interaction/abc-123/consent', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: validAuthCookie },
@@ -414,7 +414,7 @@ describe('consent redirects inactive partners to BILLING_URL', () => {
     expect(body.redirectTo).toMatch(/\/oauth\/auth\/abc-123$/);
   });
 
-  it('returns 402 when status=trial and BILLING_URL is empty', async () => {
+  it('returns 402 when status=pending and BILLING_URL is empty', async () => {
     delete process.env.BILLING_URL;
     const res = await app.request('/oauth/interaction/abc-123/consent', {
       method: 'POST',
@@ -876,7 +876,7 @@ DROP TABLE IF EXISTS partner_activations;
 -- 2) Drop api_keys.scope_state. The 'readonly' value was only ever set by
 --    verify_tenant during pending_payment; that flow is gone, and all
 --    surviving keys are 'full'. partnerGuard now governs whether tools work
---    at all (active vs trial/suspended), so a per-key scope is redundant.
+--    at all (active vs pending/suspended), so a per-key scope is redundant.
 ALTER TABLE api_keys DROP COLUMN IF EXISTS scope_state;
 
 -- Intentionally KEEP on partners:
@@ -1032,7 +1032,7 @@ In `sendDeploymentInvites.ts`, replace lines that reference the deleted tools. C
 to:
 
 ```ts
-'Sends install-link emails to a list of staff. Requires an active tenant. If the tenant is inactive (status=trial or suspended), the call returns 402 with a billing_url the user must visit.',
+'Sends install-link emails to a list of staff. Requires an active tenant. If the tenant is inactive (status=pending or suspended), the call returns 402 with a billing_url the user must visit.',
 ```
 
 - [ ] **Step 2: Edit `configure_defaults` similarly**
@@ -1087,7 +1087,7 @@ Use this content:
 
 ## The flow (so you know what you're watching)
 
-User clicks **Add Connector** in Claude.ai. Claude opens an OAuth tab to Breeze. The login screen offers **Sign In** or **Create Account**. They click Create Account, fill the signup form, hit submit. On hosted, the new partner lands at `status='trial'` — the OAuth consent screen sees that and redirects to `BILLING_URL`. The user completes payment in breeze-billing (separate tab/service). breeze-billing flips `status='active'` and returns the user to `/oauth/consent`. They click **Approve**. Claude.ai stores the access token and queries `tools/list` — the full ~30-tool surface appears. Done.
+User clicks **Add Connector** in Claude.ai. Claude opens an OAuth tab to Breeze. The login screen offers **Sign In** or **Create Account**. They click Create Account, fill the signup form, hit submit. On hosted, the new partner lands at `status='pending'` — the OAuth consent screen sees that and redirects to `BILLING_URL`. The user completes payment in breeze-billing (separate tab/service). breeze-billing flips `status='active'` and returns the user to `/oauth/consent`. They click **Approve**. Claude.ai stores the access token and queries `tools/list` — the full ~30-tool surface appears. Done.
 
 **No prompt yet.** That happens after auth.
 
@@ -1153,8 +1153,8 @@ isolate it. Then schedule patching for tonight at 2am for both devices.
 | Signup → "registration disabled" | Check `ENABLE_REGISTRATION=true`. |
 | After signup, redirect goes to `/dashboard` instead of billing | OAuth interaction UID was lost — the demo browser was missing the `?return_to=oauth&interaction=` query through signup. Reload the OAuth tab and retry. |
 | billing tab returns "interaction expired" | OAuth interaction TTL (20m) lapsed. Disconnect+reconnect the connector to start a fresh handshake. |
-| breeze-billing → tenant stays `trial` after Stripe success | Webhook signature mismatch — check `STRIPE_WEBHOOK_SECRET` in breeze-billing matches the dashboard. Look in breeze-billing logs. |
-| Authed tool returns 402 `subscription_required` | Tenant is still `trial` — billing callback to public repo's `POST /internal/partners/:id/activate` failed or hasn't arrived. Check both repos' logs. |
+| breeze-billing → tenant stays `pending` after Stripe success | Webhook signature mismatch — check `STRIPE_WEBHOOK_SECRET` in breeze-billing matches the dashboard. Look in breeze-billing logs. |
+| Authed tool returns 402 `subscription_required` | Tenant is still `pending` — billing callback to public repo's `POST /internal/partners/:id/activate` failed or hasn't arrived. Check both repos' logs. |
 | Installer landing page says "invalid or already used" | Ask Claude: "resend the deployment invite to <email>" — fresh token issued. |
 
 ## Tear-down
@@ -1304,7 +1304,7 @@ After live testing showed Claude.ai OAuths at connector-add time (not at first a
 
 **Renamed:** `MCP_BOOTSTRAP_ENABLED` → `IS_HOSTED`; `apps/api/src/modules/mcpBootstrap/` → `apps/api/src/modules/mcpInvites/`.
 
-**Replaced by:** OAuth Create Account branch on the OAuth login screen → `/auth/register-partner` → on hosted, partner created at `status='trial'` → `partnerGuard` blocks access → consent handler redirects to `BILLING_URL` → breeze-billing flips status to `'active'` via signed callback → user returns to consent → Approve → Claude has full tool surface.
+**Replaced by:** OAuth Create Account branch on the OAuth login screen → `/auth/register-partner` → on hosted, partner created at `status='pending'` → `partnerGuard` blocks access → consent handler redirects to `BILLING_URL` → breeze-billing flips status to `'active'` via signed callback → user returns to consent → Approve → Claude has full tool surface.
 ```
 
 - [ ] **Step 3: Commit**
@@ -1518,7 +1518,7 @@ The breeze-billing repo must be updated to:
 
 After completing all phases:
 
-- [ ] **Spec coverage:** Every change agreed in chat (rename flag, status=trial on hosted, OAuth Create Account branch, consent → billing redirect, delete bootstrap tools, delete activation flow, schema cleanup, doc rewrite, breeze-billing callback) maps to at least one task above.
+- [ ] **Spec coverage:** Every change agreed in chat (rename flag, status=pending on hosted, OAuth Create Account branch, consent → billing redirect, delete bootstrap tools, delete activation flow, schema cleanup, doc rewrite, breeze-billing callback) maps to at least one task above.
 - [ ] **Placeholder scan:** `grep -n "TBD\|TODO\|implement later" docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md` returns no matches in tasks (only in cross-repo Phase 8 callouts where the breeze-billing repo's PR# is unknowable from here).
 - [ ] **Type consistency:** `IS_HOSTED` flag used everywhere (not `BREEZE_HOSTED` or `IS_SAAS`). `BILLING_URL` and `BREEZE_BILLING_CALLBACK_SECRET` env-var names consistent across env.ts, .env.example, and tests.
 - [ ] **Migration filename ordering:** `2026-04-29-a-cleanup-mcp-bootstrap.sql` sorts after the most recent shipped migration (lexicographically). `ls apps/api/migrations/ | sort` should show it last.
