@@ -46,26 +46,40 @@ function loginRedirectTarget(uid: string): string {
   return `/auth?next=${encodeURIComponent(next)}`;
 }
 
-const REDIRECT_GUARD_KEY = 'oauth-consent-redirect-attempt';
+// Per-uid so parallel OAuth flows in the same tab don't trip each other.
+function redirectGuardKey(uid: string): string {
+  return `oauth-consent-redirect-attempt:${uid}`;
+}
 
 // Detects an unauthenticated → /auth → unauthenticated bounce so we don't
 // pinball forever when the auth cookie can't be set (3rd-party cookie
 // blocking, CSP, sandboxed iframe). Returns true on the second hit and
 // clears the marker so a manual retry can succeed.
-function detectRedirectLoop(): boolean {
+function detectRedirectLoop(uid: string): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    const prior = window.sessionStorage.getItem(REDIRECT_GUARD_KEY);
+    const key = redirectGuardKey(uid);
+    const prior = window.sessionStorage.getItem(key);
     if (prior) {
-      window.sessionStorage.removeItem(REDIRECT_GUARD_KEY);
+      window.sessionStorage.removeItem(key);
       return true;
     }
-    window.sessionStorage.setItem(REDIRECT_GUARD_KEY, String(Date.now()));
+    window.sessionStorage.setItem(key, String(Date.now()));
     return false;
-  } catch {
+  } catch (err) {
     // sessionStorage unavailable (cookies/storage blocked) — assume looping
     // since the surrounding bounce is most likely caused by the same block.
+    console.warn('[consent] sessionStorage unavailable; treating as redirect loop', err);
     return true;
+  }
+}
+
+function clearRedirectGuard(uid: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(redirectGuardKey(uid));
+  } catch {
+    // Same storage block as detectRedirectLoop — nothing to clear, nothing to do.
   }
 }
 
@@ -84,7 +98,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}`);
         if (cancelled) return;
         if (res.status === 401) {
-          if (detectRedirectLoop()) {
+          if (detectRedirectLoop(uid)) {
             setState({ kind: 'redirect-loop' });
             return;
           }
@@ -93,6 +107,9 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
           setState({ kind: 'unauthenticated' });
           return;
         }
+        // Any non-401 response means auth worked (or the link is dead) — clear
+        // the bounce marker so the user's NEXT consent flow starts fresh.
+        clearRedirectGuard(uid);
         if (res.status === 404) {
           setState({ kind: 'expired' });
           return;

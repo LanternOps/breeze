@@ -14,7 +14,10 @@ import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema 
 import { isMcpBootstrapEnabled } from '../../config/env';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
-import { writeAuditEvent } from '../../services/auditEvents';
+import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
+import { captureException } from '../../services/sentry';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -92,18 +95,36 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // (MCP_BOOTSTRAP_ENABLED=true) skip the gate so the partner table can
     // bootstrap from an empty state.
     if (isMcpBootstrapEnabled()) {
-      writeAuditEvent(c, {
-        orgId: null,
-        actorType: 'system',
-        action: 'register-partner.setup-admin-gate-bypass',
-        resourceType: 'partner',
-        details: {
-          email: email.toLowerCase(),
-          companyName,
-          reason: 'mcp-bootstrap-enabled',
-        },
-        result: 'success',
-      });
+      // Awaited so a DB-write failure surfaces here with full context, rather
+      // than orphaning a context-less captureException out of the request scope.
+      // Signup still proceeds on failure — these events are low-volume and
+      // gating user signup on audit-table availability would be heavy.
+      const bypassDetails = {
+        email: email.toLowerCase(),
+        companyName,
+        reason: 'mcp-bootstrap-enabled',
+      };
+      try {
+        await createAuditLog({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'register-partner.setup-admin-gate-bypass',
+          resourceType: 'partner',
+          details: bypassDetails,
+          ipAddress: getTrustedClientIpOrUndefined(c),
+          userAgent: c.req.header('user-agent'),
+          result: 'success',
+        });
+      } catch (auditErr) {
+        console.error('[register-partner] bypass audit-log write failed', {
+          error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+          stack: auditErr instanceof Error ? auditErr.stack : undefined,
+          ...bypassDetails,
+          ip: getTrustedClientIpOrUndefined(c),
+        });
+        captureException(auditErr, c);
+      }
       // eslint-disable-next-line no-console
       console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
     } else {
@@ -267,7 +288,22 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
             // Keep effectiveStatus at original value since DB update failed.
             // Returning the unchanged status to the client is a deliberate
             // trade-off: surfacing a 500 here would partially undo a successful
-            // partner+user creation. The audit log captures the intent mismatch.
+            // partner+user creation. Write an audit row so triage can find
+            // partners whose effective status diverged from hook intent.
+            writeAuditEvent(c, {
+              orgId: null,
+              actorType: 'system',
+              action: 'register-partner.hook-status-update-failed',
+              resourceType: 'partner',
+              resourceId: newPartner.id,
+              resourceName: newPartner.name,
+              details: {
+                fromStatus: newPartner.status,
+                toStatus: hookResponse.status,
+              },
+              result: 'failure',
+              errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
+            });
           }
         }
       }

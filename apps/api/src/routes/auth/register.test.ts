@@ -31,6 +31,19 @@ vi.mock('../../services/partnerHooks', () => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
+  ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
+}));
+
+vi.mock('../../services/auditService', () => ({
+  createAuditLog: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
+vi.mock('../../services/clientIp', () => ({
+  getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
 vi.mock('./helpers', async () => {
@@ -63,6 +76,8 @@ import { registerRoutes } from './register';
 import { db } from '../../db';
 import { createPartner } from '../../services/partnerCreate';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
+import { captureException } from '../../services/sentry';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -165,28 +180,47 @@ describe('POST /register-partner setup-admin gate', () => {
       }]) as any);
 
     await postRegisterPartner(validBody);
-    expect(writeAuditEvent).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: 'register-partner.setup-admin-gate-bypass',
-        actorType: 'system',
-        result: 'success',
-        details: expect.objectContaining({
-          email: 'admin@acme.test',
-          companyName: 'Acme Co',
-          reason: 'mcp-bootstrap-enabled',
-        }),
-      }),
-    );
+    expect(createAuditLog).toHaveBeenCalledTimes(1);
+    expect(createAuditLog).toHaveBeenCalledWith({
+      orgId: null,
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'register-partner.setup-admin-gate-bypass',
+      resourceType: 'partner',
+      details: {
+        email: 'admin@acme.test',
+        companyName: 'Acme Co',
+        reason: 'mcp-bootstrap-enabled',
+      },
+      ipAddress: '127.0.0.1',
+      userAgent: undefined,
+      result: 'success',
+    });
   });
 
   it('does NOT write the bypass audit event when the gate is enforced', async () => {
-    // MCP_BOOTSTRAP_ENABLED unset; gate enforced; no setup admin
     await postRegisterPartner(validBody);
-    expect(writeAuditEvent).not.toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ action: 'register-partner.setup-admin-gate-bypass' }),
-    );
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with signup when the bypass audit-log write fails', async () => {
+    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    const auditErr = new Error('audit DB unreachable');
+    vi.mocked(createAuditLog).mockRejectedValueOnce(auditErr);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any);
+
+    const res = await postRegisterPartner(validBody);
+    expect(res.status).toBe(200);
+    expect(createPartner).toHaveBeenCalledOnce();
+    expect(captureException).toHaveBeenCalledWith(auditErr, expect.anything());
   });
 
   // Truthy-parsing matrix per envFlag(): '1' | 'true' | 'yes' | 'on'

@@ -57,13 +57,8 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      try {
-        // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-        await navigateTo(result.requiresSetup ? '/setup' : safeNext);
-      } catch (err) {
-        setError(err instanceof Error ? `Navigation failed: ${err.message}` : 'Navigation failed.');
-        setLoading(false);
-      }
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
       return;
     }
 
@@ -87,13 +82,8 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      try {
-        // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-        await navigateTo(result.requiresSetup ? '/setup' : safeNext);
-      } catch (err) {
-        setError(err instanceof Error ? `Navigation failed: ${err.message}` : 'Navigation failed.');
-        setLoading(false);
-      }
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
       return;
     }
 
