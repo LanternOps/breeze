@@ -1294,6 +1294,8 @@ git commit -m "docs: mark deleted-design plans/specs superseded"
 
 ## Phase 8 — `breeze-billing` repo coordination (NOT executed by this plan)
 
+> **DROPPED 2026-04-29:** Phase 8 was based on the wrong assumption that breeze-billing would HTTP-call back to the public repo. breeze-billing already writes `partners.status='active'` directly via Drizzle on the shared Postgres DB (its `checkout.session.completed` webhook handler calls `activatePartner()`). The Phase 8 route, env var, and tests were deleted. Cross-repo work needed instead is `oauth_uid` threading through the Plans UI and `success_url` — landed in breeze-billing commit `af9788a`.
+
 This phase is documentation only. It calls out the changes that must land in the **separate** `breeze-billing` repo (working copy at `/Users/toddhebebrand/breeze-billing`) before this cleanup ships to hosted production. Do not edit `breeze-billing` from this worktree.
 
 The contract:

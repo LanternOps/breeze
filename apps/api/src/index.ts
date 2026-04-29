@@ -108,7 +108,6 @@ import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { drRoutes } from './routes/dr';
 import { captureException } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
-import { partnerActivateRoute } from './routes/internal/partnerActivate';
 import { API_VERSION } from './version';
 
 // Workers
@@ -374,10 +373,6 @@ if (process.env.MCP_OAUTH_ENABLED === 'true') {
   app.route('/api/v1/oauth', oauthInteractionRoutes);
   app.route('/api/v1/settings/connected-apps', connectedAppsRoutes);
 }
-
-// Internal server-to-server routes (no user auth — shared-secret authenticated).
-// Mounted at / so the route's own /internal/* path prefix applies directly.
-app.route('/', partnerActivateRoute);
 
 // API routes
 const api = new Hono();
