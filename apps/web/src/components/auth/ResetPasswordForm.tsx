@@ -1,7 +1,9 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import PasswordInput from './PasswordInput';
+import PasswordStrength from './PasswordStrength';
 
 const resetPasswordSchema = z
   .object({
@@ -31,6 +33,7 @@ export default function ResetPasswordForm({
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting }
   } = useForm<ResetPasswordFormValues>({
     resolver: zodResolver(resetPasswordSchema),
@@ -41,6 +44,10 @@ export default function ResetPasswordForm({
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const password = watch('password');
+  const passwordErrId = useId();
+  const confirmErrId = useId();
+  const formErrId = useId();
 
   return (
     <form
@@ -48,45 +55,52 @@ export default function ResetPasswordForm({
         await onSubmit?.(values);
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      aria-describedby={errorMessage ? formErrId : undefined}
     >
       <div className="space-y-2">
         <label htmlFor="password" className="text-sm font-medium">
           New password
         </label>
-        <input
+        <PasswordInput
           id="password"
-          type="password"
           autoComplete="new-password"
+          autoFocus
           placeholder="Enter a new password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          aria-invalid={errors.password ? true : undefined}
+          aria-describedby={errors.password ? passwordErrId : undefined}
           {...register('password')}
         />
         {errors.password && (
-          <p className="text-sm text-destructive">{errors.password.message}</p>
+          <p id={passwordErrId} className="text-sm text-destructive">{errors.password.message}</p>
         )}
+        <PasswordStrength password={password ?? ''} />
       </div>
 
       <div className="space-y-2">
         <label htmlFor="confirmPassword" className="text-sm font-medium">
           Confirm password
         </label>
-        <input
+        <PasswordInput
           id="confirmPassword"
-          type="password"
           autoComplete="new-password"
           placeholder="Re-enter your new password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          aria-invalid={errors.confirmPassword ? true : undefined}
+          aria-describedby={errors.confirmPassword ? confirmErrId : undefined}
           {...register('confirmPassword')}
         />
         {errors.confirmPassword && (
-          <p className="text-sm text-destructive">
+          <p id={confirmErrId} className="text-sm text-destructive">
             {errors.confirmPassword.message}
           </p>
         )}
       </div>
 
       {errorMessage && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div
+          id={formErrId}
+          role="alert"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           {errorMessage}
         </div>
       )}
@@ -94,9 +108,10 @@ export default function ResetPasswordForm({
       <button
         type="submit"
         disabled={isLoading}
+        aria-busy={isLoading || undefined}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Resetting password...' : submitLabel}
+        {isLoading ? 'Resetting password…' : submitLabel}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">

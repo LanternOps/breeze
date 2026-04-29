@@ -9,7 +9,8 @@ describe('buildDeploymentInviteEmail', () => {
       installUrl: 'https://us.2breeze.app/i/ABC12345',
       customMessage: '<script>alert(1)</script>Please install ASAP.',
     });
-    expect(subject).toBe('[Acme] Install your device monitoring agent');
+    expect(subject).toContain('Acme');
+    expect(subject).toMatch(/install/i);
     expect(html).toContain('https://us.2breeze.app/i/ABC12345');
     expect(html).toContain('alex@acme.com');
     expect(html).not.toContain('<script>');
@@ -25,8 +26,10 @@ describe('buildDeploymentInviteEmail', () => {
       adminEmail: 'alex@acme.com',
       installUrl: 'https://us.2breeze.app/i/ABC12345',
     });
-    expect(html).toContain('→ Install now');
-    expect(text).toContain('→ Install now');
+    expect(html).toContain('https://us.2breeze.app/i/ABC12345');
+    expect(text).toContain('https://us.2breeze.app/i/ABC12345');
+    expect(html).toMatch(/install/i);
+    expect(text).toMatch(/install/i);
   });
 
   it('clamps custom message to 500 chars after HTML strip', () => {

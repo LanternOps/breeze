@@ -1,5 +1,11 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
+import {
+  escapeHtml,
+  getSupportEmail,
+  renderButton,
+  renderLayout,
+} from './emailLayout';
 
 export interface SendEmailParams {
   to: string | string[];
@@ -434,35 +440,42 @@ async function sendViaMailgun(
   }
 }
 
+const BODY_PARA = 'margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;';
+const MUTED_PARA = 'margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;';
+
+function supportFooter(explicit: string | undefined, prefix: string): string | undefined {
+  const support = getSupportEmail(explicit);
+  return support ? `${prefix} ${support}.` : undefined;
+}
+
 function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
-  const support = params.supportEmail ?? 'support@breeze.local';
   const subject = 'Reset your Breeze password';
+  const preheader = 'Use the link below to set a new Breeze password.';
   const body = `
-      <p style="margin: 0 0 16px; font-size: 16px; color: #1d2735;">
-        Hi ${escapeHtml(name)},
-      </p>
-      <p style="margin: 0 0 16px; font-size: 16px; color: #1d2735;">
-        We received a request to reset your Breeze password. Use the button below to set a new one.
-      </p>
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">A password reset was requested for your Breeze account. Use the button below to set a new one.</p>
       ${renderButton('Reset password', params.resetUrl)}
-      <p style="margin: 16px 0 0; font-size: 14px; color: #4a5568;">
-        If you did not request this, you can safely ignore this email.
-      </p>
+      <p style="${MUTED_PARA}">If you did not request this, you can safely ignore this email.</p>
   `;
   const html = renderLayout({
     title: subject,
+    preheader,
+    heading: 'Reset your password',
     body,
-    footer: `Need help? Contact ${support}.`
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
   });
 
+  const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    'We received a request to reset your Breeze password.',
+    'A password reset was requested for your Breeze account.',
     `Reset your password: ${params.resetUrl}`,
     'If you did not request this, you can safely ignore this email.',
-    `Need help? Contact ${support}.`
-  ].join('\n');
+    support ? `Need help? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   return { subject, html, text };
 }
@@ -471,83 +484,36 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
   const inviter = params.inviterName?.trim() || 'A teammate';
   const orgName = params.orgName?.trim();
-  const support = params.supportEmail ?? 'support@breeze.local';
   const subject = orgName
-    ? `${inviter} invited you to join ${orgName} in Breeze`
+    ? `${inviter} invited you to ${orgName} on Breeze`
     : `${inviter} invited you to Breeze`;
+  const preheader = orgName
+    ? `Accept your invitation to ${orgName} on Breeze.`
+    : 'Accept your invitation to Breeze.';
+  const heading = orgName ? `Join ${orgName}` : 'You are invited';
 
   const body = `
-      <p style="margin: 0 0 16px; font-size: 16px; color: #1d2735;">
-        Hi ${escapeHtml(name)},
-      </p>
-      <p style="margin: 0 0 16px; font-size: 16px; color: #1d2735;">
-        ${escapeHtml(inviter)} invited you${orgName ? ` to join ${escapeHtml(orgName)}` : ''} in Breeze.
-      </p>
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">${escapeHtml(inviter)} invited you${orgName ? ` to ${escapeHtml(orgName)}` : ''} on Breeze.</p>
       ${renderButton('Accept invitation', params.inviteUrl)}
-      <p style="margin: 16px 0 0; font-size: 14px; color: #4a5568;">
-        This invitation will expire after 7 days.
-      </p>
+      <p style="${MUTED_PARA}">This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.</p>
   `;
 
   const html = renderLayout({
-    title: 'You are invited',
+    title: heading,
+    preheader,
+    heading,
     body,
-    footer: `Questions? Contact ${support}.`
+    footer: supportFooter(params.supportEmail, 'Questions? Contact'),
   });
 
+  const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    `${inviter} invited you${orgName ? ` to join ${orgName}` : ''} in Breeze.`,
+    `${inviter} invited you${orgName ? ` to ${orgName}` : ''} on Breeze.`,
     `Accept invitation: ${params.inviteUrl}`,
-    'This invitation will expire after 7 days.',
-    `Questions? Contact ${support}.`
-  ].join('\n');
-
-  return { subject, html, text };
-}
-
-function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): EmailTemplate {
-  const severityLabel = params.severity.toUpperCase();
-  const subject = `Alert ${severityLabel}: ${params.alertName}`;
-  const support = params.orgName ? `${params.orgName} support` : 'Breeze support';
-  const timestamp = formatTimestamp(params.occurredAt);
-  const severityColor = alertSeverityColor(params.severity);
-  const details = [
-    params.deviceName ? `Device: ${params.deviceName}` : null,
-    `Severity: ${severityLabel}`,
-    timestamp ? `Detected: ${timestamp}` : null
-  ].filter(Boolean);
-
-  const body = `
-      <p style="margin: 0 0 12px; font-size: 16px; color: #1d2735;">
-        ${escapeHtml(params.summary)}
-      </p>
-      <div style="margin: 0 0 16px; padding: 12px; border-radius: 8px; background: #f7fafc;">
-        ${details
-      .map(
-        (detail) =>
-          `<p style="margin: 0 0 6px; font-size: 14px; color: #2d3748;">${escapeHtml(detail ?? '')}</p>`
-      )
-      .join('')}
-        <span style="display: inline-block; margin-top: 6px; padding: 4px 10px; border-radius: 999px; background: ${severityColor}; color: #ffffff; font-size: 12px; letter-spacing: 0.5px;">
-          ${severityLabel}
-        </span>
-      </div>
-      ${params.dashboardUrl ? renderButton('View alert details', params.dashboardUrl) : ''}
-  `;
-
-  const html = renderLayout({
-    title: 'Alert notification',
-    body,
-    footer: `If you have questions, contact ${support}.`
-  });
-
-  const text = [
-    `${params.alertName} (${severityLabel})`,
-    params.summary,
-    params.deviceName ? `Device: ${params.deviceName}` : undefined,
-    timestamp ? `Detected: ${timestamp}` : undefined,
-    params.dashboardUrl ? `View details: ${params.dashboardUrl}` : undefined
+    "This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.",
+    support ? `Questions? Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');
@@ -555,67 +521,57 @@ function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): E
   return { subject, html, text };
 }
 
-function renderLayout(options: { title: string; body: string; footer: string }): string {
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(options.title)}</title>
-  </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0;">
-      <tr>
-        <td align="center">
-          <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);">
-            <tr>
-              <td style="padding: 28px 32px 8px;">
-                <h1 style="margin: 0; font-size: 22px; color: #111827; font-weight: 600;">
-                  ${escapeHtml(options.title)}
-                </h1>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding: 0 32px 24px;">
-                ${options.body}
-              </td>
-            </tr>
-            <tr>
-              <td style="padding: 0 32px 24px;">
-                <p style="margin: 0; font-size: 12px; color: #6b7280;">
-                  ${escapeHtml(options.footer)}
-                </p>
-              </td>
-            </tr>
-          </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8;">
-            Breeze RMM
-          </p>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`;
-}
+function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): EmailTemplate {
+  const severityLabel = params.severity.toUpperCase();
+  const subject = `Alert ${severityLabel}: ${params.alertName}`;
+  const timestamp = formatTimestamp(params.occurredAt);
+  const { bg: pillBg, fg: pillFg } = alertSeverityPalette(params.severity);
+  const preheader = [
+    severityLabel,
+    params.deviceName ? `on ${params.deviceName}` : null,
+    timestamp ? `at ${timestamp}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const details = [
+    params.deviceName ? `Device: ${params.deviceName}` : null,
+    `Severity: ${severityLabel}`,
+    timestamp ? `Detected: ${timestamp}` : null,
+  ].filter(Boolean) as string[];
 
-function renderButton(label: string, url: string): string {
-  return `
-    <a
-      href="${escapeHtml(url)}"
-      style="display: inline-block; padding: 12px 20px; border-radius: 8px; background: #0f172a; color: #ffffff; font-size: 14px; text-decoration: none;"
-    >
-      ${escapeHtml(label)}
-    </a>
+  const body = `
+      <p style="margin: 0 0 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.6px; text-transform: none;">
+        <span style="display: inline-block; padding: 4px 10px; border-radius: 999px; background: ${pillBg}; color: ${pillFg}; font-size: 12px; letter-spacing: 0.6px;">${severityLabel}</span>
+      </p>
+      <p style="${BODY_PARA}">${escapeHtml(params.summary)}</p>
+      <div style="margin: 12px 0 16px; padding: 12px 14px; border-radius: 8px; background: #f7fafc;">
+        ${details
+    .map((detail) => `<p style="margin: 0 0 6px; font-size: 13px; line-height: 1.5; color: #374151;">${escapeHtml(detail)}</p>`)
+    .join('')}
+      </div>
+      ${params.dashboardUrl ? renderButton('View details', params.dashboardUrl) : ''}
   `;
-}
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  const orgSupport = params.orgName ? `${params.orgName} support` : 'Breeze support';
+  const html = renderLayout({
+    title: params.alertName,
+    preheader,
+    heading: params.alertName,
+    body,
+    footer: `If you have questions, contact ${orgSupport}.`,
+  });
+
+  const text = [
+    `${params.alertName} (${severityLabel})`,
+    params.summary,
+    params.deviceName ? `Device: ${params.deviceName}` : undefined,
+    timestamp ? `Detected: ${timestamp}` : undefined,
+    params.dashboardUrl ? `View details: ${params.dashboardUrl}` : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
 }
 
 function formatTimestamp(value?: Date | string): string | null {
@@ -628,27 +584,30 @@ function formatTimestamp(value?: Date | string): string | null {
     return null;
   }
 
-  return date.toLocaleString('en-US', {
+  const formatted = date.toLocaleString('en-US', {
     year: 'numeric',
     month: 'short',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'UTC',
   });
+  return `${formatted} UTC`;
 }
 
-function alertSeverityColor(severity: AlertSeverity): string {
+function alertSeverityPalette(severity: AlertSeverity): { bg: string; fg: string } {
   switch (severity) {
     case 'critical':
-      return '#dc2626';
+      return { bg: '#dc2626', fg: '#ffffff' };
     case 'high':
-      return '#f97316';
+      return { bg: '#c2410c', fg: '#ffffff' };
     case 'medium':
-      return '#eab308';
+      return { bg: '#fde68a', fg: '#78350f' };
     case 'low':
-      return '#3b82f6';
+      return { bg: '#1d4ed8', fg: '#ffffff' };
     case 'info':
     default:
-      return '#64748b';
+      return { bg: '#475569', fg: '#ffffff' };
   }
 }

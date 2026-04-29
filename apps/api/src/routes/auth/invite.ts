@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users } from '../../db/schema';
+import { users, partners, organizations } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
@@ -26,6 +26,48 @@ import {
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const inviteRoutes = new Hono();
+
+inviteRoutes.get('/invite/preview/:token', async (c) => {
+  const token = c.req.param('token');
+  if (!token) return c.json({ error: 'missing token' }, 400);
+
+  const rateLimitClient = getClientRateLimitKey(c);
+  const redis = getRedis();
+  if (!redis) return c.json({ error: 'unavailable' }, 503);
+
+  const rateCheck = await rateLimiter(redis, `invite-preview:${rateLimitClient}`, 30, 600);
+  if (!rateCheck.allowed) return c.json({ error: 'rate_limited' }, 429);
+
+  const tokenHash = hashInviteToken(token);
+  const userId = await redis.get(inviteRedisKey(tokenHash));
+  if (!userId) return c.json({ error: 'invalid_or_expired' }, 404);
+
+  const [row] = await withSystemDbAccessContext(async () =>
+    db
+      .select({
+        email: users.email,
+        name: users.name,
+        status: users.status,
+        partnerName: partners.name,
+        orgName: organizations.name,
+      })
+      .from(users)
+      .leftJoin(partners, eq(partners.id, users.partnerId))
+      .leftJoin(organizations, eq(organizations.id, users.orgId))
+      .where(eq(users.id, userId))
+      .limit(1),
+  );
+
+  if (!row) return c.json({ error: 'invalid_or_expired' }, 404);
+  if (row.status !== 'invited') return c.json({ error: 'already_accepted' }, 410);
+
+  return c.json({
+    email: row.email,
+    name: row.name,
+    partnerName: row.partnerName ?? undefined,
+    orgName: row.orgName ?? undefined,
+  });
+});
 
 inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), async (c) => {
   const { token, password } = c.req.valid('json');
@@ -81,15 +123,21 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
   try {
     const passwordHash = await hashPassword(password);
 
-    await db
-      .update(users)
-      .set({
-        passwordHash,
-        status: 'active',
-        passwordChangedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, userId));
+    // Pre-auth path: RLS UPDATE policy on `users` requires partner/org
+    // /self context. Without the system-scope wrap, this silently
+    // matches zero rows and returns success — the invitee's account
+    // never gets activated. Same fix as reset-password (see password.ts).
+    await withSystemDbAccessContext(async () =>
+      db
+        .update(users)
+        .set({
+          passwordHash,
+          status: 'active',
+          passwordChangedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, userId))
+    );
 
     // Clean up invite tokens (single-use)
     await redis.del(inviteRedisKey(tokenHash)).catch((err: unknown) => {

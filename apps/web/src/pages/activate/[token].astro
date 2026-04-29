@@ -6,6 +6,6 @@ const { token } = Astro.params;
 const status = Astro.url.searchParams.get('status') ?? 'pending';
 ---
 
-<AuthLayout title="Activate your Breeze tenant">
+<AuthLayout title="Activate Breeze">
   <ActivateTokenPage client:load token={token!} initialStatus={status} />
 </AuthLayout>

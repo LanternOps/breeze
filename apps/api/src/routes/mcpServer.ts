@@ -28,6 +28,7 @@ import { devices, alerts, scripts, automations, partners, organizations, partner
 import { eq, and, desc, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
+import { resolveDefaultOrgId } from '../modules/mcpBootstrap/activationRoutes';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
@@ -191,6 +192,7 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
       const out: Record<string, unknown> = { type: 'string' };
       for (const check of def.checks ?? []) {
         if (check.kind === 'email') out.format = 'email';
+        if (check.kind === 'uuid') out.format = 'uuid';
         if (check.kind === 'min') out.minLength = check.value;
         if (check.kind === 'max') out.maxLength = check.value;
       }
@@ -202,6 +204,22 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
       return { type: 'number' };
     case 'ZodBoolean':
       return { type: 'boolean' };
+    case 'ZodArray': {
+      // Without this case, MCP clients (Claude.ai, ChatGPT) see `emails: {}` —
+      // an unconstrained schema interpreted as `any`, and the client coerces
+      // arrays to strings before validation. Surfaced via send_deployment_invites
+      // when its `emails: z.array(z.string().email())` declared the array shape
+      // but the converter dropped it.
+      const out: Record<string, unknown> = {
+        type: 'array',
+        items: zodToJsonSchema(def.type),
+      };
+      for (const check of def.checks ?? []) {
+        if (check.kind === 'min') out.minItems = check.value;
+        if (check.kind === 'max') out.maxItems = check.value;
+      }
+      return out;
+    }
     case 'ZodOptional':
     case 'ZodDefault':
       return zodToJsonSchema(def.innerType);
@@ -512,8 +530,16 @@ mcpServerRoutes.post(
 
     const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey.scopeState, apiKey, c);
 
+    // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
+    // by design (partner admins span every org). Without the fallback, every
+    // authed MCP audit event would lose org attribution and be invisible to
+    // org-scoped audit searches. resolveDefaultOrgId mirrors what the
+    // bootstrap-authTool dispatch does for the same reason.
+    const auditOrgId =
+      apiKey.orgId ??
+      (auth.partnerId ? await resolveDefaultOrgId(auth.partnerId) : null);
     writeAuditEvent(c, {
-      orgId: apiKey.orgId,
+      orgId: auditOrgId,
       actorType: 'api_key',
       actorId: apiKey.id,
       action: buildMcpAuditAction(body.method),
@@ -991,12 +1017,30 @@ async function dispatchBootstrapAuthTool(
     return jsonRpcError(id, -32602, 'Invalid arguments', parsed.error.flatten());
   }
 
-  if (!apiKey || !apiKey.orgId || !auth.partnerId) {
+  if (!apiKey || !auth.partnerId) {
     return jsonRpcError(
       id,
       -32603,
-      'Bootstrap authTool requires an API key with a resolvable partner and organization.',
+      'Bootstrap authTool requires an authenticated session with a resolvable partner.',
     );
+  }
+
+  // Partner-scoped OAuth tokens correctly carry org_id=null because partner
+  // admins span every org under their partner. Bootstrap authTools (e.g.
+  // send_deployment_invites) still need a concrete orgId to write into.
+  // Fall back to the partner's first-created org — same convention used by
+  // configure_defaults / send_deployment_invites elsewhere. X-API-Key callers
+  // already have apiKey.orgId set; this block only fires for OAuth bearers.
+  let resolvedOrgId = apiKey.orgId;
+  if (!resolvedOrgId) {
+    resolvedOrgId = await resolveDefaultOrgId(auth.partnerId);
+    if (!resolvedOrgId) {
+      return jsonRpcError(
+        id,
+        -32603,
+        'Partner has no organizations — create one before calling bootstrap authTools.',
+      );
+    }
   }
 
   // Look up partner billing email (used as the admin email in invite templates).
@@ -1019,7 +1063,7 @@ async function dispatchBootstrapAuthTool(
     apiKey: {
       id: apiKey.id,
       partnerId: auth.partnerId,
-      defaultOrgId: apiKey.orgId,
+      defaultOrgId: resolvedOrgId,
       partnerAdminEmail,
       scopeState: apiKey.scopeState,
     },

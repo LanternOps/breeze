@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ForgotPasswordForm from './ForgotPasswordForm';
+import StatusIcon from './StatusIcon';
 import { apiForgotPassword } from '../../stores/auth';
 
 export default function ForgotPasswordPage() {
@@ -27,11 +28,7 @@ export default function ForgotPasswordPage() {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
         <div className="space-y-2 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
-            <svg className="h-6 w-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
+          <StatusIcon variant="success" />
           <h2 className="text-lg font-semibold">Check your email</h2>
           <p className="text-sm text-muted-foreground">
             If an account exists with that email, we have sent a password reset link.

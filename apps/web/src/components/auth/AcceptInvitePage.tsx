@@ -1,23 +1,61 @@
 import { useEffect, useState } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
-import { apiAcceptInvite, useAuthStore, fetchAndApplyPreferences } from '../../stores/auth';
+import StatusIcon from './StatusIcon';
+import {
+  apiAcceptInvite,
+  apiPreviewInvite,
+  fetchAndApplyPreferences,
+  useAuthStore,
+} from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+
+type TokenState =
+  | { phase: 'loading' }
+  | { phase: 'present'; token: string }
+  | { phase: 'absent' };
+
+interface InvitePreview {
+  email?: string;
+  name?: string;
+  orgName?: string;
+  partnerName?: string;
+}
 
 export default function AcceptInvitePage() {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  // Read the token in `useEffect` so SSR + first client render agree on
-  // `undefined` and React doesn't trip a hydration-mismatch error (#418).
-  // Same pattern as ResetPasswordPage.
-  const [token, setToken] = useState<string>();
+  const [tokenState, setTokenState] = useState<TokenState>({ phase: 'loading' });
+  const [preview, setPreview] = useState<InvitePreview | undefined>();
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenParam = params.get('token');
-    if (tokenParam) setToken(tokenParam);
+    setTokenState(
+      tokenParam ? { phase: 'present', token: tokenParam } : { phase: 'absent' },
+    );
   }, []);
 
+  useEffect(() => {
+    if (tokenState.phase !== 'present') return;
+    let cancelled = false;
+    apiPreviewInvite(tokenState.token).then((result) => {
+      if (cancelled) return;
+      if (result.success) {
+        setPreview({
+          email: result.email,
+          name: result.name,
+          orgName: result.orgName,
+          partnerName: result.partnerName,
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenState]);
+
   const handleSubmit = async (values: { password: string }) => {
-    if (!token) {
+    if (tokenState.phase !== 'present') {
       setError('Invalid or missing invite token');
       return;
     }
@@ -26,7 +64,7 @@ export default function AcceptInvitePage() {
     setError(undefined);
 
     try {
-      const result = await apiAcceptInvite(token, values.password);
+      const result = await apiAcceptInvite(tokenState.token, values.password);
 
       if (!result.success) {
         setError(result.error || 'Failed to accept invite');
@@ -47,30 +85,62 @@ export default function AcceptInvitePage() {
     }
   };
 
-  if (!token) {
+  if (tokenState.phase === 'loading') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" aria-busy="true">
         <div className="space-y-2 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-            <svg className="h-6 w-6 text-destructive" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </div>
-          <h2 className="text-lg font-semibold">Invalid Link</h2>
-          <p className="text-sm text-muted-foreground">
-            This invite link is invalid or has expired.
-          </p>
+          <StatusIcon variant="pending" label="Loading" />
+          <h2 className="text-lg font-semibold">Loading…</h2>
         </div>
       </div>
     );
   }
 
+  if (tokenState.phase === 'absent') {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="space-y-2 text-center">
+          <StatusIcon variant="error" />
+          <h2 className="text-lg font-semibold">This link doesn't work</h2>
+          <p className="text-sm text-muted-foreground">
+            The invite link is invalid or has expired. Ask your administrator to send a new
+            invitation.
+          </p>
+        </div>
+        <a
+          href="/login"
+          className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
+        >
+          Back to sign in
+        </a>
+      </div>
+    );
+  }
+
+  const target = preview?.orgName ?? preview?.partnerName;
+  const greetingName = preview?.name?.split(' ')[0];
+
   return (
-    <ResetPasswordForm
-      onSubmit={handleSubmit}
-      errorMessage={error}
-      loading={loading}
-      submitLabel="Set password & sign in"
-    />
+    <div className="space-y-4">
+      {(target || preview?.email) && (
+        <div className="space-y-1 text-center">
+          <h2 className="text-lg font-semibold">
+            {greetingName ? `Hi ${greetingName}, ` : ''}
+            {target ? `you're invited to ${target}` : "you're invited to Breeze"}
+          </h2>
+          {preview?.email && (
+            <p className="text-sm text-muted-foreground">
+              Set a password to finish creating your <strong>{preview.email}</strong> account.
+            </p>
+          )}
+        </div>
+      )}
+      <ResetPasswordForm
+        onSubmit={handleSubmit}
+        errorMessage={error}
+        loading={loading}
+        submitLabel="Set password & sign in"
+      />
+    </div>
   );
 }

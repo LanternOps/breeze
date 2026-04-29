@@ -118,15 +118,23 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // Hash new password
   const passwordHash = await hashPassword(password);
 
-  // Update password
-  await db
-    .update(users)
-    .set({
-      passwordHash,
-      passwordChangedAt: new Date(),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, userId));
+  // Pre-auth path: no session means RLS context is empty, and the
+  // breeze_user_isolation_update policy on `users` requires partner/org
+  // /self context. Without the system-scope wrap, Drizzle issues an
+  // UPDATE that matches zero rows and silently returns success — the
+  // password never changes, the next login fails, and we ship a broken
+  // reset flow. Wrap so RLS is bypassed for this trusted token-gated
+  // path. Same fix needed in accept-invite (see invite.ts).
+  await withSystemDbAccessContext(async () =>
+    db
+      .update(users)
+      .set({
+        passwordHash,
+        passwordChangedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, userId))
+  );
 
   // Invalidate reset token
   await redis.del(`reset:${tokenHash}`);
