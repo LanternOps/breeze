@@ -1,8 +1,9 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { cn, widthPercentClass } from '@/lib/utils';
+import PasswordInput from './PasswordInput';
+import PasswordStrength from './PasswordStrength';
 
 const partnerRegisterSchema = z
   .object({
@@ -27,30 +28,6 @@ type PartnerRegisterFormProps = {
   errorMessage?: string;
   loading?: boolean;
 };
-
-type StrengthConfig = {
-  label: string;
-  className: string;
-  minScore: number;
-};
-
-const strengthScale: StrengthConfig[] = [
-  { label: 'Too weak', className: 'bg-destructive', minScore: 0 },
-  { label: 'Weak', className: 'bg-destructive/70', minScore: 2 },
-  { label: 'Fair', className: 'bg-amber-500', minScore: 3 },
-  { label: 'Good', className: 'bg-emerald-500', minScore: 4 },
-  { label: 'Strong', className: 'bg-emerald-600', minScore: 5 }
-];
-
-function getStrengthScore(password: string) {
-  let score = 0;
-  if (password.length >= 8) score += 1;
-  if (/[A-Z]/.test(password)) score += 1;
-  if (/[a-z]/.test(password)) score += 1;
-  if (/\d/.test(password)) score += 1;
-  if (/[^A-Za-z0-9]/.test(password)) score += 1;
-  return score;
-}
 
 export default function PartnerRegisterForm({
   onSubmit,
@@ -79,19 +56,8 @@ export default function PartnerRegisterForm({
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const passwordValue = watch('password');
 
-  const strength = useMemo(() => {
-    if (!passwordValue) {
-      return { label: 'Enter a password', className: 'bg-muted', percent: 0 };
-    }
-    const score = getStrengthScore(passwordValue);
-    const tier = strengthScale.slice().reverse().find(item => score >= item.minScore);
-    const percent = Math.min(100, Math.round((score / 5) * 100));
-    return {
-      label: tier?.label ?? 'Weak',
-      className: tier?.className ?? 'bg-destructive',
-      percent
-    };
-  }, [passwordValue]);
+  const passwordErrId = useId();
+  const confirmErrId = useId();
 
   const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
@@ -173,12 +139,12 @@ export default function PartnerRegisterForm({
           <label htmlFor="password" className="text-sm font-medium">
             Password
           </label>
-          <input
+          <PasswordInput
             id="password"
-            type="password"
             autoComplete="new-password"
             placeholder="Create a password"
-            className={inputClass}
+            aria-invalid={errors.password ? true : undefined}
+            aria-describedby={errors.password ? passwordErrId : undefined}
             {...register('password', {
               onChange: () => {
                 if (touchedFields.confirmPassword) trigger('confirmPassword');
@@ -186,35 +152,25 @@ export default function PartnerRegisterForm({
             })}
           />
           {errors.password && touchedFields.password && (
-            <p className="text-sm text-destructive">{errors.password.message}</p>
+            <p id={passwordErrId} className="text-sm text-destructive">{errors.password.message}</p>
           )}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Password strength</span>
-              <span>{strength.label}</span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className={cn('h-full transition-all', strength.className, widthPercentClass(strength.percent))}
-              />
-            </div>
-          </div>
+          <PasswordStrength password={passwordValue ?? ''} />
         </div>
 
         <div className="space-y-2">
           <label htmlFor="confirmPassword" className="text-sm font-medium">
             Confirm password
           </label>
-          <input
+          <PasswordInput
             id="confirmPassword"
-            type="password"
             autoComplete="new-password"
             placeholder="Re-enter your password"
-            className={inputClass}
+            aria-invalid={errors.confirmPassword ? true : undefined}
+            aria-describedby={errors.confirmPassword ? confirmErrId : undefined}
             {...register('confirmPassword')}
           />
           {errors.confirmPassword && touchedFields.confirmPassword && (
-            <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
+            <p id={confirmErrId} className="text-sm text-destructive">{errors.confirmPassword.message}</p>
           )}
         </div>
       </div>
@@ -260,6 +216,7 @@ export default function PartnerRegisterForm({
       <button
         type="submit"
         disabled={isLoading}
+        aria-busy={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {isLoading ? 'Creating account...' : 'Create company account'}

@@ -23,16 +23,46 @@ export default function ActivateTokenPage({ token, initialStatus }: Props) {
   const [pendingStuck, setPendingStuck] = useState(false);
 
   // The /activate/:token API endpoint verifies the token server-side and
-  // redirects here with ?status=email_verified. If a user lands on this
-  // page in the pending state (e.g. browser blocked the redirect, or the
-  // user pasted a bare /activate/<token> URL), forward them through the
-  // verification endpoint. If nothing happens within 10s, surface a
-  // manual retry instead of leaving them on a frozen screen.
+  // 302s to /activate/complete on success, or returns a 4xx text body on
+  // invalid/expired/used tokens. If a user lands here in the pending state
+  // (e.g. browser blocked the redirect, or they pasted a bare
+  // /activate/<token>?status=pending URL), drive the call from JS so we
+  // can keep error states inside the React shell rather than letting the
+  // browser replace the page with raw plaintext on 404/410. fetch() with
+  // the default `redirect: 'follow'` transparently follows the 302 — on
+  // success, res.url is the absolute /activate/complete URL.
   useEffect(() => {
     if (status !== 'pending') return;
+    const controller = new AbortController();
     const timeout = window.setTimeout(() => setPendingStuck(true), PENDING_TIMEOUT_MS);
-    window.location.replace(`/activate/${encodeURIComponent(token)}`);
-    return () => window.clearTimeout(timeout);
+
+    (async () => {
+      try {
+        const res = await fetch(`/activate/${encodeURIComponent(token)}`, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        window.clearTimeout(timeout);
+        if (res.ok) {
+          window.location.replace(res.url);
+          return;
+        }
+        const message = await res.text().catch(() => '');
+        setError(message || 'This activation link is no longer valid.');
+        setPendingStuck(true);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        window.clearTimeout(timeout);
+        const message = err instanceof Error ? err.message : 'Network error';
+        setError(message);
+        setPendingStuck(true);
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
   }, [status, token]);
 
   async function onAttachPayment() {
@@ -59,20 +89,23 @@ export default function ActivateTokenPage({ token, initialStatus }: Props) {
   }
 
   if (status === 'pending') {
+    const hasError = error !== null;
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" aria-busy={!pendingStuck}>
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" aria-busy={!pendingStuck && !hasError}>
         <div className="space-y-2 text-center">
-          <StatusIcon variant="pending" label="Verifying" />
+          <StatusIcon variant={hasError ? 'error' : 'pending'} label={hasError ? 'Error' : 'Verifying'} />
           <h2 className="text-lg font-semibold">
-            {pendingStuck ? 'Still working…' : 'Verifying your email…'}
+            {hasError ? "We couldn't verify your link" : pendingStuck ? 'Still working…' : 'Verifying your email…'}
           </h2>
-          <p className="text-sm text-muted-foreground">
-            {pendingStuck
-              ? "If this page hasn't moved on, your link may have expired."
-              : 'One moment while we confirm your activation link.'}
+          <p className="text-sm text-muted-foreground" role={hasError ? 'alert' : undefined}>
+            {hasError
+              ? error
+              : pendingStuck
+                ? "If this page hasn't moved on, your link may have expired."
+                : 'One moment while we confirm your activation link.'}
           </p>
         </div>
-        {pendingStuck && (
+        {(pendingStuck || hasError) && (
           <a
             href="/login"
             className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
