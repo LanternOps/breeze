@@ -90,7 +90,7 @@ import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
-import { mountActivationRoutes, mountInviteLandingRoutes } from './modules/mcpBootstrap';
+import { mountInviteLandingRoutes } from './modules/mcpBootstrap';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
@@ -355,13 +355,13 @@ app.route('/metrics', metricsRoutes);
 // Short link routes (enrollment short URLs at /s/<code>)
 app.route('/s', publicShortLinkRoutes);
 
-// MCP bootstrap activation routes (flag-gated). Mount sites are conditional
-// on IS_HOSTED so the routes only attach when the feature is on.
+// MCP bootstrap invite landing routes (flag-gated). Mount conditional on
+// IS_HOSTED so the routes only attach when the feature is on.
 // The module is statically imported above — tsup bundles it either way and
 // dynamic import broke both CJS production (top-level await) and ESM dev
 // (require()). The flag still gates whether the routes actually exist.
+// Note: mountActivationRoutes was removed in Phase 4 (activation flow deleted).
 if (process.env.IS_HOSTED === 'true') {
-  mountActivationRoutes(app);
   mountInviteLandingRoutes(app);
 }
 

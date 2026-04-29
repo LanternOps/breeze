@@ -25,10 +25,9 @@ import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTool
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
-import { eq, and, desc, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
-import { resolveDefaultOrgId } from '../modules/mcpBootstrap/activationRoutes';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
@@ -1071,6 +1070,32 @@ function jsonRpcResult(id: string | number, result: unknown): JsonRpcResponse {
 
 function jsonRpcError(id: string | number | null, code: number, message: string, data?: unknown): JsonRpcResponse {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message, data } };
+}
+
+/**
+ * Resolve the partner's default (first-created) organization id. Mirrors the
+ * convention used by configure_defaults / send_deployment_invites. Used to
+ * scope partner.* audit events so query_audit_log surfaces them for the
+ * partner's own MCP caller, and to default the bootstrap-authTool dispatch
+ * orgId for partner-scoped OAuth tokens (which intentionally have org_id=null
+ * since partner-admins span all orgs).
+ *
+ * Inlined here after activationRoutes.ts was deleted in Phase 4 — the only
+ * remaining caller is this file.
+ */
+async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
+  try {
+    const [row] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId))
+      .orderBy(asc(organizations.createdAt))
+      .limit(1);
+    return row?.id ?? null;
+  } catch (err) {
+    console.error('[mcpServer] failed to resolve default orgId for partner', partnerId, err);
+    return null;
+  }
 }
 
 /**
