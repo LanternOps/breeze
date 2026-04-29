@@ -7,7 +7,7 @@ import { setGrantBreezeMeta } from '../oauth/adapter';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users } from '../db/schema';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -212,6 +212,29 @@ if (MCP_OAUTH_ENABLED) {
       };
     });
     if (!hasAccess) throw new HTTPException(403, { message: 'not a member of this partner' });
+
+    const [partnerRow] = await asSystem(async () =>
+      db
+        .select({ status: partners.status })
+        .from(partners)
+        .where(eq(partners.id, body.partner_id))
+        .limit(1),
+    );
+    if (!partnerRow) {
+      throw new HTTPException(404, { message: 'partner not found' });
+    }
+    if (partnerRow.status !== 'active') {
+      if (BILLING_URL) {
+        // Hand off to breeze-billing. On payment success, breeze-billing
+        // flips partners.status='active' and returns the user to
+        // /oauth/consent?uid=<UID>, where this handler falls through to
+        // grant.save() below.
+        return c.json({
+          redirectTo: `${BILLING_URL}?uid=${encodeURIComponent(c.req.param('uid'))}`,
+        });
+      }
+      throw new HTTPException(402, { message: 'subscription_required' });
+    }
 
     const grant = new (provider as any).Grant({
       accountId: userId,

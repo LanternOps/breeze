@@ -339,6 +339,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     // Two updates happen during a successful consent:
     //   1) setGrantBreezeMeta() does an UPDATE on oauth_grants to persist
     //      partner_id/org_id alongside the just-saved Grant row, so the
@@ -408,6 +409,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
 
@@ -480,6 +482,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
@@ -507,6 +510,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate(); // setGrantBreezeMeta on oauth_grants
     // `firstConsented: false` => firstConsentedAt < lastConsentedAt =>
     // route classifies this as a re-consent (existing row, conflict-update).
@@ -540,6 +544,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(dA);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
 
@@ -574,6 +579,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
 
@@ -612,6 +618,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
 
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
@@ -636,6 +643,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(d);
     queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate(); // setGrantBreezeMeta on oauth_grants
     queueInsertGrantReturning({ firstConsented: true });
 
@@ -667,6 +675,93 @@ describe('oauthInteractionRoutes', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { scopes: string[] };
     expect(body.scopes).toEqual(['openid', 'offline_access', 'mcp:read', 'mcp:write']);
+  });
+
+  // -------------------------------------------------------------------
+  // BILLING_URL redirect — inactive partner status gate
+  // When a partner's status is not 'active', the consent handler hands off
+  // to the billing service (if BILLING_URL is set) or returns 402.
+  // -------------------------------------------------------------------
+  describe('consent redirects inactive partners to BILLING_URL', () => {
+    afterEach(() => {
+      delete process.env.BILLING_URL;
+    });
+
+    it('returns redirectTo BILLING_URL when partner.status=pending and BILLING_URL is set', async () => {
+      process.env.BILLING_URL = 'https://billing.example.com/setup';
+      const d = details({
+        session: { accountId: 'u1' },
+        prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+      } as any);
+      mocks.interactionDetails.mockResolvedValue(d);
+      // Queue 1: membership check (hasAccess)
+      queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+      // Queue 2: user org lookup
+      queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+      // Queue 3: partner status check — returns 'pending'
+      queueSelect([{ status: 'pending' }], 'limit');
+
+      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+        method: 'POST',
+        body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { redirectTo: string };
+      expect(body.redirectTo).toBe(`https://billing.example.com/setup?uid=uid-1`);
+      // No grant should be minted
+      expect(mocks.Grant.instances).toHaveLength(0);
+    });
+
+    it('falls through to grant.save when partner.status=active', async () => {
+      process.env.BILLING_URL = 'https://billing.example.com/setup';
+      const d = details({
+        session: { accountId: 'u1' },
+        prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+      } as any);
+      mocks.interactionDetails.mockResolvedValue(d);
+      // Queue 1: membership check
+      queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+      // Queue 2: user org lookup
+      queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+      // Queue 3: partner status check — returns 'active', falls through
+      queueSelect([{ status: 'active' }], 'limit');
+      queueUpdate(); // setGrantBreezeMeta on oauth_grants
+      queueInsertGrantReturning({ firstConsented: true });
+
+      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+        method: 'POST',
+        body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { redirectTo: string };
+      // Should follow normal consent flow — redirectTo points to OIDC auth resume
+      expect(body.redirectTo).toMatch(/\/oauth\/auth\/uid-1$/);
+      // Grant WAS minted
+      expect(mocks.Grant.instances).toHaveLength(1);
+    });
+
+    it('returns 402 subscription_required when status=pending and BILLING_URL is empty', async () => {
+      delete process.env.BILLING_URL;
+      const d = details({
+        session: { accountId: 'u1' },
+        prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+      } as any);
+      mocks.interactionDetails.mockResolvedValue(d);
+      // Queue 1: membership check
+      queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+      // Queue 2: user org lookup
+      queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+      // Queue 3: partner status check — returns 'pending', no BILLING_URL
+      queueSelect([{ status: 'pending' }], 'limit');
+
+      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+        method: 'POST',
+        body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+      });
+      expect(res.status).toBe(402);
+      expect(await res.json()).toEqual({ message: 'subscription_required' });
+      expect(mocks.Grant.instances).toHaveLength(0);
+    });
   });
 
   it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {
