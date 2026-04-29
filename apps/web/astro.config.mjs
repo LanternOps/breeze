@@ -2,6 +2,24 @@ import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
 import tailwind from '@astrojs/tailwind';
 import node from '@astrojs/node';
+import sentry from '@sentry/astro';
+
+const sentryDsn = process.env.PUBLIC_SENTRY_DSN_WEB ?? process.env.SENTRY_DSN_WEB;
+const sentryIntegration = sentryDsn
+  ? [
+      sentry({
+        dsn: sentryDsn,
+        environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
+        release: process.env.SENTRY_RELEASE,
+        sourceMapsUploadOptions: {
+          org: process.env.SENTRY_ORG,
+          project: process.env.SENTRY_PROJECT,
+          authToken: process.env.SENTRY_AUTH_TOKEN,
+          enabled: Boolean(process.env.SENTRY_AUTH_TOKEN)
+        }
+      })
+    ]
+  : [];
 
 export default defineConfig({
   output: 'server',
@@ -46,6 +64,7 @@ export default defineConfig({
     }
   },
   integrations: [
+    ...sentryIntegration,
     react(),
     tailwind({
       applyBaseStyles: false
