@@ -147,6 +147,9 @@ services:
       PORT: 4321
       PUBLIC_API_URL: https://${BREEZE_DOMAIN}
       PUBLIC_BILLING_URL: https://${BREEZE_DOMAIN}
+      PUBLIC_SENTRY_DSN_WEB: ${PUBLIC_SENTRY_DSN_WEB:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
     depends_on:
       api:
         condition: service_healthy
