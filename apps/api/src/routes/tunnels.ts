@@ -9,6 +9,7 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
 
@@ -147,9 +148,7 @@ async function isSourceIpAllowed(sourceIp: string, orgId: string): Promise<boole
 }
 
 function getClientIp(c: any): string {
-  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-    || c.req.header('x-real-ip')
-    || '127.0.0.1';
+  return getTrustedClientIp(c, '127.0.0.1');
 }
 
 async function getDeviceForTunnel(deviceId: string, auth: AuthContext) {
