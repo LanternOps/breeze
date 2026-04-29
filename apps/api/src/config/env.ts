@@ -7,9 +7,7 @@ function envFlag(name: string, fallback = false): boolean {
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
-// Read at call time, not module init — test suites flip this via process.env
-// in beforeEach to exercise SaaS-vs-self-hosted code paths without
-// vi.resetModules().
+// Read at call time so tests can flip `MCP_BOOTSTRAP_ENABLED` per-test without `vi.resetModules()`.
 export function isMcpBootstrapEnabled(): boolean {
   return envFlag('MCP_BOOTSTRAP_ENABLED');
 }

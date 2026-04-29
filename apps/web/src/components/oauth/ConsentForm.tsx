@@ -17,6 +17,7 @@ interface InteractionDetails {
 type ViewState =
   | { kind: 'loading' }
   | { kind: 'unauthenticated' }
+  | { kind: 'redirect-loop' }
   | { kind: 'expired' }
   | { kind: 'error'; message: string }
   | { kind: 'no-tenants' }
@@ -42,8 +43,30 @@ function isHighRiskScope(scope: string): boolean {
 function loginRedirectTarget(uid: string): string {
   const params = new URLSearchParams({ uid });
   const next = `/oauth/consent?${params.toString()}`;
-  // /auth (not /login) so users without a Breeze account have a signup tab.
   return `/auth?next=${encodeURIComponent(next)}`;
+}
+
+const REDIRECT_GUARD_KEY = 'oauth-consent-redirect-attempt';
+
+// Detects an unauthenticated → /auth → unauthenticated bounce so we don't
+// pinball forever when the auth cookie can't be set (3rd-party cookie
+// blocking, CSP, sandboxed iframe). Returns true on the second hit and
+// clears the marker so a manual retry can succeed.
+function detectRedirectLoop(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const prior = window.sessionStorage.getItem(REDIRECT_GUARD_KEY);
+    if (prior) {
+      window.sessionStorage.removeItem(REDIRECT_GUARD_KEY);
+      return true;
+    }
+    window.sessionStorage.setItem(REDIRECT_GUARD_KEY, String(Date.now()));
+    return false;
+  } catch {
+    // sessionStorage unavailable (cookies/storage blocked) — assume looping
+    // since the surrounding bounce is most likely caused by the same block.
+    return true;
+  }
 }
 
 export interface ConsentFormProps {
@@ -61,8 +84,11 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}`);
         if (cancelled) return;
         if (res.status === 401) {
-          // Auto-navigate; the unauthenticated state below is a fallback
-          // for cases where navigation is blocked (e.g. tests).
+          if (detectRedirectLoop()) {
+            setState({ kind: 'redirect-loop' });
+            return;
+          }
+          // Fallback state for environments where navigation is blocked (tests).
           window.location.href = loginRedirectTarget(uid);
           setState({ kind: 'unauthenticated' });
           return;
@@ -126,6 +152,27 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
           className="inline-flex h-10 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white transition hover:bg-emerald-700"
         >
           Sign in
+        </a>
+      </ConsentShell>
+    );
+  }
+
+  if (state.kind === 'redirect-loop') {
+    // Reached after one bounce through /auth that came right back here as 401.
+    // Almost always a cookie/storage block — surface a hard stop instead of
+    // pinballing the user.
+    return (
+      <ConsentShell title="We can't sign you in">
+        <p className="text-sm text-muted-foreground">
+          Your browser sent you back here without a sign-in cookie. Third-party
+          cookies or site storage may be blocked. Allow cookies for this site
+          and try again, or return to your MCP client and start over.
+        </p>
+        <a
+          href={loginRedirectTarget(uid)}
+          className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+        >
+          Try again
         </a>
       </ConsentShell>
     );

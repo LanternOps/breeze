@@ -3,9 +3,6 @@ import LoginPage from './LoginPage';
 import PartnerRegisterPage from './PartnerRegisterPage';
 
 interface AuthPageProps {
-  // Forwarded as-is. LoginPage and PartnerRegisterPage own validation via
-  // getSafeNext at the navigation site (they're also reachable from /login and
-  // /register-partner, so validation has to live there regardless).
   next?: string;
 }
 

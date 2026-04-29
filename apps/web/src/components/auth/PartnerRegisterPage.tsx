@@ -40,7 +40,12 @@ export default function PartnerRegisterPage({ next }: PartnerRegisterPageProps =
 
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
-      await navigateTo(result.redirectUrl ?? safeNext);
+      try {
+        await navigateTo(result.redirectUrl ?? safeNext);
+      } catch (err) {
+        setError(err instanceof Error ? `Navigation failed: ${err.message}` : 'Navigation failed.');
+        setLoading(false);
+      }
       return;
     }
 

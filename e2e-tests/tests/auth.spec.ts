@@ -23,24 +23,32 @@ test.describe('/auth tabs page', () => {
     expect(cleanPage.url()).toMatch(/#signup$/);
   });
 
-  test('signing in via /auth honors ?next=', async ({ cleanPage }) => {
+  test('signing in via /auth?next=/devices lands on /devices (setup-complete admin)', async ({ cleanPage }) => {
+    // Precondition: E2E_ADMIN_EMAIL has setup_completed_at set. If a regression
+    // re-routes to /setup unconditionally, this test fails — that's the point.
     const auth = new AuthPage(cleanPage);
     await auth.goto('/devices');
     await auth.signIn(
       process.env.E2E_ADMIN_EMAIL!,
       process.env.E2E_ADMIN_PASSWORD!,
-      /\/devices(\?|$)|\/setup/,
+      /\/devices(\?|$|#)/,
     );
   });
 });
 
 test.describe('OAuth no-session redirect', () => {
-  test('unauthenticated /oauth/consent redirects to /auth with next=', async ({ cleanPage }) => {
+  test('unauthenticated /oauth/consent redirects to /auth with the original URL preserved verbatim in next=', async ({ cleanPage }) => {
     // Use a fake uid — the API will 401 on the interaction lookup (no auth
     // cookies on cleanPage), and ConsentForm's 401 handler navigates to
     // /auth?next=... regardless of whether the uid is real.
     await cleanPage.goto('/oauth/consent?uid=fake-uid');
     await cleanPage.waitForURL(/\/auth\?next=/, { timeout: 30_000 });
-    expect(decodeURIComponent(cleanPage.url())).toContain('/oauth/consent?uid=fake-uid');
+
+    // Assert the next param is the original URL byte-for-byte after a single
+    // decode. A regression that double-encodes or strips the query string
+    // would still match the looser `.toContain()` assertion this replaces.
+    const url = new URL(cleanPage.url());
+    expect(url.pathname).toBe('/auth');
+    expect(url.searchParams.get('next')).toBe('/oauth/consent?uid=fake-uid');
   });
 });

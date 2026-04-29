@@ -29,6 +29,10 @@ vi.mock('../../services/partnerHooks', () => ({
   dispatchHook: vi.fn(async () => null),
 }));
 
+vi.mock('../../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+}));
+
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {
@@ -58,6 +62,7 @@ vi.mock('./schemas', async () => {
 import { registerRoutes } from './register';
 import { db } from '../../db';
 import { createPartner } from '../../services/partnerCreate';
+import { writeAuditEvent } from '../../services/auditEvents';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -145,5 +150,77 @@ describe('POST /register-partner setup-admin gate', () => {
     const res = await postRegisterPartner(validBody);
     expect(res.status).toBe(200);
     expect(createPartner).toHaveBeenCalledOnce();
+  });
+
+  it('writes a setup-admin-gate-bypass audit event when MCP_BOOTSTRAP_ENABLED=true', async () => {
+    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any);
+
+    await postRegisterPartner(validBody);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'register-partner.setup-admin-gate-bypass',
+        actorType: 'system',
+        result: 'success',
+        details: expect.objectContaining({
+          email: 'admin@acme.test',
+          companyName: 'Acme Co',
+          reason: 'mcp-bootstrap-enabled',
+        }),
+      }),
+    );
+  });
+
+  it('does NOT write the bypass audit event when the gate is enforced', async () => {
+    // MCP_BOOTSTRAP_ENABLED unset; gate enforced; no setup admin
+    await postRegisterPartner(validBody);
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'register-partner.setup-admin-gate-bypass' }),
+    );
+  });
+
+  // Truthy-parsing matrix per envFlag(): '1' | 'true' | 'yes' | 'on'
+  // (case-insensitive) bypass the gate; anything else enforces it. A
+  // regression where 'False' or 'no' bypasses would silently open
+  // registration in self-hosted production. Locks the contract at this layer
+  // so swapping envFlag's parser triggers a test failure here, not a CVE.
+  it.each([
+    // bypass (200)
+    ['1', 200],
+    ['true', 200],
+    ['TRUE', 200],
+    ['yes', 200],
+    ['on', 200],
+    // enforce (403)
+    ['false', 403],
+    ['0', 403],
+    ['no', 403],
+    ['off', 403],
+    ['', 403],
+    ['random', 403],
+  ])('MCP_BOOTSTRAP_ENABLED=%j → status %i', async (flag, expectedStatus) => {
+    process.env.MCP_BOOTSTRAP_ENABLED = flag;
+    if (expectedStatus === 200) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+        }]) as any);
+    }
+    const res = await postRegisterPartner(validBody);
+    expect(res.status).toBe(expectedStatus);
   });
 });

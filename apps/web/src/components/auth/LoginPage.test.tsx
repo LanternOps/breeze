@@ -125,4 +125,15 @@ describe('LoginPage navigation after MFA verify', () => {
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/setup');
   });
+
+  it('rewrites unsafe next to "/" before navigating after MFA verify', async () => {
+    render(<LoginPage next="https://evil.example.com" />);
+    await loginToMfaState();
+
+    vi.mocked(apiVerifyMFA).mockResolvedValueOnce(baseLoginSuccess);
+    await submitMfaCode();
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalled());
+    expect(navigateTo).toHaveBeenCalledWith('/');
+  });
 });

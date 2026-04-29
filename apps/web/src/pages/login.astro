@@ -1,8 +1,10 @@
 ---
 import AuthShellBranded from '../layouts/AuthShellBranded.astro';
 import LoginPage from '../components/auth/LoginPage';
+
+const next = Astro.url.searchParams.get('next') ?? undefined;
 ---
 
 <AuthShellBranded title="Sign In">
-  <LoginPage client:load />
+  <LoginPage client:load next={next} />
 </AuthShellBranded>

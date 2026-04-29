@@ -14,6 +14,7 @@ import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema 
 import { isMcpBootstrapEnabled } from '../../config/env';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
+import { writeAuditEvent } from '../../services/auditEvents';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -91,10 +92,20 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // (MCP_BOOTSTRAP_ENABLED=true) skip the gate so the partner table can
     // bootstrap from an empty state.
     if (isMcpBootstrapEnabled()) {
-      console.warn('[register-partner] setup-admin gate bypassed (saas mode)', {
-        ip: getClientRateLimitKey(c),
-        userAgent: c.req.header('user-agent'),
+      writeAuditEvent(c, {
+        orgId: null,
+        actorType: 'system',
+        action: 'register-partner.setup-admin-gate-bypass',
+        resourceType: 'partner',
+        details: {
+          email: email.toLowerCase(),
+          companyName,
+          reason: 'mcp-bootstrap-enabled',
+        },
+        result: 'success',
       });
+      // eslint-disable-next-line no-console
+      console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
     } else {
       const [setupAdmin] = await db
         .select({ setupCompletedAt: users.setupCompletedAt })
@@ -138,6 +149,15 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // Hash password before transaction (CPU-intensive, don't hold tx open)
     const passwordHash = await hashPassword(password);
 
+    type RegisterPhase =
+      | 'create-partner'
+      | 'post-create-fetch'
+      | 'token-creation'
+      | 'hook-dispatch'
+      | 'response-build';
+    let phase: RegisterPhase = 'create-partner';
+    let partnerIdForLog: string | undefined;
+
     try {
       // Atomic creation of partner, role, user, partner-user link, org, site.
       // Slug generation + uniqueness loop now live inside the service so the
@@ -149,6 +169,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         passwordHash,
         origin: { mcp: false },
       });
+      partnerIdForLog = result.partnerId;
+
+      phase = 'post-create-fetch';
 
       // Fetch the partner + user rows we need downstream (slug, plan, status,
       // billingEmail, mfa state). Kept outside the service so the service's
@@ -180,6 +203,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         throw new Error('Partner or user row missing after createPartner');
       }
 
+      phase = 'token-creation';
+
       // Token creation outside tx (doesn't need rollback)
       // MFA is vacuously satisfied when the user hasn't enrolled in MFA
       const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
@@ -194,6 +219,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       });
 
       setRefreshTokenCookie(c, tokens.refreshToken);
+
+      phase = 'hook-dispatch';
 
       // Dispatch post-registration hook (external services can override status/redirect)
       const hookResponse = await dispatchHook('registration', newPartner.id, {
@@ -230,11 +257,22 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               .where(eq(partners.id, newPartner.id));
             effectiveStatus = hookResponse.status;
           } catch (statusErr) {
-            console.error(`[Registration] Failed to update partner ${newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
-            // Keep effectiveStatus at original value since DB update failed
+            console.error('[register-partner] hook-status update failed', {
+              partnerId: newPartner.id,
+              fromStatus: newPartner.status,
+              toStatus: hookResponse.status,
+              error: statusErr instanceof Error ? statusErr.message : String(statusErr),
+              stack: statusErr instanceof Error ? statusErr.stack : undefined,
+            });
+            // Keep effectiveStatus at original value since DB update failed.
+            // Returning the unchanged status to the client is a deliberate
+            // trade-off: surfacing a 500 here would partially undo a successful
+            // partner+user creation. The audit log captures the intent mismatch.
           }
         }
       }
+
+      phase = 'response-build';
 
       // Only allow relative redirects from hooks to prevent open redirect
       const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
@@ -257,7 +295,12 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {
-      console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
+      console.error('[register-partner] failed', {
+        phase,
+        partnerId: partnerIdForLog,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       return c.json({ error: 'Registration failed. Please try again.' }, 500);
     }
   });
