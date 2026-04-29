@@ -81,7 +81,7 @@ export default function RecentActivity() {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Activity</h3>
+          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
           <a href="/audit" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View audit log
           </a>
@@ -104,7 +104,7 @@ export default function RecentActivity() {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Activity</h3>
+          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
           <a href="/audit" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View audit log
           </a>
@@ -126,7 +126,7 @@ export default function RecentActivity() {
   return (
     <div className="border-t pt-6 mt-2">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Recent Activity</h3>
+        <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
         <a href="/audit" className="text-sm text-primary hover:underline">
           View audit log
         </a>

@@ -121,10 +121,10 @@ else
   echo "» MCP_BOOTSTRAP_TEST_MODE already 'true' — no env flip needed"
 fi
 
-echo "» Running mcp_bootstrap test against $BASE_URL"
+echo "» Running mcp-bootstrap spec against $BASE_URL"
 cd "$REPO_ROOT/e2e-tests"
 E2E_API_URL="$BASE_URL" \
 E2E_BASE_URL="$BASE_URL" \
 MCP_BOOTSTRAP_ENABLED=true \
 MCP_BOOTSTRAP_TEST_MODE=true \
-  npx tsx run.ts --mode live --test mcp_bootstrap
+  pnpm test tests/mcp-bootstrap.spec.ts

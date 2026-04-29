@@ -6,14 +6,8 @@ playwright-report/
 test-results/
 blob-report/
 
-# Auth state (generated at runtime)
-.auth/user.json
-
-# Reports from YAML runner
-reports/
-
-# Test results (generated per run)
-results/
+# Auth state (generated at runtime by globalSetup)
+.auth/
 
 # Doc verify artifacts
 doc-verify/assertions.json

@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getDeviceWithOrgCheck } from './helpers';
 import {
   isCommandFailure,
@@ -185,7 +186,7 @@ fileBrowserRoutes.post(
         encoding: body.encoding || 'text',
         sizeBytes: body.content.length
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: isCommandFailure(result) ? auditErrorMessage(result) : undefined,
     });
@@ -259,7 +260,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { sourcePath: item.sourcePath, destPath: item.destPath, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -322,7 +323,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { sourcePath: item.sourcePath, destPath: item.destPath, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -386,7 +387,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { path, permanent, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -488,7 +489,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { trashId, restoredPath, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -541,7 +542,7 @@ fileBrowserRoutes.post(
         purgeAll: !body.trashIds,
         unverified: result.status === 'timeout' ? true : undefined,
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: success ? 'success' : 'failure',
       errorMessage: success ? undefined : auditErrorMessage(result),
     }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));

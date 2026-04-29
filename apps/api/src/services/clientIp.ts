@@ -60,6 +60,20 @@ export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string
     return fallback;
   }
 
+  // Precedence rationale:
+  // 1. CF-Connecting-IP — set directly by Cloudflare's edge for every tunneled
+  //    request. It is a single canonical IP (not a chain) and cannot be
+  //    appended-to by intermediaries the way XFF can, so when present it is
+  //    the most trustworthy source. Our prod stack is always behind CF.
+  // 2. X-Forwarded-For — emitted by Caddy with the real client at the head of
+  //    the chain (now that `trusted_proxies` + `client_ip_headers` is set,
+  //    see docker/Caddyfile.prod). Fallback for non-CF deployments / dev.
+  // 3. X-Real-IP — single-IP variant some proxies emit instead of XFF.
+  const cloudflare = normalizeIpCandidate(c.req.header('cf-connecting-ip') ?? c.req.header('CF-Connecting-IP') ?? '');
+  if (cloudflare) {
+    return cloudflare;
+  }
+
   const forwarded = firstValidIpFromCsv(c.req.header('x-forwarded-for') ?? c.req.header('X-Forwarded-For'));
   if (forwarded) {
     return forwarded;
@@ -68,11 +82,6 @@ export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string
   const realIp = normalizeIpCandidate(c.req.header('x-real-ip') ?? c.req.header('X-Real-IP') ?? '');
   if (realIp) {
     return realIp;
-  }
-
-  const cloudflare = normalizeIpCandidate(c.req.header('cf-connecting-ip') ?? c.req.header('CF-Connecting-IP') ?? '');
-  if (cloudflare) {
-    return cloudflare;
   }
 
   return fallback;

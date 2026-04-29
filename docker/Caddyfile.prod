@@ -13,6 +13,26 @@
 #                       Only used when CADDY_SITE_ADDRESS is a domain.
 #                       Ignored for :80 (no TLS).
 
+# --- Global options ---------------------------------------------------------
+# Production traffic chain: Internet -> cloudflared (CF tunnel) -> Caddy -> API.
+# cloudflared bridges to Caddy over the docker network and sets
+# `CF-Connecting-IP: <real client>` on every request. Without `trusted_proxies`,
+# Caddy treats cloudflared's docker-network IP as the client and rewrites
+# X-Forwarded-For to that internal address — which is what landed in our audit
+# logs (#521).
+#
+# `trusted_proxies static private_ranges` tells Caddy that any peer in RFC1918
+# space is a trusted forwarder, so it should look at incoming
+# X-Forwarded-For / CF-Connecting-IP to determine the real client. Combined
+# with `client_ip_headers`, the X-Forwarded-For Caddy emits to upstream now
+# contains the real client at the head of the chain.
+{
+  servers {
+    trusted_proxies static private_ranges
+    client_ip_headers CF-Connecting-IP X-Forwarded-For
+  }
+}
+
 {$CADDY_SITE_ADDRESS::80} {
   # --- SSE / streaming: no compression, no buffering ---
   @streaming {

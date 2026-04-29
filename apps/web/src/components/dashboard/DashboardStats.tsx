@@ -139,7 +139,7 @@ export default function DashboardStats() {
 
   const header = (
     <div className="flex items-center justify-between">
-      <h1 className="text-xl font-semibold tracking-tight">
+      <h1 data-testid="dashboard-heading" className="text-xl font-semibold tracking-tight">
         {greeting}{firstName ? `, ${firstName}` : ''}
       </h1>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -222,13 +222,14 @@ export default function DashboardStats() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="dashboard-stats">
       {header}
       <div className="grid grid-cols-2 lg:grid-cols-4 rounded-lg border bg-card overflow-hidden">
         {statItems.map((stat, idx) => (
           <a
             key={stat.name}
             href={stat.href}
+            data-testid={`dashboard-${stat.name.toLowerCase().replace(/\s+/g, '-')}-card`}
             className={cn(
               'flex items-center gap-3 px-6 py-4 transition-colors hover:bg-muted/30',
               idx % 2 !== 0 && 'border-l border-border',

@@ -13,7 +13,7 @@ import { randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { PERMISSIONS } from '../services/permissions';
 import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, getTrustedClientIpOrUndefined } from '../services/clientIp';
 import {
   buildMacosInstallerZip, buildWindowsInstallerZip,
   fetchRegularMsi, fetchMacosPkg, fetchMacosInstallerAppZip,
@@ -143,7 +143,7 @@ function writeEnrollmentKeyAudit(
     resourceId: event.keyId,
     resourceName: event.keyName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
@@ -1027,7 +1027,7 @@ enrollmentKeyRoutes.get(
         resourceId: parentKey.id,
         resourceName: parentKey.name,
         details: { platform, childKeyId: childKey.id, count: childMaxUsage, error: detail },
-        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+        ipAddress: getTrustedClientIpOrUndefined(c),
         userAgent: c.req.header('user-agent'),
         result: 'failure',
       });

@@ -26,6 +26,7 @@ import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
+import { getTrustedClientIpOrUndefined } from './clientIp';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -265,7 +266,7 @@ export class StreamingSessionManager {
     ) => { server: McpSdkServerConfigWithInstance; name: string },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
-      ip: requestContext?.req.header('x-forwarded-for') ?? requestContext?.req.header('x-real-ip'),
+      ip: requestContext ? getTrustedClientIpOrUndefined(requestContext) : undefined,
       userAgent: requestContext?.req.header('user-agent'),
     };
 
