@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import LoginPage from './LoginPage';
 import PartnerRegisterPage from './PartnerRegisterPage';
-import { getSafeNext } from '../../lib/authNext';
 
 interface AuthPageProps {
+  // Forwarded as-is. LoginPage and PartnerRegisterPage own validation via
+  // getSafeNext at the navigation site (they're also reachable from /login and
+  // /register-partner, so validation has to live there regardless).
   next?: string;
 }
 
@@ -16,7 +18,6 @@ function getInitialTab(): Tab {
 
 export default function AuthPage({ next }: AuthPageProps) {
   const [tab, setTab] = useState<Tab>(getInitialTab);
-  const safeNext = getSafeNext(next);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -61,9 +62,9 @@ export default function AuthPage({ next }: AuthPageProps) {
       </div>
 
       {tab === 'signin' ? (
-        <LoginPage next={safeNext} />
+        <LoginPage next={next} />
       ) : (
-        <PartnerRegisterPage next={safeNext} />
+        <PartnerRegisterPage next={next} />
       )}
     </div>
   );

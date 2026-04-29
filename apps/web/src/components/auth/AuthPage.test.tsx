@@ -58,13 +58,13 @@ describe('AuthPage', () => {
     expect(screen.getByTestId('mock-register')).toBeTruthy();
   });
 
-  it('forwards a safe `next` value to the active child', () => {
+  it('forwards `next` to the active child unchanged (children own validation)', () => {
     render(<AuthPage next="/oauth/consent?uid=abc" />);
     expect(screen.getByTestId('mock-login').getAttribute('data-next')).toBe('/oauth/consent?uid=abc');
   });
 
-  it('rewrites an unsafe `next` to "/" before forwarding', () => {
+  it('forwards an unsafe `next` unchanged — LoginPage/PartnerRegisterPage rewrite it before navigating', () => {
     render(<AuthPage next="https://evil.example.com" />);
-    expect(screen.getByTestId('mock-login').getAttribute('data-next')).toBe('/');
+    expect(screen.getByTestId('mock-login').getAttribute('data-next')).toBe('https://evil.example.com');
   });
 });

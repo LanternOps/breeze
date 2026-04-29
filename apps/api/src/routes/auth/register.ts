@@ -11,6 +11,7 @@ import {
   getRedis
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
+import { isMcpBootstrapEnabled } from '../../config/env';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
 import {
@@ -89,7 +90,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // setup before strangers can create partners. SaaS deployments
     // (MCP_BOOTSTRAP_ENABLED=true) skip the gate so the partner table can
     // bootstrap from an empty state.
-    if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
+    if (isMcpBootstrapEnabled()) {
       console.warn('[register-partner] setup-admin gate bypassed (saas mode)', {
         ip: getClientRateLimitKey(c),
         userAgent: c.req.header('user-agent'),
