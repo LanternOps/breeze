@@ -13,6 +13,7 @@ import { requireScope } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
 import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   createSessionSchema,
   listSessionsSchema,
@@ -199,7 +200,7 @@ sessionRoutes.post(
         deviceHostname: device.hostname,
         type: data.type
       },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({
@@ -680,7 +681,7 @@ sessionRoutes.post(
       auth.user.id,
       device.orgId,
       { sessionId, type: session.type },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     // Send start_desktop command to agent with the offer and ICE servers
@@ -777,7 +778,7 @@ sessionRoutes.post(
       auth.user.id,
       device.orgId,
       { sessionId, type: session.type },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({
@@ -904,7 +905,7 @@ sessionRoutes.post(
         type: session.type,
         durationSeconds
       },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({

@@ -10,6 +10,7 @@ import {
 } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { saveChunk, assembleChunks, getFileStream, getFileSize, hasAssembledFile, getTotalBytesReceived, MAX_TRANSFER_SIZE_BYTES } from '../../services/fileStorage';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { Readable } from 'stream';
 import { createTransferSchema, listTransfersSchema } from './schemas';
 import {
@@ -136,7 +137,7 @@ transferRoutes.post(
         localFilename: data.localFilename,
         sizeBytes: data.sizeBytes
       },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({
@@ -367,7 +368,7 @@ transferRoutes.post(
         direction: transfer.direction,
         remotePath: transfer.remotePath
       },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({
