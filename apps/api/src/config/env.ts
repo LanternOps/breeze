@@ -32,3 +32,8 @@ export const OAUTH_CONSENT_URL_BASE = process.env.OAUTH_CONSENT_URL_BASE ?? '';
 export const OAUTH_JWKS_PRIVATE_JWK = process.env.OAUTH_JWKS_PRIVATE_JWK ?? '';
 export const OAUTH_JWKS_PUBLIC_JWK = process.env.OAUTH_JWKS_PUBLIC_JWK ?? '';
 export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';
+
+// Hosted SaaS only — shared secret breeze-billing uses to call back into
+// the public repo when a payment method is verified. The callback flips
+// partners.status='active'. Empty on self-host (no billing service runs).
+export const BREEZE_BILLING_CALLBACK_SECRET = process.env.BREEZE_BILLING_CALLBACK_SECRET ?? '';
