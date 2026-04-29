@@ -102,7 +102,6 @@ const ctx: any = {
     partnerId: '22222222-2222-2222-2222-222222222222',
     defaultOrgId: '33333333-3333-3333-3333-333333333333',
     partnerAdminEmail: 'admin@acme.com',
-    scopeState: 'full',
   },
 };
 

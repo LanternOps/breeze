@@ -300,7 +300,6 @@ describe('bearerTokenAuthMiddleware', () => {
       scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write', 'ai:execute'],
       rateLimit: 1000,
       createdBy: userId,
-      scopeState: 'full',
     });
     expect(c.get('apiKeyOrgId')).toBe(orgId);
     expect(withDbAccessContext).toHaveBeenCalledWith(
@@ -391,7 +390,6 @@ describe('bearerTokenAuthMiddleware', () => {
       scopes: ['mcp:read', 'ai:read'],
       rateLimit: 1000,
       createdBy: userId,
-      scopeState: 'full',
     });
     expect(c.get('apiKeyOrgId')).toBeUndefined();
     expect(withDbAccessContext).toHaveBeenCalledWith(

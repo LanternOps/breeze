@@ -116,7 +116,6 @@ const ctx: any = {
     partnerId: PARTNER_ID,
     defaultOrgId: ORG_ID,
     partnerAdminEmail: 'admin@acme.com',
-    scopeState: 'full',
   },
 };
 
@@ -353,8 +352,8 @@ describe('configure_defaults tool', () => {
 
 // ---- Tool definition wiring -----------------------------------------------
 
-// paymentGate.ts was deleted in Phase 3; payment enforcement moved to
-// dispatchBootstrapAuthTool in mcpServer.ts (scopeState === 'readonly' gate).
+// paymentGate.ts was deleted in Phase 3; scope enforcement is now handled
+// by the execute-scope check in dispatchBootstrapAuthTool.
 describe('configure_defaults tool wiring', () => {
   it('tool definition registers a handler', () => {
     expect(typeof configureDefaultsTool.handler).toBe('function');

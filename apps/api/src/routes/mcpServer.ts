@@ -461,7 +461,7 @@ mcpServerRoutes.post(
     // Build a minimal AuthContext from the API key
     const auth = await buildAuthFromApiKey(apiKey);
 
-    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey.scopeState, apiKey, c);
+    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c);
 
     // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
     // by design (partner admins span every org). Without the fallback, every
@@ -497,13 +497,7 @@ mcpServerRoutes.post(
       }
     }
 
-    // PAYMENT_REQUIRED (readonly-scope backstop) surfaces as HTTP 402.
-    const errData = response.error?.data as { code?: string } | undefined;
-    if (errData?.code === 'PAYMENT_REQUIRED') {
-      return c.json(response, 402);
-    }
-
-    // Otherwise return inline (stateless HTTP mode)
+    // Return inline (stateless HTTP mode)
     return c.json(response);
   }
 );
@@ -516,8 +510,7 @@ async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full' = 'full',
-  apiKey?: { id: string; orgId: string | null; scopeState: 'readonly' | 'full' },
+  apiKey?: { id: string; orgId: string | null },
   c?: Context,
 ): Promise<JsonRpcResponse> {
   try {
@@ -543,7 +536,7 @@ async function handleJsonRpc(
         return handleToolsList(req.id, scopes);
 
       case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, scopeState, apiKey, c);
+        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c);
 
       case 'resources/list':
         return handleResourcesList(req.id);
@@ -619,8 +612,7 @@ async function handleToolsCall(
   params: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full' = 'full',
-  apiKey?: { id: string; orgId: string | null; scopeState: 'readonly' | 'full' },
+  apiKey?: { id: string; orgId: string | null },
   c?: Context,
 ): Promise<JsonRpcResponse> {
   const toolName = params.name as string;
@@ -642,7 +634,6 @@ async function handleToolsCall(
       toolInput,
       auth,
       scopes,
-      scopeState,
       apiKey,
       c,
     );
@@ -652,21 +643,6 @@ async function handleToolsCall(
   const tier = getToolTier(toolName);
   if (tier === undefined) {
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
-  }
-
-  // Readonly-scope backstop: pre-payment keys can't call tier-2+ tools.
-  // Returned as a JSON-RPC error; the outer /message handler translates a
-  // PAYMENT_REQUIRED data.code into a 402 HTTP response.
-  if (scopeState === 'readonly' && tier >= 2) {
-    return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
-      code: 'PAYMENT_REQUIRED',
-      message:
-        'This action requires a payment method on file. Complete the activation flow to upgrade your API key.',
-      remediation: {
-        action: 'complete_activation',
-        details: 'Visit the Breeze dashboard to complete your account activation.',
-      },
-    });
   }
 
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
@@ -778,23 +754,9 @@ async function dispatchBootstrapAuthTool(
   toolInput: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full',
-  apiKey: { id: string; orgId: string | null; scopeState: 'readonly' | 'full' } | undefined,
+  apiKey: { id: string; orgId: string | null } | undefined,
   c: Context | undefined,
 ): Promise<JsonRpcResponse> {
-  // Readonly-scope backstop — authTools are tier-3 mutations.
-  if (scopeState === 'readonly') {
-    return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
-      code: 'PAYMENT_REQUIRED',
-      message:
-        'This action requires a payment method on file. Complete the activation flow to upgrade your API key.',
-      remediation: {
-        action: 'complete_activation',
-        details: 'Visit the Breeze dashboard to complete your account activation.',
-      },
-    });
-  }
-
   const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
@@ -878,7 +840,6 @@ async function dispatchBootstrapAuthTool(
       partnerId: auth.partnerId,
       defaultOrgId: resolvedOrgId,
       partnerAdminEmail,
-      scopeState: apiKey.scopeState,
     },
   };
 

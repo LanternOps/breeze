@@ -16,7 +16,6 @@ export interface ApiKeyContext {
     scopes: string[];
     rateLimit: number;
     createdBy: string;
-    scopeState: 'readonly' | 'full';
   };
   orgId: string;
 }
@@ -78,7 +77,6 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         usageCount: apiKeys.usageCount,
         status: apiKeys.status,
         createdBy: apiKeys.createdBy,
-        scopeState: apiKeys.scopeState,
         source: apiKeys.source
       })
       .from(apiKeys)
@@ -180,7 +178,6 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     scopes: apiKey.scopes || [],
     rateLimit: apiKey.rateLimit,
     createdBy: apiKey.createdBy,
-    scopeState: (apiKey.scopeState === 'readonly' ? 'readonly' : 'full')
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 

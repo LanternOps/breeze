@@ -13,7 +13,7 @@ const setApiKeyContext = (c: any) => {
   c.set('apiKey', {
     id: 'key-1', orgId: 'org-1', name: 'test', keyPrefix: 'brz_test',
     partnerId: 'partner-1',
-    scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1', scopeState: 'full',
+    scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1',
   });
   c.set('apiKeyOrgId', 'org-1');
 };
@@ -182,7 +182,6 @@ describe('mcpServer bearer auth routing', () => {
         scopes: ['ai:read'],
         rateLimit: 1000,
         createdBy: 'user-1',
-        scopeState: 'full',
       });
       return next();
     });

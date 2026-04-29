@@ -16,7 +16,6 @@ interface OAuthApiKeyContext {
   scopes: string[];
   rateLimit: number;
   createdBy: string;
-  scopeState: 'full';
   oauthGrantId?: string;
 }
 
@@ -247,7 +246,6 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     scopes: effectiveScopes,
     rateLimit: 1000,
     createdBy: payload.sub,
-    scopeState: 'full' as const,
     ...(typeof payload.grant_id === 'string' ? { oauthGrantId: payload.grant_id } : {}),
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);

@@ -13,7 +13,7 @@ export function initMcpBootstrap(): {
     // redirects inactive partners to BILLING_URL (Phase 2).
     unauthTools: [],
     // Auth tools require a valid API key AND partner.status === 'active'
-    // (enforced via the scopeState=readonly gate in dispatchBootstrapAuthTool).
+    // (enforced via partnerGuard in dispatchBootstrapAuthTool).
     authTools: [sendDeploymentInvitesTool, configureDefaultsTool],
   };
 }

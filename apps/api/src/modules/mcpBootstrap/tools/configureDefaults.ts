@@ -265,9 +265,5 @@ export const configureDefaultsTool: BootstrapTool<
     description: TOOL_DESCRIPTION,
     inputSchema,
   },
-  // Payment gate enforced at the MCP dispatch layer (dispatchBootstrapAuthTool
-  // rejects when scopeState === 'readonly' with PAYMENT_REQUIRED). The
-  // requirePaymentMethod decorator was removed when paymentGate.ts was
-  // deleted in Phase 3.
   handler: configureDefaultsHandler,
 };

@@ -21,7 +21,6 @@ export interface BootstrapContext {
     partnerId: string;
     defaultOrgId: string;
     partnerAdminEmail: string;
-    scopeState: 'readonly' | 'full';
   };
 }
 
