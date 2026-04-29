@@ -86,7 +86,7 @@ describe('renameAppInZip', () => {
       const entries = await z.entries();
       const binary = entries['Breeze Installer [PERMS01@host.local].app/Contents/MacOS/BreezeInstaller'];
       expect(binary, 'BreezeInstaller entry must exist').toBeTruthy();
-      const binaryMode = (binary.attr >>> 16) & 0o777;
+      const binaryMode = (binary!.attr >>> 16) & 0o777;
       expect(binaryMode & 0o100, 'BreezeInstaller must remain executable (owner-x bit)').not.toBe(0);
       await z.close();
     } finally {
