@@ -137,6 +137,7 @@ export default function MFAVerifyForm({
               {digits.map((digit, index) => (
                 <input
                   key={`mfa-verify-digit-${index}`}
+                  data-testid={`mfa-digit-${index}`}
                   ref={element => {
                     inputRefs.current[index] = element;
                   }}
@@ -186,6 +187,7 @@ export default function MFAVerifyForm({
       {(!isSms || smsSent) && (
         <button
           type="submit"
+          data-testid="mfa-submit"
           disabled={isLoading || code.length !== DIGIT_COUNT}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >

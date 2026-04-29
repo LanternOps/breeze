@@ -4,6 +4,7 @@ import MFAVerifyForm from './MFAVerifyForm';
 import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode, fetchAndApplyPreferences } from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { getSafeNext } from '../../lib/authNext';
 
 function getRegistrationDisabledNotice(): string | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -13,7 +14,12 @@ function getRegistrationDisabledNotice(): string | undefined {
   }
 }
 
-export default function LoginPage() {
+interface LoginPageProps {
+  next?: string;
+}
+
+export default function LoginPage({ next }: LoginPageProps = {}) {
+  const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
   const registrationNotice = getRegistrationDisabledNotice();
   const [loading, setLoading] = useState(false);
@@ -51,7 +57,8 @@ export default function LoginPage() {
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      await navigateTo(result.requiresSetup ? '/setup' : '/');
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
       return;
     }
 
@@ -75,7 +82,8 @@ export default function LoginPage() {
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      await navigateTo(result.requiresSetup ? '/setup' : '/');
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
       return;
     }
 

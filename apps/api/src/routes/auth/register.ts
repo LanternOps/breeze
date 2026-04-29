@@ -11,8 +11,13 @@ import {
   getRedis
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
+import { isMcpBootstrapEnabled } from '../../config/env';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
+import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
+import { captureException } from '../../services/sentry';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -85,18 +90,54 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
   return runWithSystemDbAccess(async () => {
 
-    // Block registration until any partner admin has completed initial setup.
-    // We check partner_users + users rather than a hardcoded email because the
-    // seeded admin may have changed their email during the setup wizard.
-    const [setupAdmin] = await db
-      .select({ setupCompletedAt: users.setupCompletedAt })
-      .from(users)
-      .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
-      .where(sql`${users.setupCompletedAt} IS NOT NULL`)
-      .limit(1);
+    // Self-hosted single-tenant installs need the seeded admin to finish
+    // setup before strangers can create partners. SaaS deployments
+    // (MCP_BOOTSTRAP_ENABLED=true) skip the gate so the partner table can
+    // bootstrap from an empty state.
+    if (isMcpBootstrapEnabled()) {
+      // Awaited so a DB-write failure surfaces here with full context, rather
+      // than orphaning a context-less captureException out of the request scope.
+      // Signup still proceeds on failure — these events are low-volume and
+      // gating user signup on audit-table availability would be heavy.
+      const bypassDetails = {
+        email: email.toLowerCase(),
+        companyName,
+        reason: 'mcp-bootstrap-enabled',
+      };
+      try {
+        await createAuditLog({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'register-partner.setup-admin-gate-bypass',
+          resourceType: 'partner',
+          details: bypassDetails,
+          ipAddress: getTrustedClientIpOrUndefined(c),
+          userAgent: c.req.header('user-agent'),
+          result: 'success',
+        });
+      } catch (auditErr) {
+        console.error('[register-partner] bypass audit-log write failed', {
+          error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+          stack: auditErr instanceof Error ? auditErr.stack : undefined,
+          ...bypassDetails,
+          ip: getTrustedClientIpOrUndefined(c),
+        });
+        captureException(auditErr, c);
+      }
+      // eslint-disable-next-line no-console
+      console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
+    } else {
+      const [setupAdmin] = await db
+        .select({ setupCompletedAt: users.setupCompletedAt })
+        .from(users)
+        .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .where(sql`${users.setupCompletedAt} IS NOT NULL`)
+        .limit(1);
 
-    if (!setupAdmin) {
-      return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+      if (!setupAdmin) {
+        return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+      }
     }
 
     // Rate limit registration - stricter for partner registration
@@ -129,6 +170,15 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // Hash password before transaction (CPU-intensive, don't hold tx open)
     const passwordHash = await hashPassword(password);
 
+    type RegisterPhase =
+      | 'create-partner'
+      | 'post-create-fetch'
+      | 'token-creation'
+      | 'hook-dispatch'
+      | 'response-build';
+    let phase: RegisterPhase = 'create-partner';
+    let partnerIdForLog: string | undefined;
+
     try {
       // Atomic creation of partner, role, user, partner-user link, org, site.
       // Slug generation + uniqueness loop now live inside the service so the
@@ -140,6 +190,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         passwordHash,
         origin: { mcp: false },
       });
+      partnerIdForLog = result.partnerId;
+
+      phase = 'post-create-fetch';
 
       // Fetch the partner + user rows we need downstream (slug, plan, status,
       // billingEmail, mfa state). Kept outside the service so the service's
@@ -171,6 +224,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         throw new Error('Partner or user row missing after createPartner');
       }
 
+      phase = 'token-creation';
+
       // Token creation outside tx (doesn't need rollback)
       // MFA is vacuously satisfied when the user hasn't enrolled in MFA
       const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
@@ -185,6 +240,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       });
 
       setRefreshTokenCookie(c, tokens.refreshToken);
+
+      phase = 'hook-dispatch';
 
       // Dispatch post-registration hook (external services can override status/redirect)
       const hookResponse = await dispatchHook('registration', newPartner.id, {
@@ -221,11 +278,36 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               .where(eq(partners.id, newPartner.id));
             effectiveStatus = hookResponse.status;
           } catch (statusErr) {
-            console.error(`[Registration] Failed to update partner ${newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
-            // Keep effectiveStatus at original value since DB update failed
+            console.error('[register-partner] hook-status update failed', {
+              partnerId: newPartner.id,
+              fromStatus: newPartner.status,
+              toStatus: hookResponse.status,
+              error: statusErr instanceof Error ? statusErr.message : String(statusErr),
+              stack: statusErr instanceof Error ? statusErr.stack : undefined,
+            });
+            // Returning the unchanged status to the client is a deliberate
+            // trade-off: surfacing a 500 here would partially undo a successful
+            // partner+user creation. The audit row below lets triage find
+            // partners whose effective status diverged from hook intent.
+            writeAuditEvent(c, {
+              orgId: null,
+              actorType: 'system',
+              action: 'register-partner.hook-status-update-failed',
+              resourceType: 'partner',
+              resourceId: newPartner.id,
+              resourceName: newPartner.name,
+              details: {
+                fromStatus: newPartner.status,
+                toStatus: hookResponse.status,
+              },
+              result: 'failure',
+              errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
+            });
           }
         }
       }
+
+      phase = 'response-build';
 
       // Only allow relative redirects from hooks to prevent open redirect
       const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
@@ -248,7 +330,12 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {
-      console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
+      console.error('[register-partner] failed', {
+        phase,
+        partnerId: partnerIdForLog,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       return c.json({ error: 'Registration failed. Please try again.' }, 500);
     }
   });

@@ -17,6 +17,7 @@ interface InteractionDetails {
 type ViewState =
   | { kind: 'loading' }
   | { kind: 'unauthenticated' }
+  | { kind: 'redirect-loop' }
   | { kind: 'expired' }
   | { kind: 'error'; message: string }
   | { kind: 'no-tenants' }
@@ -42,7 +43,44 @@ function isHighRiskScope(scope: string): boolean {
 function loginRedirectTarget(uid: string): string {
   const params = new URLSearchParams({ uid });
   const next = `/oauth/consent?${params.toString()}`;
-  return `/login?next=${encodeURIComponent(next)}`;
+  return `/auth?next=${encodeURIComponent(next)}`;
+}
+
+// Per-uid so parallel OAuth flows in the same tab don't trip each other.
+function redirectGuardKey(uid: string): string {
+  return `oauth-consent-redirect-attempt:${uid}`;
+}
+
+// Detects an unauthenticated → /auth → unauthenticated bounce so we don't
+// pinball forever when the auth cookie can't be set (3rd-party cookie
+// blocking, CSP, sandboxed iframe). Returns true on the second hit and
+// clears the marker so a manual retry can succeed.
+function detectRedirectLoop(uid: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const key = redirectGuardKey(uid);
+    const prior = window.sessionStorage.getItem(key);
+    if (prior) {
+      window.sessionStorage.removeItem(key);
+      return true;
+    }
+    window.sessionStorage.setItem(key, String(Date.now()));
+    return false;
+  } catch (err) {
+    // sessionStorage unavailable (cookies/storage blocked) — assume looping
+    // since the surrounding bounce is most likely caused by the same block.
+    console.warn('[consent] sessionStorage unavailable; treating as redirect loop', err);
+    return true;
+  }
+}
+
+function clearRedirectGuard(uid: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(redirectGuardKey(uid));
+  } catch {
+    // Same storage block as detectRedirectLoop — nothing to clear, nothing to do.
+  }
 }
 
 export interface ConsentFormProps {
@@ -60,13 +98,18 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}`);
         if (cancelled) return;
         if (res.status === 401) {
-          // Auto-navigate to /login so the user lands directly in the sign-in
-          // flow with `next` set to come back here. The unauthenticated state
-          // remains as a fallback in case navigation is blocked (e.g. tests).
+          if (detectRedirectLoop(uid)) {
+            setState({ kind: 'redirect-loop' });
+            return;
+          }
+          // Fallback state for environments where navigation is blocked (tests).
           window.location.href = loginRedirectTarget(uid);
           setState({ kind: 'unauthenticated' });
           return;
         }
+        // Any non-401 response means auth worked (or the link is dead) — clear
+        // the bounce marker so the user's NEXT consent flow starts fresh.
+        clearRedirectGuard(uid);
         if (res.status === 404) {
           setState({ kind: 'expired' });
           return;
@@ -126,6 +169,27 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
           className="inline-flex h-10 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white transition hover:bg-emerald-700"
         >
           Sign in
+        </a>
+      </ConsentShell>
+    );
+  }
+
+  if (state.kind === 'redirect-loop') {
+    // Reached after one bounce through /auth that came right back here as 401.
+    // Almost always a cookie/storage block — surface a hard stop instead of
+    // pinballing the user.
+    return (
+      <ConsentShell title="We can't sign you in">
+        <p className="text-sm text-muted-foreground">
+          Your browser sent you back here without a sign-in cookie. Third-party
+          cookies or site storage may be blocked. Allow cookies for this site
+          and try again, or return to your MCP client and start over.
+        </p>
+        <a
+          href={loginRedirectTarget(uid)}
+          className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+        >
+          Try again
         </a>
       </ConsentShell>
     );
