@@ -503,56 +503,9 @@ reaches consent — should not happen since signup sets status='active'
 on self-host."
 ```
 
-### Task 2.2: Bump OAuth interaction TTL to 20 minutes
+### Task 2.2 [DROPPED 2026-04-29]: Bump OAuth interaction TTL
 
-**Files:**
-- Modify: `apps/api/src/oauth/provider.ts`
-
-- [ ] **Step 1: Locate the `cookies` / `ttl` config**
-
-Run:
-```bash
-grep -n "ttl:\|cookies:\|interaction:" apps/api/src/oauth/provider.ts | head -20
-```
-
-Find the `oidc-provider` configuration object. The interaction cookie TTL is typically in `cookies.short` or a `ttl.Interaction` field.
-
-- [ ] **Step 2: Set interaction TTL to 20 minutes**
-
-In the provider config object, add (or modify):
-
-```ts
-ttl: {
-  // ... existing entries
-  Interaction: 20 * 60, // 20 min — covers signup form + breeze-billing round-trip
-  Session: 60 * 60,     // keep / set per existing
-},
-cookies: {
-  // ... existing entries
-  long: { signed: true, maxAge: 14 * 24 * 60 * 60 * 1000 },
-  short: { signed: true, maxAge: 20 * 60 * 1000 },
-},
-```
-
-- [ ] **Step 3: Run OAuth tests**
-
-Run:
-```bash
-cd apps/api && npx vitest run src/oauth/ src/routes/oauth*.test.ts
-```
-
-Expected: pass.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add apps/api/src/oauth/provider.ts
-git commit -m "chore(oauth): bump Interaction TTL to 20m
-
-Signup flow on hosted is form (~30s) → billing redirect (~60-90s in
-breeze-billing) → return to consent. Default 10m TTL was tight; 20m
-gives comfortable headroom."
-```
+**Reason dropped:** the existing `Interaction` TTL in `apps/api/src/oauth/provider.ts` is already `60 * 60` (60 minutes), set deliberately when the OAuth feature shipped in PR #507. The plan's premise ("default 10m TTL is tight") was wrong — the existing 60m is already 30× longer than the worst-case signup-with-Stripe round-trip (~2 min). No change needed.
 
 ---
 
