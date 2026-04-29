@@ -715,6 +715,37 @@ export async function apiEnableSmsMfa(): Promise<{
   }
 }
 
+export async function apiPreviewInvite(token: string): Promise<{
+  success: boolean;
+  email?: string;
+  name?: string;
+  orgName?: string;
+  partnerName?: string;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(buildApiUrl(`/auth/invite/preview/${encodeURIComponent(token)}`), {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `Preview unavailable (${response.status})` };
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      email: data.email,
+      name: data.name,
+      orgName: data.orgName,
+      partnerName: data.partnerName,
+    };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
 export async function apiAcceptInvite(token: string, password: string): Promise<{
   success: boolean;
   user?: User;

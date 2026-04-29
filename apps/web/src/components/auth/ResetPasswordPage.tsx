@@ -1,23 +1,26 @@
 import { useState, useEffect } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
+import StatusIcon from './StatusIcon';
 import { apiResetPassword } from '../../stores/auth';
+
+type TokenState = { phase: 'loading' } | { phase: 'present'; token: string } | { phase: 'absent' };
 
 export default function ResetPasswordPage() {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [token, setToken] = useState<string>();
+  // Tri-state to prevent a one-frame flash of "Invalid Link" while the
+  // useEffect that reads the URL is still pending. (#418, then a follow-up.)
+  const [tokenState, setTokenState] = useState<TokenState>({ phase: 'loading' });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenParam = params.get('token');
-    if (tokenParam) {
-      setToken(tokenParam);
-    }
+    setTokenState(tokenParam ? { phase: 'present', token: tokenParam } : { phase: 'absent' });
   }, []);
 
   const handleSubmit = async (values: { password: string }) => {
-    if (!token) {
+    if (tokenState.phase !== 'present') {
       setError('Invalid or missing reset token');
       return;
     }
@@ -25,7 +28,7 @@ export default function ResetPasswordPage() {
     setLoading(true);
     setError(undefined);
 
-    const result = await apiResetPassword(token, values.password);
+    const result = await apiResetPassword(tokenState.token, values.password);
 
     if (!result.success) {
       setError(result.error);
@@ -37,18 +40,25 @@ export default function ResetPasswordPage() {
     setLoading(false);
   };
 
-  if (!token) {
+  if (tokenState.phase === 'loading') {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" aria-busy="true">
+        <div className="space-y-2 text-center">
+          <StatusIcon variant="pending" label="Loading" />
+          <h2 className="text-lg font-semibold">Loading…</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (tokenState.phase === 'absent') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
         <div className="space-y-2 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-            <svg className="h-6 w-6 text-destructive" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </div>
-          <h2 className="text-lg font-semibold">Invalid Link</h2>
+          <StatusIcon variant="error" />
+          <h2 className="text-lg font-semibold">This link doesn't work</h2>
           <p className="text-sm text-muted-foreground">
-            This password reset link is invalid or has expired.
+            The password reset link is invalid or has expired. Request a new one and try again.
           </p>
         </div>
         <a
@@ -65,11 +75,7 @@ export default function ResetPasswordPage() {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
         <div className="space-y-2 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
-            <svg className="h-6 w-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
+          <StatusIcon variant="success" />
           <h2 className="text-lg font-semibold">Password reset successful</h2>
           <p className="text-sm text-muted-foreground">
             Your password has been reset. You can now sign in with your new password.

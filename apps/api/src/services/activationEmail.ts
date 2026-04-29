@@ -2,6 +2,12 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { partners } from '../db/schema';
 import { getEmailService } from './email';
+import {
+  escapeHtml,
+  getSupportEmail,
+  renderButton,
+  renderLayout,
+} from './emailLayout';
 
 export interface BuildActivationEmailInput {
   activationUrl: string;
@@ -16,32 +22,43 @@ export interface SendActivationEmailArgs {
 
 export function buildActivationEmail({ activationUrl, orgName }: BuildActivationEmailInput) {
   const safeOrg = escapeHtml(orgName);
-  const subject = `Activate your Breeze tenant for ${orgName}`;
-  const text = [
-    `Welcome to Breeze!`,
-    ``,
-    `Click the link below to activate ${orgName}'s tenant (link valid 24 hours):`,
-    ``,
-    activationUrl,
-    ``,
-    `After clicking, you'll be asked to add a payment method. Stripe uses this to verify your identity — you won't be charged now.`,
-    ``,
-    `— Breeze`,
-  ].join('\n');
-  const html = [
-    `<p>Welcome to <strong>Breeze</strong>!</p>`,
-    `<p>Click the link below to activate <strong>${safeOrg}</strong>'s tenant (link valid 24 hours):</p>`,
-    `<p><a href="${escapeHtml(activationUrl)}">${escapeHtml(activationUrl)}</a></p>`,
-    `<p>After clicking, you'll be asked to add a payment method. Stripe uses this to verify your identity — you won't be charged now.</p>`,
-    `<p>— Breeze</p>`,
-  ].join('');
-  return { subject, html, text };
-}
+  const subject = `Activate Breeze for ${orgName}`;
+  const preheader = `Confirm your account in 24 hours to start using Breeze.`;
+  const support = getSupportEmail();
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!
-  ));
+  const text = [
+    'Welcome to Breeze.',
+    '',
+    `To finish setting up Breeze for ${orgName}, activate your account using the link below. The link is valid for 24 hours.`,
+    '',
+    `Activate: ${activationUrl}`,
+    '',
+    "After activating, you'll be asked to add a payment method. Stripe uses this to verify your identity. You won't be charged now.",
+    '',
+    "If you weren't expecting this email, you can safely ignore it.",
+    support ? '' : null,
+    support ? `Questions? Contact ${support}.` : null,
+  ]
+    .filter((line) => line !== null)
+    .join('\n');
+
+  const body = `
+      <p style="margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;">Welcome to Breeze.</p>
+      <p style="margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;">To finish setting up Breeze for <strong>${safeOrg}</strong>, activate your account using the button below. The link is valid for 24 hours.</p>
+      ${renderButton('Activate account', activationUrl)}
+      <p style="margin: 16px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;">After activating, you'll be asked to add a payment method. Stripe uses this to verify your identity. You won't be charged now.</p>
+      <p style="margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;">If you weren't expecting this email, you can safely ignore it.</p>
+  `;
+
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: 'Activate your Breeze account',
+    body,
+    footer: support ? `Questions? Contact ${support}.` : undefined,
+  });
+
+  return { subject, html, text };
 }
 
 export async function sendActivationEmail(input: SendActivationEmailArgs): Promise<void> {

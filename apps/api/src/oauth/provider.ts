@@ -1,4 +1,4 @@
-import Provider from 'oidc-provider';
+import { Provider } from 'oidc-provider';
 import * as Sentry from '@sentry/node';
 import {
   OAUTH_COOKIE_SECRET,
@@ -243,6 +243,15 @@ export async function getProvider(): Promise<Provider> {
       userinfoSigningAlgValues: ['EdDSA'],
       introspectionSigningAlgValues: ['EdDSA'],
       authorizationSigningAlgValues: ['EdDSA'],
+    },
+    // DCR clients (Claude.ai, ChatGPT, etc.) typically omit
+    // id_token_signed_response_alg and inherit oidc-provider's default of
+    // 'RS256'. Since enabledJWA only permits EdDSA, that default fails
+    // validation with `invalid_client_metadata`. Override the per-client
+    // defaults so DCR registrations succeed without the client knowing the
+    // algorithm preference.
+    clientDefaults: {
+      id_token_signed_response_alg: 'EdDSA',
     },
     // oidc-provider's default `issueRefreshToken` returns false unless the
     // auth code's scopes include `offline_access`. The OIDC core spec then

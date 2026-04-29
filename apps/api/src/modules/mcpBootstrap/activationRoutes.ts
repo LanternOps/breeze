@@ -31,9 +31,11 @@ import { tombstoneBootstrapSecret } from './bootstrapSecret';
  * Resolve the partner's default (first-created) organization id. Mirrors the
  * convention used by configure_defaults / send_deployment_invites. Used to
  * scope partner.* audit events so query_audit_log surfaces them for the
- * partner's own MCP caller.
+ * partner's own MCP caller, and to default the bootstrap-authTool dispatch
+ * orgId for partner-scoped OAuth tokens (which intentionally have org_id=null
+ * since partner-admins span all orgs).
  */
-async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
+export async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
   try {
     const [row] = await db
       .select({ id: organizations.id })
@@ -284,9 +286,14 @@ export function mountActivationRoutes(app: Hono): void {
       }
 
       await db.transaction(async (tx) => {
+        // Final state transition: payment-attached partners become 'active'.
+        // partnerCreate seeds MCP-origin partners as 'pending' and only flips
+        // to 'active' here once Stripe verifies a payment method. Without
+        // this status flip, partnerGuard middleware blocks every authed
+        // dashboard page even though the activation is logically complete.
         await tx
           .update(partners)
-          .set({ paymentMethodAttachedAt: new Date() })
+          .set({ paymentMethodAttachedAt: new Date(), status: 'active' })
           .where(eq(partners.id, partner.id));
         // Upgrade all readonly MCP-provisioning keys scoped to any org under this
         // partner. The apiKeys.orgId is an organization id, so we join through
@@ -380,7 +387,7 @@ export function mountActivationRoutes(app: Hono): void {
         await db.transaction(async (tx) => {
           await tx
             .update(partners)
-            .set({ paymentMethodAttachedAt: new Date() })
+            .set({ paymentMethodAttachedAt: new Date(), status: 'active' })
             .where(eq(partners.id, partnerId));
           const orgs = await tx
             .select({ id: organizations.id })
