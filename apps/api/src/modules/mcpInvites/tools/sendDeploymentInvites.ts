@@ -35,12 +35,8 @@ export interface SendDeploymentInvitesOutput {
   failures?: Array<{ email: string; error: string }>;
 }
 
-const TOOL_DESCRIPTION = [
-  'Email each listed staff member a one-click installer link for their operating system. Each link auto-enrolls their device into this tenant.',
-  'Call this after verify_tenant returns active. Requires a payment method on file; if you get PAYMENT_REQUIRED, call attach_payment_method first.',
-  'Maximum 25 invites per call (free-tier device cap). Recipients invited in the last 24h are silently deduplicated.',
-  'Poll get_fleet_status to see devices come online as staff install.',
-].join(' ');
+const TOOL_DESCRIPTION =
+  'Sends install-link emails to a list of staff. Requires an active tenant. If the tenant is inactive (`partner.status != \'active\'`), the call returns 402 with the configured billing URL the user must visit.';
 
 async function sendDeploymentInvitesHandler(
   input: SendInput,

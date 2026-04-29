@@ -186,7 +186,7 @@ describe('MCP bootstrap carve-out', () => {
     else process.env.NODE_ENV = originalNodeEnv;
     if (originalTrustProxyHeaders === undefined) delete process.env.TRUST_PROXY_HEADERS;
     else process.env.TRUST_PROXY_HEADERS = originalTrustProxyHeaders;
-    vi.doUnmock('../modules/mcpBootstrap');
+    vi.doUnmock('../modules/mcpInvites');
     vi.doUnmock('../middleware/apiKeyAuth');
   });
 
@@ -266,7 +266,7 @@ describe('MCP bootstrap carve-out', () => {
       },
       handler: handlerMock,
     };
-    vi.doMock('../modules/mcpBootstrap', () => ({
+    vi.doMock('../modules/mcpInvites', () => ({
       initMcpBootstrap: () => ({
         unauthTools: [],
         authTools: [fakeAuthTool],

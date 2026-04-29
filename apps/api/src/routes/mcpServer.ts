@@ -32,8 +32,8 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
-import type { BootstrapTool } from '../modules/mcpBootstrap/types';
-import { BootstrapError } from '../modules/mcpBootstrap/types';
+import type { BootstrapTool } from '../modules/mcpInvites/types';
+import { BootstrapError } from '../modules/mcpInvites/types';
 
 export const mcpServerRoutes = new Hono();
 
@@ -133,7 +133,7 @@ type BootstrapModule = { unauthTools: BootstrapTool<any, any>[]; authTools: Boot
 let bootstrapModule: BootstrapModule | null = null;
 
 async function loadBootstrapModuleInternal(): Promise<BootstrapModule> {
-  const mod = await import('../modules/mcpBootstrap');
+  const mod = await import('../modules/mcpInvites');
   return mod.initMcpBootstrap();
 }
 

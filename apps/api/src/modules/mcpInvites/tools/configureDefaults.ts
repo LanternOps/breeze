@@ -41,7 +41,7 @@ const TOOL_DESCRIPTION = [
   '(2) attach a standard alert policy (CPU > 90% for 5m, disk free < 10%, offline > 15m) if built-in templates are available,',
   '(3) set the partner risk profile (low/standard/strict),',
   "(4) add an admin-email notification channel routed to the tenant's primary admin.",
-  "Idempotent — calling twice only creates what's missing. Call once after verify_tenant returns active.",
+  "Idempotent — calling twice only creates what's missing. Requires an active tenant; if the tenant is inactive (`partner.status != 'active'`), the call returns 402 with the configured billing URL the user must visit.",
 ].join(' ');
 
 const DEFAULT_GROUP_NAME = 'All Devices';

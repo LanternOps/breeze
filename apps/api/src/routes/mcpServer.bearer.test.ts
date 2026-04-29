@@ -73,7 +73,7 @@ vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
 }));
-vi.mock('../modules/mcpBootstrap', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
+vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
 
 const ENV = ['MCP_OAUTH_ENABLED', 'IS_HOSTED', 'OAUTH_ISSUER'] as const;
 const clearEnv = () => { for (const key of ENV) delete process.env[key]; };

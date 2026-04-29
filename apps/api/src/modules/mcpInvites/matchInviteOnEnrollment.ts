@@ -47,7 +47,7 @@ export async function matchDeploymentInviteOnEnrollment(
   } catch (err) {
     // Best-effort: never let an invite-match failure break enrollment.
     console.error(
-      '[mcpBootstrap] matchDeploymentInviteOnEnrollment failed (non-fatal):',
+      '[mcpInvites] matchDeploymentInviteOnEnrollment failed (non-fatal):',
       err instanceof Error ? err.message : err,
     );
   }

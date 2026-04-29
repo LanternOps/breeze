@@ -90,7 +90,7 @@ import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
-import { mountInviteLandingRoutes } from './modules/mcpBootstrap';
+import { mountInviteLandingRoutes } from './modules/mcpInvites';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
