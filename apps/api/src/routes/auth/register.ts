@@ -189,6 +189,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         adminName: name,
         passwordHash,
         origin: { mcp: false },
+        status: isHosted() ? 'pending' : 'active',
       });
       partnerIdForLog = result.partnerId;
 

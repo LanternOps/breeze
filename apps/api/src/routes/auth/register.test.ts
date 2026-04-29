@@ -110,6 +110,72 @@ async function postRegisterPartner(body: unknown) {
   });
 }
 
+describe('/register-partner partner status by deployment mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.IS_HOSTED;
+
+    vi.mocked(createPartner).mockResolvedValue({
+      partnerId: 'p-1',
+      orgId: 'o-1',
+      adminUserId: 'u-1',
+      adminRoleId: 'r-1',
+      siteId: 's-1',
+      mcpOrigin: false,
+    });
+
+    // Hosted path: skip gate (IS_HOSTED=true), no dup user, then partner+user rows
+    // Non-hosted path: setup admin exists, no dup user, then partner+user rows
+  });
+
+  function setupDbSelectsForSuccess(isHostedMode: boolean) {
+    if (isHostedMode) {
+      // gate skipped; user-existence check + post-create partner + post-create user
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+        }]) as any);
+    } else {
+      // setup-admin check returns admin, user-existence empty, partner+user rows
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([{ setupCompletedAt: new Date() }]) as any)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'active',
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+        }]) as any);
+    }
+  }
+
+  it('creates partner with status=pending when IS_HOSTED=true', async () => {
+    process.env.IS_HOSTED = 'true';
+    setupDbSelectsForSuccess(true);
+
+    const res = await postRegisterPartner(validBody);
+    expect(res.status).toBeLessThan(400);
+    expect(createPartner).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'pending' }),
+    );
+  });
+
+  it('creates partner with status=active when IS_HOSTED is unset', async () => {
+    // IS_HOSTED already deleted in beforeEach
+    setupDbSelectsForSuccess(false);
+
+    const res = await postRegisterPartner(validBody);
+    expect(res.status).toBeLessThan(400);
+    expect(createPartner).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'active' }),
+    );
+  });
+});
+
 describe('POST /register-partner setup-admin gate', () => {
   const originalFlag = process.env.IS_HOSTED;
 
