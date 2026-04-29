@@ -80,6 +80,12 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/insta
 
 Share the resulting URL with on-site contacts. Public download links are rate-limited to prevent abuse.
 
+### Short Codes (`/s/<code>`)
+
+Public installer links are also issued with a short, human-friendly URL of the form `https://breeze.yourdomain.com/s/<code>`. The short URL automatically detects the requester's platform and serves the correct installer (Windows MSI or macOS PKG), and increments the enrollment key's `usageCount` atomically — so the same `maxUsage` limit applies whether the installer is downloaded via the long-form link or the short link.
+
+Short codes are convenient for sharing in email, chat, or printed runbooks. The platform is selected per-request from the User-Agent and can be overridden with a `?platform=windows` or `?platform=macos` query parameter.
+
 ---
 
 ## Enrollment Key Lifecycle
@@ -328,6 +334,7 @@ All routes are prefixed with `/api/v1/enrollment-keys` and require JWT authentic
 | `GET` | `/enrollment-keys/:id/installer/:platform` | `organizations:read` | Download a pre-configured MSI or PKG installer. |
 | `POST` | `/enrollment-keys/:id/installer-link` | `organizations:write` | Generate a public download link for an installer. |
 | `GET` | `/enrollment-keys/public-download/:platform` | Token (public) | Download an installer via a public link token. |
+| `GET` | `/s/:code` | Public (short code) | Auto-detects platform and redirects to the matching installer download. Increments enrollment-key usage atomically. |
 
 The agent enrollment endpoint is separate:
 

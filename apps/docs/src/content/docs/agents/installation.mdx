@@ -74,6 +74,8 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
       SERVER_URL=https://breeze.yourdomain.com `
       ENROLLMENT_KEY=YOUR_ENROLLMENT_KEY
     ```
+
+    The MSI installer enrolls the agent by invoking `breeze-agent.exe enroll` directly during installation — there is no PowerShell wrapper script in the install path. If enrollment fails, the installer surfaces the underlying agent error message instead of a generic Windows error.
   </TabItem>
 </Tabs>
 
@@ -99,6 +101,18 @@ You can generate a shareable download URL for an enrollment key so that site con
 - From the enrollment key details, click **Copy Public Link** or use the API (`POST /enrollment-keys/:id/installer-link`).
 - Share the link with on-site contacts via email, chat, or documentation.
 - Links are token-authenticated and rate-limited to prevent abuse.
+
+### Short Enrollment Links
+
+Public installer links can also be issued as short, human-friendly URLs of the form `https://breeze.yourdomain.com/s/<code>`. The short link automatically delivers the right installer for the requester's platform (Windows MSI or macOS PKG), respects the enrollment key's usage limits, and is one-time-use by default.
+
+Short codes are issued alongside long-form public links — copy the short URL from the enrollment key details page and share it however you like. Each visit increments the underlying enrollment key's usage count atomically, so you cannot exceed the configured `maxUsage`.
+
+### macOS GUI Installer
+
+For onboarding Macs the same way you'd install any other native macOS app, Breeze provides a Swift-based GUI installer (`Breeze Installer.app`). A site contact opens the app, confirms the install with **Touch ID**, and the agent is enrolled and started — no Terminal commands.
+
+The GUI installer uses bootstrap tokens generated server-side from an enrollment key, so the same usage-limit and site-pinning guarantees as MSI/PKG installers apply.
 
 ---
 
