@@ -15,8 +15,14 @@ export function getSafeNext(raw: string | null | undefined, fallback = '/'): str
 }
 
 function rejectAndWarn(raw: string, fallback: string): string {
-  // Trimmed preview keeps the log line bounded if `raw` is hostile (long input).
-  const preview = raw.length > 64 ? raw.slice(0, 64) + '…' : raw;
+  // Strip query/fragment so a hostile `next` carrying a token (e.g. an OAuth
+  // code accidentally routed through this path) doesn't land in the console
+  // or any forwarded log sink. Then bound the length.
+  const pathOnly = raw.split(/[?#]/)[0]!;
+  const preview = pathOnly.length > 64 ? pathOnly.slice(0, 64) + '…' : pathOnly;
+  // No client-side observability sink exists today (no Sentry browser SDK in
+  // apps/web). When one is added, route this through a structured breadcrumb
+  // so probe campaigns leave a server-visible trace.
   // eslint-disable-next-line no-console
   console.warn('[authNext] dropping unsafe next', { raw: preview, fallback });
   return fallback;

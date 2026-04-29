@@ -285,10 +285,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               error: statusErr instanceof Error ? statusErr.message : String(statusErr),
               stack: statusErr instanceof Error ? statusErr.stack : undefined,
             });
-            // Keep effectiveStatus at original value since DB update failed.
             // Returning the unchanged status to the client is a deliberate
             // trade-off: surfacing a 500 here would partially undo a successful
-            // partner+user creation. Write an audit row so triage can find
+            // partner+user creation. The audit row below lets triage find
             // partners whose effective status diverged from hook intent.
             writeAuditEvent(c, {
               orgId: null,

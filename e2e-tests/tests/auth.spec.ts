@@ -44,9 +44,6 @@ test.describe('OAuth no-session redirect', () => {
     await cleanPage.goto('/oauth/consent?uid=fake-uid');
     await cleanPage.waitForURL(/\/auth\?next=/, { timeout: 30_000 });
 
-    // Assert the next param is the original URL byte-for-byte after a single
-    // decode. A regression that double-encodes or strips the query string
-    // would still match the looser `.toContain()` assertion this replaces.
     const url = new URL(cleanPage.url());
     expect(url.pathname).toBe('/auth');
     expect(url.searchParams.get('next')).toBe('/oauth/consent?uid=fake-uid');
