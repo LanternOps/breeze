@@ -34,8 +34,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
 import type { BootstrapTool } from '../modules/mcpBootstrap/types';
-import { BOOTSTRAP_TOOL_NAMES, BootstrapError } from '../modules/mcpBootstrap/types';
-import { PaymentRequiredError } from '../modules/mcpBootstrap/paymentGate';
+import { BootstrapError } from '../modules/mcpBootstrap/types';
 
 export const mcpServerRoutes = new Hono();
 
@@ -128,28 +127,22 @@ async function readJsonRpcBodyWithLimit(
 }
 
 // ============================================
-// Bootstrap module (unauthenticated tools)
+// Bootstrap module (authenticated tools only)
 // ============================================
-
-const IS_HOSTED = envFlag('IS_HOSTED', false);
 
 type BootstrapModule = { unauthTools: BootstrapTool<any, any>[]; authTools: BootstrapTool<any, any>[] };
 let bootstrapModule: BootstrapModule | null = null;
 
-async function loadBootstrapModuleInternal(): Promise<BootstrapModule | null> {
-  if (!IS_HOSTED) return null;
+async function loadBootstrapModuleInternal(): Promise<BootstrapModule> {
   const mod = await import('../modules/mcpBootstrap');
   return mod.initMcpBootstrap();
 }
 
 /**
  * Initialize the bootstrap module. Called from `apps/api/src/index.ts` during
- * `bootstrap()` so startup fails loudly if required envs are missing when the
- * flag is on. A flag-off call is a no-op and returns null.
- *
- * Must complete before the API begins serving requests to eliminate the
- * load-race where a cold-start first request sees `bootstrapModule === null`
- * and falls through to a 401.
+ * startup. After Phase 3, the bootstrap module only contains auth tools
+ * (send_deployment_invites, configure_defaults); the three unauth tools and
+ * the IS_HOSTED flag-gate are gone.
  */
 export async function initMcpBootstrapForStartup(): Promise<BootstrapModule | null> {
   bootstrapModule = await loadBootstrapModuleInternal();
@@ -229,15 +222,17 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
 }
 
 /**
- * Auth middleware with bootstrap carve-out.
+ * MCP auth middleware.
  *
- * - Requests with an `X-API-Key` header go through normal API-key auth.
- * - Requests WITHOUT an API key are rejected UNLESS the bootstrap flag is on
- *   AND the request body is a JSON-RPC `tools/list` or `tools/call` for one
- *   of the unauthenticated bootstrap tools. This lets fresh MCP clients
- *   discover and invoke the three pre-activation tools without credentials.
+ * All callers must provide either an `Authorization: Bearer <token>` header
+ * (OAuth 2.1 flow, when MCP_OAUTH_ENABLED) or an `X-API-Key` header.
+ * Unauthenticated callers receive 401 + WWW-Authenticate.
+ *
+ * The bootstrap unauth carve-out (IS_HOSTED flag + create_tenant /
+ * verify_tenant / attach_payment_method) was removed in Phase 3. The new
+ * account-creation path is OAuth Create Account → /auth/register-partner.
  */
-async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
+async function mcpAuthMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization') ?? '';
   const hasBearer = MCP_OAUTH_ENABLED && authHeader.startsWith('Bearer ');
   if (hasBearer) {
@@ -249,69 +244,15 @@ async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
     return apiKeyAuthMiddleware(c, next);
   }
 
-  if (!IS_HOSTED || !bootstrapModule) {
-    setWwwAuthenticate(c);
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
-      401,
-    );
-  }
-
-  // GET (SSE) with no key: allow only if bootstrap flag is on; SSE is optional
-  // transport and bootstrap clients use the plain POST flow anyway. Reject to
-  // keep the surface minimal.
-  if (c.req.method !== 'POST') {
-    setWwwAuthenticate(c);
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
-      401,
-    );
-  }
-
-  // Clone the body so downstream handlers can re-parse.
-  let body: any = null;
-  const parsedBody = await readJsonRpcBodyWithLimit(c.req.raw, { clone: true });
-  if (parsedBody.tooLarge) {
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Request body too large' } },
-      413,
-    );
-  }
-  if (parsedBody.parseError) {
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: invalid JSON' } },
-      400,
-    );
-  }
-  body = parsedBody.body;
-
-  if (body?.method === 'initialize' || body?.method === 'notifications/initialized') {
-    return next();
-  }
-  if (body?.method === 'tools/list') {
-    return next();
-  }
-  if (
-    body?.method === 'tools/call' &&
-    typeof body?.params?.name === 'string' &&
-    (BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(body.params.name)
-  ) {
-    return next();
-  }
-
   setWwwAuthenticate(c);
   return c.json(
-    {
-      jsonrpc: '2.0',
-      id: body?.id ?? null,
-      error: { code: -32001, message: 'Missing X-API-Key header' },
-    },
+    { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
     401,
   );
 }
 
-// All MCP routes go through auth (with bootstrap carve-out when flag is on).
-mcpServerRoutes.use('*', mcpAuthOrBootstrapMiddleware);
+// All MCP routes require authentication.
+mcpServerRoutes.use('*', mcpAuthMiddleware);
 
 // ============================================
 // Types
@@ -459,11 +400,10 @@ mcpServerRoutes.get(
 mcpServerRoutes.post(
   '/message',
   async (c) => {
-    const apiKey = c.get('apiKey'); // undefined when bootstrap carve-out let us through unauthed
+    const apiKey = c.get('apiKey');
     const principalKey = apiKey ? mcpPrincipalKey(apiKey) : null;
 
-    // Rate limit messages in production (only if authed — unauth bootstrap
-    // tools are individually rate-limited inside the handlers)
+    // Rate limit messages in production.
     if (apiKey && process.env.NODE_ENV === 'production') {
       const redis = getRedis();
       if (!redis) {
@@ -505,14 +445,8 @@ mcpServerRoutes.post(
       } satisfies JsonRpcResponse, 400);
     }
 
-    // Unauthenticated path: only bootstrap methods (carve-out middleware
-    // guarantees we only arrive here for whitelisted methods).
-    if (!apiKey) {
-      const response = await handleJsonRpcUnauth(body, c);
-      return c.json(response);
-    }
-
-    // Authed path: enforce ai:read scope (previously done via requireApiKeyScope).
+    // All callers are authenticated (mcpAuthMiddleware enforces this).
+    // Enforce ai:read scope.
     const hasAiRead = apiKey.scopes.includes('*') || apiKey.scopes.includes('ai:read');
     if (!hasAiRead) {
       return c.json(
@@ -638,12 +572,9 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
-  const bootstrapNames = new Set<string>(BOOTSTRAP_TOOL_NAMES);
 
-  // Filter tools based on API key scopes; bootstrap tools are pre-activation
-  // only and must never appear in the authed list.
+  // Filter tools based on API key scopes.
   const filteredTools = allTools.filter((tool) => {
-    if (bootstrapNames.has(tool.name)) return false;
     const tier = getToolTier(tool.name);
     if (tier === undefined) return false;
 
@@ -661,7 +592,7 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     inputSchema: tool.input_schema,
   }));
 
-  // Surface bootstrap authTools (post-activation: send_deployment_invites, etc.)
+  // Surface bootstrap auth tools (send_deployment_invites, configure_defaults)
   // to authenticated callers with the matching scope. These tools live outside
   // the main aiTools registry but flow through the authed dispatch path below.
   if (bootstrapModule) {
@@ -678,106 +609,6 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
   }
 
   return jsonRpcResult(id, { tools: result });
-}
-
-// ============================================
-// Unauthenticated JSON-RPC (bootstrap-only)
-// ============================================
-
-async function handleJsonRpcUnauth(
-  req: JsonRpcRequest,
-  c: Context,
-): Promise<JsonRpcResponse> {
-  try {
-    switch (req.method) {
-      case 'initialize':
-        return jsonRpcResult(req.id, {
-          protocolVersion: '2024-11-05',
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'breeze-rmm-bootstrap', version: '1.0.0' },
-        });
-      case 'notifications/initialized':
-        return jsonRpcResult(req.id, {});
-      case 'tools/list':
-        return handleBootstrapToolsList(req.id);
-      case 'tools/call':
-        return await handleBootstrapToolsCall(req.id, req.params ?? {}, c);
-      default:
-        return jsonRpcError(req.id, -32601, `Method not available pre-activation: ${req.method}`);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal error';
-    console.error('[MCP] Bootstrap JSON-RPC handler error:', err);
-    return jsonRpcError(req.id, -32000, message);
-  }
-}
-
-function handleBootstrapToolsList(id: string | number): JsonRpcResponse {
-  if (!bootstrapModule) {
-    return jsonRpcResult(id, { tools: [] });
-  }
-  return jsonRpcResult(id, {
-    tools: bootstrapModule.unauthTools.map((tool) => ({
-      name: tool.definition.name,
-      description: tool.definition.description,
-      inputSchema: zodToJsonSchema(tool.definition.inputSchema),
-    })),
-  });
-}
-
-async function handleBootstrapToolsCall(
-  id: string | number,
-  params: Record<string, unknown>,
-  c: Context,
-): Promise<JsonRpcResponse> {
-  const toolName = params.name as string;
-  const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
-
-  if (!toolName) {
-    return jsonRpcError(id, -32602, 'Missing required parameter: name');
-  }
-  if (!bootstrapModule) {
-    return jsonRpcError(id, -32601, 'Bootstrap tools are not available.');
-  }
-  const tool = bootstrapModule.unauthTools.find((t) => t.definition.name === toolName);
-  if (!tool) {
-    return jsonRpcError(id, -32601, `Unknown bootstrap tool: ${toolName}`);
-  }
-
-  const parsed = tool.definition.inputSchema.safeParse(toolInput);
-  if (!parsed.success) {
-    return jsonRpcError(id, -32602, 'Invalid arguments', parsed.error.flatten());
-  }
-
-  const ctx = {
-    ip: requestIp(c),
-    userAgent: c.req.header('user-agent') ?? null,
-    region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
-  };
-
-  try {
-    // Bootstrap unauth tools run BEFORE any API key is issued, so there's no
-    // request-scoped DB access context. They must write via the system context
-    // or RLS will reject the inserts (partner_activations, api_keys, partners).
-    const result = await withSystemDbAccessContext(async () =>
-      tool.handler(parsed.data, ctx),
-    );
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    });
-  } catch (err) {
-    if (err instanceof BootstrapError) {
-      return jsonRpcError(id, -32000, err.message, {
-        code: err.code,
-        remediation: err.remediation,
-      });
-    }
-    const message = err instanceof Error ? err.message : 'Tool execution failed';
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-      isError: true,
-    });
-  }
 }
 
 // ============================================
@@ -800,16 +631,7 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
   }
 
-  // Bootstrap unauth tools are pre-activation only — refuse when authed.
-  if ((BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(toolName)) {
-    return jsonRpcError(
-      id,
-      -32001,
-      `already_authenticated: bootstrap tool "${toolName}" is only available pre-activation.`,
-    );
-  }
-
-  // Bootstrap authTools (post-activation, e.g. send_deployment_invites) live
+  // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main aiTools registry but dispatch through this authed path.
   const bootstrapAuthTool = bootstrapModule?.authTools.find(
     (t) => t.definition.name === toolName,
@@ -834,21 +656,16 @@ async function handleToolsCall(
   }
 
   // Readonly-scope backstop: pre-payment keys can't call tier-2+ tools.
-  // Defense-in-depth — the primary enforcement is the `requirePaymentMethod`
-  // decorator on individual bootstrap tools. Returned as a JSON-RPC error;
-  // the outer /message handler translates a PAYMENT_REQUIRED data.code into a
-  // 402 HTTP response.
+  // Returned as a JSON-RPC error; the outer /message handler translates a
+  // PAYMENT_REQUIRED data.code into a 402 HTTP response.
   if (scopeState === 'readonly' && tier >= 2) {
     return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
       code: 'PAYMENT_REQUIRED',
       message:
-        'This action requires a payment method on file (identity verification, no charge for free tier).',
+        'This action requires a payment method on file. Complete the activation flow to upgrade your API key.',
       remediation: {
-        tool: 'attach_payment_method',
-        args: {
-          tenant_id: auth.partnerId,
-          bootstrap_secret: '<bootstrap_secret returned by create_tenant>',
-        },
+        action: 'complete_activation',
+        details: 'Visit the Breeze dashboard to complete your account activation.',
       },
     });
   }
@@ -971,13 +788,10 @@ async function dispatchBootstrapAuthTool(
     return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
       code: 'PAYMENT_REQUIRED',
       message:
-        'This action requires a payment method on file (identity verification, no charge for free tier).',
+        'This action requires a payment method on file. Complete the activation flow to upgrade your API key.',
       remediation: {
-        tool: 'attach_payment_method',
-        args: {
-          tenant_id: auth.partnerId,
-          bootstrap_secret: '<bootstrap_secret returned by create_tenant>',
-        },
+        action: 'complete_activation',
+        details: 'Visit the Breeze dashboard to complete your account activation.',
       },
     });
   }
@@ -1075,13 +889,6 @@ async function dispatchBootstrapAuthTool(
       content: [{ type: 'text', text: JSON.stringify(result) }],
     });
   } catch (err) {
-    if (err instanceof PaymentRequiredError) {
-      return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
-        code: err.code,
-        message: err.message,
-        remediation: err.remediation,
-      });
-    }
     if (err instanceof BootstrapError) {
       return jsonRpcError(id, -32000, err.message, {
         code: err.code,

@@ -20,17 +20,9 @@ vi.mock('../../../db/schema', () => ({
   },
 }));
 
-vi.mock('../paymentGate', async () => {
-  // Pass-through decorator: in unit tests we want to exercise the handler
-  // directly except for the explicit "payment required" case, where we can
-  // swap the decorator out per-test.
-  return {
-    requirePaymentMethod: <I, O>(h: (i: I, c: any) => Promise<O>) => h,
-    PaymentRequiredError: class PaymentRequiredError extends Error {
-      code = 'PAYMENT_REQUIRED' as const;
-    },
-  };
-});
+// paymentGate.ts was deleted in Phase 3. The requirePaymentMethod decorator
+// is no longer used by this tool; payment enforcement is handled at the MCP
+// dispatch layer (dispatchBootstrapAuthTool in mcpServer.ts).
 
 vi.mock('../../../services/rate-limit', () => ({
   rateLimiter: vi.fn(),

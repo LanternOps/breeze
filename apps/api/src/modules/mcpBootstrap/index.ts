@@ -1,25 +1,23 @@
 import type { BootstrapTool } from './types';
-import { createTenantTool } from './tools/createTenant';
-import { verifyTenantTool } from './tools/verifyTenant';
-import { attachPaymentMethodTool } from './tools/attachPaymentMethod';
 import { sendDeploymentInvitesTool } from './tools/sendDeploymentInvites';
 import { configureDefaultsTool } from './tools/configureDefaults';
-import { checkMcpBootstrapStartup } from './startupCheck';
 
 export function initMcpBootstrap(): {
   unauthTools: BootstrapTool<any, any>[];
   authTools: BootstrapTool<any, any>[];
 } {
-  checkMcpBootstrapStartup();
   return {
-    // Unauth tools: reachable before the partner has an API key (pre-activation).
-    unauthTools: [createTenantTool, verifyTenantTool, attachPaymentMethodTool],
-    // Auth tools require a valid API key AND a payment method on file
-    // (enforced via the requirePaymentMethod decorator).
+    // Unauth tools: create_tenant, verify_tenant, attach_payment_method were
+    // deleted in Phase 3. The bootstrap flow now happens via OAuth
+    // Create Account → /auth/register-partner (Phase 1) → consent handler
+    // redirects inactive partners to BILLING_URL (Phase 2).
+    unauthTools: [],
+    // Auth tools require a valid API key AND partner.status === 'active'
+    // (enforced via the scopeState=readonly gate in dispatchBootstrapAuthTool).
     authTools: [sendDeploymentInvitesTool, configureDefaultsTool],
   };
 }
 
-export { BOOTSTRAP_TOOL_NAMES, BootstrapError } from './types';
+export { BootstrapError } from './types';
 export { mountActivationRoutes } from './activationRoutes';
 export { mountInviteLandingRoutes } from './inviteLandingRoutes';

@@ -190,10 +190,11 @@ describe('MCP bootstrap carve-out', () => {
     vi.doUnmock('../middleware/apiKeyAuth');
   });
 
-  it('flag off + no auth header → tools/list returns 401', async () => {
+  it('no auth header → tools/list always returns 401 + WWW-Authenticate', async () => {
+    // The bootstrap unauth carve-out was deleted in Phase 3. All unauth callers
+    // must receive 401 regardless of IS_HOSTED or any other flag.
     delete process.env.IS_HOSTED;
-    // Stub the API-key middleware to be inert (the carve-out middleware is
-    // what we exercise); middleware import still resolves.
+
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async () => {
         throw new Error('should not be called when no X-API-Key header');
@@ -327,63 +328,13 @@ describe('MCP bootstrap carve-out', () => {
     const body = await res.json();
     expect(body.error?.message).toBe('PAYMENT_REQUIRED');
     expect(body.error?.data?.code).toBe('PAYMENT_REQUIRED');
-    expect(body.error?.data?.remediation?.tool).toBe('attach_payment_method');
-    expect(body.error?.data?.remediation?.args?.tenant_id).toBe('partner-1');
+    // attach_payment_method was deleted in Phase 3; remediation now points to
+    // the dashboard activation flow.
+    expect(body.error?.data?.remediation?.action).toBe('complete_activation');
   });
 
-  it('flag on + no auth header → tools/list returns the three bootstrap tools', async () => {
-    process.env.IS_HOSTED = 'true';
-
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async () => {
-        throw new Error('should not be called when no X-API-Key header');
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
-    // Mock the bootstrap module so we don't pull in DB/redis/startup checks.
-    const fakeTool = (name: string) => ({
-      definition: {
-        name,
-        description: `fake ${name}`,
-        // Real zod schema — was previously a hand-rolled mock that always
-        // returned success, which silently bypassed any schema regressions.
-        // Use z.object({}).passthrough() so existing tests that pass arbitrary
-        // arguments (e.g. { emails: ['a@b.com'] }) still flow through.
-        inputSchema: zod.object({}).passthrough(),
-      },
-      handler: async () => ({ ok: true }),
-    });
-    vi.doMock('../modules/mcpBootstrap', () => ({
-      initMcpBootstrap: () => ({
-        unauthTools: [
-          fakeTool('create_tenant'),
-          fakeTool('verify_tenant'),
-          fakeTool('attach_payment_method'),
-        ],
-        authTools: [],
-      }),
-    }));
-
-    const mod = await import('./mcpServer');
-    // Force the bootstrap module to be loaded (the top-level load is fire-
-    // and-forget; tests call this helper to await it deterministically).
-    await mod.__loadMcpBootstrapForTests();
-
-    const res = await mod.mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.result?.tools).toBeDefined();
-    const names = body.result.tools.map((t: any) => t.name).sort();
-    expect(names).toEqual(['attach_payment_method', 'create_tenant', 'verify_tenant']);
-  });
-
-  it('flag on + authed key → authTools surface in tools/list AND dispatch to handler', async () => {
-    process.env.IS_HOSTED = 'true';
+  it('authed key → authTools surface in tools/list AND dispatch to handler', async () => {
+    delete process.env.IS_HOSTED;
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async (c: any, next: any) => {
@@ -488,195 +439,6 @@ describe('MCP bootstrap carve-out', () => {
     });
   });
 
-  it('unauth bootstrap dispatch runs tool handler inside withSystemDbAccessContext', async () => {
-    // Regression test: unauth bootstrap tools (create_tenant, verify_tenant,
-    // attach_payment_method) write to RLS-enabled tables (partner_activations,
-    // api_keys) with no request-scoped DB context, so the dispatcher must wrap
-    // the handler in withSystemDbAccessContext or production will fail with
-    // "new row violates row-level security policy" on every create_tenant call.
-    process.env.IS_HOSTED = 'true';
-
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async () => {
-        throw new Error('should not be called when no X-API-Key header');
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
-    // Spy: the system-context wrapper should be invoked with a function that,
-    // when called, drives the tool handler.
-    const systemCtxSpy = vi.fn(async (fn: () => any) => await fn());
-    vi.doMock('../db', () => ({
-      db: {},
-      withDbAccessContext: vi.fn(),
-      withSystemDbAccessContext: systemCtxSpy,
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
-
-    const handlerMock = vi.fn(async () => ({ tenant_id: 'p-new', activation_status: 'pending_email' }));
-    const fakeTool = {
-      definition: {
-        name: 'create_tenant',
-        description: 'fake',
-        // Real zod schema — was previously a hand-rolled mock that always
-        // returned success, which silently bypassed any schema regressions.
-        // Use z.object({}).passthrough() so existing tests that pass arbitrary
-        // arguments (e.g. { emails: ['a@b.com'] }) still flow through.
-        inputSchema: zod.object({}).passthrough(),
-      },
-      handler: handlerMock,
-    };
-    vi.doMock('../modules/mcpBootstrap', () => ({
-      initMcpBootstrap: () => ({
-        unauthTools: [fakeTool],
-        authTools: [],
-      }),
-    }));
-
-    const mod = await import('./mcpServer');
-    await mod.__loadMcpBootstrapForTests();
-
-    const res = await mod.mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'create_tenant',
-          arguments: {
-            org_name: 'Acme',
-            admin_email: 'alex@acme-ops.com',
-            admin_name: 'Alex',
-            region: 'us',
-          },
-        },
-      }),
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.error).toBeUndefined();
-    expect(systemCtxSpy).toHaveBeenCalledTimes(1);
-    expect(systemCtxSpy).toHaveBeenCalledWith(expect.any(Function));
-    expect(handlerMock).toHaveBeenCalledTimes(1);
-    // The wrapper must be invoked strictly before the tool handler runs.
-    const wrapperInvokedBeforeHandler =
-      systemCtxSpy.mock.invocationCallOrder[0]! < handlerMock.mock.invocationCallOrder[0]!;
-    expect(wrapperInvokedBeforeHandler).toBe(true);
-  });
-
-  it('unauth bootstrap context ignores forwarded IP headers when production proxy trust is disabled', async () => {
-    process.env.IS_HOSTED = 'true';
-    process.env.NODE_ENV = 'production';
-    process.env.TRUST_PROXY_HEADERS = 'false';
-
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async () => {
-        throw new Error('should not be called when no X-API-Key header');
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
-    vi.doMock('../db', () => ({
-      db: {},
-      withDbAccessContext: vi.fn(),
-      withSystemDbAccessContext: vi.fn(async (fn: () => any) => await fn()),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
-
-    const handlerMock = vi.fn(async () => ({ tenant_id: 'p-new', activation_status: 'pending_email' }));
-    const fakeTool = {
-      definition: {
-        name: 'create_tenant',
-        description: 'fake',
-        // Real zod schema — was previously a hand-rolled mock that always
-        // returned success, which silently bypassed any schema regressions.
-        // Use z.object({}).passthrough() so existing tests that pass arbitrary
-        // arguments (e.g. { emails: ['a@b.com'] }) still flow through.
-        inputSchema: zod.object({}).passthrough(),
-      },
-      handler: handlerMock,
-    };
-    vi.doMock('../modules/mcpBootstrap', () => ({
-      initMcpBootstrap: () => ({
-        unauthTools: [fakeTool],
-        authTools: [],
-      }),
-    }));
-
-    const mod = await import('./mcpServer');
-    await mod.__loadMcpBootstrapForTests();
-
-    const res = await mod.mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-forwarded-for': '203.0.113.201',
-        'user-agent': 'mcp-test',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'create_tenant',
-          arguments: {
-            org_name: 'Acme',
-            admin_email: 'alex@acme-ops.com',
-            admin_name: 'Alex',
-            region: 'us',
-          },
-        },
-      }),
-    }, {
-      incoming: { socket: { remoteAddress: '198.51.100.45' } },
-    } as any);
-
-    expect(res.status).toBe(200);
-    expect(handlerMock).toHaveBeenCalledTimes(1);
-    const [, calledCtx] = handlerMock.mock.calls[0] as unknown as [any, any];
-    expect(calledCtx.ip).toBe('198.51.100.45');
-    expect(calledCtx.userAgent).toBe('mcp-test');
-  });
-
-  it('rejects oversized unauth bootstrap JSON-RPC bodies before dispatch', async () => {
-    process.env.IS_HOSTED = 'true';
-
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async () => {
-        throw new Error('should not be called when no X-API-Key header');
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-    vi.doMock('../modules/mcpBootstrap', () => ({
-      initMcpBootstrap: () => ({
-        unauthTools: [],
-        authTools: [],
-      }),
-    }));
-
-    const mod = await import('./mcpServer');
-    await mod.__loadMcpBootstrapForTests();
-
-    const res = await mod.mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/list',
-        params: { padding: 'x'.repeat(70 * 1024) },
-      }),
-    });
-
-    expect(res.status).toBe(413);
-    expect(await res.json()).toEqual({
-      jsonrpc: '2.0',
-      id: null,
-      error: { code: -32600, message: 'Request body too large' },
-    });
-  });
 
   it('rejects oversized authed MCP JSON-RPC bodies before parsing', async () => {
     delete process.env.IS_HOSTED;

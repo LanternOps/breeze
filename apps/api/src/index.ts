@@ -1209,11 +1209,10 @@ async function bootstrap(): Promise<void> {
 
   await runStartupChecks();
 
-  // Initialize MCP bootstrap module (no-op when IS_HOSTED is false).
-  // Synchronous startup wait — if required envs are missing when the flag is
-  // on, checkMcpBootstrapStartup() throws here and aborts boot. This also
-  // eliminates the cold-start load-race where the first unauth request could
-  // see bootstrapModule === null and fall through to a 401.
+  // Initialize MCP bootstrap module. Loads auth tools (send_deployment_invites,
+  // configure_defaults) so they are ready before the first request. The unauth
+  // tools (create_tenant, verify_tenant, attach_payment_method) were deleted in
+  // Phase 3; the IS_HOSTED startup check is also gone.
   await initMcpBootstrapForStartup();
 
   try {

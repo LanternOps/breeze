@@ -17,7 +17,30 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { getBreezeBillingClient } from '../../services/breezeBillingClient';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { recordActivationTransition } from './metrics';
-import { tombstoneBootstrapSecret } from './bootstrapSecret';
+import { sql as drizzleSql } from 'drizzle-orm';
+
+/**
+ * Tombstone the MCP bootstrap secret for an activated partner. Inlined here
+ * after bootstrapSecret.ts was deleted in Phase 3 — the function is only
+ * called from activation webhooks so keeping it local avoids a Phase-4 stub.
+ */
+async function tombstoneBootstrapSecret(partnerId: string): Promise<void> {
+  const BOOTSTRAP_SECRET_SETTINGS_KEY = 'mcp_bootstrap_secret_hash';
+  try {
+    await db
+      .update(partners)
+      .set({
+        settings: drizzleSql`coalesce(${partners.settings}, '{}'::jsonb) - ${BOOTSTRAP_SECRET_SETTINGS_KEY}`,
+      })
+      .where(eq(partners.id, partnerId));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      '[mcpBootstrap] tombstoneBootstrapSecret: best-effort delete failed',
+      { partnerId, error: msg },
+    );
+  }
+}
 
 /**
  * Activation routes for MCP-provisioned tenants.

@@ -3,7 +3,6 @@ import { and, eq, gt } from 'drizzle-orm';
 import { db } from '../../../db';
 import { deploymentInvites, partners } from '../../../db/schema';
 import { mintChildEnrollmentKey } from '../../../routes/enrollmentKeys';
-import { requirePaymentMethod } from '../paymentGate';
 import { rateLimiter } from '../../../services/rate-limit';
 import { getRedis } from '../../../services/redis';
 import { buildDeploymentInviteEmail } from '../../../services/deploymentInviteEmail';
@@ -219,5 +218,9 @@ export const sendDeploymentInvitesTool: BootstrapTool<SendInput, SendDeploymentI
     description: TOOL_DESCRIPTION,
     inputSchema,
   },
-  handler: requirePaymentMethod(sendDeploymentInvitesHandler),
+  // Payment gate enforced at the MCP dispatch layer (dispatchBootstrapAuthTool
+  // rejects when scopeState === 'readonly' with PAYMENT_REQUIRED). The
+  // requirePaymentMethod decorator was removed when paymentGate.ts was
+  // deleted in Phase 3.
+  handler: sendDeploymentInvitesHandler,
 };

@@ -204,17 +204,16 @@ describe('mcpServer bearer auth routing', () => {
     expect(Array.isArray(authArg?.accessibleOrgIds)).toBe(true);
   });
 
-  it('still allows the bootstrap carve-out with no auth headers', async () => {
+  it('no auth headers → 401 even with MCP_OAUTH_ENABLED (carve-out deleted in Phase 3)', async () => {
     process.env.MCP_OAUTH_ENABLED = 'true';
-    process.env.IS_HOSTED = 'true';
-    const { app, mod } = await appWithMcpRoutes();
-    await mod.__loadMcpBootstrapForTests();
+    delete process.env.IS_HOSTED;
+    const { app } = await appWithMcpRoutes();
     const res = await app.request('/mcp/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
     expect(mocks.bearerTokenAuthMiddleware).not.toHaveBeenCalled();
     expect(mocks.apiKeyAuthMiddleware).not.toHaveBeenCalled();
   });
