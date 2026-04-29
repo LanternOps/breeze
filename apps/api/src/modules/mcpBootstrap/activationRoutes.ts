@@ -22,7 +22,7 @@ import { tombstoneBootstrapSecret } from './bootstrapSecret';
 /**
  * Activation routes for MCP-provisioned tenants.
  *
- * Mounted only when `MCP_BOOTSTRAP_ENABLED=true`. Three routes:
+ * Mounted only when `IS_HOSTED=true`. Three routes:
  *   GET  /activate/:token              — email-click endpoint
  *   POST /activate/setup-intent        — create Stripe SetupIntent for payment attachment
  *   POST /activate/complete/webhook    — Stripe webhook for setup_intent.succeeded

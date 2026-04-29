@@ -7,10 +7,19 @@ function envFlag(name: string, fallback = false): boolean {
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
-// Read at call time so tests can flip `MCP_BOOTSTRAP_ENABLED` per-test without `vi.resetModules()`.
-export function isMcpBootstrapEnabled(): boolean {
-  return envFlag('MCP_BOOTSTRAP_ENABLED');
+// Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
+export function isHosted(): boolean {
+  return envFlag('IS_HOSTED');
 }
+
+// Public URL of the breeze-billing payment-setup landing page. Empty on
+// self-host. Consumed by the OAuth consent redirect (see Phase 2 Task 2.1
+// of docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md) — the
+// consent handler redirects users to BILLING_URL?uid=<UID> when their
+// partner.status != 'active'. Distinct from BREEZE_BILLING_URL, which is
+// the internal service-to-service base URL used by breezeBillingClient.ts.
+export const BILLING_URL = process.env.BILLING_URL ?? '';
+
 export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', process.env.NODE_ENV !== 'production');
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';

@@ -160,12 +160,12 @@ describe('MCP utility functions', () => {
 // ============================================================================
 //
 // These tests exercise the route file directly. Because the module reads
-// MCP_BOOTSTRAP_ENABLED at import time and kicks off a background load, we
+// IS_HOSTED at import time and kicks off a background load, we
 // set the env var BEFORE dynamic-importing the route module and reset modules
 // between cases.
 
 describe('MCP bootstrap carve-out', () => {
-  const originalFlag = process.env.MCP_BOOTSTRAP_ENABLED;
+  const originalFlag = process.env.IS_HOSTED;
   const originalExecuteAdmin = process.env.MCP_REQUIRE_EXECUTE_ADMIN;
   const originalAllowlist = process.env.MCP_EXECUTE_TOOL_ALLOWLIST;
   const originalNodeEnv = process.env.NODE_ENV;
@@ -176,8 +176,8 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   afterEach(() => {
-    if (originalFlag === undefined) delete process.env.MCP_BOOTSTRAP_ENABLED;
-    else process.env.MCP_BOOTSTRAP_ENABLED = originalFlag;
+    if (originalFlag === undefined) delete process.env.IS_HOSTED;
+    else process.env.IS_HOSTED = originalFlag;
     if (originalExecuteAdmin === undefined) delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
     else process.env.MCP_REQUIRE_EXECUTE_ADMIN = originalExecuteAdmin;
     if (originalAllowlist === undefined) delete process.env.MCP_EXECUTE_TOOL_ALLOWLIST;
@@ -191,7 +191,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('flag off + no auth header → tools/list returns 401', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
     // Stub the API-key middleware to be inert (the carve-out middleware is
     // what we exercise); middleware import still resolves.
     vi.doMock('../middleware/apiKeyAuth', () => ({
@@ -213,7 +213,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('readonly scope backstop — allows tier-1 tool calls with readonly key', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async (c: any, next: any) => {
@@ -272,7 +272,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('readonly scope backstop — blocks tier-2+ tool, returns 402 PAYMENT_REQUIRED', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async (c: any, next: any) => {
@@ -332,7 +332,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('flag on + no auth header → tools/list returns the three bootstrap tools', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async () => {
@@ -383,7 +383,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('flag on + authed key → authTools surface in tools/list AND dispatch to handler', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async (c: any, next: any) => {
@@ -494,7 +494,7 @@ describe('MCP bootstrap carve-out', () => {
     // api_keys) with no request-scoped DB context, so the dispatcher must wrap
     // the handler in withSystemDbAccessContext or production will fail with
     // "new row violates row-level security policy" on every create_tenant call.
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async () => {
@@ -567,7 +567,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('unauth bootstrap context ignores forwarded IP headers when production proxy trust is disabled', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
     process.env.NODE_ENV = 'production';
     process.env.TRUST_PROXY_HEADERS = 'false';
 
@@ -641,7 +641,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('rejects oversized unauth bootstrap JSON-RPC bodies before dispatch', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async () => {
@@ -679,7 +679,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('rejects oversized authed MCP JSON-RPC bodies before parsing', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async (c: any, next: any) => {
@@ -721,7 +721,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('keys production MCP message limits by stable OAuth grant when present', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
@@ -764,7 +764,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('production defaults to requiring ai:execute_admin for tier-3 MCP calls', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command';
     delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
@@ -830,7 +830,7 @@ describe('MCP bootstrap carve-out', () => {
   });
 
   it('production can explicitly opt out of the execute-admin requirement while keeping the allowlist gate', async () => {
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command';
     process.env.MCP_REQUIRE_EXECUTE_ADMIN = 'false';
@@ -905,7 +905,7 @@ describe('MCP bootstrap carve-out', () => {
     // bytesRead accumulator inside the read loop. Build a Request whose
     // ReadableStream emits chunks summing to MAX+1 bytes and whose
     // content-length header is omitted entirely — the loop must still 413.
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
 
     vi.doMock('../middleware/apiKeyAuth', () => ({
       apiKeyAuthMiddleware: async (c: any, next: any) => {
@@ -967,7 +967,7 @@ describe('MCP bootstrap carve-out', () => {
     // grant's responses. We exercise the bucketing via the per-key SSE
     // session cap (5) — issuing 5 SSE GETs on grant A then a 6th on grant B
     // must succeed (different bucket), while a 6th on grant A must 429.
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     process.env.MCP_MAX_SSE_SESSIONS_PER_KEY = '2';
 

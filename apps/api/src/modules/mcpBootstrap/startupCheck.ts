@@ -11,16 +11,16 @@ export function checkMcpBootstrapStartup(): void {
   const missing = REQUIRED_ENVS.filter((name) => !process.env[name]);
   if (missing.length > 0) {
     throw new Error(
-      `MCP_BOOTSTRAP_ENABLED is true but required env vars are missing: ${missing.join(', ')}. ` +
-      `Either set these vars or set MCP_BOOTSTRAP_ENABLED=false.`
+      `IS_HOSTED is true but required env vars are missing: ${missing.join(', ')}. ` +
+      `Either set these vars or set IS_HOSTED=false.`
     );
   }
 
   if (!getEmailService()) {
     throw new Error(
-      'MCP_BOOTSTRAP_ENABLED is true but email is not configured. ' +
+      'IS_HOSTED is true but email is not configured. ' +
       'Set EMAIL_PROVIDER + provider creds (RESEND_API_KEY / SMTP_* / MAILGUN_*) and EMAIL_FROM, ' +
-      'or set MCP_BOOTSTRAP_ENABLED=false.'
+      'or set IS_HOSTED=false.'
     );
   }
 }

@@ -356,11 +356,11 @@ app.route('/metrics', metricsRoutes);
 app.route('/s', publicShortLinkRoutes);
 
 // MCP bootstrap activation routes (flag-gated). Mount sites are conditional
-// on MCP_BOOTSTRAP_ENABLED so the routes only attach when the feature is on.
+// on IS_HOSTED so the routes only attach when the feature is on.
 // The module is statically imported above — tsup bundles it either way and
 // dynamic import broke both CJS production (top-level await) and ESM dev
 // (require()). The flag still gates whether the routes actually exist.
-if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
+if (process.env.IS_HOSTED === 'true') {
   mountActivationRoutes(app);
   mountInviteLandingRoutes(app);
 }
@@ -1209,7 +1209,7 @@ async function bootstrap(): Promise<void> {
 
   await runStartupChecks();
 
-  // Initialize MCP bootstrap module (no-op when MCP_BOOTSTRAP_ENABLED is false).
+  // Initialize MCP bootstrap module (no-op when IS_HOSTED is false).
   // Synchronous startup wait — if required envs are missing when the flag is
   // on, checkMcpBootstrapStartup() throws here and aborts boot. This also
   // eliminates the cold-start load-race where the first unauth request could

@@ -56,7 +56,7 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
   },
 }));
 
-const ENV = ['MCP_OAUTH_ENABLED', 'MCP_BOOTSTRAP_ENABLED', 'OAUTH_ISSUER'] as const;
+const ENV = ['MCP_OAUTH_ENABLED', 'IS_HOSTED', 'OAUTH_ISSUER'] as const;
 const clear = () => {
   for (const k of ENV) delete process.env[k];
 };

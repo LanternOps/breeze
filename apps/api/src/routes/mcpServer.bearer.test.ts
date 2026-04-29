@@ -75,7 +75,7 @@ vi.mock('../services/rate-limit', () => ({
 }));
 vi.mock('../modules/mcpBootstrap', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
 
-const ENV = ['MCP_OAUTH_ENABLED', 'MCP_BOOTSTRAP_ENABLED', 'OAUTH_ISSUER'] as const;
+const ENV = ['MCP_OAUTH_ENABLED', 'IS_HOSTED', 'OAUTH_ISSUER'] as const;
 const clearEnv = () => { for (const key of ENV) delete process.env[key]; };
 
 async function appWithMcpRoutes() {
@@ -206,7 +206,7 @@ describe('mcpServer bearer auth routing', () => {
 
   it('still allows the bootstrap carve-out with no auth headers', async () => {
     process.env.MCP_OAUTH_ENABLED = 'true';
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
     const { app, mod } = await appWithMcpRoutes();
     await mod.__loadMcpBootstrapForTests();
     const res = await app.request('/mcp/message', {

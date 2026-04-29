@@ -131,13 +131,13 @@ async function readJsonRpcBodyWithLimit(
 // Bootstrap module (unauthenticated tools)
 // ============================================
 
-const MCP_BOOTSTRAP_ENABLED = envFlag('MCP_BOOTSTRAP_ENABLED', false);
+const IS_HOSTED = envFlag('IS_HOSTED', false);
 
 type BootstrapModule = { unauthTools: BootstrapTool<any, any>[]; authTools: BootstrapTool<any, any>[] };
 let bootstrapModule: BootstrapModule | null = null;
 
 async function loadBootstrapModuleInternal(): Promise<BootstrapModule | null> {
-  if (!MCP_BOOTSTRAP_ENABLED) return null;
+  if (!IS_HOSTED) return null;
   const mod = await import('../modules/mcpBootstrap');
   return mod.initMcpBootstrap();
 }
@@ -249,7 +249,7 @@ async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
     return apiKeyAuthMiddleware(c, next);
   }
 
-  if (!MCP_BOOTSTRAP_ENABLED || !bootstrapModule) {
+  if (!IS_HOSTED || !bootstrapModule) {
     setWwwAuthenticate(c);
     return c.json(
       { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },

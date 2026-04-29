@@ -3,7 +3,7 @@
  *
  * Tier 3+ destructive tool. Flag-independent — registered into the standard
  * authed aiTools registry, available to MCP agents and the in-app assistant
- * regardless of `MCP_BOOTSTRAP_ENABLED`.
+ * regardless of `IS_HOSTED`.
  *
  * Safety rails:
  *   1. `tenant_id` MUST equal the API key's partnerId → cross-tenant deletion

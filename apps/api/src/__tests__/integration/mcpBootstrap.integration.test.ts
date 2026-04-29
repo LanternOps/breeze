@@ -22,7 +22,7 @@
 // missing, and initMcpBootstrap runs at first POST /mcp/message. Set them here
 // at top-of-file so Vitest's hoisted vi.mock() and the import graph both see
 // them.
-process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+process.env.IS_HOSTED = 'true';
 process.env.STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || 'sk_test_xxx';
 process.env.STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_test';
 process.env.BREEZE_BILLING_URL = process.env.BREEZE_BILLING_URL || 'http://localhost:9999';
@@ -116,7 +116,7 @@ describe('MCP bootstrap integration', () => {
       const { mcpServerRoutes, __loadMcpBootstrapForTests } = await import('../../routes/mcpServer');
       // Force-load the bootstrap module now (normally deferred to a microtask).
       const bootstrap = await __loadMcpBootstrapForTests();
-      expect(bootstrap, 'bootstrap module should load when MCP_BOOTSTRAP_ENABLED=true').not.toBeNull();
+      expect(bootstrap, 'bootstrap module should load when IS_HOSTED=true').not.toBeNull();
 
       const app = new Hono();
       app.route('/mcp', mcpServerRoutes);

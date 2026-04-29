@@ -4,15 +4,16 @@ Feature-flagged module that lets an external AI agent provision a brand-new
 Breeze tenant end-to-end via MCP. Default OFF.
 
 **This module is for Breeze Cloud only.** Self-hosted deployments should
-leave `MCP_BOOTSTRAP_ENABLED` unset.
+leave `IS_HOSTED` unset.
 
 ## Required environment variables (when enabled)
 
 | Var | Purpose |
 |---|---|
-| `MCP_BOOTSTRAP_ENABLED` | Set to `true` to enable. Default `false`. |
+| `IS_HOSTED` | Set to `true` to enable. Default `false`. |
 | `STRIPE_SECRET_KEY` | Stripe secret for SetupIntent creation via breeze-billing. |
-| `BREEZE_BILLING_URL` | Base URL of the breeze-billing service. |
+| `BILLING_URL` | Public URL of the breeze-billing payment-setup landing page. Empty on self-host. Used by the OAuth consent handler to redirect users with `partner.status != 'active'`. |
+| `BREEZE_BILLING_URL` | Internal service-to-service base URL of the breeze-billing service (used by `breezeBillingClient.ts`). |
 | `EMAIL_PROVIDER_KEY` | Whichever email provider is configured globally. |
 | `PUBLIC_ACTIVATION_BASE_URL` | e.g. `https://us.2breeze.app`. |
 | `BUSINESS_EMAIL_ALLOW_OVERRIDES` | Optional. Path to JSON file. |
