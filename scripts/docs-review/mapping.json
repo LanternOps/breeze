@@ -195,6 +195,31 @@
       ]
     },
     {
+      "pattern": "apps/api/src/routes/oauth*.ts",
+      "docs": [
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/mcpBootstrap*.ts",
+      "docs": [
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/publicShortLinks.ts",
+      "docs": [
+        "agents/enrollment-keys.mdx",
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/installer/macos-app/**",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/routes/scripts.ts",
       "docs": [
         "features/scripts.mdx"

@@ -170,42 +170,51 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  const handleMfaRequestSetup = async () => {
+  const handleMfaRequestSetup = async (currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
+    // Clear any QR code from a prior aborted attempt before issuing a new one.
+    setQrCodeDataUrl(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/setup', {
-        method: 'POST'
+        method: 'POST',
+        body: JSON.stringify({ currentPassword })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? 'Failed to start MFA setup');
+        throw new Error(
+          errorData.error ?? errorData.message ?? `Failed to start MFA setup (HTTP ${response.status})`
+        );
       }
 
       const data = await response.json();
       setQrCodeDataUrl(data.qrCodeDataUrl);
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : 'Failed to start MFA setup');
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleMfaEnable = async (code: string) => {
+  const handleMfaEnable = async (code: string, currentPassword: string) => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
-        body: JSON.stringify({ code })
+        body: JSON.stringify({ code, currentPassword })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? 'Failed to enable MFA');
+        throw new Error(
+          errorData.error ?? errorData.message ?? `Failed to enable MFA (HTTP ${response.status})`
+        );
       }
 
       const data = await response.json();
@@ -220,19 +229,21 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  const handleMfaDisable = async (code: string) => {
+  const handleMfaDisable = async (code: string, currentPassword: string) => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/disable', {
         method: 'POST',
-        body: JSON.stringify({ code })
+        body: JSON.stringify({ code, currentPassword })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? 'Failed to disable MFA');
+        throw new Error(
+          errorData.error ?? errorData.message ?? `Failed to disable MFA (HTTP ${response.status})`
+        );
       }
 
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));

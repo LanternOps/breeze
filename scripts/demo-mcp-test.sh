@@ -5,8 +5,8 @@ set -euo pipefail
 #
 # Defaults to hitting the API directly at http://localhost:3001 because the
 # /test/activate and /test/complete-payment shortcut routes are NOT proxied by
-# Caddy (Caddyfile.dev only forwards /api/*, /s/*, etc), so going through
-# https://2breeze.app would 404 those steps.
+# Caddy (the canonical docker/Caddyfile.prod only forwards /api/*, /s/*, etc),
+# so going through https://2breeze.app would 404 those steps.
 #
 # Override with BASE_URL=https://your.host if you've added /test/* to Caddy.
 

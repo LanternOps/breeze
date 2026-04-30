@@ -124,17 +124,17 @@ Remote desktop uses hardware GPU encoding when available for better performance.
 
 If the hardware encoder stalls (for example, due to a driver issue), the agent automatically switches to a software encoder within approximately 600 milliseconds — previous builds took around 11 seconds to recover. Headless servers without a GPU use software rendering automatically with no configuration needed.
 
-### VNC Fallback (macOS)
+### VNC Fallback and In-Window Switcher (macOS)
 
-Older macOS devices running Monterey or Ventura do not support WebRTC remote desktop at the login screen. Breeze auto-detects this limitation and falls back to VNC via the built-in macOS Screen Sharing service.
+Some macOS devices and scenarios — older releases, certain hardware configurations, or sessions started at the login screen — cannot use WebRTC remote desktop. Breeze auto-detects these situations and falls back to VNC via the built-in macOS Screen Sharing service.
 
-When the fallback activates, the system tunnels VNC through the agent connection and renders it in the browser using noVNC. When you disconnect, the VNC password is cleared — no credentials persist on the device.
+In the **Breeze Viewer** desktop app, you can switch between WebRTC and VNC transports inside the same session window. If WebRTC degrades or fails, the viewer hands off to VNC without closing the window or losing your place. When conditions improve, you can switch back. From the web app, the **Remote Desktop** button hands off to the viewer via a deep link when VNC is the right transport, so the experience is consistent whether you start from the browser or the app.
+
+When the fallback activates, the system tunnels VNC through the agent connection. When you disconnect, the VNC password is cleared — no credentials persist on the device.
 
 <Aside type="note">
   The agent no longer disables Apple Remote Management on startup. If you use Screen Sharing alongside Breeze, it stays enabled. VNC fallback behavior is controlled by the `manageRemoteManagement` Configuration Policy flag (off by default). When VNC is needed and Screen Sharing is not already enabled, the agent returns an informative error asking you to enable the policy or enable Screen Sharing manually on the device.
 </Aside>
-
-This works in both the browser and the Breeze viewer app. No manual configuration is needed — the **Connect Desktop** button auto-detects the situation and displays a VNC badge on the session.
 
 ### Session Switcher
 
@@ -155,6 +155,8 @@ Select a shortcut from the menu to inject it into the remote session. This avoid
 ### Login Screen Input (macOS)
 
 Keyboard and mouse input works at the macOS login screen during remote desktop sessions. You can type passwords and interact with login UI elements remotely. This uses a low-level input method that operates below the normal event system, so it functions even when no user session is active.
+
+The agent dynamically switches input handling when the console transitions to or from the login window, so keyboard and mouse keep working through sign-in and sign-out events without reconnecting the session.
 
 ### Network Proxy
 
@@ -177,6 +179,8 @@ Network Proxy lets you access TCP services on an agent's local network without a
 ## Remote Terminal
 
 Remote Terminal opens an interactive shell session rendered in the browser using xterm.js. It is a PTY session on the device — keystrokes are sent to the device's shell and output is streamed back in real time, with full terminal emulation including colour, cursor control, and resizing.
+
+On Windows, terminal sessions use the modern **ConPTY** pseudo-console API, so colours, resizing, and interactive prompts behave the same as a local PowerShell window. macOS and Linux use a standard POSIX PTY.
 
 ### Starting a terminal session
 

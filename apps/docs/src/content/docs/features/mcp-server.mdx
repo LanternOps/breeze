@@ -65,6 +65,14 @@ All MCP endpoints require an API key with `ai:*` scopes. Authentication is perfo
 
 API keys follow the format `brz_<random>`. The server stores only a SHA-256 hash of the key; the plaintext is never persisted.
 
+### OAuth 2.1 (preview)
+
+For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. Users sign in to Breeze, grant the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization.
+
+OAuth is available behind the `MCP_OAUTH_ENABLED` feature flag. When enabled, the OIDC provider exposes the standard discovery endpoint at `/.well-known/oauth-authorization-server` and DCR clients can register at `/oauth/reg`. Grant revocation invalidates all sibling access tokens immediately, and refresh tokens rotate on every use.
+
+API key authentication via the `X-API-Key` header continues to work for self-hosted MCP clients that don't support OAuth.
+
 ---
 
 ## Connecting Claude Desktop
@@ -144,6 +152,14 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
   }
 }
 ```
+
+---
+
+## MCP Bootstrap (preview)
+
+Beyond the standard MCP tool surface, Breeze includes an **MCP Bootstrap** module that lets a connected AI assistant provision a new tenant end-to-end — create the tenant, run KYC via Stripe, attach a payment method, and send installer invites — through a small set of well-scoped tools (`create_tenant`, `verify_tenant`, `attach_payment_method`, `send_deployment_invites`).
+
+MCP Bootstrap is gated behind a server feature flag and is only available on SaaS deployments. Each step is fully audit-logged with `actorType: 'agent'`. Contact your account team if you'd like access for an early-customer onboarding flow.
 
 ---
 

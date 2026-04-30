@@ -13,6 +13,10 @@ The watchdog is installed automatically alongside the agent during normal instal
   As of **v0.60.1**, the watchdog service is bundled in all platform installers — Windows MSI, macOS PKG, and Linux install scripts. New installs get automatic crash recovery out of the box with no separate installation step needed. Devices installed with earlier versions can upgrade their installer package to add the watchdog.
 </Aside>
 
+<Aside>
+  As of **v0.62.25**, running `breeze-agent service install` from the CLI also auto-bootstraps the watchdog process, so unattended scripted installs are protected against agent crashes without an extra step. On macOS, agent auto-updates re-bootstrap the desktop helper and watchdog so remote control stays available across upgrades.
+</Aside>
+
 ---
 
 ## How It Works
