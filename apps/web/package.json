@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@astrojs/node": "^10.0.4",
-    "@astrojs/react": "^4.1.0",
+    "@astrojs/react": "^5.0.4",
     "@astrojs/tailwind": "^6.0.0",
     "@hookform/resolvers": "^5.2.2",
     "@monaco-editor/react": "^4.6.0",
