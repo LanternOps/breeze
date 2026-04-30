@@ -12,10 +12,10 @@ type MFASettingsProps = {
   smsAllowed?: boolean;
   qrCodeDataUrl?: string;
   recoveryCodes?: string[];
-  onEnable?: (code: string) => void | Promise<void>;
-  onDisable?: (code: string) => void | Promise<void>;
+  onEnable?: (code: string, currentPassword: string) => void | Promise<void>;
+  onDisable?: (code: string, currentPassword: string) => void | Promise<void>;
   onGenerateRecoveryCodes?: () => void | Promise<void>;
-  onRequestSetup?: () => void | Promise<void>;
+  onRequestSetup?: (currentPassword: string) => Promise<boolean> | boolean;
   onVerifyPhone?: (phoneNumber: string) => Promise<{ success: boolean; error?: string }>;
   onConfirmPhone?: (phoneNumber: string, code: string) => Promise<{ success: boolean; error?: string }>;
   onEnableSmsMfa?: () => Promise<{ success: boolean; recoveryCodes?: string[]; error?: string }>;
@@ -24,7 +24,14 @@ type MFASettingsProps = {
   loading?: boolean;
 };
 
-type MFAView = 'status' | 'setup' | 'disable' | 'recovery' | 'phone-verify' | 'sms-setup';
+type MFAView =
+  | 'status'
+  | 'confirm-password-setup'
+  | 'setup'
+  | 'disable'
+  | 'recovery'
+  | 'phone-verify'
+  | 'sms-setup';
 
 export default function MFASettings({
   enabled = false,
@@ -57,6 +64,11 @@ export default function MFASettings({
   const [phoneCodeSent, setPhoneCodeSent] = useState(false);
   const [localPhoneVerified, setLocalPhoneVerified] = useState(phoneVerified);
   const [localPhoneLast4, setLocalPhoneLast4] = useState(phoneLast4);
+  // Password is held in component state for the duration of the setup flow:
+  // /mfa/setup and /mfa/enable both require it, and we want to avoid
+  // double-prompting between the two steps. Cleared on view exit / completion.
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [disablePassword, setDisablePassword] = useState('');
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const phoneInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -152,19 +164,30 @@ export default function MFASettings({
     handlePhoneDigitChange(index, event.clipboardData.getData('text'));
   };
 
-  const handleStartSetup = async () => {
-    await onRequestSetup?.();
-    setView('setup');
+  const handleConfirmPasswordSetup = async () => {
+    if (!currentPassword || isLoading) return;
+    try {
+      setIsSubmitting(true);
+      const result = await onRequestSetup?.(currentPassword);
+      // Treat undefined (legacy/no-op) as success to keep prop optional.
+      const ok = result === undefined ? true : result;
+      if (ok) {
+        setView('setup');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleEnableSubmit = async () => {
-    if (isLoading || code.length !== DIGIT_COUNT) {
+    if (isLoading || code.length !== DIGIT_COUNT || !currentPassword) {
       return;
     }
     try {
       setIsSubmitting(true);
-      await onEnable?.(code);
+      await onEnable?.(code, currentPassword);
       resetDigits();
+      setCurrentPassword('');
       setView('status');
     } finally {
       setIsSubmitting(false);
@@ -172,13 +195,14 @@ export default function MFASettings({
   };
 
   const handleDisableSubmit = async () => {
-    if (isLoading || code.length !== DIGIT_COUNT) {
+    if (isLoading || code.length !== DIGIT_COUNT || !disablePassword) {
       return;
     }
     try {
       setIsSubmitting(true);
-      await onDisable?.(code);
+      await onDisable?.(code, disablePassword);
       resetDigits();
+      setDisablePassword('');
       setView('status');
     } finally {
       setIsSubmitting(false);
@@ -487,7 +511,12 @@ export default function MFASettings({
           ) : !enabled ? (
             <button
               type="button"
-              onClick={handleStartSetup}
+              onClick={() => {
+                setCurrentPassword('');
+                setLocalError(undefined);
+                setLocalSuccess(undefined);
+                setView('confirm-password-setup');
+              }}
               disabled={isLoading}
               className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -586,6 +615,67 @@ export default function MFASettings({
     );
   }
 
+  // Confirm-password gate before /mfa/setup. The server requires the user's
+  // current password to attach a new TOTP factor; we collect it here and reuse
+  // it for the subsequent /mfa/enable call without re-prompting.
+  if (view === 'confirm-password-setup') {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold">Confirm your password</h2>
+          <p className="text-sm text-muted-foreground">
+            Re-enter your account password to start setting up an authenticator app.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="mfa-confirm-password">
+            Current password
+          </label>
+          <input
+            id="mfa-confirm-password"
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            value={currentPassword}
+            onChange={e => setCurrentPassword(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && currentPassword && !isLoading) {
+                handleConfirmPasswordSetup();
+              }
+            }}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            disabled={isLoading}
+          />
+        </div>
+
+        {renderError()}
+
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setCurrentPassword('');
+              setLocalError(undefined);
+              setView('status');
+            }}
+            className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirmPasswordSetup}
+            disabled={isLoading || !currentPassword}
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLoading ? 'Verifying...' : 'Continue'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Setup view - QR code and verification (TOTP)
   if (view === 'setup') {
     return (
@@ -667,6 +757,24 @@ export default function MFASettings({
           </p>
         </div>
 
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="mfa-disable-password">
+            Current password
+          </label>
+          <input
+            id="mfa-disable-password"
+            type="password"
+            autoComplete="current-password"
+            value={disablePassword}
+            onChange={e => setDisablePassword(e.target.value)}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            disabled={isLoading}
+          />
+          <p className="text-xs text-muted-foreground">
+            Re-enter your account password to confirm this change.
+          </p>
+        </div>
+
         {renderError()}
 
         <div className="flex flex-wrap items-center justify-end gap-3">
@@ -674,6 +782,7 @@ export default function MFASettings({
             type="button"
             onClick={() => {
               resetDigits();
+              setDisablePassword('');
               setView('status');
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
@@ -683,7 +792,7 @@ export default function MFASettings({
           <button
             type="button"
             onClick={handleDisableSubmit}
-            disabled={isLoading || code.length !== DIGIT_COUNT}
+            disabled={isLoading || code.length !== DIGIT_COUNT || !disablePassword}
             className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading ? 'Disabling...' : 'Disable MFA'}
