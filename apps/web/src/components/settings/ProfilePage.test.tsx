@@ -70,3 +70,53 @@ describe('ProfilePage avatar settings', () => {
     );
   });
 });
+
+describe('ProfilePage MFA setup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Regression guard for the bug fixed in PR #543: server requires
+  // currentPassword on /auth/mfa/setup, but the client wasn't sending it,
+  // breaking MFA enrollment for every user. Without this assertion the
+  // server/client schema drift was silent — tsc passed, the page rendered,
+  // requests just 400'd in production.
+  it('sends currentPassword in the body when starting MFA setup', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' })
+    );
+
+    render(
+      <ProfilePage
+        initialUser={{
+          id: 'user-1',
+          name: 'Casey Admin',
+          email: 'casey@example.com',
+          mfaEnabled: false
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+
+    // Wait for the confirm-password view to mount, then query the MFA-specific
+    // input by its id (the page also has a Change Password form with the same
+    // "Current password" label, so getByLabelText would be ambiguous).
+    await screen.findByText(/Confirm your password/i);
+    const passwordInput = document.getElementById('mfa-confirm-password') as HTMLInputElement;
+    expect(passwordInput).not.toBeNull();
+    fireEvent.change(passwordInput, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await screen.findByText(/Set up authenticator/i);
+
+    const setupCall = fetchWithAuthMock.mock.calls.find(
+      ([url]) => String(url) === '/auth/mfa/setup'
+    );
+    expect(setupCall).toBeDefined();
+
+    const [, init] = setupCall!;
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toEqual({ currentPassword: 'hunter2-pw' });
+  });
+});

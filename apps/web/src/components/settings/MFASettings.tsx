@@ -165,7 +165,7 @@ export default function MFASettings({
   };
 
   const handleConfirmPasswordSetup = async () => {
-    if (!currentPassword || isLoading) return;
+    if (!currentPassword || isLoading || isSubmitting) return;
     try {
       setIsSubmitting(true);
       const result = await onRequestSetup?.(currentPassword);
@@ -174,38 +174,47 @@ export default function MFASettings({
       if (ok) {
         setView('setup');
       }
+    } catch {
+      // Parent handler surfaces errors via the errorMessage prop. If it
+      // unexpectedly throws, stay on this view so the user can retry.
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleEnableSubmit = async () => {
-    if (isLoading || code.length !== DIGIT_COUNT || !currentPassword) {
+    if (isLoading || isSubmitting || code.length !== DIGIT_COUNT || !currentPassword) {
       return;
     }
     try {
       setIsSubmitting(true);
       await onEnable?.(code, currentPassword);
+      setView('status');
+    } catch {
+      // Parent handler surfaces errors via the errorMessage prop.
+    } finally {
+      // Always clear sensitive state, regardless of outcome — keeps the
+      // plaintext password from sitting in component state across views.
+      setIsSubmitting(false);
       resetDigits();
       setCurrentPassword('');
-      setView('status');
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
   const handleDisableSubmit = async () => {
-    if (isLoading || code.length !== DIGIT_COUNT || !disablePassword) {
+    if (isLoading || isSubmitting || code.length !== DIGIT_COUNT || !disablePassword) {
       return;
     }
     try {
       setIsSubmitting(true);
       await onDisable?.(code, disablePassword);
-      resetDigits();
-      setDisablePassword('');
       setView('status');
+    } catch {
+      // Parent handler surfaces errors via the errorMessage prop.
     } finally {
       setIsSubmitting(false);
+      resetDigits();
+      setDisablePassword('');
     }
   };
 
@@ -640,12 +649,12 @@ export default function MFASettings({
             value={currentPassword}
             onChange={e => setCurrentPassword(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter' && currentPassword && !isLoading) {
+              if (e.key === 'Enter' && currentPassword && !isLoading && !isSubmitting) {
                 handleConfirmPasswordSetup();
               }
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            disabled={isLoading}
+            disabled={isLoading || isSubmitting}
           />
         </div>
 
@@ -666,7 +675,7 @@ export default function MFASettings({
           <button
             type="button"
             onClick={handleConfirmPasswordSetup}
-            disabled={isLoading || !currentPassword}
+            disabled={isLoading || isSubmitting || !currentPassword}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading ? 'Verifying...' : 'Continue'}
