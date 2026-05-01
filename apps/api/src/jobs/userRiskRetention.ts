@@ -55,7 +55,8 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const retentionDays = Math.max(30, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+        // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
         const start = Date.now();
 
         const result = await db.execute(sql`
