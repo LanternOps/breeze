@@ -26,6 +26,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Install e2e-tests dependencies
+        # `e2e-tests/` is intentionally not in pnpm-workspace.yaml (keeps the
+        # API/web tree lean), so a workspace `pnpm install` skips it. Install
+        # explicitly here so `tsx`, the doc-verify CLI, and Playwright are
+        # available in subsequent steps.
+        run: cd e2e-tests && pnpm install
+
       - name: Install Playwright browsers
         run: cd e2e-tests && npx playwright install chromium
 
