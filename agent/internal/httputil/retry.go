@@ -45,25 +45,47 @@ func isRetryableStatus(code int) bool {
 // Do executes an HTTP request with retry logic. The request body must be
 // provided separately as a byte slice so it can be replayed on retries.
 // Returns the response from the first successful (or last) attempt.
+//
+// When the server returns a retryable status (especially 429 or 503) with a
+// Retry-After header, the parsed value (clamped to ≤300s) is honored for the
+// next sleep instead of the internal exponential delay. This prevents fleets
+// of agents from steamrolling server-side rate limits.
 func Do(ctx context.Context, client *http.Client, method, url string, body []byte, headers http.Header, cfg RetryConfig) (*http.Response, error) {
 	var lastErr error
 	delay := cfg.InitialDelay
+	// nextSleepOverride, if non-zero, replaces the exponential delay for the
+	// next attempt's pre-sleep. It's set when the server sends Retry-After.
+	var nextSleepOverride time.Duration
 
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
-			jittered := applyJitter(delay, cfg.JitterFrac)
-			log.Debug("retrying request",
-				"attempt", attempt,
-				"delay", jittered,
-				"url", url,
-			)
+			var sleepFor time.Duration
+			if nextSleepOverride > 0 {
+				// Honor server-provided Retry-After. ParseRetryAfter already
+				// caps at 300s defensively.
+				sleepFor = nextSleepOverride
+				log.Debug("honoring Retry-After from server",
+					"attempt", attempt,
+					"delay", sleepFor,
+					"url", url,
+				)
+				nextSleepOverride = 0
+			} else {
+				sleepFor = applyJitter(delay, cfg.JitterFrac)
+				log.Debug("retrying request",
+					"attempt", attempt,
+					"delay", sleepFor,
+					"url", url,
+				)
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(jittered):
+			case <-time.After(sleepFor):
 			}
 
-			// Exponential backoff for next attempt
+			// Exponential backoff for next attempt (used if server doesn't
+			// send Retry-After next time around).
 			delay = time.Duration(float64(delay) * cfg.BackoffFactor)
 			if delay > cfg.MaxDelay {
 				delay = cfg.MaxDelay
@@ -95,7 +117,10 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 			return resp, nil // success or non-retryable error
 		}
 
-		// Retryable status — close body and retry
+		// Retryable status — check for Retry-After before discarding response.
+		if ra := ParseRetryAfter(resp.Header, time.Now()); ra > 0 {
+			nextSleepOverride = ra
+		}
 		resp.Body.Close()
 		lastErr = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
 	}
