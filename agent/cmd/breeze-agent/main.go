@@ -216,7 +216,7 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
-	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
+	userHelperCmd.Flags().StringVar(&helperRole, "role", "user", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
 	rootCmd.AddCommand(startCmd)

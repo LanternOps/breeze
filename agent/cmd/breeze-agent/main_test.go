@@ -531,6 +531,25 @@ func TestWaitForEnrollment_IgnoresTornWrite(t *testing.T) {
 	}
 }
 
+// TestUserHelperRoleDefault locks in the cobra default for `breeze-agent
+// user-helper --role`. The Windows AgentUserHelper Scheduled Task invokes
+// `breeze-agent user-helper` (historically with no flags) under
+// BUILTIN\Users at LeastPrivilege, so the default must be "user". The
+// previous "system" default caused the helper to claim HelperRoleSystem,
+// which the sessionbroker correctly rejected with "system role requires
+// SYSTEM identity", crash-looping every Windows customer on 0.63.x/0.64.x.
+// The legitimate desktop-capture path uses the separate `desktop-helper`
+// cobra command and hardcodes ipc.HelperRoleSystem in runDesktopHelper().
+func TestUserHelperRoleDefault(t *testing.T) {
+	roleFlag := userHelperCmd.Flags().Lookup("role")
+	if roleFlag == nil {
+		t.Fatal("role flag not registered on userHelperCmd")
+	}
+	if roleFlag.DefValue != "user" {
+		t.Errorf("user-helper --role default = %q, want %q (system role requires SYSTEM identity; user-mode helpers must default to user)", roleFlag.DefValue, "user")
+	}
+}
+
 // TestAssertHostnameNonEmpty guards the #439 contract at the enroll
 // boundary: enrollment must refuse to proceed with an empty or
 // whitespace-only hostname. This is the last line of defense against a
