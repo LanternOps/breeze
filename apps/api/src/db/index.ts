@@ -18,7 +18,19 @@ const connectionString =
   || process.env.DATABASE_URL
   || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
+// Pool sizing: postgres-js defaults to max=10, which causes cascading 504s
+// under heartbeat storms (e.g. a 1000-agent fleet reconnecting at once).
+// Default to 30 and allow tuning via DB_POOL_MAX.
+function getDbPoolMax(): number {
+  const raw = Number.parseInt(process.env.DB_POOL_MAX ?? '', 10);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 30;
+  }
+  return raw;
+}
+
 const client = postgres(connectionString, {
+  max: getDbPoolMax(),
   idle_timeout: 20,
   max_lifetime: 60 * 30,
   connect_timeout: 10,
