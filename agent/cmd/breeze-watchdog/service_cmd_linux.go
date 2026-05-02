@@ -31,7 +31,9 @@ Type=simple
 ExecStart=/usr/local/bin/breeze-watchdog run
 WorkingDirectory=/etc/breeze
 Restart=always
-RestartSec=5
+# Watchdog should come back faster than the agent (RestartSec=30) so it can
+# cover an agent crash, but 5s was unnecessarily aggressive.
+RestartSec=15
 
 # Security hardening
 ProtectSystem=strict
