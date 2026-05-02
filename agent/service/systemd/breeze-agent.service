@@ -11,7 +11,11 @@ Type=simple
 ExecStart=/usr/local/bin/breeze-agent start
 WorkingDirectory=/etc/breeze
 Restart=on-failure
-RestartSec=5
+# 30s cooldown spreads respawn across a fleet that crashes simultaneously
+# (e.g. correlated network blip). Combined with StartLimitBurst=5 over
+# StartLimitIntervalSec=60, a misbehaving host backs off entirely instead
+# of stampeding the API.
+RestartSec=30
 
 # Cap total stop time so a hung HTTP flush during OS shutdown (network
 # going down) doesn't block system power-off for the 90s systemd default.
