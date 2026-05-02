@@ -23,7 +23,19 @@ declare module 'hono' {
 // 120 requests per 60-second window per agent
 const AGENT_RATE_LIMIT = 120;
 const AGENT_RATE_WINDOW_SECONDS = 60;
+// Default per-org budget: 5x the per-agent budget — supports up to ~5 active
+// agents per org without rate-limiting. Configurable via env var.
+const DEFAULT_AGENT_ORG_RATE_LIMIT = 600;
+const AGENT_ORG_RATE_WINDOW_SECONDS = 60;
 const DEFAULT_AGENT_TOKEN_ROTATION_MAX_AGE_DAYS = 30;
+
+function getAgentOrgRateLimit(): number {
+  const raw = Number.parseInt(process.env.AGENT_ORG_RATE_LIMIT_PER_MIN ?? '', 10);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_AGENT_ORG_RATE_LIMIT;
+  }
+  return raw;
+}
 
 function tokenHashMatches(storedHash: string, tokenHash: string): boolean {
   const storedBuf = Buffer.from(storedHash, 'hex');
@@ -158,6 +170,26 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   if (!rateCheck.allowed) {
     c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));
     throw new HTTPException(429, { message: 'Agent rate limit exceeded' });
+  }
+
+  // Rate limiting per org (applied AFTER per-agent so we don't bill the org bucket
+  // for requests that already failed the per-agent check). Protects against a
+  // large fleet on one MSP saturating shared resources via the per-agent budget.
+  const orgRateKey = `agent_org_rate:${device.orgId}`;
+  const orgRateCheck = await rateLimiter(
+    redis,
+    orgRateKey,
+    getAgentOrgRateLimit(),
+    AGENT_ORG_RATE_WINDOW_SECONDS,
+  );
+
+  if (!orgRateCheck.allowed) {
+    console.warn('[agentAuth] org rate limit exceeded', {
+      orgId: device.orgId,
+      deviceId: device.id,
+    });
+    c.header('Retry-After', '60');
+    return c.json({ error: 'org_rate_limit_exceeded' }, 429);
   }
 
   if (match.tokenRotationRequired) {
