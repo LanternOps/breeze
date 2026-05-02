@@ -26,6 +26,7 @@ Files:
 - [R-198 through R-199](/Users/toddhebebrand/breeze/security_reports/security_best_practices_report_r198_r199.md)
 - [R-200](/Users/toddhebebrand/breeze/security_reports/security_best_practices_report_r200.md)
 - [R-201 through R-214](/Users/toddhebebrand/breeze/security_reports/security_best_practices_report_r201_r214.md)
+- [2026-05-02 General hardening review](/Users/toddhebebrand/breeze/security_reports/security_best_practices_report_2026-05-02_general_hardening.md)
 
 The canonical working report is still:
 - [security_best_practices_report.md](/Users/toddhebebrand/breeze/security_best_practices_report.md)

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
+import McpUrlCard from '../shared/McpUrlCard';
 import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode, fetchAndApplyPreferences } from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
@@ -145,6 +146,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         errorMessage={error}
         loading={loading}
       />
+      <McpUrlCard variant="compact" className="mt-8" />
     </div>
   );
 }
