@@ -1,6 +1,7 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ConnectedAppsList from '../../components/settings/ConnectedAppsList';
+import McpUrlCard from '../../components/shared/McpUrlCard';
 ---
 
 <DashboardLayout title="Connected apps">
@@ -12,6 +13,7 @@ import ConnectedAppsList from '../../components/settings/ConnectedAppsList';
         Revoke access at any time — the app's token will be rejected within 10 minutes.
       </p>
     </div>
+    <McpUrlCard client:only="react" />
     <ConnectedAppsList client:only="react" />
   </div>
 </DashboardLayout>
