@@ -102,7 +102,7 @@ func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("os.Executable: %w", err)
 	}
-	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper`, exePath))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(exePath, "system"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -174,7 +174,7 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("os.Executable: %w", err)
 	}
-	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper --role user`, exePath))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(exePath, "user"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
