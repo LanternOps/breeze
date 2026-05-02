@@ -146,7 +146,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         errorMessage={error}
         loading={loading}
       />
-      <McpUrlCard variant="compact" className="mt-8" />
+      <McpUrlCard variant="compact" requireOAuth className="mt-8" />
     </div>
   );
 }

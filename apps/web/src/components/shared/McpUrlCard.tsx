@@ -5,20 +5,35 @@ interface McpUrlCardProps {
   /** Full card with title + description (default) or compact one-liner */
   variant?: 'card' | 'compact';
   className?: string;
+  /**
+   * When true, render nothing unless the API exposes the OAuth 2.1 discovery
+   * doc. The sign-in page uses this so we don't direct users to a URL their
+   * MCP client can't authenticate against until the server-side flag is on.
+   */
+  requireOAuth?: boolean;
 }
 
-function resolveMcpUrl(): string {
-  const base = (import.meta.env.PUBLIC_API_URL as string | undefined)?.trim() || window.location.origin;
-  return `${base.replace(/\/$/, '')}/mcp/sse`;
+function resolveApiBase(): string {
+  return ((import.meta.env.PUBLIC_API_URL as string | undefined)?.trim() || window.location.origin).replace(/\/$/, '');
 }
 
-export default function McpUrlCard({ variant = 'card', className }: McpUrlCardProps) {
+export default function McpUrlCard({ variant = 'card', className, requireOAuth = false }: McpUrlCardProps) {
   const [url, setUrl] = useState<string>('');
   const [copied, setCopied] = useState(false);
+  const [oauthReady, setOauthReady] = useState<boolean>(!requireOAuth);
 
   useEffect(() => {
-    setUrl(resolveMcpUrl());
-  }, []);
+    const base = resolveApiBase();
+    setUrl(`${base}/api/v1/mcp/sse`);
+    if (!requireOAuth) return;
+    let cancelled = false;
+    fetch(`${base}/.well-known/oauth-authorization-server`, { method: 'GET' })
+      .then((res) => { if (!cancelled) setOauthReady(res.ok); })
+      .catch(() => { if (!cancelled) setOauthReady(false); });
+    return () => { cancelled = true; };
+  }, [requireOAuth]);
+
+  if (!oauthReady) return null;
 
   const onCopy = async () => {
     if (!url) return;
