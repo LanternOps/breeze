@@ -24,7 +24,6 @@ describe('mintApiKey', () => {
       defaultOrgId: 'o1',
       createdByUserId: 'u1',
       name: 'MCP Provisioning',
-      scopeState: 'readonly',
       scopes: ['ai:read'],
       source: 'mcp_provisioning',
     });
@@ -34,7 +33,7 @@ describe('mintApiKey', () => {
     expect(r.rawKey.length).toBe(52);
   });
 
-  it('hashes the raw key with sha256 (never stores plaintext) and forwards scope_state/createdBy', async () => {
+  it('hashes the raw key with sha256 (never stores plaintext) and forwards createdBy', async () => {
     const valuesMock = vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue([{ id: 'key-2' }]),
     });
@@ -45,7 +44,6 @@ describe('mintApiKey', () => {
       defaultOrgId: 'o1',
       createdByUserId: 'u1',
       name: 'MCP Provisioning',
-      scopeState: 'full',
       scopes: ['ai:read', 'ai:write'],
       source: 'mcp_provisioning',
     });
@@ -57,7 +55,6 @@ describe('mintApiKey', () => {
     expect(args.keyPrefix).toBe(r.rawKey.slice(0, 8));
     expect(args.orgId).toBe('o1');
     expect(args.createdBy).toBe('u1');
-    expect(args.scopeState).toBe('full');
     expect(args.status).toBe('active');
     expect(args.scopes).toEqual(['ai:read', 'ai:write']);
     expect(args.source).toBe('mcp_provisioning');
@@ -74,7 +71,6 @@ describe('mintApiKey', () => {
       defaultOrgId: 'o1',
       createdByUserId: 'u1',
       name: 'Manual',
-      scopeState: 'full',
       scopes: ['ai:read'],
       source: 'manual',
     });

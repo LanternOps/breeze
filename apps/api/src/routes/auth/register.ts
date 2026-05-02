@@ -11,7 +11,8 @@ import {
   getRedis
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
-import { isMcpBootstrapEnabled } from '../../config/env';
+import { isHosted } from '../../config/env';
+import type { PartnerStatus } from '../../db/schema/orgs';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
 import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
@@ -92,9 +93,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
     // Self-hosted single-tenant installs need the seeded admin to finish
     // setup before strangers can create partners. SaaS deployments
-    // (MCP_BOOTSTRAP_ENABLED=true) skip the gate so the partner table can
+    // (IS_HOSTED=true) skip the gate so the partner table can
     // bootstrap from an empty state.
-    if (isMcpBootstrapEnabled()) {
+    if (isHosted()) {
       // Awaited so a DB-write failure surfaces here with full context, rather
       // than orphaning a context-less captureException out of the request scope.
       // Signup still proceeds on failure — these events are low-volume and
@@ -189,6 +190,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         adminName: name,
         passwordHash,
         origin: { mcp: false },
+        status: isHosted() ? 'pending' : 'active',
       });
       partnerIdForLog = result.partnerId;
 
@@ -252,7 +254,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       // If hook overrides the partner status (e.g. to 'pending'), apply it
       const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
-      let effectiveStatus: string = newPartner.status;
+      let effectiveStatus: PartnerStatus = newPartner.status;
 
       if (hookResponse?.status && hookResponse.status !== newPartner.status) {
         if (!VALID_STATUSES.includes(hookResponse.status as any)) {
@@ -276,7 +278,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               .update(partners)
               .set(updateSet)
               .where(eq(partners.id, newPartner.id));
-            effectiveStatus = hookResponse.status;
+            effectiveStatus = hookResponse.status as PartnerStatus;
           } catch (statusErr) {
             console.error('[register-partner] hook-status update failed', {
               partnerId: newPartner.id,

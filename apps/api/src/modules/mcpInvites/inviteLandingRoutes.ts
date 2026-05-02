@@ -25,7 +25,7 @@ import {
  *      enrollment key and serves the signed installer zip with the token
  *      baked in.
  *
- * Mounted only when `MCP_BOOTSTRAP_ENABLED=true`.
+ * Mounted only when `IS_HOSTED=true`.
  */
 
 type DetectedOs = 'win' | 'mac' | 'linux' | 'unknown';

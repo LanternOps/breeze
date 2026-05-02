@@ -46,7 +46,6 @@ const ORG_ID_KEYED_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, string>([
   ['partners', 'id'],
   ['partner_users', 'partner_id'],
-  ['partner_activations', 'partner_id'],
   ['oauth_clients', 'partner_id'],
   ['oauth_client_partner_grants', 'partner_id'],
   ['oauth_refresh_tokens', 'partner_id'],

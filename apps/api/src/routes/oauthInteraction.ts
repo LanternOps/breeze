@@ -7,7 +7,7 @@ import { setGrantBreezeMeta } from '../oauth/adapter';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users } from '../db/schema';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -212,6 +212,57 @@ if (MCP_OAUTH_ENABLED) {
       };
     });
     if (!hasAccess) throw new HTTPException(403, { message: 'not a member of this partner' });
+
+    let partnerRow: { status: string } | undefined;
+    try {
+      [partnerRow] = await asSystem(async () =>
+        db
+          .select({ status: partners.status })
+          .from(partners)
+          .where(eq(partners.id, body.partner_id))
+          .limit(1),
+      );
+    } catch (err) {
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_CONSENT_PARTNER_STATUS_FAILED,
+        message: 'Failed to fetch partner status during consent',
+        err,
+        context: { uid: c.req.param('uid'), partnerId: body.partner_id },
+      });
+      throw new HTTPException(500, { message: 'failed to verify partner status' });
+    }
+    if (!partnerRow) {
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_CONSENT_PARTNER_STATUS_FAILED,
+        message: 'Partner row missing despite confirmed membership — possible data integrity issue',
+        err: new Error('partner row missing'),
+        context: { uid: c.req.param('uid'), partnerId: body.partner_id },
+      });
+      throw new HTTPException(404, { message: 'partner not found' });
+    }
+    if (partnerRow.status !== 'active') {
+      if (BILLING_URL) {
+        // Hand off to breeze-billing. On payment success, breeze-billing
+        // flips partners.status='active' and returns the user to
+        // /oauth/consent?uid=<UID>, where this handler falls through to
+        // grant.save() below.
+        let billingUrl: URL;
+        try {
+          billingUrl = new URL(BILLING_URL);
+        } catch (err) {
+          logOauthError({
+            errorId: ERROR_IDS.OAUTH_CONSENT_PARTNER_STATUS_FAILED,
+            message: 'BILLING_URL is not a valid URL — cannot redirect inactive partner',
+            err,
+            context: { BILLING_URL, uid: c.req.param('uid') },
+          });
+          throw new HTTPException(500, { message: 'billing service misconfigured' });
+        }
+        billingUrl.searchParams.set('uid', c.req.param('uid'));
+        return c.json({ redirectTo: billingUrl.toString() });
+      }
+      throw new HTTPException(402, { message: 'subscription_required' });
+    }
 
     const grant = new (provider as any).Grant({
       accountId: userId,

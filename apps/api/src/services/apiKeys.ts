@@ -18,7 +18,6 @@ export interface MintApiKeyInput {
   defaultOrgId: string;
   createdByUserId: string;
   name: string;
-  scopeState: 'readonly' | 'full';
   scopes: string[];
   source: 'mcp_provisioning' | 'manual';
 }
@@ -38,7 +37,6 @@ export async function mintApiKey(
       keyHash,
       keyPrefix,
       scopes: input.scopes,
-      scopeState: input.scopeState,
       status: 'active',
       source: input.source,
       createdBy: input.createdByUserId,

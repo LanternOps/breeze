@@ -63,5 +63,4 @@ export * from './localVault';
 export * from './incidentResponse';
 export * from './tunnels';
 export * from './installerBootstrapTokens';
-export * from './partnerActivations';
 export * from './deploymentInvites';

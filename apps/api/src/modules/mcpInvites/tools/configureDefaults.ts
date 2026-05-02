@@ -8,7 +8,6 @@ import {
   alertRules,
   partners,
 } from '../../../db/schema';
-import { requirePaymentMethod } from '../paymentGate';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../../../services/auditEvents';
 import type { BootstrapTool, BootstrapContext } from '../types';
 
@@ -42,7 +41,7 @@ const TOOL_DESCRIPTION = [
   '(2) attach a standard alert policy (CPU > 90% for 5m, disk free < 10%, offline > 15m) if built-in templates are available,',
   '(3) set the partner risk profile (low/standard/strict),',
   "(4) add an admin-email notification channel routed to the tenant's primary admin.",
-  "Idempotent — calling twice only creates what's missing. Call once after verify_tenant returns active.",
+  "Idempotent — calling twice only creates what's missing. Requires an active partner. Bearer-token (OAuth) callers will be blocked with 403 PARTNER_INACTIVE if the partner becomes inactive between sessions; X-API-Key callers do not have this check at the tool layer (the per-key revocation flow is the gate there).",
 ].join(' ');
 
 const DEFAULT_GROUP_NAME = 'All Devices';
@@ -266,5 +265,5 @@ export const configureDefaultsTool: BootstrapTool<
     description: TOOL_DESCRIPTION,
     inputSchema,
   },
-  handler: requirePaymentMethod(configureDefaultsHandler),
+  handler: configureDefaultsHandler,
 };

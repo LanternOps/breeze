@@ -13,7 +13,7 @@ const setApiKeyContext = (c: any) => {
   c.set('apiKey', {
     id: 'key-1', orgId: 'org-1', name: 'test', keyPrefix: 'brz_test',
     partnerId: 'partner-1',
-    scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1', scopeState: 'full',
+    scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1',
   });
   c.set('apiKeyOrgId', 'org-1');
 };
@@ -73,9 +73,9 @@ vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
 }));
-vi.mock('../modules/mcpBootstrap', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
+vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
 
-const ENV = ['MCP_OAUTH_ENABLED', 'MCP_BOOTSTRAP_ENABLED', 'OAUTH_ISSUER'] as const;
+const ENV = ['MCP_OAUTH_ENABLED', 'IS_HOSTED', 'OAUTH_ISSUER'] as const;
 const clearEnv = () => { for (const key of ENV) delete process.env[key]; };
 
 async function appWithMcpRoutes() {
@@ -182,7 +182,6 @@ describe('mcpServer bearer auth routing', () => {
         scopes: ['ai:read'],
         rateLimit: 1000,
         createdBy: 'user-1',
-        scopeState: 'full',
       });
       return next();
     });
@@ -204,17 +203,16 @@ describe('mcpServer bearer auth routing', () => {
     expect(Array.isArray(authArg?.accessibleOrgIds)).toBe(true);
   });
 
-  it('still allows the bootstrap carve-out with no auth headers', async () => {
+  it('no auth headers → 401 even with MCP_OAUTH_ENABLED (carve-out deleted in Phase 3)', async () => {
     process.env.MCP_OAUTH_ENABLED = 'true';
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
-    const { app, mod } = await appWithMcpRoutes();
-    await mod.__loadMcpBootstrapForTests();
+    delete process.env.IS_HOSTED;
+    const { app } = await appWithMcpRoutes();
     const res = await app.request('/mcp/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
     expect(mocks.bearerTokenAuthMiddleware).not.toHaveBeenCalled();
     expect(mocks.apiKeyAuthMiddleware).not.toHaveBeenCalled();
   });

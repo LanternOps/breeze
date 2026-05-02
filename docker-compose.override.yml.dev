@@ -58,11 +58,12 @@ services:
       TURN_HOST: ${TURN_HOST:-127.0.0.1}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-dev-turn-secret}
-      # MCP bootstrap (agent-deployable tenant setup)
-      MCP_BOOTSTRAP_ENABLED: ${MCP_BOOTSTRAP_ENABLED:-false}
+      # Hosted SaaS flag (enables billing redirect, bypasses self-host gates)
+      IS_HOSTED: ${IS_HOSTED:-false}
       MCP_BOOTSTRAP_TEST_MODE: ${MCP_BOOTSTRAP_TEST_MODE:-false}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      BILLING_URL: ${BILLING_URL:-}
       BREEZE_BILLING_URL: ${BREEZE_BILLING_URL:-http://billing:3002}
       PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-http://localhost:4321}
       BREEZE_REGION: ${BREEZE_REGION:-us}

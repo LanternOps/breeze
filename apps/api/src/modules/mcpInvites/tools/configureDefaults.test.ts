@@ -26,13 +26,9 @@ vi.mock('../../../db/schema', () => ({
   },
 }));
 
-vi.mock('../paymentGate', () => ({
-  // Pass-through by default; override per-test for the payment-required case.
-  requirePaymentMethod: <I, O>(h: (i: I, c: any) => Promise<O>) => h,
-  PaymentRequiredError: class PaymentRequiredError extends Error {
-    code = 'PAYMENT_REQUIRED' as const;
-  },
-}));
+// paymentGate.ts was deleted in Phase 3. The requirePaymentMethod decorator
+// is no longer used by this tool; payment enforcement is handled at the MCP
+// dispatch layer (dispatchBootstrapAuthTool in mcpServer.ts).
 
 vi.mock('../../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
@@ -120,7 +116,6 @@ const ctx: any = {
     partnerId: PARTNER_ID,
     defaultOrgId: ORG_ID,
     partnerAdminEmail: 'admin@acme.com',
-    scopeState: 'full',
   },
 };
 
@@ -355,13 +350,12 @@ describe('configure_defaults tool', () => {
   });
 });
 
-// ---- Payment gate ---------------------------------------------------------
+// ---- Tool definition wiring -----------------------------------------------
 
-// Payment gate is covered by paymentGate.test.ts — the decorator is applied
-// to configureDefaultsTool.handler at module load. Here we just assert the
-// wiring by showing the handler is the gated handler (not the raw one).
-describe('configure_defaults payment gate wiring', () => {
-  it('tool definition registers a handler (gated by requirePaymentMethod at import)', () => {
+// paymentGate.ts was deleted in Phase 3; scope enforcement is now handled
+// by the execute-scope check in dispatchBootstrapAuthTool.
+describe('configure_defaults tool wiring', () => {
+  it('tool definition registers a handler', () => {
     expect(typeof configureDefaultsTool.handler).toBe('function');
     expect(configureDefaultsTool.definition.name).toBe('configure_defaults');
   });

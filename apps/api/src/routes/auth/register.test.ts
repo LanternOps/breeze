@@ -110,12 +110,78 @@ async function postRegisterPartner(body: unknown) {
   });
 }
 
+describe('/register-partner partner status by deployment mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.IS_HOSTED;
+
+    vi.mocked(createPartner).mockResolvedValue({
+      partnerId: 'p-1',
+      orgId: 'o-1',
+      adminUserId: 'u-1',
+      adminRoleId: 'r-1',
+      siteId: 's-1',
+      mcpOrigin: false,
+    });
+
+    // Hosted path: skip gate (IS_HOSTED=true), no dup user, then partner+user rows
+    // Non-hosted path: setup admin exists, no dup user, then partner+user rows
+  });
+
+  function setupDbSelectsForSuccess(isHostedMode: boolean) {
+    if (isHostedMode) {
+      // gate skipped; user-existence check + post-create partner + post-create user
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+        }]) as any);
+    } else {
+      // setup-admin check returns admin, user-existence empty, partner+user rows
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([{ setupCompletedAt: new Date() }]) as any)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'active',
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{
+          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+        }]) as any);
+    }
+  }
+
+  it('creates partner with status=pending when IS_HOSTED=true', async () => {
+    process.env.IS_HOSTED = 'true';
+    setupDbSelectsForSuccess(true);
+
+    const res = await postRegisterPartner(validBody);
+    expect(res.status).toBeLessThan(400);
+    expect(createPartner).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'pending' }),
+    );
+  });
+
+  it('creates partner with status=active when IS_HOSTED is unset', async () => {
+    // IS_HOSTED already deleted in beforeEach
+    setupDbSelectsForSuccess(false);
+
+    const res = await postRegisterPartner(validBody);
+    expect(res.status).toBeLessThan(400);
+    expect(createPartner).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'active' }),
+    );
+  });
+});
+
 describe('POST /register-partner setup-admin gate', () => {
-  const originalFlag = process.env.MCP_BOOTSTRAP_ENABLED;
+  const originalFlag = process.env.IS_HOSTED;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.MCP_BOOTSTRAP_ENABLED;
+    delete process.env.IS_HOSTED;
 
     vi.mocked(createPartner).mockResolvedValue({
       partnerId: 'p-1',
@@ -133,11 +199,11 @@ describe('POST /register-partner setup-admin gate', () => {
   });
 
   afterEach(() => {
-    if (originalFlag === undefined) delete process.env.MCP_BOOTSTRAP_ENABLED;
-    else process.env.MCP_BOOTSTRAP_ENABLED = originalFlag;
+    if (originalFlag === undefined) delete process.env.IS_HOSTED;
+    else process.env.IS_HOSTED = originalFlag;
   });
 
-  it('returns 403 when MCP_BOOTSTRAP_ENABLED is unset and no setup admin exists', async () => {
+  it('returns 403 when IS_HOSTED is unset and no setup admin exists', async () => {
     const res = await postRegisterPartner(validBody);
     expect(res.status).toBe(403);
     const body = await res.json();
@@ -145,8 +211,8 @@ describe('POST /register-partner setup-admin gate', () => {
     expect(createPartner).not.toHaveBeenCalled();
   });
 
-  it('skips the setup-admin gate and proceeds when MCP_BOOTSTRAP_ENABLED=true', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+  it('skips the setup-admin gate and proceeds when IS_HOSTED=true', async () => {
+    process.env.IS_HOSTED = 'true';
 
     // After the gate is skipped, the route runs the user-existence SELECT and
     // then the post-create SELECTs for partner + user. Stage three responses:
@@ -167,8 +233,8 @@ describe('POST /register-partner setup-admin gate', () => {
     expect(createPartner).toHaveBeenCalledOnce();
   });
 
-  it('writes a setup-admin-gate-bypass audit event when MCP_BOOTSTRAP_ENABLED=true', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+  it('writes a setup-admin-gate-bypass audit event when IS_HOSTED=true', async () => {
+    process.env.IS_HOSTED = 'true';
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([]) as any)
@@ -204,7 +270,7 @@ describe('POST /register-partner setup-admin gate', () => {
   });
 
   it('proceeds with signup when the bypass audit-log write fails', async () => {
-    process.env.MCP_BOOTSTRAP_ENABLED = 'true';
+    process.env.IS_HOSTED = 'true';
     const auditErr = new Error('audit DB unreachable');
     vi.mocked(createAuditLog).mockRejectedValueOnce(auditErr);
 
@@ -242,8 +308,8 @@ describe('POST /register-partner setup-admin gate', () => {
     ['off', 403],
     ['', 403],
     ['random', 403],
-  ])('MCP_BOOTSTRAP_ENABLED=%j → status %i', async (flag, expectedStatus) => {
-    process.env.MCP_BOOTSTRAP_ENABLED = flag;
+  ])('IS_HOSTED=%j → status %i', async (flag, expectedStatus) => {
+    process.env.IS_HOSTED = flag;
     if (expectedStatus === 200) {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectChain([]) as any)

@@ -125,6 +125,6 @@ echo "» Running mcp-bootstrap spec against $BASE_URL"
 cd "$REPO_ROOT/e2e-tests"
 E2E_API_URL="$BASE_URL" \
 E2E_BASE_URL="$BASE_URL" \
-MCP_BOOTSTRAP_ENABLED=true \
+IS_HOSTED=true \
 MCP_BOOTSTRAP_TEST_MODE=true \
   pnpm test tests/mcp-bootstrap.spec.ts

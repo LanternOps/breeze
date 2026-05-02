@@ -3,7 +3,6 @@ import { and, eq, gt } from 'drizzle-orm';
 import { db } from '../../../db';
 import { deploymentInvites, partners } from '../../../db/schema';
 import { mintChildEnrollmentKey } from '../../../routes/enrollmentKeys';
-import { requirePaymentMethod } from '../paymentGate';
 import { rateLimiter } from '../../../services/rate-limit';
 import { getRedis } from '../../../services/redis';
 import { buildDeploymentInviteEmail } from '../../../services/deploymentInviteEmail';
@@ -36,12 +35,8 @@ export interface SendDeploymentInvitesOutput {
   failures?: Array<{ email: string; error: string }>;
 }
 
-const TOOL_DESCRIPTION = [
-  'Email each listed staff member a one-click installer link for their operating system. Each link auto-enrolls their device into this tenant.',
-  'Call this after verify_tenant returns active. Requires a payment method on file; if you get PAYMENT_REQUIRED, call attach_payment_method first.',
-  'Maximum 25 invites per call (free-tier device cap). Recipients invited in the last 24h are silently deduplicated.',
-  'Poll get_fleet_status to see devices come online as staff install.',
-].join(' ');
+const TOOL_DESCRIPTION =
+  "Sends install-link emails to a list of staff. Requires an active partner. Bearer-token (OAuth) callers will be blocked with 403 PARTNER_INACTIVE if the partner becomes inactive between sessions; X-API-Key callers do not have this check at the tool layer (the per-key revocation flow is the gate there).";
 
 async function sendDeploymentInvitesHandler(
   input: SendInput,
@@ -219,5 +214,5 @@ export const sendDeploymentInvitesTool: BootstrapTool<SendInput, SendDeploymentI
     description: TOOL_DESCRIPTION,
     inputSchema,
   },
-  handler: requirePaymentMethod(sendDeploymentInvitesHandler),
+  handler: sendDeploymentInvitesHandler,
 };
