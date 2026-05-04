@@ -24,6 +24,7 @@ import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 
@@ -32,18 +33,27 @@ export const heartbeatRoutes = new Hono();
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  const agent = c.get('agent') as AgentAuthContext | undefined;
+
+  if (!agent?.deviceId) {
+    return c.json({ error: 'Agent context not found' }, 401);
+  }
 
   const [device] = await db
     .select()
     .from(devices)
-    .where(eq(devices.agentId, agentId))
+    .where(eq(devices.id, agent.deviceId))
     .limit(1);
 
   if (!device) {
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  const isWatchdog = data.role === 'watchdog';
+  if (data.role && data.role !== agent.role) {
+    return c.json({ error: 'Agent credential role mismatch' }, 403);
+  }
+
+  const isWatchdog = agent.role === 'watchdog';
 
   if (isWatchdog) {
     // Update watchdog-specific columns only — don't touch agent metrics
@@ -390,7 +400,9 @@ if (latestHelper) {
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
-  const rotateToken = !authenticatedWithPreviousToken && isAgentTokenRotationDue(device.tokenIssuedAt);
+  const rotateToken =
+    !authenticatedWithPreviousToken &&
+    (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
 
   let manageRemoteManagement = false;
   try {

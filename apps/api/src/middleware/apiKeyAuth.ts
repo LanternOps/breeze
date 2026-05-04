@@ -1,10 +1,12 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { apiKeys, organizations } from '../db/schema';
+import { apiKeys } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
+import { getActiveOrgTenant } from '../services/tenantStatus';
+import { getTrustedClientIp } from '../services/clientIp';
 
 export interface ApiKeyContext {
   apiKey: {
@@ -34,6 +36,34 @@ function hashApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
+function envInt(name: string, fallback: number): number {
+  const raw = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+async function enforcePreLookupProbeRateLimit(c: Context): Promise<void> {
+  const limit = envInt('API_KEY_PRELOOKUP_RATE_LIMIT', 300);
+  const windowSeconds = envInt('API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS', 60);
+  const clientIp = getTrustedClientIp(c, 'unknown');
+  const rateCheck = await rateLimiter(getRedis(), `api_key_probe:${clientIp}`, limit, windowSeconds);
+
+  if (!rateCheck.allowed) {
+    c.header('X-RateLimit-Limit', String(limit));
+    c.header('X-RateLimit-Remaining', '0');
+    c.header('X-RateLimit-Reset', String(Math.ceil(rateCheck.resetAt.getTime() / 1000)));
+    c.header('Retry-After', String(Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000))));
+
+    throw new HTTPException(429, {
+      message: 'Too many API key authentication attempts',
+      cause: {
+        limit,
+        remaining: 0,
+        resetAt: rateCheck.resetAt.toISOString()
+      }
+    });
+  }
+}
+
 /**
  * Middleware to authenticate requests via X-API-Key header.
  *
@@ -53,7 +83,10 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Missing X-API-Key header' });
   }
 
-  // Validate key format
+  await enforcePreLookupProbeRateLimit(c);
+
+  // Validate key format after the probe limiter so malformed brute-force
+  // attempts cannot bypass the pre-lookup throttle.
   if (!apiKeyHeader.startsWith('brz_')) {
     throw new HTTPException(401, { message: 'Invalid API key format' });
   }
@@ -107,6 +140,11 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'API key has expired' });
   }
 
+  const ownerTenant = await getActiveOrgTenant(apiKey.orgId);
+  if (!ownerTenant) {
+    throw new HTTPException(401, { message: 'API key owner is not active' });
+  }
+
   // Check rate limits (requests per hour)
   const redis = getRedis();
   const rateLimitKey = `api_key_rate:${apiKey.id}`;
@@ -158,16 +196,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   // we skip the round-trip and keep accessiblePartnerIds empty. This also
   // avoids a per-request DB hit on the hot agent-authed path.
   const isMcpProvisioningKey = apiKey.source === 'mcp_provisioning';
-  const resolvedPartnerId = isMcpProvisioningKey
-    ? await withSystemDbAccessContext(async () => {
-        const [row] = await db
-          .select({ partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, apiKey.orgId))
-          .limit(1);
-        return row?.partnerId ?? null;
-      })
-    : null;
+  const resolvedPartnerId = isMcpProvisioningKey ? ownerTenant.partnerId : null;
 
   // Set API key context for route handlers
   c.set('apiKey', {
@@ -224,10 +253,10 @@ export function requireApiKeyScope(...requiredScopes: string[]) {
       });
     }
 
-    // Check if API key has any of the required scopes
-    // Also check for wildcard scope '*' which grants all access
-    const hasWildcard = apiKey.scopes.includes('*');
-    const hasRequiredScope = hasWildcard || requiredScopes.some(scope => apiKey.scopes.includes(scope));
+    // Check if API key has any of the required scopes. Wildcard scopes are
+    // intentionally not honored; create/update rejects them and old rows should
+    // not retain blanket access.
+    const hasRequiredScope = requiredScopes.some(scope => apiKey.scopes.includes(scope));
 
     if (!hasRequiredScope) {
       throw new HTTPException(403, {

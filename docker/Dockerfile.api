@@ -1,5 +1,5 @@
-FROM node:22-alpine AS base
-RUN npm install -g pnpm
+FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS base
+RUN corepack enable && corepack prepare pnpm@9.15.7 --activate
 
 FROM base AS deps
 WORKDIR /app

@@ -4,20 +4,19 @@ import { eq, sql, desc, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
 
 export const commandsRoutes = new Hono();
 
 commandsRoutes.use('*', authMiddleware);
 
-function hasScriptId(payload: unknown): boolean {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return false;
-  }
-  return typeof (payload as Record<string, unknown>).scriptId === 'string';
+function canAccessDeviceSite(device: { siteId?: string | null }, userPerms: UserPermissions | undefined): boolean {
+  if (!userPerms?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
 }
 
 // POST /devices/bulk/commands - Queue a command for multiple devices
@@ -31,9 +30,8 @@ commandsRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Validate payload based on command type
-    if (data.type === 'script' && !hasScriptId(data.payload)) {
-      return c.json({ error: 'Script commands require a scriptId in payload' }, 400);
+    if (data.type === 'script') {
+      return c.json({ error: 'Script commands must be executed through the scripts endpoint' }, 400);
     }
 
     const commandList: Array<{
@@ -85,7 +83,7 @@ commandsRoutes.post(
         resourceName: data.type,
         details: {
           deviceId,
-          commandType: data.type,
+          ...commandAuditDetails(command.id, data.type, data.payload || {}),
           bulk: true
         }
       });
@@ -107,6 +105,10 @@ commandsRoutes.post(
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
+    if (data.type === 'script') {
+      return c.json({ error: 'Script commands must be executed through the scripts endpoint' }, 400);
+    }
+
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
@@ -115,11 +117,6 @@ commandsRoutes.post(
     // Don't allow commands to decommissioned devices
     if (device.status === 'decommissioned') {
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-    }
-
-    // Validate payload based on command type
-    if (data.type === 'script' && !hasScriptId(data.payload)) {
-      return c.json({ error: 'Script commands require a scriptId in payload' }, 400);
     }
 
     const [command] = await db
@@ -145,7 +142,7 @@ commandsRoutes.post(
       resourceName: data.type,
       details: {
         deviceId,
-        commandType: data.type
+        ...commandAuditDetails(command.id, data.type, data.payload || {})
       }
     });
 
@@ -212,6 +209,7 @@ commandsRoutes.post(
 commandsRoutes.get(
   '/:id/commands',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -221,6 +219,9 @@ commandsRoutes.get(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const countResult = await db
@@ -238,7 +239,7 @@ commandsRoutes.get(
       .offset(pagination.offset);
 
     return c.json({
-      data: commands,
+      data: commands.map((command) => sanitizeCommandForHistory(command)),
       pagination: {
         page: pagination.page,
         limit: pagination.limit,
@@ -252,6 +253,7 @@ commandsRoutes.get(
 commandsRoutes.get(
   '/:id/commands/:commandId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -260,6 +262,9 @@ commandsRoutes.get(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const [command] = await db
@@ -277,6 +282,6 @@ commandsRoutes.get(
       return c.json({ error: 'Command not found' }, 404);
     }
 
-    return c.json({ data: command });
+    return c.json({ data: sanitizeCommandForHistory(command) });
   }
 );

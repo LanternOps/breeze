@@ -11,6 +11,13 @@ import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders
 import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
+import {
+  decryptWebhookHeaders,
+  encryptWebhookHeaders,
+  isMaskedIntegrationSecret,
+  redactWebhookHeaders,
+} from '../services/notificationChannelSecrets';
+import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../services/outboundHeaders';
 
 export const webhookRoutes = new Hono();
 
@@ -18,7 +25,7 @@ type ApiWebhookStatus = 'active' | 'paused' | 'failed';
 type DbWebhookStatus = 'active' | 'disabled' | 'error';
 type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
 
-type WebhookHeaders = Array<{ key: string; value: string }>;
+type WebhookHeaders = Array<{ key: string; value: unknown }>;
 
 type RouteAuth = {
   scope: 'organization' | 'partner' | 'system' | string;
@@ -52,11 +59,11 @@ function normalizeHeaders(headers: unknown): WebhookHeaders {
 
   if (Array.isArray(headers)) {
     return headers
-      .filter((entry): entry is { key: string; value: string } => {
+      .filter((entry): entry is { key: string; value: unknown } => {
         return Boolean(entry)
           && typeof entry === 'object'
           && typeof (entry as { key?: unknown }).key === 'string'
-          && typeof (entry as { value?: unknown }).value === 'string';
+          && 'value' in entry;
       })
       .map((entry) => ({
         key: entry.key,
@@ -74,10 +81,13 @@ function normalizeHeaders(headers: unknown): WebhookHeaders {
 }
 
 function headersToRecord(headers: unknown): Record<string, string> {
-  return normalizeHeaders(headers).reduce<Record<string, string>>((acc, header) => {
-    acc[header.key] = header.value;
+  const headerRecord = normalizeHeaders(headers).reduce<Record<string, string>>((acc, header) => {
+    if (typeof header.value === 'string') {
+      acc[header.key] = header.value;
+    }
     return acc;
   }, {});
+  return sanitizeOutboundHeaders(headerRecord);
 }
 
 function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): WorkerWebhookConfig {
@@ -99,7 +109,7 @@ function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): Work
     url: webhook.url,
     secret,
     events: webhook.events ?? [],
-    headers: headersToRecord(webhook.headers),
+    headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
     retryPolicy
   };
 }
@@ -111,7 +121,7 @@ function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
     name: webhook.name,
     url: webhook.url,
     events: webhook.events ?? [],
-    headers: normalizeHeaders(webhook.headers),
+    headers: normalizeHeaders(redactWebhookHeaders(webhook.headers)),
     status: mapDbStatusToApi(webhook.status as DbWebhookStatus),
     createdBy: webhook.createdBy,
     createdAt: webhook.createdAt,
@@ -214,13 +224,20 @@ const listWebhooksSchema = z.object({
   status: z.enum(['active', 'paused', 'failed']).optional()
 });
 
+const customHeadersSchema = z.array(z.object({ key: z.string().min(1), value: z.string() })).superRefine((headers, ctx) => {
+  const errors = getOutboundHeaderValidationErrors(headers);
+  for (const error of errors) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: error });
+  }
+});
+
 const createWebhookSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   url: z.string().url(),
   secret: z.string().min(1).max(255),
   events: z.array(z.string().min(1)).min(1),
-  headers: z.array(z.object({ key: z.string().min(1), value: z.string() })).optional().default([])
+  headers: customHeadersSchema.optional().default([])
 });
 
 const updateWebhookSchema = z.object({
@@ -228,7 +245,7 @@ const updateWebhookSchema = z.object({
   url: z.string().url().optional(),
   secret: z.string().min(1).max(255).optional(),
   events: z.array(z.string().min(1)).min(1).optional(),
-  headers: z.array(z.object({ key: z.string().min(1), value: z.string() })).optional(),
+  headers: customHeadersSchema.optional(),
   status: z.enum(['active', 'paused', 'failed']).optional()
 });
 
@@ -367,7 +384,7 @@ webhookRoutes.post(
         url: data.url,
         secret: encryptSecret(data.secret),
         events: data.events,
-        headers: data.headers ?? [],
+        headers: encryptWebhookHeaders(data.headers ?? []),
         status: 'active',
         createdBy: auth.user.id,
         createdAt: new Date(),
@@ -453,9 +470,11 @@ webhookRoutes.patch(
 
     if (data.name !== undefined) updatePayload.name = data.name;
     if (data.url !== undefined) updatePayload.url = data.url;
-    if (data.secret !== undefined) updatePayload.secret = encryptSecret(data.secret);
+    if (data.secret !== undefined && !isMaskedIntegrationSecret(data.secret)) {
+      updatePayload.secret = encryptSecret(data.secret);
+    }
     if (data.events !== undefined) updatePayload.events = data.events;
-    if (data.headers !== undefined) updatePayload.headers = data.headers;
+    if (data.headers !== undefined) updatePayload.headers = encryptWebhookHeaders(data.headers, webhook.headers);
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
 
     const [updated] = await db

@@ -5,6 +5,7 @@ import { users } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { API_VERSION } from '../version';
 import { PERMISSIONS } from '../services/permissions';
+import { envFlag } from '../utils/envFlag';
 
 export const systemRoutes = new Hono();
 const requireSystemConfigRead = requirePermission(
@@ -55,7 +56,7 @@ systemRoutes.get('/config-status', requireSystemConfigRead, async (c) => {
     security: {
       httpsForced: env.FORCE_HTTPS === 'true' || env.NODE_ENV === 'production',
       mfaEnabled: env.ENABLE_2FA !== 'false',
-      registrationEnabled: env.ENABLE_REGISTRATION !== 'false'
+      registrationEnabled: envFlag('ENABLE_REGISTRATION', false)
     },
     integrations: {
       sms: !!env.TWILIO_ACCOUNT_SID,

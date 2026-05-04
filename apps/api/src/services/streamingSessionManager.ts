@@ -27,6 +27,7 @@ import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools'
 import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
+import { redactAiToolOutputText } from './aiToolOutput';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -37,6 +38,50 @@ const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000; // 6 min per-turn timeout (accounts f
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
+
+const SDK_CHILD_ENV_ALLOWLIST = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_AGENT_SDK_CLIENT_APP',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NO_PROXY',
+  'https_proxy',
+  'http_proxy',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SystemRoot',
+  'COMSPEC',
+] as const;
+
+export function buildClaudeSdkChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {
+    CI: 'true',
+    CLAUDE_AGENT_SDK_CLIENT_APP: source.CLAUDE_AGENT_SDK_CLIENT_APP ?? 'breeze-api/ai-agent',
+  };
+
+  for (const key of SDK_CHILD_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (typeof value === 'string' && value.length > 0) {
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+export function redactClaudeSdkStderr(data: string): string {
+  return redactAiToolOutputText(data).trim();
+}
 
 // ============================================
 // StreamInputController
@@ -200,6 +245,8 @@ export interface ActiveSession {
   turnTimeoutId: ReturnType<typeof setTimeout> | null;
   /** Approval mode for this session (loaded from org's aiBudgets) */
   approvalMode: AiApprovalMode;
+  /** Optional MCP allowlist for restricted sessions such as helper chat. */
+  allowedTools?: string[];
   /** True when admin has paused auto-approve — falls back to per_step */
   isPaused: boolean;
   /** ID of the currently active action plan (if any) */
@@ -275,6 +322,7 @@ export class StreamingSessionManager {
       // Update per-request context
       existing.auth = auth;
       existing.auditSnapshot = snapshot;
+      existing.allowedTools = allowedTools;
       existing.lastActivityAt = Date.now();
       return existing;
     }
@@ -326,6 +374,7 @@ export class StreamingSessionManager {
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
       approvalMode,
+      allowedTools,
       isPaused: false,
       activePlanId: null,
       approvedPlanSteps: new Map(),
@@ -357,7 +406,7 @@ export class StreamingSessionManager {
     let effectiveSystemPrompt = systemPrompt;
     if (approvalMode !== 'per_step') {
       const modeInstructions: Record<string, string> = {
-        auto_approve: '\n\n## Approval Mode\nTools execute without individual approval. Confirm destructive operations verbally before executing.',
+        auto_approve: '\n\n## Approval Mode\nTier 2 tools execute without individual approval and are audit logged. Tier 3 destructive or remote-control tools still require explicit approval.',
         action_plan: '\n\n## Approval Mode\nWhen executing multiple Tier 2+ operations, call `propose_action_plan` first with all planned steps. Wait for approval. Execute steps in order. Do NOT deviate from the approved plan.',
         hybrid_plan: '\n\n## Approval Mode\nWhen executing multiple Tier 2+ operations, call `propose_action_plan` first. Wait for approval. Execute steps in order. Screenshots will be captured between steps. The user can click Stop to abort. Do NOT deviate from the approved plan.',
       };
@@ -382,13 +431,14 @@ export class StreamingSessionManager {
           mcpServers: { [mcpServerName]: mcpServer },
           includePartialMessages: true,
           abortController,
+          env: buildClaudeSdkChildEnv(),
           resume: dbSession.sdkSessionId ?? undefined,
           persistSession: true,
           settingSources: [],
           thinking: { type: 'disabled' },
           stderr: (data: string) => {
             if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
-              console.error('[SDK-stderr]', breezeSessionId, data.trim());
+              console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));
             }
           },
         }

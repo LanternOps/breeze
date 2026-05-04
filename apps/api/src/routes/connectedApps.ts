@@ -2,13 +2,17 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { and, eq } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { MCP_OAUTH_ENABLED } from '../config/env';
 
 export const connectedAppsRoutes = new Hono();
+
+function asSystem<T>(fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
 
 if (MCP_OAUTH_ENABLED) {
   connectedAppsRoutes.use('*', authMiddleware);
@@ -65,23 +69,18 @@ if (MCP_OAUTH_ENABLED) {
       .limit(1);
     if (!row) return c.body(null, 404);
 
-    // Delete this partner's join row so the app stops appearing in their
-    // connected-apps list. Forces a fresh consent if the user re-authorizes
-    // (safer than leaving the row and letting reconnect skip the consent
-    // screen). We deliberately do NOT touch `oauth_clients.disabled_at` —
-    // other partners may still have active grants on the same DCR client.
-    await db.delete(oauthClientPartnerGrants)
-      .where(and(
-        eq(oauthClientPartnerGrants.clientId, clientId),
-        eq(oauthClientPartnerGrants.partnerId, partnerId),
-      ));
-
-    const tokens = await db.select({
-      id: oauthRefreshTokens.id,
-      payload: oauthRefreshTokens.payload,
-      expiresAt: oauthRefreshTokens.expiresAt,
-    }).from(oauthRefreshTokens)
-      .where(and(eq(oauthRefreshTokens.clientId, clientId), eq(oauthRefreshTokens.partnerId, partnerId)));
+    // Token rows are user-scoped OAuth secrets. This route is an explicit
+    // partner-admin revocation flow: after the join-row authorization check
+    // above, run the tenant-wide token revoke under system DB context rather
+    // than depending on broad partner/org RLS access to token rows.
+    const tokens = await asSystem(() =>
+      db.select({
+        id: oauthRefreshTokens.id,
+        payload: oauthRefreshTokens.payload,
+        expiresAt: oauthRefreshTokens.expiresAt,
+      }).from(oauthRefreshTokens)
+        .where(and(eq(oauthRefreshTokens.clientId, clientId), eq(oauthRefreshTokens.partnerId, partnerId)))
+    );
 
     const now = new Date();
     // Track unique grant ids so we only write each grant marker once per
@@ -92,11 +91,10 @@ if (MCP_OAUTH_ENABLED) {
     // the grant. Mirrors ACCESS_TOKEN_TTL_SECONDS in oauth/provider.ts.
     const ACCESS_TOKEN_TTL_SECONDS = 600;
 
+    // Do cache revocation before DB mutation. If Redis is unavailable, the
+    // app remains visible and refresh-token rows are untouched, so the user
+    // can retry instead of seeing a hidden but only partially revoked app.
     for (const token of tokens) {
-      await db.update(oauthRefreshTokens)
-        .set({ revokedAt: now })
-        .where(eq(oauthRefreshTokens.id, token.id));
-
       const payload = token.payload as { jti?: string; grantId?: string } | null;
       const jti = payload?.jti;
       const grantId = payload?.grantId;
@@ -142,6 +140,26 @@ if (MCP_OAUTH_ENABLED) {
         }
       }
     }
+
+    // Delete this partner's join row only after revocation-cache writes have
+    // succeeded. Keep the DB mutations in one transaction so DB failures do
+    // not leave the app hidden after only some refresh-token rows were
+    // revoked.
+    await asSystem(() =>
+      db.transaction(async (tx) => {
+        for (const token of tokens) {
+          await tx.update(oauthRefreshTokens)
+            .set({ revokedAt: now })
+            .where(eq(oauthRefreshTokens.id, token.id));
+        }
+
+        await tx.delete(oauthClientPartnerGrants)
+          .where(and(
+            eq(oauthClientPartnerGrants.clientId, clientId),
+            eq(oauthClientPartnerGrants.partnerId, partnerId),
+          ));
+      })
+    );
 
     return c.body(null, 204);
   });

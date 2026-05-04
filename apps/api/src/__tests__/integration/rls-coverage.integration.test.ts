@@ -35,6 +35,16 @@ import { db } from '../../db';
 // Add deliberately, with a comment. Empty for now.
 const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([]);
 
+// Tables with org_id metadata that are intentionally not generic org-tenant
+// tables. OAuth token rows are user/client secrets; org_id is retained for
+// lifecycle filtering only, and tenant-wide revocation uses system DB context
+// after app-layer authorization.
+const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
+  'oauth_authorization_codes',
+  'oauth_grants',
+  'oauth_refresh_tokens',
+]);
+
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
 const ORG_ID_KEYED_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'organizations',
@@ -48,12 +58,6 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['partner_users', 'partner_id'],
   ['oauth_clients', 'partner_id'],
   ['oauth_client_partner_grants', 'partner_id'],
-  ['oauth_refresh_tokens', 'partner_id'],
-  // oauth_grants partner_id is nullable (NULL between adapter.upsert and the
-  // setGrantBreezeMeta UPDATE during consent). The coverage check only needs
-  // the column name; the policy's `partner_id IS NULL OR ...` clause is
-  // checked by the policy's own qual, not this allowlist.
-  ['oauth_grants', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -87,6 +91,8 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   'ticket_comments',
   'access_review_items',
   'oauth_authorization_codes',
+  'oauth_grants',
+  'oauth_refresh_tokens',
   // oauth_sessions: account_id (= users.id) is nullable for anonymous
   // pre-login Sessions. Policy matches the user-scope-OR-system-scope
   // pattern of oauth_authorization_codes; the coverage test only checks
@@ -119,6 +125,169 @@ function offendersFrom(rows: TableRow[]): Array<{ table: string; rls_on: boolean
 }
 
 describe('RLS coverage contract', () => {
+  it('oauth_clients shared rows are visible only to system scope or granted partners', async () => {
+    const rows = (await db.execute(sql`
+      SELECT
+        policyname,
+        cmd,
+        COALESCE(qual, '') AS qual,
+        COALESCE(with_check, '') AS with_check
+      FROM pg_policies
+      WHERE schemaname = 'public'
+        AND tablename = 'oauth_clients'
+      ORDER BY policyname;
+    `)) as unknown as Array<{
+      policyname: string;
+      cmd: string;
+      qual: string;
+      with_check: string;
+    }>;
+
+    const combined = rows.map((row) => `${row.qual}\n${row.with_check}`).join('\n');
+    const selectPolicy = rows.find((row) => row.policyname === 'oauth_clients_select_access');
+    const writePolicies = rows.filter((row) =>
+      [
+        'oauth_clients_insert_access',
+        'oauth_clients_update_access',
+        'oauth_clients_delete_access',
+      ].includes(row.policyname)
+    );
+
+    expect(selectPolicy?.qual).toContain('breeze_current_scope() = \'system\'');
+    expect(selectPolicy?.qual).toContain('oauth_client_partner_grants');
+    expect(selectPolicy?.qual).toContain('breeze_has_partner_access(g.partner_id)');
+    expect(combined).not.toContain('partner_id IS NULL');
+    expect(writePolicies).toHaveLength(3);
+    for (const policy of writePolicies) {
+      expect(`${policy.qual}\n${policy.with_check}`).not.toContain('partner_id IS NULL');
+    }
+  });
+
+  it('OAuth token-row policies do not grant generic org-axis access', async () => {
+    const rows = (await db.execute(sql`
+      SELECT
+        tablename,
+        policyname,
+        COALESCE(qual, '') AS qual,
+        COALESCE(with_check, '') AS with_check
+      FROM pg_policies
+      WHERE schemaname = 'public'
+        AND tablename = ANY(ARRAY[
+          'oauth_authorization_codes',
+          'oauth_grants',
+          'oauth_refresh_tokens'
+        ]::text[])
+      ORDER BY tablename, policyname;
+    `)) as unknown as Array<{
+      tablename: string;
+      policyname: string;
+      qual: string;
+      with_check: string;
+    }>;
+
+    expect(rows.map((row) => row.tablename).sort()).toEqual([
+      'oauth_authorization_codes',
+      'oauth_grants',
+      'oauth_refresh_tokens',
+    ]);
+
+    for (const row of rows) {
+      const predicate = `${row.qual}\n${row.with_check}`;
+      expect(predicate).toContain('breeze_current_scope() = \'system\'');
+      expect(predicate).not.toContain('breeze_has_org_access');
+    }
+
+    const authCodes = rows.find((row) => row.tablename === 'oauth_authorization_codes');
+    const grants = rows.find((row) => row.tablename === 'oauth_grants');
+    const refreshTokens = rows.find((row) => row.tablename === 'oauth_refresh_tokens');
+
+    expect(`${authCodes?.qual}\n${authCodes?.with_check}`).toContain('user_id = breeze_current_user_id()');
+    expect(`${grants?.qual}\n${grants?.with_check}`).toContain('account_id = breeze_current_user_id()');
+    expect(`${refreshTokens?.qual}\n${refreshTokens?.with_check}`).toContain('user_id = breeze_current_user_id()');
+  });
+
+  it('every tenant-scoped public table has FORCE ROW LEVEL SECURITY enabled', async () => {
+    const explicitTables = Array.from(new Set([
+      ...ORG_ID_KEYED_TENANT_TABLES,
+      ...PARTNER_TENANT_TABLES.keys(),
+      ...DUAL_AXIS_TENANT_TABLES,
+      ...DEVICE_ID_JOIN_POLICY_TABLES,
+      ...USER_ID_SCOPED_TABLES,
+    ]));
+
+    const rows = (await db.execute(sql`
+      WITH org_id_tables AS (
+        SELECT DISTINCT c.relname, c.relforcerowsecurity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN information_schema.columns col
+          ON col.table_schema = n.nspname AND col.table_name = c.relname
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND col.column_name = 'org_id'
+      ),
+      explicit_tables AS (
+        SELECT c.relname, c.relforcerowsecurity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ANY(${sql.raw(
+            `ARRAY[${explicitTables.map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
+      ),
+      tenant_tables AS (
+        SELECT * FROM org_id_tables
+        UNION
+        SELECT * FROM explicit_tables
+      )
+      SELECT relname AS table_name, relforcerowsecurity AS force_rls_on
+      FROM tenant_tables
+      ORDER BY relname;
+    `)) as unknown as Array<{ table_name: string; force_rls_on: boolean }>;
+
+    const offenders = rows
+      .filter((row) => !EXEMPT_TABLES.has(row.table_name))
+      .filter((row) => !row.force_rls_on)
+      .map((row) => row.table_name);
+
+    expect(
+      offenders,
+      `Tenant-scoped tables missing FORCE ROW LEVEL SECURITY:\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: add an idempotent migration that runs ALTER TABLE ... FORCE ROW LEVEL SECURITY for each offender.`
+    ).toEqual([]);
+  });
+
+  it('deployment_invites has a database invariant tying org_id to partner_id', async () => {
+    const rows = (await db.execute(sql`
+      SELECT
+        c.conname,
+        c.contype,
+        src.relname AS source_table,
+        target.relname AS target_table,
+        pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c
+      JOIN pg_class src ON src.oid = c.conrelid
+      JOIN pg_class target ON target.oid = c.confrelid
+      JOIN pg_namespace n ON n.oid = src.relnamespace
+      WHERE n.nspname = 'public'
+        AND src.relname = 'deployment_invites'
+        AND c.conname = 'deployment_invites_org_partner_fk';
+    `)) as unknown as Array<{
+      conname: string;
+      contype: string;
+      source_table: string;
+      target_table: string;
+      definition: string;
+    }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.contype).toBe('f');
+    expect(rows[0]?.target_table).toBe('organizations');
+    expect(rows[0]?.definition).toContain('FOREIGN KEY (org_id, partner_id)');
+    expect(rows[0]?.definition).toContain('REFERENCES organizations(id, partner_id)');
+  });
+
   it('every org-tenant public table has RLS on and all four DML commands covered by breeze_has_org_access', async () => {
     const idKeyedList = Array.from(ORG_ID_KEYED_TENANT_TABLES);
 
@@ -132,6 +301,9 @@ describe('RLS coverage contract', () => {
         WHERE n.nspname = 'public'
           AND c.relkind = 'r'
           AND col.column_name = 'org_id'
+          AND c.relname <> ALL(${sql.raw(
+            `ARRAY[${Array.from(ORG_AXIS_POLICY_EXCLUDED_TABLES).map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
       ),
       id_keyed_tables AS (
         SELECT c.oid, c.relname, c.relrowsecurity

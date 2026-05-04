@@ -290,10 +290,24 @@ describe('buildRecoveryDownloadDescriptor', () => {
     expect(result.type).toBe('breeze_proxy');
     expect(result.method).toBe('GET');
     expect(result.url).toBe('https://breeze.test/api/v1/backup/bmr/recover/download');
-    expect(result.tokenQueryParam).toBe('token');
+    expect(result.tokenQueryParam).toBeUndefined();
+    expect(result.tokenHeaderName).toBe('authorization');
+    expect(result.tokenHeaderFormat).toBe('Bearer <recovery-token>');
     expect(result.pathQueryParam).toBe('path');
     expect(result.requiresAuthentication).toBe(true);
     expect(result.pathPrefix).toBe('snapshots/snap-abc');
+  });
+
+  it('advertises query token only under the compatibility flag', () => {
+    process.env.BREEZE_SERVER = 'https://breeze.test';
+    process.env.BMR_RECOVERY_ADVERTISE_QUERY_TOKEN = 'true';
+
+    const result = buildRecoveryDownloadDescriptor({
+      providerSnapshotId: 'snap-abc',
+    });
+
+    expect(result.tokenQueryParam).toBe('token');
+    expect(result.tokenHeaderName).toBe('authorization');
   });
 
   it('includes expiry when authenticatedAt and tokenExpiresAt are provided', () => {

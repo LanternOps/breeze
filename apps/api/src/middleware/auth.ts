@@ -5,9 +5,10 @@ import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPer
 import { isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
-import { and, eq, inArray, SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 export interface AuthContext {
   user: {
@@ -46,6 +47,7 @@ export interface AuthContext {
 declare module 'hono' {
   interface ContextVariableMap {
     auth: AuthContext;
+    permissions: UserPermissions;
   }
 }
 
@@ -99,6 +101,18 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
   );
 
   if (user && user.status === 'active') {
+    try {
+      await assertActiveTenantContext({
+        scope: payload.scope,
+        partnerId: payload.partnerId,
+        orgId: payload.orgId,
+      });
+    } catch (err) {
+      if (!(err instanceof TenantInactiveError)) throw err;
+      await next();
+      return;
+    }
+
     const accessibleOrgIds = await computeAccessibleOrgIds(
       payload.scope,
       payload.partnerId,
@@ -224,7 +238,9 @@ async function computeAccessibleOrgIds(
           .where(
             and(
               eq(organizations.partnerId, partnerId),
-              inArray(organizations.id, selectedOrgIds)
+              inArray(organizations.id, selectedOrgIds),
+              inArray(organizations.status, ['active', 'trial']),
+              isNull(organizations.deletedAt)
             )
           );
 
@@ -235,7 +251,13 @@ async function computeAccessibleOrgIds(
       const partnerOrgs = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(eq(organizations.partnerId, partnerId));
+        .where(
+          and(
+            eq(organizations.partnerId, partnerId),
+            inArray(organizations.status, ['active', 'trial']),
+            isNull(organizations.deletedAt)
+          )
+        );
 
       return partnerOrgs.map(o => o.id);
     });
@@ -313,6 +335,19 @@ export async function authMiddleware(c: Context, next: Next) {
 
   if (user.status !== 'active') {
     throw new HTTPException(403, { message: 'Account is not active' });
+  }
+
+  try {
+    await assertActiveTenantContext({
+      scope: payload.scope,
+      partnerId: payload.partnerId,
+      orgId: payload.orgId,
+    });
+  } catch (err) {
+    if (err instanceof TenantInactiveError) {
+      throw new HTTPException(403, { message: 'Tenant is not active' });
+    }
+    throw err;
   }
 
   // Pre-compute accessible org IDs

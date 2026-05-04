@@ -8,6 +8,10 @@ const { sendSmsNotificationMock } = vi.hoisted(() => ({
 const { publishEventMock } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1')
 }));
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false }
+}));
 
 vi.mock('../services', () => ({}));
 
@@ -96,7 +100,19 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => (c: any, next: any) => next())
+  requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  })
 }));
 
 import { db } from '../db';
@@ -107,6 +123,8 @@ describe('alert routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     sendSmsNotificationMock.mockResolvedValue({
       success: true,
       sentCount: 1,
@@ -421,6 +439,75 @@ describe('alert routes', () => {
   });
 
   describe('notification channel webhook validation', () => {
+    it('encrypts and redacts credential-bearing channel config on create', async () => {
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn((values: any) => ({
+          returning: vi.fn(() => Promise.resolve([{
+            id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            orgId: '11111111-1111-1111-1111-111111111111',
+            name: 'PagerDuty',
+            type: 'pagerduty',
+            config: values.config,
+            enabled: true,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          }]))
+        }))
+      } as any);
+
+      const res = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'PagerDuty',
+          type: 'pagerduty',
+          config: { routingKey: 'pd-routing-key' },
+          enabled: true
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const insertValues = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0][0];
+      expect(insertValues.config.routingKey).not.toBe('pd-routing-key');
+      expect(String(insertValues.config.routingKey)).toMatch(/^enc:v1:/);
+      const body = await res.json();
+      expect(JSON.stringify(body)).not.toContain('pd-routing-key');
+      expect(body.config.routingKey).toEqual({
+        redacted: true,
+        hasSecret: true,
+        masked: '********'
+      });
+    });
+
+    it('requires permission and MFA for channel mutations', async () => {
+      permissionGate.deny = true;
+      const deniedPermission = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'PagerDuty',
+          type: 'pagerduty',
+          config: { routingKey: 'pd-routing-key' },
+          enabled: true
+        })
+      });
+      expect(deniedPermission.status).toBe(403);
+
+      permissionGate.deny = false;
+      mfaGate.deny = true;
+      const deniedMfa = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'PagerDuty',
+          type: 'pagerduty',
+          config: { routingKey: 'pd-routing-key' },
+          enabled: true
+        })
+      });
+      expect(deniedMfa.status).toBe(403);
+    });
+
     it('rejects creating a webhook channel with an unsafe URL', async () => {
       const res = await app.request('/alerts/channels', {
         method: 'POST',
@@ -463,6 +550,37 @@ describe('alert routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('Invalid webhook channel configuration');
+    });
+
+    it('does not return decrypted webhook URLs from channel test details', async () => {
+      const channelId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Webhook',
+              type: 'webhook',
+              config: { url: 'https://hooks.example.com/token/secret-token' }
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(JSON.stringify(body)).not.toContain('secret-token');
+      expect(body.testResult.details.url).toEqual({
+        redacted: true,
+        hasSecret: true,
+        masked: '********'
+      });
     });
   });
 

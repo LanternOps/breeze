@@ -128,10 +128,6 @@ function extractBearerToken(headerValue: string | null | undefined): string | nu
 }
 
 function resolveRecoveryDownloadToken(c: any, queryToken?: string | null): { token: string | null; source: RecoveryDownloadTokenSource } {
-  if (queryToken && queryToken.trim()) {
-    return { token: queryToken.trim(), source: 'query' };
-  }
-
   const authHeader = extractBearerToken(c.req.header('authorization'));
   if (authHeader) {
     return { token: authHeader, source: 'authorization' };
@@ -142,7 +138,16 @@ function resolveRecoveryDownloadToken(c: any, queryToken?: string | null): { tok
     return { token: headerToken, source: 'x-recovery-token' };
   }
 
+  if (queryToken && queryToken.trim()) {
+    return { token: queryToken.trim(), source: 'query' };
+  }
+
   return { token: null, source: 'missing' };
+}
+
+function allowRecoveryQueryToken(): boolean {
+  const value = process.env.BMR_RECOVERY_ALLOW_QUERY_TOKEN?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
 function writeRecoveryDownloadAudit(
@@ -1272,6 +1277,18 @@ bmrPublicRoutes.get(
     await expireUnusedRecoveryTokens();
 
     const { token: queryToken, path } = c.req.valid('query');
+    if (queryToken?.trim() && !allowRecoveryQueryToken()) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: null,
+        result: 'denied',
+        path,
+        tokenSource: 'query',
+        statusCode: 400,
+        reason: 'Recovery token query parameter is disabled',
+      });
+      return c.json({ error: 'Recovery token query parameter is disabled. Use Authorization: Bearer or X-Recovery-Token.' }, 400);
+    }
+
     const { token, source: tokenSource } = resolveRecoveryDownloadToken(c, queryToken);
     if (!token) {
       writeRecoveryDownloadAudit(c, {

@@ -7,6 +7,7 @@ import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { captureException } from '../services/sentry';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 
 // Store active tunnel connections: Map<tunnelId, TunnelConnection>
 interface TunnelConnection {
@@ -34,6 +35,10 @@ const tunnelAgentOwnership = new Map<string, string>(); // tunnelId → agentId
 // Buffer for early frames: data arriving from agent before the browser WS connects.
 // VNC servers send the RFB banner immediately on TCP connect, before the browser attaches.
 const MAX_BUFFER_SIZE = 512 * 1024; // 512KB max buffer per tunnel
+const MAX_TUNNEL_FRAME_BYTES = 1_000_000;
+const MAX_TUNNEL_TEXT_MESSAGE_BYTES = Math.ceil(MAX_TUNNEL_FRAME_BYTES / 3) * 4 + 512;
+const MAX_TUNNEL_BASE64_BYTES = Math.ceil(MAX_TUNNEL_FRAME_BYTES / 3) * 4;
+const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const earlyFrameBuffers = new Map<string, Uint8Array[]>();
 
 // Server-side ping/pong constants
@@ -65,6 +70,46 @@ function isRateLimited(userId: string): boolean {
   timestamps.push(now);
   userWsTimestamps.set(userId, timestamps);
   return false;
+}
+
+export function validateTunnelTextRelayFrame(text: string): { ok: true; data: string } | { ok: false; error: string } {
+  if (Buffer.byteLength(text, 'utf8') > MAX_TUNNEL_TEXT_MESSAGE_BYTES) {
+    return { ok: false, error: 'Text tunnel frame is too large' };
+  }
+
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return { ok: false, error: 'Malformed JSON' };
+  }
+
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+    return { ok: false, error: 'Invalid message' };
+  }
+
+  const record = msg as Record<string, unknown>;
+  if (record.type !== 'data') {
+    return { ok: false, error: 'Not data' };
+  }
+
+  if (typeof record.data !== 'string' || record.data.length === 0) {
+    return { ok: false, error: 'Missing data' };
+  }
+
+  if (record.data.length > MAX_TUNNEL_BASE64_BYTES) {
+    return { ok: false, error: 'Encoded tunnel frame is too large' };
+  }
+
+  if (!BASE64_RE.test(record.data)) {
+    return { ok: false, error: 'Invalid base64 data' };
+  }
+
+  if (Buffer.byteLength(record.data, 'base64') > MAX_TUNNEL_FRAME_BYTES) {
+    return { ok: false, error: 'Decoded tunnel frame is too large' };
+  }
+
+  return { ok: true, data: record.data };
 }
 
 // Periodic cleanup
@@ -208,6 +253,36 @@ function cleanupTunnelConnection(tunnelId: string) {
   earlyFrameBuffers.delete(tunnelId);
 }
 
+async function closeTunnelLifecycle(tunnelId: string, options: { notifyAgent: boolean; reason?: string } = { notifyAgent: true }) {
+  const conn = activeTunnelConnections.get(tunnelId);
+  cleanupTunnelConnection(tunnelId);
+
+  if (options.notifyAgent && conn) {
+    sendCommandToAgent(conn.agentId, {
+      id: `tun-close-${Date.now()}`,
+      type: 'tunnel_close',
+      payload: { tunnelId },
+    });
+  }
+
+  try {
+    await withSystemDbAccessContext(async () => {
+      await db
+        .update(tunnelSessions)
+        .set({
+          status: 'disconnected',
+          endedAt: new Date(),
+          ...(options.reason ? { errorMessage: options.reason } : {}),
+        })
+        .where(eq(tunnelSessions.id, tunnelId));
+    });
+  } catch (err) {
+    console.error(`[TunnelWs] Failed to update tunnel ${tunnelId} status on close:`, err);
+  }
+
+  await revokeViewerSession(tunnelId);
+}
+
 /**
  * Create WebSocket handlers for a tunnel session.
  */
@@ -253,7 +328,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
             ws.send(data as Uint8Array<ArrayBuffer>);
           } catch (err) {
             console.warn(`[TunnelWs] Failed to relay data for tunnel ${tunnelId}, cleaning up:`, err);
-            cleanupTunnelConnection(tunnelId);
+            void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Relay send failed' });
             try { ws.close(4005, 'Relay error'); } catch { /* already closing */ }
           }
         });
@@ -288,7 +363,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
 
           if (Date.now() - conn.lastPongAt > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
             console.warn(`[TunnelWs] Stale tunnel connection ${tunnelId}, closing`);
-            cleanupTunnelConnection(tunnelId);
+            void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Connection timeout' });
             ws.close(4003, 'Connection timeout');
             return;
           }
@@ -296,7 +371,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
           try {
             ws.send(JSON.stringify({ type: 'ping' }));
           } catch {
-            cleanupTunnelConnection(tunnelId);
+            void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Relay ping failed' });
           }
         }, PING_INTERVAL_MS);
 
@@ -352,7 +427,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
           const buf = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data;
 
           // Size limit: 1MB per frame
-          if (buf.length > 1_000_000) {
+          if (buf.length > MAX_TUNNEL_FRAME_BYTES) {
             console.warn(`[TunnelWs] Dropping oversized user frame for tunnel ${tunnelId}: ${buf.length} bytes`);
             return;
           }
@@ -366,7 +441,7 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
           if (!sent) {
             console.warn(`[TunnelWs] Agent ${conn.agentId} disconnected, cannot relay for tunnel ${tunnelId}`);
             ws.send(JSON.stringify({ type: 'error', message: 'Agent disconnected' }));
-            cleanupTunnelConnection(tunnelId);
+            await closeTunnelLifecycle(tunnelId, { notifyAgent: false, reason: 'Agent disconnected' });
             ws.close(4002, 'Agent offline');
             return;
           }
@@ -375,27 +450,32 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
 
         // Text data — JSON messages (ping/pong)
         const text = typeof event.data === 'string' ? event.data : event.data.toString();
-        let msg: { type: string };
+        let msg: { type?: string } | null;
         try {
-          msg = JSON.parse(text);
+          const parsed = JSON.parse(text);
+          msg = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
         } catch {
           return; // Ignore malformed JSON
         }
 
-        if (msg.type === 'pong') {
+        if (msg?.type === 'pong') {
           conn.lastPongAt = Date.now();
-        } else if (msg.type === 'data' && 'data' in msg) {
+        } else if (msg?.type === 'data') {
           // Text-mode data relay (base64-encoded)
-          const dataMsg = msg as { type: string; data: string };
+          const validated = validateTunnelTextRelayFrame(text);
+          if (!validated.ok) {
+            console.warn(`[TunnelWs] Dropping invalid text tunnel frame for tunnel ${tunnelId}: ${validated.error}`);
+            return;
+          }
           const sent = sendCommandToAgent(conn.agentId, {
             id: `tun-data-${Date.now()}`,
             type: 'tunnel_data',
-            payload: { tunnelId, data: dataMsg.data },
+            payload: { tunnelId, data: validated.data },
           });
           if (!sent) {
             console.warn(`[TunnelWs] Agent ${conn.agentId} disconnected, cannot relay for tunnel ${tunnelId}`);
             ws.send(JSON.stringify({ type: 'error', message: 'Agent disconnected' }));
-            cleanupTunnelConnection(tunnelId);
+            await closeTunnelLifecycle(tunnelId, { notifyAgent: false, reason: 'Agent disconnected' });
             ws.close(4002, 'Agent offline');
             return;
           }
@@ -408,40 +488,16 @@ function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
 
     onClose: async () => {
       console.log(`[TunnelWs] Tunnel ${tunnelId} WebSocket closed`);
-
-      // Read the connection BEFORE cleanup removes it from the map.
-      const conn = activeTunnelConnections.get(tunnelId);
-      cleanupTunnelConnection(tunnelId);
-
-      // Notify agent to close the TCP connection
-      if (conn) {
-        sendCommandToAgent(conn.agentId, {
-          id: `tun-close-${Date.now()}`,
-          type: 'tunnel_close',
-          payload: { tunnelId },
-        });
-      }
-
-      // Update session status
-      try {
-        await withSystemDbAccessContext(async () => {
-          await db
-            .update(tunnelSessions)
-            .set({
-              status: 'disconnected',
-              endedAt: new Date(),
-            })
-            .where(eq(tunnelSessions.id, tunnelId));
-        });
-      } catch (err) {
-        console.error(`[TunnelWs] Failed to update tunnel ${tunnelId} status on close:`, err);
-      }
+      await closeTunnelLifecycle(tunnelId, { notifyAgent: true });
     },
 
-    onError: (error: unknown) => {
+    onError: async (error: unknown) => {
       console.error(`[TunnelWs] Error for tunnel ${tunnelId}:`, error);
       captureException(error);
-      cleanupTunnelConnection(tunnelId);
+      await closeTunnelLifecycle(tunnelId, {
+        notifyAgent: true,
+        reason: error instanceof Error ? error.message : 'Tunnel WebSocket error',
+      });
     },
   };
 }

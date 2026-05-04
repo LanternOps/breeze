@@ -444,6 +444,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	switch req.CommandType {
 	// Core backup operations
 	case "backup_run":
+		if err := applyCommandStorageEncryption(mgr.GetProvider(), req.Payload); err != nil {
+			return fail(err.Error())
+		}
 		result := marshalResult(mgr.RunBackup())
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {

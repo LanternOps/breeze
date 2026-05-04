@@ -63,12 +63,14 @@ type MtlsCertData struct {
 }
 
 type EnrollResponse struct {
-	AgentID   string        `json:"agentId"`
-	AuthToken string        `json:"authToken"`
-	OrgID     string        `json:"orgId"`
-	SiteID    string        `json:"siteId"`
-	Config    AgentConfig   `json:"config"`
-	Mtls      *MtlsCertData `json:"mtls"`
+	AgentID           string        `json:"agentId"`
+	AuthToken         string        `json:"authToken"`
+	WatchdogAuthToken string        `json:"watchdogAuthToken"`
+	HelperAuthToken   string        `json:"helperAuthToken"`
+	OrgID             string        `json:"orgId"`
+	SiteID            string        `json:"siteId"`
+	Config            AgentConfig   `json:"config"`
+	Mtls              *MtlsCertData `json:"mtls"`
 }
 
 type RenewCertResponse struct {
@@ -78,8 +80,10 @@ type RenewCertResponse struct {
 }
 
 type RotateTokenResponse struct {
-	AuthToken string `json:"authToken"`
-	RotatedAt string `json:"rotatedAt"`
+	AuthToken         string `json:"authToken"`
+	WatchdogAuthToken string `json:"watchdogAuthToken"`
+	HelperAuthToken   string `json:"helperAuthToken"`
+	RotatedAt         string `json:"rotatedAt"`
 }
 
 type AgentConfig struct {

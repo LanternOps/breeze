@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { snmpRoutes } from './snmp';
+import { db } from '../db';
 
 vi.mock('../services', () => ({}));
 
@@ -26,7 +27,17 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  snmpTemplates: { id: 'id', name: 'name', createdAt: 'createdAt' },
+  snmpTemplates: {
+    id: 'id',
+    orgId: 'orgId',
+    name: 'name',
+    description: 'description',
+    vendor: 'vendor',
+    deviceType: 'deviceType',
+    oids: 'oids',
+    isBuiltIn: 'isBuiltIn',
+    createdAt: 'createdAt'
+  },
   snmpDevices: { id: 'id', orgId: 'orgId', lastPolled: 'lastPolled', lastStatus: 'lastStatus', isActive: 'isActive' },
   snmpMetrics: { deviceId: 'deviceId', timestamp: 'timestamp' },
   snmpAlertThresholds: { deviceId: 'deviceId' }
@@ -46,7 +57,12 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
+    if (!scopes.includes(c.get('auth')?.scope)) {
+      return c.json({ error: 'Insufficient scope' }, 403);
+    }
+    return next();
+  })
 }));
 
 describe('snmp routes', () => {
@@ -126,5 +142,62 @@ describe('snmp routes', () => {
   it('GET /snmp/metrics/:deviceId/:oid returns 410', async () => {
     const res = await app.request('/snmp/metrics/snmp-dev-001/1.3.6.1.2.1.1.5.0', { method: 'GET' });
     expect(res.status).toBe(410);
+  });
+
+  it('creates tenant SNMP templates scoped to the auth organization', async () => {
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{
+        id: 'template-1',
+        orgId: 'org-123',
+        name: 'Tenant Template',
+        description: null,
+        vendor: null,
+        deviceType: null,
+        oids: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName' }],
+        isBuiltIn: false,
+        createdAt: new Date('2026-05-01T00:00:00.000Z')
+      }])
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+    const res = await app.request('/snmp/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Tenant Template',
+        oids: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName' }],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-123',
+      isBuiltIn: false,
+    }));
+    const body = await res.json();
+    expect(body.data.orgId).toBe('org-123');
+  });
+
+  it('blocks tenant users from mutating global SNMP templates', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'template-1',
+            orgId: null,
+            name: 'Global Template',
+            isBuiltIn: false
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/snmp/templates/template-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Tenant Edit' }),
+    });
+
+    expect(res.status).toBe(403);
   });
 });

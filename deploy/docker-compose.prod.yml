@@ -5,6 +5,10 @@
 #
 # Usage:
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d
+#
+# Production images are intentionally immutable. Set the *_IMAGE_DIGEST values
+# to sha256 digests produced by the release pipeline, and set third-party
+# *_IMAGE_REF values to digest-pinned image references.
 
 x-healthcheck-defaults: &healthcheck
   interval: 30s
@@ -13,19 +17,20 @@ x-healthcheck-defaults: &healthcheck
 
 services:
   binaries-init:
-    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    image: ghcr.io/lanternops/breeze/binaries@${BREEZE_BINARIES_IMAGE_DIGEST:?Set BREEZE_BINARIES_IMAGE_DIGEST to the release image digest}
     pull_policy: always
     container_name: breeze-binaries-init
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     volumes:
       - binaries:/target
     restart: "no"
 
   caddy:
-    image: caddy:2.8-alpine
+    image: ${CADDY_IMAGE_REF:?Set CADDY_IMAGE_REF to a digest-pinned Caddy image}
     container_name: breeze-caddy
     restart: unless-stopped
+    environment:
+      CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-172.30.0.10/32}"
+      CADDY_CLIENT_IP_HEADERS: "${CADDY_CLIENT_IP_HEADERS:-CF-Connecting-IP X-Forwarded-For}"
     volumes:
       - ../docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -40,10 +45,11 @@ services:
       test: ['CMD', 'caddy', 'version']
       start_period: 20s
     networks:
-      - breeze
+      breeze:
+        ipv4_address: ${BREEZE_CADDY_IP:-172.30.0.11}
 
   tunnel:
-    image: cloudflare/cloudflared:latest
+    image: ${CLOUDFLARED_IMAGE_REF:?Set CLOUDFLARED_IMAGE_REF to a digest-pinned cloudflared image}
     container_name: breeze-tunnel
     restart: unless-stopped
     command: tunnel --config /etc/cloudflared/config.yml run
@@ -53,34 +59,38 @@ services:
       caddy:
         condition: service_healthy
     networks:
-      - breeze
+      breeze:
+        ipv4_address: ${BREEZE_CLOUDFLARED_IP:-172.30.0.10}
 
   api:
-    image: ghcr.io/lanternops/breeze/api:${BREEZE_VERSION:-latest}
+    image: ghcr.io/lanternops/breeze/api@${BREEZE_API_IMAGE_DIGEST:?Set BREEZE_API_IMAGE_DIGEST to the release image digest}
     platform: linux/amd64
     container_name: breeze-api
     restart: unless-stopped
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     environment:
       NODE_ENV: production
       API_PORT: 3001
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       DATABASE_URL_APP: ${DATABASE_URL_APP:-}
       BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
-      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
       REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN:-7d}
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
+      BREEZE_BOOTSTRAP_ADMIN_EMAIL: ${BREEZE_BOOTSTRAP_ADMIN_EMAIL:-}
+      BREEZE_BOOTSTRAP_ADMIN_PASSWORD: ${BREEZE_BOOTSTRAP_ADMIN_PASSWORD:-}
+      BREEZE_BOOTSTRAP_ADMIN_NAME: ${BREEZE_BOOTSTRAP_ADMIN_NAME:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${BREEZE_DOMAIN}}
       PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
       DASHBOARD_URL: https://${BREEZE_DOMAIN}
       PUBLIC_API_URL: https://${BREEZE_DOMAIN}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
-      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:-}
-      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:-}
+      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
+      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
       TRANSFER_STORAGE_PATH: /data/transfers
       PATCH_REPORT_STORAGE_PATH: /data/patch-reports
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -88,6 +98,7 @@ services:
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-false}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-noreply@2breeze.app}
@@ -96,9 +107,10 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      APP_VERSION: ${BREEZE_VERSION:-latest}
-      BREEZE_VERSION: ${BREEZE_VERSION:-latest}
+      APP_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
+      BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: github
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:?Set RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS in .env}
       AGENT_BINARY_DIR: /data/binaries/agent
       VIEWER_BINARY_DIR: /data/binaries/viewer
       HELPER_BINARY_DIR: /data/binaries/helper
@@ -112,7 +124,9 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
+      TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
       TRUST_PROXY_HEADERS: "true"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.30.0.11/32}"
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
@@ -122,6 +136,8 @@ services:
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
+    secrets:
+      - redis_password
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -135,18 +151,17 @@ services:
       - breeze
 
   web:
-    image: ghcr.io/lanternops/breeze/web:${BREEZE_VERSION:-latest}
+    image: ghcr.io/lanternops/breeze/web@${BREEZE_WEB_IMAGE_DIGEST:?Set BREEZE_WEB_IMAGE_DIGEST to the release image digest}
     platform: linux/amd64
     container_name: breeze-web
     restart: unless-stopped
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 4321
       PUBLIC_API_URL: https://${BREEZE_DOMAIN}
       PUBLIC_BILLING_URL: https://${BREEZE_DOMAIN}
+      PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-false}
       PUBLIC_SENTRY_DSN_WEB: ${PUBLIC_SENTRY_DSN_WEB:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
@@ -161,10 +176,7 @@ services:
       - breeze
 
   billing:
-    build:
-      context: /opt/breeze-billing
-      dockerfile: Dockerfile
-    image: breeze-billing:local
+    image: ${BILLING_IMAGE_REF:?Set BILLING_IMAGE_REF to a digest-pinned billing image}
     container_name: breeze-billing
     restart: unless-stopped
     environment:
@@ -191,15 +203,25 @@ services:
       - breeze
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE_REF:?Set REDIS_IMAGE_REF to a digest-pinned Redis image}
     container_name: breeze-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy noeviction --maxclients 10000 --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: >
+      sh -ec 'password="$$(cat /run/secrets/redis_password)";
+      umask 077;
+      printf "%s\n" "appendonly yes" "maxmemory ${REDIS_MAXMEMORY:-256mb}" "maxmemory-policy noeviction" "maxclients 10000" "requirepass $$password" > /tmp/redis.conf;
+      exec redis-server /tmp/redis.conf'
+    secrets:
+      - redis_password
     volumes:
       - redis_data:/data
     healthcheck:
       <<: *healthcheck
-      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping']
+      test:
+        [
+          'CMD-SHELL',
+          'password="$$(cat /run/secrets/redis_password)"; { printf "AUTH %s\r\n" "$$password"; printf "PING\r\n"; } | redis-cli --no-auth-warning | grep -q PONG',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -207,27 +229,9 @@ services:
     networks:
       - breeze
 
-  watchtower:
-    image: containrrr/watchtower:latest
-    container_name: breeze-watchtower
-    restart: unless-stopped
-    environment:
-      WATCHTOWER_POLL_INTERVAL: 300
-      WATCHTOWER_LABEL_ENABLE: "true"
-      # Cleanup disabled so previous image stays on disk for rollback.
-      # Weekly host cron prunes images older than 14 days:
-      # 0 3 * * 0 docker image prune -a --filter "until=336h" -f
-      WATCHTOWER_CLEANUP: "false"
-      DOCKER_API_VERSION: "1.54"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json:ro
-    networks:
-      - breeze
-
   # TURN relay for WebRTC remote desktop. Opt-in via: docker compose --profile turn up -d
   coturn:
-    image: coturn/coturn:4-alpine
+    image: ${COTURN_IMAGE_REF:?Set COTURN_IMAGE_REF to a digest-pinned coturn image}
     container_name: breeze-coturn
     restart: unless-stopped
     profiles:
@@ -238,9 +242,29 @@ services:
       --listening-port=3478
       --tls-listening-port=5349
       --fingerprint
-      --lt-cred-mech
+      --use-auth-secret
       --relay-threads=4
       --max-allocations-quota=12
+      --user-quota=4
+      --total-quota=1000
+      --max-bps=${TURN_MAX_BPS:-5000000}
+      --no-loopback-peers
+      --no-multicast-peers
+      --denied-peer-ip=0.0.0.0-0.255.255.255
+      --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=100.64.0.0-100.127.255.255
+      --denied-peer-ip=127.0.0.0-127.255.255.255
+      --denied-peer-ip=169.254.0.0-169.254.255.255
+      --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.0.0.0-192.0.0.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255
+      --denied-peer-ip=198.18.0.0-198.19.255.255
+      --denied-peer-ip=224.0.0.0-239.255.255.255
+      --denied-peer-ip=240.0.0.0-255.255.255.255
+      --denied-peer-ip=::1
+      --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --denied-peer-ip=ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       --log-file=stdout
       --verbose
       --min-port=49152
@@ -253,6 +277,9 @@ services:
 networks:
   breeze:
     name: breeze
+    ipam:
+      config:
+        - subnet: ${BREEZE_DOCKER_SUBNET:-172.30.0.0/24}
 
 volumes:
   binaries:
@@ -260,3 +287,7 @@ volumes:
   caddy_config:
   api_data:
   redis_data:
+
+secrets:
+  redis_password:
+    environment: REDIS_PASSWORD

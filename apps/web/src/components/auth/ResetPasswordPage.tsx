@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import ResetPasswordForm from './ResetPasswordForm';
 import StatusIcon from './StatusIcon';
 import { apiResetPassword } from '../../stores/auth';
+import { scrubQueryParamsFromCurrentUrl } from '../../lib/sensitiveUrl';
 
 type TokenState = { phase: 'loading' } | { phase: 'present'; token: string } | { phase: 'absent' };
 
@@ -16,6 +17,9 @@ export default function ResetPasswordPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenParam = params.get('token');
+    if (tokenParam) {
+      scrubQueryParamsFromCurrentUrl(['token']);
+    }
     setTokenState(tokenParam ? { phase: 'present', token: tokenParam } : { phase: 'absent' });
   }, []);
 

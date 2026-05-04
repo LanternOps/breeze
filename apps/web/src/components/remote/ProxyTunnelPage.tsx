@@ -5,15 +5,22 @@ import { fetchWithAuth } from '@/stores/auth';
 interface Props {
   tunnelId: string;
   target: string;
-  wsUrl: string;
 }
 
 /**
  * Proxy tunnel info page. Shows the tunnel status, target, and connection URLs
  * for accessing the proxied service.
  */
-export default function ProxyTunnelPage({ tunnelId, target, wsUrl }: Props) {
+function buildTunnelWsUrl(tunnelId: string, ticket: string): string {
+  const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
+  const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
+  const wsHost = apiUrl.replace(/^https?:\/\//, '');
+  return `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnelId}/ws?ticket=${encodeURIComponent(ticket)}`;
+}
+
+export default function ProxyTunnelPage({ tunnelId, target }: Props) {
   const [status, setStatus] = useState<'connecting' | 'active' | 'disconnected' | 'failed'>('connecting');
+  const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,12 +43,44 @@ export default function ProxyTunnelPage({ tunnelId, target, wsUrl }: Props) {
     return () => clearInterval(interval);
   }, [pollStatus]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const mintTicket = async () => {
+      try {
+        const res = await fetchWithAuth(`/tunnels/${tunnelId}/ws-ticket`, { method: 'POST' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || 'Failed to obtain tunnel ticket');
+        }
+        const body = await res.json();
+        const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
+        if (!ticket) {
+          throw new Error('Invalid tunnel ticket response');
+        }
+        if (!cancelled) {
+          setWsUrl(buildTunnelWsUrl(tunnelId, ticket));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to prepare tunnel relay URL');
+        }
+      }
+    };
+
+    mintTicket();
+    return () => {
+      cancelled = true;
+    };
+  }, [tunnelId]);
+
   const handleClose = useCallback(() => {
     fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch(() => {});
     setStatus('disconnected');
   }, [tunnelId]);
 
   const handleCopyWsUrl = useCallback(() => {
+    if (!wsUrl) return;
     navigator.clipboard.writeText(wsUrl).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);

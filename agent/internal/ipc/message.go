@@ -322,7 +322,7 @@ type ShutdownIntent struct {
 	ExpectedDuration int    `json:"expectedDurationSeconds,omitempty"`
 }
 
-// TokenUpdate is sent by the watchdog to the agent when the agent token changes.
+// TokenUpdate is sent by the agent to the watchdog when the watchdog-scoped token changes.
 type TokenUpdate struct {
 	Token string `json:"token"`
 }

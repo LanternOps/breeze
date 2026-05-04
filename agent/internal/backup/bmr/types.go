@@ -24,7 +24,9 @@ type AuthenticatedDownloadDescriptor struct {
 	Type                string `json:"type"`
 	Method              string `json:"method"`
 	URL                 string `json:"url"`
-	TokenQueryParam     string `json:"tokenQueryParam"`
+	TokenQueryParam     string `json:"tokenQueryParam,omitempty"`
+	TokenHeaderName     string `json:"tokenHeaderName,omitempty"`
+	TokenHeaderFormat   string `json:"tokenHeaderFormat,omitempty"`
 	PathQueryParam      string `json:"pathQueryParam"`
 	RequiresAuthSession bool   `json:"requiresAuthentication"`
 	PathPrefix          string `json:"pathPrefix"`

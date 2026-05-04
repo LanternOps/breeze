@@ -19,6 +19,13 @@ function shouldTrustProxyHeaders(): boolean {
   return isTruthy(mode);
 }
 
+function trustedProxyCidrs(): string[] {
+  return (process.env.TRUSTED_PROXY_CIDRS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function normalizeIpCandidate(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -55,8 +62,75 @@ function firstValidIpFromCsv(value: string | undefined): string | null {
   return null;
 }
 
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let result = 0;
+  for (const part of parts) {
+    const parsed = Number.parseInt(part, 10);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 255) return null;
+    result = (result << 8) | parsed;
+  }
+  return result >>> 0;
+}
+
+function ipv4InCidr(ip: string, cidr: string): boolean {
+  const [network, bitsRaw] = cidr.split('/');
+  const bits = Number.parseInt(bitsRaw ?? '', 10);
+  if (!network || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const ipNum = ipv4ToInt(ip);
+  const netNum = ipv4ToInt(network);
+  if (ipNum === null || netNum === null) return false;
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return (ipNum & mask) === (netNum & mask);
+}
+
+export function isTrustedProxySource(sourceIp: string | undefined): boolean {
+  const cidrs = trustedProxyCidrs();
+  if (cidrs.length === 0) {
+    return process.env.NODE_ENV !== 'production';
+  }
+
+  const normalizedSource = sourceIp ? normalizeIpCandidate(sourceIp) : null;
+  if (!normalizedSource) {
+    return false;
+  }
+
+  for (const cidr of cidrs) {
+    if (!cidr.includes('/')) {
+      if (normalizeIpCandidate(cidr) === normalizedSource) return true;
+      continue;
+    }
+
+    if (isIP(normalizedSource) === 4 && ipv4InCidr(normalizedSource, cidr)) {
+      return true;
+    }
+    if (isIP(normalizedSource) === 6) {
+      const [network, bitsRaw] = cidr.split('/');
+      if (bitsRaw === '128' && normalizeIpCandidate(network ?? '') === normalizedSource) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getImmediatePeerIp(c: RequestLike, fallback: string): string | undefined {
+  const contextWithEnv = c as RequestLike & {
+    env?: { incoming?: { socket?: { remoteAddress?: string } } };
+  };
+  return normalizeIpCandidate(contextWithEnv.env?.incoming?.socket?.remoteAddress ?? '')
+    ?? normalizeIpCandidate(fallback)
+    ?? undefined;
+}
+
 export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string {
   if (!shouldTrustProxyHeaders()) {
+    return fallback;
+  }
+
+  if (!isTrustedProxySource(getImmediatePeerIp(c, fallback))) {
     return fallback;
   }
 

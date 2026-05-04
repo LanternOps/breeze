@@ -373,6 +373,7 @@ mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resourc
 mssqlRoutes.post(
   '/mssql/restore',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', mssqlRestoreSchema),
@@ -471,6 +472,7 @@ mssqlRoutes.post(
 mssqlRoutes.post(
   '/mssql/verify/:snapshotId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('param', snapshotIdParamSchema),

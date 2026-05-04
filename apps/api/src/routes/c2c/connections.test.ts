@@ -14,6 +14,10 @@ const decryptSecretMock = vi.fn((value: string | null | undefined) => {
   if (!value) return null;
   return value.startsWith('enc:') ? value.slice(4) : value;
 });
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false },
+}));
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -84,6 +88,18 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  }),
 }));
 
 import { authMiddleware } from '../../middleware/auth';
@@ -115,6 +131,8 @@ describe('c2c connection routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     authState = {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -170,6 +188,38 @@ describe('c2c connection routes', () => {
         clientSecret: 'enc:super-secret',
       })
     );
+  });
+
+  it('requires explicit permission and MFA for credential-bearing connection mutations', async () => {
+    permissionGate.deny = true;
+    const noPermission = await app.request('/c2c/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        provider: 'microsoft_365',
+        displayName: 'M365 Tenant',
+        tenantId: 'tenant-1',
+        clientId: 'client-id-1234567890',
+        clientSecret: 'super-secret',
+      }),
+    });
+    expect(noPermission.status).toBe(403);
+
+    permissionGate.deny = false;
+    mfaGate.deny = true;
+    const noMfa = await app.request('/c2c/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        provider: 'microsoft_365',
+        displayName: 'M365 Tenant',
+        tenantId: 'tenant-1',
+        clientId: 'client-id-1234567890',
+        clientSecret: 'super-secret',
+      }),
+    });
+    expect(noMfa.status).toBe(403);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('revokes a connection', async () => {

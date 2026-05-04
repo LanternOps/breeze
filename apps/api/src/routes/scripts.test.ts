@@ -6,6 +6,7 @@ import { scriptRoutes } from './scripts';
 const SCRIPT_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SCRIPT_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 // Mock all services
 vi.mock('../services', () => ({}));
@@ -81,7 +82,19 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (c.req.header('x-site-restricted') === 'true') {
+      c.set('permissions', {
+        permissions: [{ resource, action }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-123',
+        scope: 'organization',
+        allowedSiteIds: ['site-allowed']
+      });
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -411,6 +424,36 @@ describe('scripts routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
+  });
+
+  it('denies execution details when the device is outside the caller site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: EXECUTION_ID,
+                scriptId: SCRIPT_ID_1,
+                deviceId: 'device-1',
+                status: 'completed',
+                deviceOrgId: ORG_ID,
+                deviceSiteId: 'site-denied'
+              }])
+            })
+          })
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Access to this site denied');
   });
 
   it('should validate create payload', async () => {

@@ -2,9 +2,11 @@ import { Hono } from 'hono';
 import { and, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { agentLogs } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgCheck, getPagination } from './helpers';
 import { escapeLike } from '../../utils/sql';
+import { PERMISSIONS } from '../../services/permissions';
+import { redactAgentLogRow } from '../../services/logRedaction';
 
 export const watchdogLogsRoutes = new Hono();
 
@@ -16,6 +18,7 @@ watchdogLogsRoutes.use('*', authMiddleware);
 watchdogLogsRoutes.get(
   '/:id/watchdog-logs',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -102,6 +105,6 @@ watchdogLogsRoutes.get(
       return c.json({ error: 'Failed to query watchdog logs' }, 500);
     }
 
-    return c.json({ logs: rows, total, limit, offset });
+    return c.json({ logs: rows.map((row) => redactAgentLogRow(row)), total, limit, offset });
   }
 );

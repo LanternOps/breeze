@@ -236,6 +236,16 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
 
   const deviceId = c.req.param('deviceId')!;
 
+  const [device] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+
+  if (!device) {
+    return c.json({ error: 'Device not found' }, 404);
+  }
+
   // Resolve backup config via configuration policy system
   const resolved = await resolveBackupConfigForDevice(deviceId);
 

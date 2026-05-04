@@ -4,6 +4,21 @@ import { orgRoutes } from './orgs';
 
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/tenantLifecycle', () => ({
+  revokePartnerTenantAccess: vi.fn().mockResolvedValue({
+    apiKeysRevoked: 0,
+    userSessionsRevoked: 0,
+    oauthGrantsRevoked: 0,
+    oauthRefreshTokensRevoked: 0
+  }),
+  revokeOrganizationTenantAccess: vi.fn().mockResolvedValue({
+    apiKeysRevoked: 0,
+    userSessionsRevoked: 0,
+    oauthGrantsRevoked: 0,
+    oauthRefreshTokensRevoked: 0
+  })
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -70,6 +85,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
 
 describe('org routes', () => {
   let app: Hono;
@@ -230,6 +246,19 @@ describe('org routes', () => {
       expect(body.name).toBe('Updated');
     });
 
+    it('rejects partner-scoped self-service users on broad partner update path', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/partners/partner-123', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxOrganizations: 999 })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('should return 404 when partner not found', async () => {
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -266,6 +295,7 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
     it('should return 404 when partner not found', async () => {
@@ -521,6 +551,7 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
     it('should return 404 when organization not found', async () => {

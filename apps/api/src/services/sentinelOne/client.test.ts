@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SentinelOneClient } from './client';
 
 const ORIGINAL_MAX_PAGES = process.env.S1_SYNC_MAX_PAGES;
+const { safeFetchMock } = vi.hoisted(() => ({
+  safeFetchMock: vi.fn(),
+}));
+
+vi.mock('../urlSafety', () => ({
+  safeFetch: (...args: unknown[]) => safeFetchMock(...(args as [])),
+}));
 
 afterEach(() => {
   if (ORIGINAL_MAX_PAGES === undefined) {
@@ -10,7 +17,7 @@ afterEach(() => {
     process.env.S1_SYNC_MAX_PAGES = ORIGINAL_MAX_PAGES;
   }
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
+  safeFetchMock.mockReset();
 });
 
 describe('SentinelOneClient pagination safeguards', () => {
@@ -18,14 +25,13 @@ describe('SentinelOneClient pagination safeguards', () => {
     process.env.S1_SYNC_MAX_PAGES = '1';
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const fetchMock = vi.fn().mockResolvedValue({
+    safeFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
         data: [{ id: 'agent-1', computerName: 'DESKTOP-1' }],
         pagination: { nextCursor: 'cursor-2' }
       })
     });
-    vi.stubGlobal('fetch', fetchMock as any);
 
     const client = new SentinelOneClient({
       managementUrl: 'https://example.sentinelone.net',
@@ -42,7 +48,7 @@ describe('SentinelOneClient pagination safeguards', () => {
     process.env.S1_SYNC_MAX_PAGES = '1';
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const fetchMock = vi.fn()
+    safeFetchMock
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -57,7 +63,6 @@ describe('SentinelOneClient pagination safeguards', () => {
           pagination: {}
         })
       });
-    vi.stubGlobal('fetch', fetchMock as any);
 
     const client = new SentinelOneClient({
       managementUrl: 'https://example.sentinelone.net',
@@ -68,19 +73,26 @@ describe('SentinelOneClient pagination safeguards', () => {
 
     expect(results).toHaveLength(2);
     expect(truncated).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 
 describe('SentinelOneClient error handling', () => {
+  it('rejects non-HTTPS management URLs before sending tokens', () => {
+    expect(() => new SentinelOneClient({
+      managementUrl: 'http://attacker.example.test',
+      apiToken: 'token',
+    })).toThrow('managementUrl must use HTTPS');
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
   it('throws on non-OK HTTP response with status and body', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
+    safeFetchMock.mockResolvedValue({
       ok: false,
       status: 401,
       text: async () => 'Unauthorized: Invalid API token',
     });
-    vi.stubGlobal('fetch', fetchMock as any);
 
     const client = new SentinelOneClient({
       managementUrl: 'https://example.sentinelone.net',
@@ -92,11 +104,10 @@ describe('SentinelOneClient error handling', () => {
   });
 
   it('throws on non-object JSON response', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
+    safeFetchMock.mockResolvedValue({
       ok: true,
       json: async () => 'not-an-object',
     });
-    vi.stubGlobal('fetch', fetchMock as any);
 
     const client = new SentinelOneClient({
       managementUrl: 'https://example.sentinelone.net',
@@ -128,7 +139,7 @@ describe('SentinelOneClient error handling', () => {
 
   it('drops agent records with no recognizable ID and warns', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const fetchMock = vi.fn().mockResolvedValue({
+    safeFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
         data: [
@@ -138,7 +149,6 @@ describe('SentinelOneClient error handling', () => {
         pagination: {}
       }),
     });
-    vi.stubGlobal('fetch', fetchMock as any);
 
     const client = new SentinelOneClient({
       managementUrl: 'https://example.sentinelone.net',
@@ -153,14 +163,13 @@ describe('SentinelOneClient error handling', () => {
 
   it('warns when payload.data is not an array', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const fetchMock = vi.fn().mockResolvedValue({
+    safeFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
         data: { agents: [{ id: 'agent-1' }] }, // object instead of array
         pagination: {}
       }),
     });
-    vi.stubGlobal('fetch', fetchMock as any);
 
     const client = new SentinelOneClient({
       managementUrl: 'https://example.sentinelone.net',
@@ -193,15 +202,36 @@ describe('SentinelOneClient activity status mapping', () => {
     ] as const;
 
     for (const [input, expected] of cases) {
-      const fetchMock = vi.fn().mockResolvedValue({
+      safeFetchMock.mockResolvedValue({
         ok: true,
         json: async () => ({ data: { status: input } }),
       });
-      vi.stubGlobal('fetch', fetchMock as any);
 
       const client = makeClient();
       const result = await client.getActivityStatus('activity-1');
       expect(result.status).toBe(expected);
+      safeFetchMock.mockReset();
     }
+  });
+
+  it('uses safeFetch so SentinelOne tokens are not sent to blocked internal hosts', async () => {
+    safeFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [] }),
+    });
+
+    const client = new SentinelOneClient({
+      managementUrl: 'https://example.sentinelone.net',
+      apiToken: 'token',
+    });
+    await client.listAgents();
+
+    expect(safeFetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^https:\/\/example\.sentinelone\.net\/web\/api\/v2\.1\/agents/),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'ApiToken token' }),
+        timeoutMs: expect.any(Number),
+      })
+    );
   });
 });

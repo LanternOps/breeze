@@ -116,6 +116,7 @@ async function resolveWebhookIntegration(params: {
   | {
     id: string;
     orgId: string;
+    accountId: string | null;
     webhookSecretEncrypted: string | null;
     isActive: boolean;
   }
@@ -127,6 +128,7 @@ async function resolveWebhookIntegration(params: {
         .select({
           id: huntressIntegrations.id,
           orgId: huntressIntegrations.orgId,
+          accountId: huntressIntegrations.accountId,
           webhookSecretEncrypted: huntressIntegrations.webhookSecretEncrypted,
           isActive: huntressIntegrations.isActive,
         })
@@ -137,6 +139,9 @@ async function resolveWebhookIntegration(params: {
     });
     if (!row || !row.isActive) {
       return { error: 'No active Huntress integration found for webhook payload', status: 404 };
+    }
+    if (row.accountId && params.accountId && row.accountId !== params.accountId) {
+      return { error: 'Webhook account does not match the selected Huntress integration', status: 409 };
     }
     return row;
   }

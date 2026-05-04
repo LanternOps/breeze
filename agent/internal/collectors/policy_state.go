@@ -3,6 +3,7 @@ package collectors
 import (
 	"bufio"
 	"os"
+	"path"
 	"strings"
 )
 
@@ -29,10 +30,69 @@ type ConfigStateEntry struct {
 	ConfigValue any    `json:"configValue,omitempty"`
 }
 
-type PolicyStateCollector struct{}
+var allowedPolicyConfigKeysByPath = map[string]map[string]struct{}{
+	"/etc/ssh/sshd_config": {
+		"allowtcpforwarding":              {},
+		"challengeresponseauthentication": {},
+		"clientalivecountmax":             {},
+		"clientaliveinterval":             {},
+		"kbdinteractiveauthentication":    {},
+		"logingracetime":                  {},
+		"maxauthtries":                    {},
+		"passwordauthentication":          {},
+		"permitrootlogin":                 {},
+		"protocol":                        {},
+		"pubkeyauthentication":            {},
+		"usepam":                          {},
+		"x11forwarding":                   {},
+	},
+	"/etc/login.defs": {
+		"encrypt_method": {},
+		"pass_max_days":  {},
+		"pass_min_days":  {},
+		"pass_warn_age":  {},
+		"uid_max":        {},
+		"uid_min":        {},
+		"umask":          {},
+	},
+	"/etc/audit/auditd.conf": {
+		"admin_space_left_action": {},
+		"disk_error_action":       {},
+		"disk_full_action":        {},
+		"max_log_file":            {},
+		"max_log_file_action":     {},
+		"space_left_action":       {},
+	},
+}
+
+var allowedSysctlConfigKeys = map[string]struct{}{
+	"fs.protected_hardlinks":                 {},
+	"fs.protected_symlinks":                  {},
+	"kernel.dmesg_restrict":                  {},
+	"kernel.kptr_restrict":                   {},
+	"kernel.randomize_va_space":              {},
+	"net.ipv4.conf.all.accept_redirects":     {},
+	"net.ipv4.conf.all.log_martians":         {},
+	"net.ipv4.conf.all.rp_filter":            {},
+	"net.ipv4.conf.all.secure_redirects":     {},
+	"net.ipv4.conf.default.accept_redirects": {},
+	"net.ipv4.conf.default.log_martians":     {},
+	"net.ipv4.conf.default.rp_filter":        {},
+	"net.ipv4.conf.default.secure_redirects": {},
+	"net.ipv4.ip_forward":                    {},
+	"net.ipv4.tcp_syncookies":                {},
+	"net.ipv6.conf.all.accept_redirects":     {},
+	"net.ipv6.conf.all.disable_ipv6":         {},
+	"net.ipv6.conf.default.accept_redirects": {},
+	"net.ipv6.conf.default.disable_ipv6":     {},
+}
+
+type PolicyStateCollector struct {
+	readFile func(string) ([]byte, error)
+}
 
 func NewPolicyStateCollector() *PolicyStateCollector {
-	return &PolicyStateCollector{}
+	return &PolicyStateCollector{readFile: os.ReadFile}
 }
 
 func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]ConfigStateEntry, error) {
@@ -45,6 +105,10 @@ func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]Confi
 		if filePath == "" || configKey == "" {
 			continue
 		}
+		if !isAllowedPolicyConfigProbe(filePath, configKey) {
+			continue
+		}
+		filePath = normalizePolicyConfigPath(filePath)
 
 		dedupeKey := strings.ToLower(filePath) + "::" + strings.ToLower(configKey)
 		if _, ok := seen[dedupeKey]; ok {
@@ -52,7 +116,7 @@ func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]Confi
 		}
 		seen[dedupeKey] = struct{}{}
 
-		content, err := os.ReadFile(filePath)
+		content, err := c.readConfigFile(filePath)
 		if err != nil {
 			continue
 		}
@@ -65,11 +129,86 @@ func (c *PolicyStateCollector) CollectConfigState(probes []ConfigProbe) ([]Confi
 		entries = append(entries, ConfigStateEntry{
 			FilePath:    filePath,
 			ConfigKey:   configKey,
-			ConfigValue: value,
+			ConfigValue: redactSensitiveConfigValue(configKey, value),
 		})
 	}
 
 	return entries, nil
+}
+
+func (c *PolicyStateCollector) readConfigFile(filePath string) ([]byte, error) {
+	if c != nil && c.readFile != nil {
+		return c.readFile(filePath)
+	}
+	return os.ReadFile(filePath)
+}
+
+func normalizePolicyConfigPath(filePath string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(filePath), "\\", "/")
+	if !strings.HasPrefix(normalized, "/") {
+		return ""
+	}
+	cleaned := path.Clean(normalized)
+	if cleaned == "." || strings.Contains(cleaned, "/../") || strings.HasSuffix(cleaned, "/..") {
+		return ""
+	}
+	return cleaned
+}
+
+func normalizePolicyConfigKey(configKey string) string {
+	return strings.ToLower(strings.TrimSpace(configKey))
+}
+
+func isSensitiveConfigKey(configKey string) bool {
+	normalized := strings.NewReplacer(" ", "_", ".", "_", "-", "_").Replace(normalizePolicyConfigKey(configKey))
+	sensitiveExact := map[string]struct{}{
+		"password":   {},
+		"passwd":     {},
+		"pwd":        {},
+		"secret":     {},
+		"token":      {},
+		"credential": {},
+		"bearer":     {},
+	}
+	if _, ok := sensitiveExact[normalized]; ok {
+		return true
+	}
+	return strings.Contains(normalized, "api_key") ||
+		strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "access_key") ||
+		strings.Contains(normalized, "private_key") ||
+		strings.Contains(normalized, "client_secret") ||
+		strings.Contains(normalized, "auth_token") ||
+		strings.HasSuffix(normalized, "token") ||
+		strings.HasSuffix(normalized, "secret")
+}
+
+func isAllowedPolicyConfigProbe(filePath string, configKey string) bool {
+	normalizedPath := normalizePolicyConfigPath(filePath)
+	normalizedKey := normalizePolicyConfigKey(configKey)
+	if normalizedPath == "" || normalizedKey == "" || isSensitiveConfigKey(normalizedKey) {
+		return false
+	}
+
+	if keys, ok := allowedPolicyConfigKeysByPath[normalizedPath]; ok {
+		_, allowed := keys[normalizedKey]
+		return allowed
+	}
+
+	if normalizedPath == "/etc/sysctl.conf" ||
+		(strings.HasPrefix(normalizedPath, "/etc/sysctl.d/") && strings.HasSuffix(normalizedPath, ".conf")) {
+		_, allowed := allowedSysctlConfigKeys[normalizedKey]
+		return allowed
+	}
+
+	return false
+}
+
+func redactSensitiveConfigValue(configKey string, value string) string {
+	if isSensitiveConfigKey(configKey) {
+		return "[redacted]"
+	}
+	return value
 }
 
 func extractConfigValue(content string, wantedKey string) (string, bool) {

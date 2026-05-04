@@ -14,6 +14,7 @@ import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
+import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
@@ -114,6 +115,14 @@ async function isUserDesktopWsRateLimited(userId: string): Promise<boolean> {
   return !result.allowed;
 }
 
+async function revokeDesktopViewerSession(sessionId: string): Promise<void> {
+  try {
+    await revokeViewerSession(sessionId);
+  } catch (error) {
+    console.error(`[DesktopWs] Failed to revoke viewer tokens for session ${sessionId}:`, error);
+  }
+}
+
 const desktopConnectExchangeSchema = z.object({
   sessionId: z.string().min(1),
   code: z.string().min(1)
@@ -148,6 +157,14 @@ async function validateViewerSessionAccess(
   const payload = await verifyViewerAccessToken(token);
   if (!payload) {
     return { valid: false, status: 401, error: 'Invalid or expired viewer token' };
+  }
+
+  if (await isViewerJtiRevoked(payload.jti)) {
+    return { valid: false, status: 401, error: 'Viewer token revoked' };
+  }
+
+  if (await isViewerSessionRevoked(payload.sessionId)) {
+    return { valid: false, status: 401, error: 'Session closed' };
   }
 
   if (payload.sessionId !== sessionId) {
@@ -420,6 +437,15 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
             code: 'AGENT_SEND_FAILED',
             message: 'Failed to send start command to agent'
           }));
+          activeDesktopSessions.delete(sessionId);
+          unregisterDesktopFrameCallback(sessionId);
+          await withSystemDbAccessContext(() =>
+            db.update(remoteSessions)
+              .set({ status: 'failed', errorMessage: 'Failed to send start command to agent', endedAt: new Date() })
+              .where(eq(remoteSessions.id, sessionId))
+          );
+          await revokeDesktopViewerSession(sessionId);
+          ws.close(4003, 'Agent send failed');
           return;
         }
 
@@ -489,6 +515,8 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
             );
           } catch (dbError) {
             console.error(`[DesktopWs] Failed to update session ${sessionId} status to failed:`, dbError);
+          } finally {
+            await revokeDesktopViewerSession(sessionId);
           }
         }
 
@@ -636,11 +664,15 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
         const endedAt = new Date();
         const durationSeconds = Math.round((endedAt.getTime() - desktopSession.startedAt.getTime()) / 1000);
 
-        await withSystemDbAccessContext(() =>
-          db.update(remoteSessions)
-            .set({ status: 'disconnected', endedAt, durationSeconds })
-            .where(eq(remoteSessions.id, sessionId))
-        );
+        try {
+          await withSystemDbAccessContext(() =>
+            db.update(remoteSessions)
+              .set({ status: 'disconnected', endedAt, durationSeconds })
+              .where(eq(remoteSessions.id, sessionId))
+          );
+        } finally {
+          await revokeDesktopViewerSession(sessionId);
+        }
 
         // E2: write a session summary audit row on close.
         try {
@@ -691,6 +723,8 @@ function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) 
           );
         } catch (dbError) {
           console.error(`Failed to update session ${sessionId} status after error:`, dbError);
+        } finally {
+          await revokeDesktopViewerSession(sessionId);
         }
       }
     }
@@ -812,7 +846,13 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         }, 400);
       }
 
-      return c.json({ iceServers: getIceServers() });
+      return c.json({
+        iceServers: getIceServers({
+          sessionId,
+          userId: access.session.userId,
+          deviceId: access.session.deviceId,
+        })
+      });
     }
   );
 
@@ -898,7 +938,17 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
       const agentReachable = sendCommandToAgent(access.device.agentId, {
         id: `desk-start-${sessionId}`,
         type: 'start_desktop',
-        payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}) }
+        payload: {
+          sessionId,
+          offer: data.offer,
+          iceServers: getIceServers({
+            sessionId,
+            userId: access.session.userId,
+            deviceId: access.session.deviceId,
+          }),
+          ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
+          ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {})
+        }
       });
 
       if (!agentReachable) {

@@ -3,9 +3,11 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { createHash } from 'crypto';
+import { lookup as dnsLookup } from 'dns/promises';
+import { isIP } from 'net';
 import { db, withSystemDbAccessContext } from '../../db';
 import { devices, organizations } from '../../db/schema';
-import { authMiddleware, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
@@ -13,6 +15,8 @@ import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSetting
 import { getOrgMtlsSettings, getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
+import { encryptSecret } from '../../services/secretCrypto';
+import { isPrivateIp } from '../../services/urlSafety';
 
 export const mtlsRoutes = new Hono();
 
@@ -26,6 +30,66 @@ const MTLS_RENEW_ATTEMPT_LIMIT = 1;
 const MTLS_RENEW_ATTEMPT_WINDOW_SECONDS = 30;
 const MTLS_RENEW_SUCCESS_LIMIT = 1;
 const MTLS_RENEW_SUCCESS_WINDOW_SECONDS = 3600;
+const LOG_FORWARDING_MASK = '****';
+
+function toOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+async function validateLogForwardingTarget(rawUrl: string | undefined): Promise<string[]> {
+  if (!rawUrl) return [];
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return ['Invalid Elasticsearch URL format'];
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return ['Elasticsearch URL must use HTTPS'];
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (!hostname) {
+    return ['Elasticsearch URL hostname is required'];
+  }
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    return ['Elasticsearch URL cannot target localhost or local network hostnames'];
+  }
+
+  const ipVersion = isIP(hostname);
+  if (ipVersion !== 0) {
+    return isPrivateIp(hostname)
+      ? ['Elasticsearch URL cannot target private, loopback, link-local, or reserved addresses']
+      : [];
+  }
+
+  try {
+    const resolved = await dnsLookup(hostname, { all: true, verbatim: true });
+    if (resolved.length === 0) {
+      return ['Elasticsearch URL hostname could not be resolved'];
+    }
+    const blockedTargets = resolved
+      .map((entry) => entry.address)
+      .filter((address) => isPrivateIp(address));
+    if (blockedTargets.length > 0) {
+      return [`Elasticsearch URL resolves to blocked address space: ${blockedTargets.join(', ')}`];
+    }
+  } catch {
+    return ['Elasticsearch URL hostname could not be resolved'];
+  }
+
+  return [];
+}
+
+function resolveSecretForStorage(incoming: unknown, existing: unknown): string | undefined {
+  if (typeof incoming !== 'string') return undefined;
+  const trimmed = incoming.trim();
+  if (!trimmed) return undefined;
+  if (trimmed === LOG_FORWARDING_MASK) return encryptSecret(toOptionalString(existing)) ?? undefined;
+  return encryptSecret(trimmed) ?? undefined;
+}
 
 // ============================================
 // mTLS Certificate Renewal
@@ -561,6 +625,7 @@ mtlsRoutes.patch(
   '/org/:orgId/settings/log-forwarding',
   authMiddleware,
   requirePermission('orgs', 'write'),
+  requireMfa(),
   zValidator('param', orgIdParamSchema),
   zValidator('json', orgLogForwardingSettingsSchema),
   async (c) => {
@@ -588,15 +653,6 @@ mtlsRoutes.patch(
       : {};
     const hasOwn = (obj: Record<string, unknown>, key: string): boolean =>
       Object.prototype.hasOwnProperty.call(obj, key);
-    const toOptionalString = (value: unknown): string | undefined =>
-      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
-    const resolveSecret = (incoming: unknown, existing: unknown): string | undefined => {
-      if (typeof incoming !== 'string') return undefined;
-      const trimmed = incoming.trim();
-      if (!trimmed) return undefined;
-      if (trimmed === '****') return toOptionalString(existing);
-      return trimmed;
-    };
 
     const incoming = data as Record<string, unknown>;
     const providedApiKey = hasOwn(incoming, 'elasticsearchApiKey');
@@ -610,14 +666,14 @@ mtlsRoutes.patch(
       ? toOptionalString(incoming.indexPrefix)
       : toOptionalString(existingForwarding.indexPrefix);
     let resolvedApiKey = hasOwn(incoming, 'elasticsearchApiKey')
-      ? resolveSecret(incoming.elasticsearchApiKey, existingForwarding.elasticsearchApiKey)
-      : toOptionalString(existingForwarding.elasticsearchApiKey);
+      ? resolveSecretForStorage(incoming.elasticsearchApiKey, existingForwarding.elasticsearchApiKey)
+      : encryptSecret(toOptionalString(existingForwarding.elasticsearchApiKey)) ?? undefined;
     let resolvedUsername = hasOwn(incoming, 'elasticsearchUsername')
       ? toOptionalString(incoming.elasticsearchUsername)
       : toOptionalString(existingForwarding.elasticsearchUsername);
     let resolvedPassword = hasOwn(incoming, 'elasticsearchPassword')
-      ? resolveSecret(incoming.elasticsearchPassword, existingForwarding.elasticsearchPassword)
-      : toOptionalString(existingForwarding.elasticsearchPassword);
+      ? resolveSecretForStorage(incoming.elasticsearchPassword, existingForwarding.elasticsearchPassword)
+      : encryptSecret(toOptionalString(existingForwarding.elasticsearchPassword)) ?? undefined;
 
     // Explicit auth-method updates should clear stale credentials from the other mode.
     if (providedBasic && !providedApiKey) {
@@ -625,6 +681,13 @@ mtlsRoutes.patch(
     } else if (providedApiKey && !providedBasic) {
       resolvedUsername = undefined;
       resolvedPassword = undefined;
+    }
+
+    if (data.enabled) {
+      const targetErrors = await validateLogForwardingTarget(resolvedUrl);
+      if (targetErrors.length > 0) {
+        return c.json({ error: 'Invalid log forwarding target', details: targetErrors }, 400);
+      }
     }
 
     const normalizedForwarding: Record<string, unknown> = {

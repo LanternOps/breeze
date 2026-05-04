@@ -15,19 +15,52 @@ import {
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { authMiddleware } from '../../middleware/auth';
+import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { ENABLE_2FA, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema } from './schemas';
 import {
   getClientRateLimitKey,
   revokeCurrentRefreshTokenJti,
+  resolveCurrentUserTokenContext,
   resolveUserAuditOrgId,
   writeAuthAudit
 } from './helpers';
+import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const passwordRoutes = new Hono();
+
+async function consumePasswordResetToken(
+  redis: ReturnType<typeof getRedis>,
+  tokenHash: string,
+): Promise<string | null> {
+  if (!redis) return null;
+
+  const key = `reset:${tokenHash}`;
+  const redisWithGetDel = redis as typeof redis & {
+    getdel?: (key: string) => Promise<string | null>;
+    eval?: (script: string, keyCount: number, ...keys: string[]) => Promise<unknown>;
+  };
+
+  if (typeof redisWithGetDel.getdel === 'function') {
+    return redisWithGetDel.getdel(key);
+  }
+
+  if (typeof redisWithGetDel.eval === 'function') {
+    const raw = await redisWithGetDel.eval(`
+      local value = redis.call('GET', KEYS[1])
+      if value then
+        redis.call('DEL', KEYS[1])
+      end
+      return value
+    `, 1, key);
+    return typeof raw === 'string' ? raw : null;
+  }
+
+  throw new Error('Redis client does not support atomic password reset token consumption');
+}
 
 // Forgot password
 passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), async (c) => {
@@ -61,7 +94,36 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
       .limit(1)
   );
 
+  let resetAllowed = false;
   if (user) {
+    try {
+      const context = await resolveCurrentUserTokenContext(user.id);
+      await assertPasswordAuthAllowedBySso(context);
+      resetAllowed = true;
+    } catch (error) {
+      if (error instanceof SsoPasswordAuthRequiredError) {
+        writeAuthAudit(c, {
+          action: 'user.password.reset.requested',
+          result: 'denied',
+          reason: 'sso_required',
+          userId: user.id,
+          email: user.email,
+        });
+      } else if (error instanceof TenantInactiveError) {
+        writeAuthAudit(c, {
+          action: 'user.password.reset.requested',
+          result: 'denied',
+          reason: 'tenant_inactive',
+          userId: user.id,
+          email: user.email,
+        });
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  if (user && resetAllowed) {
     // Generate reset token
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
@@ -109,10 +171,27 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
     return c.json({ error: 'Password reset unavailable. Please try again later.' }, 503);
   }
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const userId = await redis.get(`reset:${tokenHash}`);
+  const userId = await consumePasswordResetToken(redis, tokenHash);
 
   if (!userId) {
     return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+
+  try {
+    const context = await resolveCurrentUserTokenContext(userId);
+    await assertPasswordAuthAllowedBySso(context);
+  } catch (error) {
+    if (error instanceof TenantInactiveError) {
+      return c.json({ error: 'Invalid or expired reset token' }, 400);
+    }
+    if (!(error instanceof SsoPasswordAuthRequiredError)) throw error;
+    writeAuthAudit(c, {
+      action: 'user.password.reset',
+      result: 'denied',
+      reason: 'sso_required',
+      userId,
+    });
+    return c.json({ error: 'Password reset is disabled because your organization requires SSO.' }, 403);
   }
 
   // Hash new password
@@ -135,9 +214,6 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
       })
       .where(eq(users.id, userId))
   );
-
-  // Invalidate reset token
-  await redis.del(`reset:${tokenHash}`);
 
   // Invalidate all sessions — best-effort; password is already changed above
   await invalidateAllUserSessions(userId);
@@ -163,6 +239,19 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
 passwordRoutes.post('/change-password', authMiddleware, zValidator('json', changePasswordSchema), async (c) => {
   const auth = c.get('auth');
   const { currentPassword, newPassword } = c.req.valid('json');
+
+  try {
+    await assertPasswordAuthAllowedBySso({
+      scope: auth.scope,
+      orgId: auth.orgId
+    });
+  } catch (error) {
+    if (!(error instanceof SsoPasswordAuthRequiredError)) throw error;
+    return c.json({
+      error: 'Password changes are disabled because your organization requires SSO.',
+      message: 'Password changes are disabled because your organization requires SSO.'
+    }, 403);
+  }
 
   const [user] = await db
     .select({ passwordHash: users.passwordHash })

@@ -372,6 +372,15 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_recovery_readiness: { resource: 'devices', action: 'read' },
 };
 
+const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
+  restore_snapshot: [{ resource: 'backup', action: 'read' }],
+  restore_as_vm: [{ resource: 'backup', action: 'read' }],
+  instant_boot_vm: [{ resource: 'backup', action: 'read' }],
+  restore_mssql_database: [{ resource: 'backup', action: 'read' }],
+  verify_mssql_backup: [{ resource: 'backup', action: 'read' }],
+  restore_hyperv_vm: [{ resource: 'backup', action: 'read' }],
+};
+
 // Per-tool rate limits: { limit, windowSeconds }
 const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
@@ -599,6 +608,12 @@ export async function checkToolPermission(
 
   if (!hasPermission(userPerms, required.resource, required.action)) {
     return `Insufficient permissions: requires ${required.resource}.${required.action}`;
+  }
+
+  for (const extraPermission of TOOL_EXTRA_PERMISSIONS[toolName] ?? []) {
+    if (!hasPermission(userPerms, extraPermission.resource, extraPermission.action)) {
+      return `Insufficient permissions: requires ${extraPermission.resource}.${extraPermission.action}`;
+    }
   }
 
   return null;

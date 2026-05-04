@@ -5,8 +5,15 @@ import { and, eq, or, count, inArray, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users, organizations } from '../db/schema';
-import { authMiddleware, requirePermission } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import {
+  clearPermissionCache,
+  getUserPermissions,
+  hasPermission,
+  isAssignablePermission,
+  PERMISSIONS,
+  type UserPermissions
+} from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
@@ -155,6 +162,70 @@ async function getOrCreatePermission(resource: string, action: string): Promise<
   }
 
   return created.id;
+}
+
+async function getCallerPermissions(
+  c: any,
+  auth: { user: { id: string }; partnerId: string | null; orgId: string | null }
+): Promise<UserPermissions | null> {
+  const existing = c.get('permissions') as UserPermissions | undefined;
+  if (existing) return existing;
+
+  return getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined
+  });
+}
+
+function validateAssignablePermissions(
+  requested: Array<{ resource: string; action: string }>,
+  callerPermissions: UserPermissions | null
+): string | null {
+  if (requested.length === 0) {
+    return null;
+  }
+
+  if (!callerPermissions) {
+    return 'No permissions found';
+  }
+
+  for (const permission of requested) {
+    if (permission.resource === '*' || permission.action === '*') {
+      return 'Wildcard permissions cannot be assigned to custom roles';
+    }
+
+    if (!isAssignablePermission(permission)) {
+      return `Unknown permission: ${permission.resource}:${permission.action}`;
+    }
+
+    if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
+      return `Cannot assign permission not held by caller: ${permission.resource}:${permission.action}`;
+    }
+  }
+
+  return null;
+}
+
+async function getAssignedUserIdsForRoles(roleIds: string[], scopeContext: ScopeContext): Promise<string[]> {
+  if (roleIds.length === 0) return [];
+
+  const rows = scopeContext.scope === 'partner'
+    ? await db
+        .select({ userId: partnerUsers.userId })
+        .from(partnerUsers)
+        .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), inArray(partnerUsers.roleId, roleIds)))
+    : await db
+        .select({ userId: organizationUsers.userId })
+        .from(organizationUsers)
+        .where(and(eq(organizationUsers.orgId, scopeContext.orgId), inArray(organizationUsers.roleId, roleIds)));
+
+  return Array.from(new Set(rows.map((row) => row.userId).filter(Boolean)));
+}
+
+async function clearPermissionCachesForUsers(userIds: string[]): Promise<void> {
+  for (const userId of new Set(userIds)) {
+    await clearPermissionCache(userId);
+  }
 }
 
 // Helper to get all ancestor role IDs (for circular inheritance check)
@@ -421,17 +492,30 @@ roleRoutes.get(
 roleRoutes.post(
   '/',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', createRoleSchema),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
     const body = c.req.valid('json');
+    const callerPermissions = await getCallerPermissions(c, auth);
+    const permissionError = validateAssignablePermissions(body.permissions, callerPermissions);
+    if (permissionError) {
+      return c.json({ error: permissionError }, 403);
+    }
 
     // Validate parent role if provided
     if (body.parentRoleId) {
       const validation = await validateParentRole(body.parentRoleId, scopeContext);
       if (!validation.valid) {
         return c.json({ error: validation.error }, 400);
+      }
+      const parentPermissionError = validateAssignablePermissions(
+        await getEffectivePermissions(body.parentRoleId),
+        callerPermissions
+      );
+      if (parentPermissionError) {
+        return c.json({ error: parentPermissionError }, 403);
       }
     }
 
@@ -639,12 +723,20 @@ roleRoutes.get(
 roleRoutes.patch(
   '/:id',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateRoleSchema),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
     const roleId = c.req.param('id')!;
     const body = c.req.valid('json');
+    const callerPermissions = await getCallerPermissions(c, auth);
+    if (body.permissions !== undefined) {
+      const permissionError = validateAssignablePermissions(body.permissions, callerPermissions);
+      if (permissionError) {
+        return c.json({ error: permissionError }, 403);
+      }
+    }
 
     // Get role
     const [role] = await db
@@ -682,6 +774,13 @@ roleRoutes.patch(
       if (!validation.valid) {
         return c.json({ error: validation.error }, 400);
       }
+      const parentPermissionError = validateAssignablePermissions(
+        await getEffectivePermissions(body.parentRoleId),
+        callerPermissions
+      );
+      if (parentPermissionError) {
+        return c.json({ error: parentPermissionError }, 403);
+      }
 
       // Check for circular inheritance
       const wouldBeCircular = await wouldCreateCircularInheritance(roleId, body.parentRoleId);
@@ -689,6 +788,14 @@ roleRoutes.patch(
         return c.json({ error: 'Cannot set parent role: would create circular inheritance' }, 400);
       }
     }
+
+    const affectedRoleIds = new Set<string>([roleId]);
+    if (body.permissions !== undefined || body.parentRoleId !== undefined) {
+      for (const descendantRoleId of await getDescendantRoleIds(roleId)) {
+        affectedRoleIds.add(descendantRoleId);
+      }
+    }
+    const affectedUserIds = await getAssignedUserIdsForRoles([...affectedRoleIds], scopeContext);
 
     const result = await db.transaction(async (tx) => {
       // Update role fields
@@ -743,6 +850,7 @@ roleRoutes.patch(
 
       return updatedRole;
     });
+    await clearPermissionCachesForUsers(affectedUserIds);
 
     // Get updated permissions
     const rolePerms = await db
@@ -795,6 +903,7 @@ roleRoutes.patch(
 roleRoutes.delete(
   '/:id',
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
@@ -894,12 +1003,14 @@ roleRoutes.delete(
 roleRoutes.post(
   '/:id/clone',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', z.object({ name: z.string().min(1).max(100) })),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
     const roleId = c.req.param('id')!;
     const { name } = c.req.valid('json');
+    const callerPermissions = await getCallerPermissions(c, auth);
 
     // Get source role
     const [sourceRole] = await db
@@ -937,10 +1048,17 @@ roleRoutes.post(
     // Get source role permissions
     const sourcePerms = await db
       .select({
-        permissionId: rolePermissions.permissionId
+        permissionId: rolePermissions.permissionId,
+        resource: permissions.resource,
+        action: permissions.action
       })
       .from(rolePermissions)
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
       .where(eq(rolePermissions.roleId, roleId));
+    const permissionError = validateAssignablePermissions(sourcePerms, callerPermissions);
+    if (permissionError) {
+      return c.json({ error: permissionError }, 403);
+    }
 
     // Create new role
     const roleData: {

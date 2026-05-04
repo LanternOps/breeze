@@ -30,6 +30,7 @@ import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendor
 import { buildEventFingerprint } from '../services/networkBaseline';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import { decryptSnmpCommunities, decryptSnmpCredentials } from '../services/snmpSecrets';
 import {
   discoveryQueueJobDataSchema,
   type DiscoveryQueueJobData,
@@ -546,7 +547,8 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       excludeIps: profile.excludeIps ?? [],
       methods: profile.methods ?? [],
       portRanges: profile.portRanges ?? [],
-      snmpCommunities: profile.snmpCommunities ?? [],
+      snmpCommunities: decryptSnmpCommunities(profile.snmpCommunities),
+      snmpCredentials: decryptSnmpCredentials(profile.snmpCredentials),
       deepScan: profile.deepScan ?? false,
       identifyOS: profile.identifyOS ?? false,
       resolveHostnames: profile.resolveHostnames ?? false,

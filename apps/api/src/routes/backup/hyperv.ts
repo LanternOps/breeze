@@ -384,6 +384,7 @@ hypervRoutes.post(
 hypervRoutes.post(
   '/restore',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', hypervRestoreSchema),

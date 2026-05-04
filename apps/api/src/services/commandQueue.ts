@@ -8,6 +8,7 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+import { commandAuditDetails } from './commandAudit';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -362,7 +363,7 @@ export async function queueCommand(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname,
-          details: { commandId, type, payload },
+          details: commandAuditDetails(commandId, type, payload),
           result: 'success',
         });
       })
@@ -686,7 +687,7 @@ export async function executeCommand(
               resourceType: 'device',
               resourceId: deviceId,
               resourceName: device.hostname,
-              details: { commandId: command.id, type, payload },
+              details: commandAuditDetails(command.id, type, payload),
               result: 'success',
             })
             .execute()

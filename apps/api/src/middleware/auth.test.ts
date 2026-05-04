@@ -22,6 +22,11 @@ vi.mock('../services/tokenRevocation', () => ({
   isUserTokenRevoked: vi.fn().mockResolvedValue(false)
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn().mockResolvedValue(undefined)
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
@@ -57,6 +62,7 @@ import { verifyToken } from '../services/jwt';
 import { isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
 import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 const basePayload = {
   sub: 'user-123',
@@ -132,6 +138,7 @@ describe('authMiddleware', () => {
     vi.mocked(db.select).mockReset();
     vi.mocked(verifyToken).mockReset();
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
+    vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
   });
 
   it('rejects missing authorization header', async () => {
@@ -222,6 +229,19 @@ describe('authMiddleware', () => {
       }),
       expect.any(Function)
     );
+  });
+
+  it('rejects active users when their tenant context is inactive or deleted', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Organization is not active'));
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
   });
 
   it('rejects revoked access tokens', async () => {

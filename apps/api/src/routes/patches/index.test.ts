@@ -17,7 +17,10 @@ const mockAuthState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
   orgId: '11111111-1111-1111-1111-111111111111' as string | null,
   partnerId: null as string | null,
-  accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'] as string[] | null
+  accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'] as string[] | null,
+  permissions: [
+    { resource: '*', action: '*' }
+  ] as Array<{ resource: string; action: string }>
 }));
 
 vi.mock('drizzle-orm', () => {
@@ -137,7 +140,16 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    const allowed = mockAuthState.permissions.some((permission) =>
+      (permission.resource === resource || permission.resource === '*') &&
+      (permission.action === action || permission.action === '*')
+    );
+    if (!allowed) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -187,6 +199,7 @@ describe('patch routes', () => {
     mockAuthState.orgId = ACCESSIBLE_ORG_ID;
     mockAuthState.partnerId = null;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+    mockAuthState.permissions = [{ resource: '*', action: '*' }];
     app = new Hono();
     app.route('/patches', patchRoutes);
   });
@@ -379,6 +392,101 @@ describe('patch routes', () => {
     expect(body.source).toBe('apple');
     expect(body.severity).toBe('critical');
     expect(enqueuePatchComplianceReport).toHaveBeenCalledWith(reportId);
+  });
+
+  it('denies queueing a compliance report without reports export permission', async () => {
+    mockAuthState.permissions = [{ resource: 'reports', action: 'write' }];
+
+    const res = await app.request('/patches/compliance/report?source=apple&severity=critical', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(enqueuePatchComplianceReport).not.toHaveBeenCalled();
+  });
+
+  it('allows queueing a compliance report with reports export permission', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    mockAuthState.permissions = [{ resource: 'reports', action: 'export' }];
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: reportId,
+            orgId: ACCESSIBLE_ORG_ID,
+            status: 'pending',
+            format: 'csv'
+          }
+        ])
+      })
+    } as any);
+
+    const res = await app.request('/patches/compliance/report?source=apple&severity=critical', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(enqueuePatchComplianceReport).toHaveBeenCalledWith(reportId);
+  });
+
+  it('allows report status with reports read permission', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    const now = new Date('2026-05-02T12:00:00Z');
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      source: 'apple',
+      severity: 'critical',
+      summary: { total: 1 },
+      rowCount: 1,
+      errorMessage: null,
+      startedAt: now,
+      completedAt: now,
+      createdAt: now,
+      outputPath: '/tmp/report.csv'
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.id).toBe(reportId);
+  });
+
+  it('denies report status without reports read permission', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    mockAuthState.permissions = [{ resource: 'devices', action: 'read' }];
+
+    const res = await app.request(`/patches/compliance/report/${reportId}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('denies report download without reports export permission', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+
+    const res = await app.request(`/patches/compliance/report/${reportId}/download`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('queues rollback commands for accessible devices', async () => {

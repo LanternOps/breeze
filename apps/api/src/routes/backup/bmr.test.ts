@@ -302,6 +302,7 @@ describe('bmr routes', () => {
     getRecoveryBootMediaArtifactMock.mockReset();
     getRecoveryBootMediaDownloadTargetMock.mockReset();
     listRecoveryBootMediaArtifactsMock.mockReset();
+    delete process.env.BMR_RECOVERY_ALLOW_QUERY_TOKEN;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
       return next();
@@ -848,7 +849,8 @@ describe('bmr routes', () => {
     });
 
     const res = await app.request(
-      `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/manifest.json',
+      { headers: { Authorization: `Bearer ${VALID_RECOVERY_TOKEN}` } },
     );
 
     expect(res.status).toBe(200);
@@ -867,11 +869,47 @@ describe('bmr routes', () => {
     });
 
     const res = await app.request(
-      `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/manifest.json',
+      { headers: { 'X-Recovery-Token': VALID_RECOVERY_TOKEN } },
     );
 
     expect(res.status).toBe(429);
     expect(getAuthenticatedRecoveryDownloadTargetMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects recovery download query tokens by default', async () => {
+    const res = await app.request(
+      `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
+    );
+
+    expect(res.status).toBe(400);
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+    expect(getAuthenticatedRecoveryDownloadTargetMock).not.toHaveBeenCalled();
+  });
+
+  it('allows recovery download query tokens only behind the compatibility flag', async () => {
+    process.env.BMR_RECOVERY_ALLOW_QUERY_TOKEN = 'true';
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      status: 'authenticated',
+      authenticatedAt: new Date('2026-03-31T13:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+    }]));
+    getAuthenticatedRecoveryDownloadTargetMock.mockResolvedValueOnce({
+      unavailable: false,
+      type: 'stream',
+      contentType: 'application/json',
+      contentLength: 2,
+      stream: Readable.from(Buffer.from('{}')),
+    });
+
+    const res = await app.request(
+      `/backup/bmr/recover/download?token=${VALID_RECOVERY_TOKEN}&path=snapshots/snap-ext-001/manifest.json`
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('{}');
   });
 
   it('creates a recovery media build job', async () => {

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { waitForApproval } from './aiAgent';
 
 // ============================================
 // Mocks
@@ -12,6 +14,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     update: vi.fn(),
+    insert: vi.fn(),
+    select: vi.fn(),
   },
 }));
 
@@ -19,11 +23,15 @@ vi.mock('../db/schema', () => ({
   aiSessions: { id: 'id', status: 'status', orgId: 'orgId' },
   aiMessages: {},
   aiToolExecutions: {},
+  aiActionPlans: {},
+  devices: {},
+  deviceSessions: {},
 }));
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ _eq: args })),
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
+  isNull: vi.fn((...args: unknown[]) => ({ _isNull: args })),
 }));
 
 const mockGetSession = vi.fn();
@@ -63,7 +71,7 @@ vi.mock('./auditEvents', () => ({
 }));
 
 vi.mock('./aiAgentSdkTools', () => ({
-  TOOL_TIERS: { query_devices: 1, execute_command: 3 },
+  TOOL_TIERS: { query_devices: 1, take_screenshot: 2, execute_command: 3 },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
 
@@ -105,6 +113,38 @@ function makeSession(overrides?: Record<string, unknown>) {
     lastActivityAt: new Date(),
     ...overrides,
   };
+}
+
+function mockInsertValues() {
+  const values = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(db.insert).mockReturnValue({ values } as any);
+  return values;
+}
+
+function mockInsertReturning(row: Record<string, unknown>) {
+  const returning = vi.fn().mockResolvedValue([row]);
+  const values = vi.fn().mockReturnValue({ returning });
+  vi.mocked(db.insert).mockReturnValue({ values } as any);
+  return { values, returning };
+}
+
+function makeActiveSession(overrides: Record<string, unknown> = {}) {
+  return {
+    breezeSessionId: 'session-1',
+    orgId: 'org-1',
+    auth: makeAuth({ scope: 'organization' }),
+    approvalMode: 'per_step',
+    isPaused: false,
+    eventBus: { publish: vi.fn() },
+    abortController: new AbortController(),
+    activePlanId: null,
+    approvedPlanSteps: new Map(),
+    currentPlanStepIndex: 0,
+    toolUseIdQueue: ['tool-use-1'],
+    auditSnapshot: null,
+    allowedTools: undefined,
+    ...overrides,
+  } as any;
 }
 
 // ============================================
@@ -391,6 +431,144 @@ describe('runPreFlightChecks', () => {
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBe(25.0);
     }
+  });
+});
+
+// ============================================
+// createSessionPreToolUse
+// ============================================
+
+describe('createSessionPreToolUse', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+  });
+
+  it('auto-approve allows Tier 2 tools and creates an executing audit record', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      description: 'Take screenshot',
+    } as any);
+    const values = mockInsertValues();
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'device-1' });
+
+    expect(result).toEqual({ allowed: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'take_screenshot',
+      status: 'executing',
+    }));
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  it('keeps Tier 3 tools pending under auto-approve', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    const { values } = mockInsertReturning({ id: 'exec-1' });
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', {});
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'execute_command',
+      status: 'pending',
+    }));
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'approval_required',
+      executionId: 'exec-1',
+      toolName: 'execute_command',
+    }));
+    expect(waitForApproval).toHaveBeenCalledWith('exec-1', 300_000, expect.any(AbortSignal));
+  });
+
+  it('blocks tools outside the session allowlist before approval handling', async () => {
+    const session = makeActiveSession({
+      approvalMode: 'auto_approve',
+      allowedTools: ['mcp__breeze__query_devices'],
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', {});
+
+    expect(result).toEqual({
+      allowed: false,
+      error: "Tool 'execute_command' is not allowed for this session",
+    });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('matches session allowlists across MCP server prefixes', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      description: 'Execute allowed custom tool',
+    } as any);
+    const values = mockInsertValues();
+    const session = makeActiveSession({
+      approvalMode: 'auto_approve',
+      allowedTools: ['mcp__script_builder__take_screenshot'],
+    });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', {});
+
+    expect(result).toEqual({ allowed: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'take_screenshot',
+      status: 'executing',
+    }));
+  });
+});
+
+// ============================================
+// createSessionPostToolUse
+// ============================================
+
+describe('createSessionPostToolUse', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 1,
+      requiresApproval: false,
+    } as any);
+    mockInsertValues();
+  });
+
+  it('sanitizes tool output before SSE, message persistence, and execution persistence', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'device-1' }, JSON.stringify({
+      status: 'completed',
+      stdout: 'token=abc123 password=hunter2',
+      secret: 'raw-secret',
+    }), false, 12);
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tool_result',
+      output: expect.objectContaining({
+        stdout: expect.stringContaining('[REDACTED]'),
+      }),
+    }));
+    const insertedPayloads = vi.mocked(db.insert).mock.results
+      .map((result) => (result.value as any)?.values?.mock?.calls?.[0]?.[0])
+      .filter(Boolean);
+    expect(JSON.stringify(insertedPayloads)).not.toContain('abc123');
+    expect(JSON.stringify(insertedPayloads)).not.toContain('hunter2');
+    expect(JSON.stringify(insertedPayloads)).not.toContain('raw-secret');
   });
 });
 

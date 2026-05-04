@@ -181,7 +181,7 @@ export const automationTriggerSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('webhook'),
-    secret: z.string().optional()
+    secret: z.string().min(1)
   }),
   z.object({
     type: z.literal('manual')

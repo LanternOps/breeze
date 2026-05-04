@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import type { ConnectionOptions } from 'bullmq';
+import { readFileSync } from 'node:fs';
 
 let redisClient: Redis | null = null;
 let redisAvailable = true;
@@ -27,6 +28,22 @@ function warnAboutInsecureRedis(message: string): void {
   console.warn(`[Redis] ${message}`);
 }
 
+function readRedisPasswordFile(): string | undefined {
+  const passwordFile = process.env.REDIS_PASSWORD_FILE?.trim();
+  if (!passwordFile) {
+    return undefined;
+  }
+
+  try {
+    const password = readFileSync(passwordFile, 'utf8').trim();
+    return password || undefined;
+  } catch (err) {
+    throw new Error(
+      `REDIS_PASSWORD_FILE is set but could not be read: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 export function resolveRedisUrl(): string {
   const explicitUrl = process.env.REDIS_URL?.trim();
   if (explicitUrl) {
@@ -40,7 +57,7 @@ export function resolveRedisUrl(): string {
 
   const host = process.env.REDIS_HOST?.trim() || 'localhost';
   const port = process.env.REDIS_PORT?.trim() || '6379';
-  const password = process.env.REDIS_PASSWORD?.trim();
+  const password = readRedisPasswordFile() || process.env.REDIS_PASSWORD?.trim();
 
   if (password) {
     return `redis://:${encodeURIComponent(password)}@${host}:${port}`;

@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthAuthorizationCodes, oauthClients, oauthInteractions, oauthRefreshTokens } from '../db/schema';
 import { BreezeOidcAdapter } from './adapter';
 import { revokeGrant } from './revocationCache';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 vi.mock('../db', () => ({
   db: { insert: vi.fn(), update: vi.fn(), select: vi.fn() },
@@ -14,6 +15,11 @@ vi.mock('../db', () => ({
 vi.mock('./revocationCache', () => ({
   revokeJti: vi.fn(async () => undefined),
   revokeGrant: vi.fn(async () => undefined),
+}));
+
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
 }));
 
 const insertMock = vi.mocked(db.insert);
@@ -46,6 +52,7 @@ function mockSelectRows(rows: unknown[]) {
 describe('BreezeOidcAdapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
   });
 
   it('upserts Client rows with null partner, metadata payload, and hashed secret', async () => {
@@ -195,6 +202,23 @@ describe('BreezeOidcAdapter', () => {
     mockSelectRows([]);
 
     await expect(new BreezeOidcAdapter('RefreshToken').find('missing')).resolves.toBeUndefined();
+  });
+
+  it('returns undefined for refresh tokens whose tenant is inactive or deleted', async () => {
+    vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      orgId: null,
+      payload: { accountId: 'user_abc', grantId: 'grant_abc' },
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+    expect(revokeGrant).not.toHaveBeenCalled();
   });
 
   it('returns undefined for consumed AuthorizationCode rows', async () => {

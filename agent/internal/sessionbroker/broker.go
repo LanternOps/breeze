@@ -1166,7 +1166,38 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	// Step 7: Verify binary path and hash from kernel-resolved peer metadata.
+	// Do not trust authReq.BinaryHash: any local peer can self-report it.
+	if strings.TrimSpace(creds.BinaryPath) == "" {
+		log.Warn("rejecting helper connection: peer binary path unresolved",
+			"identity", identityKey,
+			"pid", creds.PID,
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "peer binary path unresolved",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+	if !b.verifyBinaryPath(creds.BinaryPath) {
+		log.Warn("binary path mismatch",
+			"identity", identityKey,
+			"pid", creds.PID,
+			"path", creds.BinaryPath,
+			"allowed", b.allowedHelperPaths(),
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "binary path mismatch",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+
+	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
 	if len(b.selfHashes) == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
@@ -1180,7 +1211,23 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
-	hashVerified := b.isAllowedBinaryHash(authReq.BinaryHash)
+	peerHash, err := hashFileSHA256(creds.BinaryPath)
+	if err != nil {
+		log.Warn("failed to hash peer binary",
+			"identity", identityKey,
+			"pid", creds.PID,
+			"path", creds.BinaryPath,
+			"error", err.Error(),
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "peer binary hash unavailable",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+	hashVerified := b.isAllowedBinaryHash(peerHash)
 	if !hashVerified {
 		allowed := make([]string, 0, len(b.selfHashes))
 		for h := range b.selfHashes {
@@ -1189,7 +1236,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
 			"expected", allowed,
-			"got", authReq.BinaryHash,
+			"got", peerHash,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
@@ -1198,21 +1245,6 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		})
 		conn.Close()
 		return
-	}
-
-	// Step 8: Verify binary path (defense in depth). If the hash already
-	// matched the allowlist (step 7), the binary is trusted regardless of path
-	// — on Windows, CreateProcessAsUser can report paths that don't match after
-	// normalization (8.3 short names, drive letter case, etc.), and the hash
-	// is the authoritative identity check. Log the path mismatch at DEBUG for
-	// future investigation, but do not reject; a hash-verified helper is safe.
-	if !b.verifyBinaryPath(creds.BinaryPath) {
-		log.Debug("binary path mismatch but hash verified; accepting",
-			"identity", identityKey,
-			"pid", creds.PID,
-			"path", creds.BinaryPath,
-			"allowed", b.allowedHelperPaths(),
-		)
 	}
 
 	// Step 9: Reject duplicate session IDs
@@ -1242,6 +1274,18 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	helperRole := authReq.HelperRole
 	if helperRole == "" {
 		helperRole = ipc.HelperRoleSystem
+	}
+	switch helperRole {
+	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup:
+	default:
+		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "unknown helper role",
+			Permanent: true,
+		})
+		conn.Close()
+		return
 	}
 
 	// Step 10: Validate role matches peer identity to prevent privilege escalation.
@@ -1285,7 +1329,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			return
 		}
 	} else {
-		// Unix: watchdog must run as root (UID 0).
+		// Unix: watchdog and system-role helpers must run as root. The macOS
+		// desktop helper runs in the GUI user/loginwindow session, so it must
+		// authenticate as user-role and receives only desktop scope below.
 		if helperRole == ipc.HelperRoleWatchdog && creds.UID != 0 {
 			log.Warn("role/identity mismatch: non-root process claiming watchdog role",
 				"uid", creds.UID, "pid", creds.PID)
@@ -1297,18 +1343,34 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			conn.Close()
 			return
 		}
+		if helperRole == ipc.HelperRoleSystem && creds.UID != 0 {
+			log.Warn("role/identity mismatch: non-root process claiming system role",
+				"uid", creds.UID, "pid", creds.PID, "binaryKind", authReq.BinaryKind)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted:  false,
+				Reason:    "system role requires root identity",
+				Permanent: true,
+			})
+			conn.Close()
+			return
+		}
 	}
 
 	var scopes []string
 	switch helperRole {
 	case ipc.HelperRoleUser:
-		scopes = userHelperScopes
+		if runtime.GOOS == "darwin" &&
+			authReq.BinaryKind == ipc.HelperBinaryDesktopHelper &&
+			b.isDesktopHelperPeerPath(creds.BinaryPath) {
+			scopes = []string{"desktop"}
+		} else {
+			scopes = userHelperScopes
+		}
 	case backupipc.HelperRoleBackup:
 		scopes = backupHelperScopes
 	case ipc.HelperRoleWatchdog:
 		scopes = watchdogHelperScopes
-	default:
-		helperRole = ipc.HelperRoleSystem
+	case ipc.HelperRoleSystem:
 		scopes = systemHelperScopes
 	}
 
@@ -1529,24 +1591,53 @@ func (b *Broker) CloseSessionsByDesktopContext(ctx string) int {
 // setupSocket is implemented in broker_windows.go and broker_unix.go.
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
+	ok := binaryPathMatchesAllowed(peerPath, b.allowedHelperPaths())
+	if ok {
+		return true
+	}
+	log.Debug("verifyBinaryPath: no match",
+		"peer", filepath.Clean(peerPath),
+		"allowed", b.allowedHelperPaths(),
+	)
+	return false
+}
+
+func binaryPathMatchesAllowed(peerPath string, allowed []string) bool {
 	peerResolved, err := filepath.EvalSymlinks(peerPath)
 	if err != nil {
-		// Peer path might not be resolvable if the process has exited
-		peerResolved = peerPath
+		return false
 	}
 	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
-	allowed := b.allowedHelperPaths()
 	for _, candidate := range allowed {
-		if normalizeBinaryPath(filepath.Clean(candidate)) == peerResolved {
+		resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			resolvedCandidate = candidate
+		}
+		if normalizeBinaryPath(filepath.Clean(resolvedCandidate)) == peerResolved {
 			return true
 		}
 	}
-	// Log the mismatch at DEBUG so investigators can see exactly which
-	// paths the broker considered trusted. Cheap and load-bearing.
-	log.Debug("verifyBinaryPath: no match",
-		"peer", peerResolved,
-		"allowed", allowed,
-	)
+	return false
+}
+
+func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
+	peerResolved, err := filepath.EvalSymlinks(peerPath)
+	if err != nil {
+		return false
+	}
+	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
+	for _, candidate := range b.allowedHelperPaths() {
+		if !strings.Contains(filepath.Base(candidate), "breeze-desktop-helper") {
+			continue
+		}
+		resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			resolvedCandidate = candidate
+		}
+		if normalizeBinaryPath(filepath.Clean(resolvedCandidate)) == peerResolved {
+			return true
+		}
+	}
 	return false
 }
 

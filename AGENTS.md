@@ -239,9 +239,8 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.ghcr up -d
 # Local build mode (native arm64)
 docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build up --build -d
 
-# Or symlink whichever mode you want as default:
-ln -sf docker-compose.override.yml.dev docker-compose.override.yml
-docker compose up --build -d
+# Do not create a root docker-compose.override.yml for shared commits;
+# Docker Compose auto-loads that filename and can weaken production defaults.
 ```
 
 ### PR Merge Process

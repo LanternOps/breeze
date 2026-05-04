@@ -199,6 +199,51 @@ describe('webhook routes', () => {
     expect(body.secret).toBeUndefined();
   });
 
+  it('encrypts and redacts custom webhook headers', async () => {
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((values: any) => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: WEBHOOK_ID_1,
+          orgId: '11111111-1111-1111-1111-111111111111',
+          name: 'Device Alerts',
+          url: 'https://example.com/webhooks/device',
+          secret: values.secret,
+          events: ['device.created'],
+          headers: values.headers,
+          status: 'active',
+          createdBy: 'user-123',
+          createdAt: new Date('2026-02-07T13:00:00.000Z'),
+          updatedAt: new Date('2026-02-07T13:00:00.000Z'),
+          lastDeliveryAt: null
+        }]))
+      }))
+    } as any);
+
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Device Alerts',
+        url: 'https://example.com/webhooks/device',
+        secret: 'secret-123',
+        events: ['device.created'],
+        headers: [{ key: 'Authorization', value: 'Bearer token-123' }]
+      })
+    });
+
+    expect(res.status).toBe(201);
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0][0];
+    expect(insertValues.headers[0].value).not.toBe('Bearer token-123');
+    expect(String(insertValues.headers[0].value)).toMatch(/^enc:v1:/);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('token-123');
+    expect(body.headers[0].value).toEqual({
+      redacted: true,
+      hasSecret: true,
+      masked: '********'
+    });
+  });
+
   it('rejects unsafe webhook URLs', async () => {
     validateWebhookUrlSafetyWithDnsMock.mockResolvedValueOnce(['Webhook URL must use HTTPS']);
 
@@ -218,6 +263,32 @@ describe('webhook routes', () => {
     expect(body.error).toBe('Invalid webhook URL');
   });
 
+  it('rejects reserved and malformed custom webhook headers', async () => {
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Bad Headers',
+        url: 'https://example.com/webhook',
+        secret: 'secret-123',
+        events: ['device.created'],
+        headers: [
+          { key: 'Host', value: '169.254.169.254' },
+          { key: 'X-Breeze-Event-Type', value: 'forged' },
+          { key: 'Bad Header', value: 'value' },
+          { key: 'X-Test', value: 'line\rbreak' }
+        ]
+      })
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(JSON.stringify(body)).toContain('reserved');
+    expect(JSON.stringify(body)).toContain('RFC token');
+    expect(JSON.stringify(body)).toContain('control characters');
+  });
+
   it('lists webhooks with pagination', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(mockSelectWhere([{ count: 2 }]) as any)
@@ -229,7 +300,7 @@ describe('webhook routes', () => {
           url: 'https://example.com/1',
           secret: 'secret-a',
           events: ['device.created'],
-          headers: [],
+          headers: [{ key: 'Authorization', value: 'enc:v1:test' }],
           status: 'active',
           createdBy: 'user-123',
           createdAt: new Date(),
@@ -262,6 +333,11 @@ describe('webhook routes', () => {
     expect(body.data).toHaveLength(2);
     expect(body.pagination.total).toBe(2);
     expect(body.data[0].secret).toBeUndefined();
+    expect(body.data[0].headers[0]?.value).toEqual({
+      redacted: true,
+      hasSecret: true,
+      masked: '********'
+    });
     expect(body.data[1].status).toBe('paused');
   });
 

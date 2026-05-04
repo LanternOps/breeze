@@ -78,4 +78,28 @@ describe('mintApiKey', () => {
     const args = valuesMock.mock.calls[0]![0];
     expect(args.source).toBe('manual');
   });
+
+  it('rejects wildcard and unsupported scopes before inserting', async () => {
+    vi.clearAllMocks();
+
+    await expect(mintApiKey({
+      partnerId: 'p1',
+      defaultOrgId: 'o1',
+      createdByUserId: 'u1',
+      name: 'Bad',
+      scopes: ['*'],
+      source: 'manual',
+    })).rejects.toThrow('Wildcard API key scopes are not supported');
+
+    await expect(mintApiKey({
+      partnerId: 'p1',
+      defaultOrgId: 'o1',
+      createdByUserId: 'u1',
+      name: 'Bad',
+      scopes: ['not:a-scope'],
+      source: 'manual',
+    })).rejects.toThrow('Unsupported API key scope: not:a-scope');
+
+    expect(db.insert).not.toHaveBeenCalled();
+  });
 });

@@ -7,6 +7,9 @@ export const agentVersions = pgTable('agent_versions', {
   architecture: varchar('architecture', { length: 20 }).notNull(), // amd64, arm64
   downloadUrl: text('download_url').notNull(),
   checksum: varchar('checksum', { length: 64 }).notNull(), // SHA256
+  releaseManifest: text('release_manifest'),
+  manifestSignature: text('manifest_signature'),
+  signingKeyId: varchar('signing_key_id', { length: 128 }),
   fileSize: bigint('file_size', { mode: 'bigint' }),
   releaseNotes: text('release_notes'),
   isLatest: boolean('is_latest').notNull().default(false),

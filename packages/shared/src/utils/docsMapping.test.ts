@@ -46,6 +46,12 @@ describe('getDocsForPath', () => {
       expect(result.label).toBe('API Keys');
     });
 
+    it('/settings/connected-apps maps to MCP server docs', () => {
+      const result = getDocsForPath('/settings/connected-apps');
+      expect(result.label).toBe('Connected Apps & MCP');
+      expect(result.url).toContain('/features/mcp-server/');
+    });
+
     it('/alerts/rules matches Alert Rules, not generic Alerts', () => {
       const result = getDocsForPath('/alerts/rules');
       expect(result.label).toBe('Alert Rules');

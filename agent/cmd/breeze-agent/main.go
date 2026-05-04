@@ -865,6 +865,8 @@ func enrollDevice(enrollmentKey string) {
 
 	cfg.AgentID = enrollResp.AgentID
 	cfg.AuthToken = enrollResp.AuthToken
+	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
+	cfg.HelperAuthToken = enrollResp.HelperAuthToken
 	cfg.OrgID = enrollResp.OrgID
 	cfg.SiteID = enrollResp.SiteID
 
@@ -1014,7 +1016,14 @@ func runUserHelper() {
 }
 
 func runDesktopHelper() {
-	runHelperProcess("desktop helper", ipc.HelperRoleSystem, desktopContext, ipc.HelperBinaryDesktopHelper)
+	runHelperProcess("desktop helper", desktopHelperRole(), desktopContext, ipc.HelperBinaryDesktopHelper)
+}
+
+func desktopHelperRole() string {
+	if runtime.GOOS == "darwin" {
+		return ipc.HelperRoleUser
+	}
+	return ipc.HelperRoleSystem
 }
 
 func runHelperProcess(name, role, context, binaryKind string) {
@@ -1042,8 +1051,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	}
 	logging.Init("text", "info", output)
 
-	// Load agent config for IPC socket path and log shipping credentials.
-	// The helper runs as SYSTEM so it can read agent.yaml.
+	// Load agent config for IPC socket path and helper-scoped log shipping credentials.
 	cfg, _ := config.Load(cfgFile)
 	if cfg == nil {
 		cfg = config.Default()
@@ -1055,9 +1063,10 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	}
 
 	// Ship helper logs to the API under the same agent identity
-	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
-		helperToken := secmem.NewSecureString(cfg.AuthToken)
-		cfg.AuthToken = "" // Clear plaintext from config struct
+	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
+		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
+		cfg.AuthToken = ""
+		cfg.HelperAuthToken = ""
 		helperAuthMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
@@ -1254,16 +1263,16 @@ func runHelperProcess(name, role, context, binaryKind string) {
 // stuck). Call reset() when the condition clears (e.g. connection has been
 // stably authenticated).
 type helperWarnLimiter struct {
-	mu                   sync.Mutex
-	limit                int
-	window               time.Duration
-	lastMsg              string
-	firstSeenAt          time.Time
-	count                int // total emissions (incl. suppressed) in this window
-	warnsEmitted         int // warn-level emissions in this window
-	suppressed           int // warnings suppressed since last info emission
-	suppressedSinceInfo  int // count since last INFO — reset on each INFO emit
-	lastInfoEmit         time.Time
+	mu                  sync.Mutex
+	limit               int
+	window              time.Duration
+	lastMsg             string
+	firstSeenAt         time.Time
+	count               int // total emissions (incl. suppressed) in this window
+	warnsEmitted        int // warn-level emissions in this window
+	suppressed          int // warnings suppressed since last info emission
+	suppressedSinceInfo int // count since last INFO — reset on each INFO emit
+	lastInfoEmit        time.Time
 }
 
 // infoInterval is the sub-window cadence for INFO summaries emitted while

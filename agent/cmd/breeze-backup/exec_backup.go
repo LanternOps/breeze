@@ -18,6 +18,54 @@ import (
 
 // --- core backup ---
 
+type commandStorageEncryption struct {
+	Required     bool   `json:"required"`
+	Mode         string `json:"mode"`
+	KeyReference string `json:"keyReference"`
+}
+
+type sseConfigurableProvider interface {
+	SetServerSideEncryption(algorithm, kmsKeyID string)
+}
+
+func applyCommandStorageEncryption(provider providers.BackupProvider, payload json.RawMessage) error {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	var p struct {
+		StorageEncryption *commandStorageEncryption `json:"storageEncryption"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("invalid backup encryption payload: %w", err)
+	}
+	if p.StorageEncryption == nil || !p.StorageEncryption.Required {
+		return nil
+	}
+	if provider == nil {
+		return fmt.Errorf("backup storage encryption is required but backup storage is not configured")
+	}
+
+	sseProvider, ok := provider.(sseConfigurableProvider)
+	if !ok {
+		return fmt.Errorf("backup storage encryption is required but the configured provider cannot enforce it")
+	}
+
+	switch p.StorageEncryption.Mode {
+	case "s3-sse-s3":
+		sseProvider.SetServerSideEncryption("AES256", "")
+	case "s3-sse-kms":
+		if p.StorageEncryption.KeyReference == "" {
+			return fmt.Errorf("backup storage encryption requires a KMS key reference")
+		}
+		sseProvider.SetServerSideEncryption("aws:kms", p.StorageEncryption.KeyReference)
+	default:
+		return fmt.Errorf("unsupported backup storage encryption mode %q", p.StorageEncryption.Mode)
+	}
+
+	return nil
+}
+
 func resolveRestoreProvider(mgr *backup.BackupManager, vaultState *vaultManagerRef) providers.BackupProvider {
 	if mgr == nil {
 		return nil

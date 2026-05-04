@@ -12,6 +12,7 @@ import { and, eq, gte, lte, ilike, inArray, desc } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { redactAgentLogRow } from './logRedaction';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -109,16 +110,19 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           .limit(maxLimit);
 
         return JSON.stringify({
-          logs: results.map((r) => ({
-            id: r.id,
-            deviceId: r.deviceId,
-            timestamp: r.timestamp.toISOString(),
-            level: r.level,
-            component: r.component,
-            message: r.message,
-            fields: r.fields,
-            agentVersion: r.agentVersion,
-          })),
+          logs: results.map((r) => {
+            const redacted = redactAgentLogRow(r);
+            return {
+              id: r.id,
+              deviceId: r.deviceId,
+              timestamp: r.timestamp.toISOString(),
+              level: r.level,
+              component: r.component,
+              message: redacted.message,
+              fields: redacted.fields,
+              agentVersion: r.agentVersion,
+            };
+          }),
           count: results.length,
         });
       } catch (err) {

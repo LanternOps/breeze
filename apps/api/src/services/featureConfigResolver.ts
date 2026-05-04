@@ -227,7 +227,8 @@ export async function resolveAlertRulesForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -287,7 +288,8 @@ export async function resolveAutomationsForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -389,7 +391,8 @@ export async function resolvePatchConfigDetailsForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -463,7 +466,8 @@ export async function resolveBackupConfigForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -523,7 +527,8 @@ export async function resolveMaintenanceConfigForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -576,7 +581,8 @@ export async function resolveComplianceRulesForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -634,7 +640,8 @@ export async function resolveSoftwarePolicyForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -1090,7 +1097,8 @@ export async function resolveBackupProtectionForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(

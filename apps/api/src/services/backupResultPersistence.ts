@@ -34,12 +34,31 @@ type SnapshotProtectionSettings = {
   legalHoldSource: 'policy' | 'manual' | null;
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function normalizeMetadata(
   metadata: ParsedBackupCommandResult['metadata']
 ): Record<string, unknown> {
   return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
     ? { ...metadata }
     : {};
+}
+
+function resolveSnapshotEncryptionKeyId(metadata: Record<string, unknown>): string | null {
+  const direct = getStringValue(metadata, 'encryptionKeyId');
+  if (direct && UUID_PATTERN.test(direct)) {
+    return direct;
+  }
+
+  const encryption = metadata.encryption;
+  if (encryption && typeof encryption === 'object' && !Array.isArray(encryption)) {
+    const nested = getStringValue(encryption as Record<string, unknown>, 'keyId');
+    if (nested && UUID_PATTERN.test(nested)) {
+      return nested;
+    }
+  }
+
+  return null;
 }
 
 function getStringValue(
@@ -473,6 +492,7 @@ export async function applyBackupCommandResultToJob(params: {
     fileCount: result.filesBackedUp ?? result.snapshot?.files?.length ?? null,
     timestamp,
     metadata: snapshotMetadata,
+    encryptionKeyId: resolveSnapshotEncryptionKeyId(snapshotMetadata),
     backupType: snapshotBackupType,
   } as const;
 

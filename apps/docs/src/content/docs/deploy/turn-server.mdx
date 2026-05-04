@@ -85,11 +85,27 @@ cat > /etc/turnserver.conf <<'EOF'
 listening-port=3478
 tls-listening-port=5349
 fingerprint
-lt-cred-mech
+use-auth-secret
 static-auth-secret=YOUR_TURN_SECRET_HERE
 realm=breeze.local
 relay-threads=2
 max-allocations-quota=100
+user-quota=4
+total-quota=1000
+max-bps=5000000
+no-loopback-peers
+no-multicast-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=224.0.0.0-239.255.255.255
+denied-peer-ip=240.0.0.0-255.255.255.255
 min-port=49152
 max-port=49252
 no-cli
@@ -171,6 +187,7 @@ TURN_HOST=YOUR_TURN_IP
 TURN_PORT=3478
 TURN_SECRET=YOUR_TURN_SECRET_HERE
 TURN_REALM=breeze.local
+TURN_CREDENTIAL_TTL_SECONDS=600
 ```
 
 <Aside type="danger">
@@ -234,11 +251,11 @@ Edit `min-port` and `max-port` in the coturn config and match the firewall rule.
 
 Breeze uses the TURN **time-limited credential** mechanism (RFC 5766 long-term credentials with a shared secret):
 
-1. The API receives a request for ICE servers (`GET /remote/ice-servers`).
-2. It generates a temporary username (Unix timestamp + random nonce) and computes an HMAC-SHA1 signature using `TURN_SECRET`.
+1. The API receives a request for ICE servers from a desktop-session or viewer-token endpoint.
+2. It verifies the caller is bound to an active desktop session, then generates a temporary username containing the Unix expiry, user/session/device scope, and random nonce.
 3. The credential pair (username + HMAC password) is returned to both the viewer and agent.
-4. Credentials expire after a configurable TTL (default: 24 hours).
-5. coturn validates incoming TURN allocations against the same shared secret.
+4. Credentials expire after a configurable TTL (default: 10 minutes, clamped to 1–15 minutes).
+5. coturn validates incoming TURN allocations against the same shared secret via `use-auth-secret`.
 
 Clients never see `TURN_SECRET` — they only receive short-lived derived credentials.
 
@@ -260,9 +277,9 @@ Clients never see `TURN_SECRET` — they only receive short-lived derived creden
 **High bandwidth usage on the TURN server**
 - TURN relays all media when direct P2P fails. Each desktop session at 5 Mbps = ~2.25 GB/hour
 - Monitor with `vnstat` or DigitalOcean's bandwidth graphs
-- Consider enabling bandwidth limits in coturn: `max-bps=5000000` (per session)
+- Keep `max-bps`, `user-quota`, `total-quota`, and a narrow relay port range enabled. Raise them only after adding bandwidth alerts and provider-level egress budgets.
 
 **WebSocket fallback is active instead of WebRTC**
 - The viewer falls back to WebSocket when WebRTC negotiation fails entirely
 - Check browser console for ICE errors
-- Ensure both STUN and TURN candidates are being generated (check `GET /remote/ice-servers` response)
+- Ensure both STUN and TURN candidates are being generated from a session-scoped ICE endpoint response

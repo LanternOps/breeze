@@ -31,6 +31,17 @@ function getProvidedEnrollmentSecret(c: any, data: { enrollmentSecret?: string }
   return (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
 }
 
+function getProvidedExistingDeviceToken(c: any): string {
+  const explicit = c.req.header('x-agent-reenrollment-token')?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const authorization = c.req.header('authorization')?.trim() ?? '';
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() ?? '';
+}
+
 function timingSafeStringEqual(left: string, right: string): boolean {
   const leftBuf = Buffer.from(left);
   const rightBuf = Buffer.from(right);
@@ -44,6 +55,17 @@ function hashEnrollmentSecret(secret: string): string {
 export function getGlobalEnrollmentSecret(): string | null {
   const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET?.trim() ?? '';
   return configuredSecret.length > 0 ? configuredSecret : null;
+}
+
+function tokenHashMatches(storedHash: string | null | undefined, presentedToken: string, now: Date, expiresAt?: Date | null): boolean {
+  if (!storedHash || !presentedToken) {
+    return false;
+  }
+  if (expiresAt && expiresAt <= now) {
+    return false;
+  }
+  const presentedHash = createHash('sha256').update(presentedToken).digest('hex');
+  return timingSafeStringEqual(storedHash, presentedHash);
 }
 
 enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
@@ -287,21 +309,31 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         .limit(1);
 
       if (partner?.maxDevices != null) {
-deviceLimitPartnerId = org.partnerId;
+        deviceLimitPartnerId = org.partnerId;
         maxDevices = partner.maxDevices;
       }
     }
 
     const agentId = generateAgentId();
     const apiKey = generateApiKey();
+    const watchdogApiKey = generateApiKey();
+    const helperApiKey = generateApiKey();
     const tokenIssuedAt = new Date();
     // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
     // the plaintext token.
     // lgtm[js/insufficient-password-hash]
     const tokenHash = createHash('sha256').update(apiKey).digest('hex');
+    const watchdogTokenHash = createHash('sha256').update(watchdogApiKey).digest('hex');
+    const helperTokenHash = createHash('sha256').update(helperApiKey).digest('hex');
 
     const [existingDevice] = await db
-      .select({ id: devices.id, status: devices.status })
+      .select({
+        id: devices.id,
+        status: devices.status,
+        agentTokenHash: devices.agentTokenHash,
+        previousTokenHash: devices.previousTokenHash,
+        previousTokenExpiresAt: devices.previousTokenExpiresAt,
+      })
       .from(devices)
       .where(
         and(
@@ -311,6 +343,36 @@ deviceLimitPartnerId = org.partnerId;
         )
       )
       .limit(1);
+
+    let existingDeviceAuthenticated = false;
+    if (existingDevice) {
+      const now = new Date();
+      const existingDeviceToken = getProvidedExistingDeviceToken(c);
+      existingDeviceAuthenticated =
+        tokenHashMatches(existingDevice.agentTokenHash, existingDeviceToken, now) ||
+        tokenHashMatches(existingDevice.previousTokenHash, existingDeviceToken, now, existingDevice.previousTokenExpiresAt);
+
+      if (!existingDeviceAuthenticated) {
+        writeAuditEvent(c, {
+          orgId: key.orgId,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceId: existingDevice.id,
+          resourceName: data.hostname,
+          details: {
+            reason: 'hostname_collision_requires_existing_device_token',
+            siteId,
+          },
+          result: 'denied',
+          errorMessage: 'Enrollment attempted to replace an existing hostname without the existing device token',
+        });
+        return c.json({
+          error: 'A device with this hostname already exists and re-enrollment requires the existing device token or an admin-approved replacement workflow',
+          reason: 'hostname_collision_requires_existing_device_token',
+        }, 409);
+      }
+    }
 
     // Auto-restore decommissioned devices on re-enrollment
     if (existingDevice && existingDevice.status === 'decommissioned') {
@@ -364,13 +426,21 @@ deviceLimitPartnerId = org.partnerId;
           .set({
             agentId: agentId,
             agentTokenHash: tokenHash,
+            watchdogTokenHash,
+            helperTokenHash,
             osType: data.osType,
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
             tokenIssuedAt,
+            watchdogTokenIssuedAt: tokenIssuedAt,
+            helperTokenIssuedAt: tokenIssuedAt,
             previousTokenHash: null,
             previousTokenExpiresAt: null,
+            previousWatchdogTokenHash: null,
+            previousWatchdogTokenExpiresAt: null,
+            previousHelperTokenHash: null,
+            previousHelperTokenExpiresAt: null,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             status: 'online',
@@ -387,12 +457,16 @@ deviceLimitPartnerId = org.partnerId;
             siteId: siteId,
             agentId: agentId,
             agentTokenHash: tokenHash,
+            watchdogTokenHash,
+            helperTokenHash,
             hostname: data.hostname,
             osType: data.osType,
             osVersion: data.osVersion,
             architecture: data.architecture,
             agentVersion: data.agentVersion,
             tokenIssuedAt,
+            watchdogTokenIssuedAt: tokenIssuedAt,
+            helperTokenIssuedAt: tokenIssuedAt,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             status: 'online',
@@ -495,6 +569,8 @@ deviceLimitPartnerId = org.partnerId;
       agentId: agentId,
       deviceId: device.id,
       authToken: apiKey,
+      watchdogAuthToken: watchdogApiKey,
+      helperAuthToken: helperApiKey,
       orgId: key.orgId,
       siteId: key.siteId,
       config: {

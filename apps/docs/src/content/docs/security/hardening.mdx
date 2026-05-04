@@ -115,4 +115,7 @@ Breeze implements Redis-backed sliding window rate limiting:
 | Login | 5 attempts | 5 minutes |
 | API (per user) | 100 requests | 60 seconds |
 | Agent (per device) | 120 requests | 60 seconds |
+| Agent (per organization) | 600 requests | 60 seconds |
 | Enrollment | 10 attempts | 60 seconds |
+
+The per-organization agent limit is configurable via `AGENT_ORG_RATE_LIMIT_PER_MIN` and caps total fleet traffic for any single tenant. When exceeded, the API returns `429` with `Retry-After: 60`; agents respect this header and back off automatically.

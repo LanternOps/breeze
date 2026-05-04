@@ -5,6 +5,7 @@ const selectMock = vi.fn();
 const updateMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
+const claimPendingCommandsForDeviceMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -29,6 +30,7 @@ vi.mock('../../db/schema', () => ({
     deviceId: 'device_commands.device_id',
     type: 'device_commands.type',
     status: 'device_commands.status',
+    targetRole: 'device_commands.target_role',
     payload: 'device_commands.payload',
   },
   devices: {
@@ -48,6 +50,10 @@ vi.mock('../backup/verificationService', () => ({
 vi.mock('../../services/commandQueue', () => ({
   CommandTypes: {},
   queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('../../services/commandDispatch', () => ({
+  claimPendingCommandsForDevice: (...args: unknown[]) => claimPendingCommandsForDeviceMock(...(args as [])),
 }));
 
 vi.mock('../../services/vaultSyncPersistence', () => ({
@@ -89,6 +95,7 @@ describe('agent commands routes', () => {
         agentId: 'agent-1',
         orgId: 'org-1',
         siteId: 'site-1',
+        role: 'agent',
       });
       await next();
     });
@@ -142,4 +149,56 @@ describe('agent commands routes', () => {
       });
     }
   );
+
+  it('claims commands for the authenticated credential role only', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
+      {
+        id: commandId,
+        type: 'run_script',
+        payload: { scriptId: 'script-1' },
+      },
+    ]);
+
+    const res = await app.request(`/agents/${agentId}/commands?role=watchdog`, {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent');
+    await expect(res.json()).resolves.toEqual({
+      commands: [
+        {
+          id: commandId,
+          type: 'run_script',
+          payload: { scriptId: 'script-1' },
+        },
+      ],
+    });
+  });
+
+  it('rejects normal agent results for watchdog-targeted commands', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'update_agent',
+          status: 'sent',
+          targetRole: 'watchdog',
+        },
+      ])
+    );
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'completed',
+        result: { updated_to: '1.2.3' },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
 });

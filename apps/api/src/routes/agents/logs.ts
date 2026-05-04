@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { gunzipSync } from 'node:zlib';
 import { db } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
+import { redactLogFields, redactLogMessage } from '../../services/logRedaction';
 
 export const logsRoutes = new Hono();
 
@@ -99,8 +100,8 @@ logsRoutes.post(
     timestamp: new Date(log.timestamp),
     level: log.level,
     component: log.component,
-    message: log.message,
-    fields: log.fields || null,
+    message: redactLogMessage(log.message),
+    fields: log.fields ? redactLogFields(log.fields) : null,
     agentVersion: log.agentVersion || null,
   }));
 

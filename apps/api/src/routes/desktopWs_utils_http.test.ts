@@ -42,9 +42,27 @@ vi.mock('../services/jwt', () => ({
   verifyViewerAccessToken: vi.fn()
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
+}));
+
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
 }));
 
 // -------------------------------------------------------------------
@@ -52,7 +70,8 @@ vi.mock('./agentWs', () => ({
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
-import { createViewerAccessToken } from '../services/jwt';
+import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleDesktopFrame,
@@ -67,7 +86,7 @@ import {
 // Helpers
 // -------------------------------------------------------------------
 
-const SESSION_ID = 'session-desktop-001';
+const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = 'device-xyz';
 const AGENT_ID = 'agent-xyz';
 
@@ -470,6 +489,50 @@ describe('desktopWs', () => {
       const body = await res.json();
       expect(body.ok).toBe(true);
       expect(body.route).toBe('desktop-ws');
+    });
+  });
+
+  describe('viewer token lifecycle', () => {
+    it('revokes desktop viewer tokens when the desktop WebSocket disconnects', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({} as any, ws as any);
+      await handlers.onClose({} as any, ws as any);
+
+      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+    });
+
+    it('revokes desktop viewer tokens when the desktop WebSocket errors', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({} as any, ws as any);
+      await handlers.onError(new Error('socket failed'), ws as any);
+
+      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+    });
+
+    it('rejects desktop viewer tokens after the bound session is revoked', async () => {
+      vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+        sub: 'user-revoked',
+        email: 'revoked@example.com',
+        sessionId: SESSION_ID,
+        purpose: 'viewer',
+        jti: 'viewer-jti-revoked',
+      });
+      vi.mocked(isViewerSessionRevoked).mockResolvedValueOnce(true);
+
+      const app = buildApp();
+      const res = await app.request(`/${SESSION_ID}/viewer/session`, {
+        headers: { Authorization: 'Bearer viewer-token' },
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Session closed' });
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

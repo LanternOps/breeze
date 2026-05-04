@@ -11,8 +11,9 @@ import {
   alertRules,
   sites
 } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { ensureOrgAccess } from './helpers';
 import { generateReportSchema } from './schemas';
 
@@ -24,6 +25,7 @@ generateRoutes.use('*', authMiddleware);
 generateRoutes.post(
   '/generate',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
   zValidator('json', generateReportSchema),
   async (c) => {
     const auth = c.get('auth');

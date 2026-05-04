@@ -479,19 +479,17 @@ describe('device routes', () => {
       expect(body.status).toBe('pending');
     });
 
-    it('should reject script commands without scriptId', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-123', status: 'online' }])
-          })
-        })
-      } as any);
-
+    it('should reject generic script commands', async () => {
       const res = await app.request('/devices/device-1/commands', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ type: 'script', payload: {} })
+        body: JSON.stringify({
+          type: 'script',
+          payload: {
+            scriptId: '11111111-1111-1111-1111-111111111111',
+            content: 'echo bypass'
+          }
+        })
       });
 
       expect(res.status).toBe(400);

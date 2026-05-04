@@ -23,6 +23,7 @@ tunnelRoutes.use('*', authMiddleware);
 const idParamSchema = z.object({ id: z.string().uuid() });
 const listQuerySchema = z.object({ siteId: z.string().uuid().optional().nullable() });
 const allowlistIdParamSchema = idParamSchema;
+const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().uuid(), type: z.literal('vnc') }),
@@ -558,6 +559,13 @@ tunnelRoutes.post(
       return c.json({ error: 'Not the session owner' }, 403);
     }
 
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Cannot mint WebSocket ticket for tunnel in current state',
+        status: session.status,
+      }, 400);
+    }
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel',
@@ -601,6 +609,13 @@ tunnelRoutes.post(
 
     if (session.userId !== auth.user.id) {
       return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Cannot mint VNC connect code for tunnel in current state',
+        status: session.status,
+      }, 400);
     }
 
     try {
@@ -656,6 +671,17 @@ vncExchangeRoutes.post(
     if (result.userId !== record.userId) {
       // Ownership mismatch — should never happen if code was minted correctly
       return c.json({ error: 'Invalid or expired VNC connect code' }, 404);
+    }
+
+    if (result.type !== 'vnc') {
+      return c.json({ error: 'VNC connect code is not bound to a VNC tunnel' }, 400);
+    }
+
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(result.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Tunnel session is not available for connection',
+        status: result.status,
+      }, 400);
     }
 
     // Build the WebSocket URL from the canonical external base URL. Using
@@ -769,6 +795,8 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
         tunnelUserId: tunnelSessions.userId,
         tunnelOrgId: tunnelSessions.orgId,
         deviceId: tunnelSessions.deviceId,
+        tunnelType: tunnelSessions.type,
+        tunnelStatus: tunnelSessions.status,
         deviceStatus: devices.status,
         agentId: devices.agentId,
         userEmail: users.email,
@@ -783,6 +811,15 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
 
   if (!bound) {
     return c.json({ error: 'Tunnel session not found' }, 404);
+  }
+  if (bound.tunnelType !== 'vnc') {
+    return c.json({ error: 'Viewer token is not bound to a VNC tunnel' }, 400);
+  }
+  if (!CONNECTABLE_TUNNEL_STATUSES.includes(bound.tunnelStatus as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+    return c.json({
+      error: 'Tunnel session is not available for upgrade',
+      status: bound.tunnelStatus,
+    }, 400);
   }
   if (bound.deviceStatus !== 'online') {
     return c.json({ error: 'Device is not online' }, 400);

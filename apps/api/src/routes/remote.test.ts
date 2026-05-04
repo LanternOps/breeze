@@ -363,6 +363,60 @@ describe('remote routes', () => {
     });
   });
 
+  describe('GET /remote/ice-servers', () => {
+    it('requires a sessionId so TURN credentials are session scoped', async () => {
+      const res = await app.request('/remote/ice-servers');
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns ICE servers for an active desktop session owned by the caller', async () => {
+      const session = {
+        id: SESSION_UUID,
+        type: 'desktop',
+        userId: 'user-123',
+        status: 'active',
+        deviceId: DEVICE_UUID,
+        orgId: 'org-123',
+        iceCandidates: []
+      };
+      const device = {
+        id: DEVICE_UUID,
+        orgId: 'org-123',
+        status: 'online'
+      };
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
+
+      const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_UUID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.iceServers).toEqual(expect.any(Array));
+    });
+
+    it('rejects disconnected non-reconnectable terminal sessions', async () => {
+      const session = {
+        id: SESSION_UUID,
+        type: 'terminal',
+        userId: 'user-123',
+        status: 'active',
+        deviceId: DEVICE_UUID,
+        orgId: 'org-123',
+        iceCandidates: []
+      };
+      const device = {
+        id: DEVICE_UUID,
+        orgId: 'org-123',
+        status: 'online'
+      };
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
+
+      const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_UUID}`);
+
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('POST /remote/transfers/:id/chunks', () => {
     it('should deny chunk upload when user does not own the transfer', async () => {
       const transferResult = {
@@ -537,6 +591,50 @@ describe('remote routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.iceCandidatesCount).toBe(2);
+    });
+  });
+
+  describe('POST /remote/sessions/:id/end', () => {
+    function mockActiveSession() {
+      vi.mocked(db.select).mockReturnValueOnce(
+        mockSelectInnerJoinChain([
+          {
+            session: {
+              id: SESSION_UUID,
+              userId: 'user-123',
+              status: 'active',
+              type: 'desktop',
+              startedAt: new Date('2026-05-02T10:00:00.000Z'),
+              createdAt: new Date('2026-05-02T10:00:00.000Z'),
+              bytesTransferred: BigInt(0),
+              recordingUrl: null,
+            },
+            device: {
+              id: DEVICE_UUID,
+              orgId: 'org-123',
+              hostname: 'host-1',
+            },
+          },
+        ]),
+      );
+    }
+
+    it.each([
+      'javascript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'vbscript:msgbox(1)',
+      '//evil.example.com/recording',
+    ])('rejects unsafe recordingUrl %s', async (recordingUrl) => {
+      mockActiveSession();
+
+      const res = await app.request(`/remote/sessions/${SESSION_UUID}/end`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ recordingUrl }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
   });
 

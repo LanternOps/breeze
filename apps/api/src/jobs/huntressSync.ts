@@ -753,6 +753,7 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
     integration: {
       id: string;
       orgId: string;
+      accountId: string | null;
       webhookSecretEncrypted: string | null;
     };
   }
@@ -762,6 +763,7 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
       .select({
         id: huntressIntegrations.id,
         orgId: huntressIntegrations.orgId,
+        accountId: huntressIntegrations.accountId,
         webhookSecretEncrypted: huntressIntegrations.webhookSecretEncrypted,
       })
       .from(huntressIntegrations)

@@ -17,6 +17,7 @@ import {
   removeFeatureLink,
   listFeatureLinks,
   listAssignments,
+  validateAssignmentTarget,
 } from './configurationPolicy';
 import {
   getConfigPolicyComplianceRuleInfo,
@@ -204,6 +205,15 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       const [policy] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+      const targetValidation = await validateAssignmentTarget(
+        policy.orgId,
+        input.level as any,
+        input.targetId as string
+      );
+      if (!targetValidation.valid) {
+        return JSON.stringify({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' });
+      }
 
       try {
         const assignment = await assignPolicy(

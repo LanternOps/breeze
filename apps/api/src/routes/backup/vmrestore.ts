@@ -112,6 +112,7 @@ async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Prom
 vmRestoreRoutes.post(
   '/backup/restore/as-vm',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', bmrVmRestoreSchema),
@@ -260,6 +261,7 @@ vmRestoreRoutes.post(
 vmRestoreRoutes.post(
   '/backup/restore/instant-boot',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', instantBootSchema),
@@ -404,7 +406,7 @@ vmRestoreRoutes.post(
 
 vmRestoreRoutes.get(
   '/backup/restore/instant-boot/active',
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -466,7 +468,7 @@ vmRestoreRoutes.get(
 
 // ── GET /backup/restore/as-vm/estimate/:snapshotId — VM estimate ────
 
-vmRestoreRoutes.get('/backup/restore/as-vm/estimate/:snapshotId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
+vmRestoreRoutes.get('/backup/restore/as-vm/estimate/:snapshotId', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {

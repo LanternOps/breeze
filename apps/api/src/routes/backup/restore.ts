@@ -67,7 +67,7 @@ async function removeQueuedRestoreDispatch(commandId: string | null | undefined)
 
 restoreRoutes.get(
   '/restore',
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   zValidator('query', restoreListSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -114,7 +114,7 @@ restoreRoutes.get(
 
 restoreRoutes.get(
   '/restore/:id',
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -140,6 +140,7 @@ restoreRoutes.get(
 restoreRoutes.post(
   '/restore',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', restoreSchema),
@@ -336,6 +337,7 @@ restoreRoutes.post(
 restoreRoutes.post(
   '/restore/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   async (c) => {

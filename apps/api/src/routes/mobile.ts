@@ -27,6 +27,14 @@ const requireMobileAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resou
 const requireMobileDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireMobileDeviceExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 
+async function requireScriptExecuteForRunScript(c: import('hono').Context, next: import('hono').Next) {
+  const data = (c.req as unknown as { valid: (target: 'json') => { action?: string } }).valid('json');
+  if (data.action !== 'run_script') {
+    return next();
+  }
+  return requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action)(c, next);
+}
+
 // Helper functions
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -736,6 +744,7 @@ mobileRoutes.post(
   requireMobileDeviceExecute,
   requireMfa(),
   zValidator('json', deviceActionSchema),
+  requireScriptExecuteForRunScript,
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;

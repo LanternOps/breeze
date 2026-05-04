@@ -34,10 +34,13 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
+import { revokeViewerSession } from '../../services/viewerTokenRevocation';
+import { normalizeRecordingUrl } from './recordingUrl';
 
 export const sessionRoutes = new Hono();
 
 const sessionIdParamSchema = z.object({ id: z.string().uuid() });
+const iceServersQuerySchema = z.object({ sessionId: z.string().uuid() });
 
 // DELETE /remote/sessions/stale - Cleanup stale sessions, optionally scoped to a device
 sessionRoutes.delete(
@@ -92,6 +95,8 @@ sessionRoutes.delete(
       .set({ status: 'disconnected', endedAt: new Date() })
       .where(inArray(remoteSessions.id, scopedSessionIds))
       .returning({ id: remoteSessions.id });
+
+    await Promise.all(result.map((row) => revokeViewerSession(row.id)));
 
     return c.json({ cleaned: result.length, ids: result.map(r => r.id) });
   }
@@ -158,7 +163,7 @@ sessionRoutes.post(
     // hard-refresh may not fire the WS onClose, leaving stale rows that
     // block new connections or confuse the agent's session broker.
     try {
-      await db
+      const staleUpdate = db
         .update(remoteSessions)
         .set({ status: 'disconnected', endedAt: new Date() })
         .where(
@@ -167,7 +172,16 @@ sessionRoutes.post(
             eq(remoteSessions.type, data.type),
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
-        );
+        ) as unknown as Promise<unknown> & {
+          returning?: (fields: { id: typeof remoteSessions.id }) => Promise<Array<{ id: string }>>;
+        };
+
+      if (typeof staleUpdate.returning === 'function') {
+        const revoked = await staleUpdate.returning({ id: remoteSessions.id });
+        await Promise.all(revoked.map((row) => revokeViewerSession(row.id)));
+      } else {
+        await staleUpdate;
+      }
     } catch (err) {
       console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
     }
@@ -626,8 +640,39 @@ sessionRoutes.post(
 sessionRoutes.get(
   '/ice-servers',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', iceServersQuerySchema),
   async (c) => {
-    return c.json({ iceServers: getIceServers() });
+    const auth = c.get('auth');
+    const { sessionId } = c.req.valid('query');
+
+    const result = await getSessionWithOrgCheck(sessionId, auth);
+    if (!result) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const { session } = result;
+    if (session.type !== 'desktop') {
+      return c.json({ error: 'ICE servers are only available for desktop sessions' }, 400);
+    }
+
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (!['pending', 'connecting', 'active', 'disconnected'].includes(session.status)) {
+      return c.json({
+        error: 'Cannot fetch ICE servers for session in current state',
+        status: session.status
+      }, 400);
+    }
+
+    return c.json({
+      iceServers: getIceServers({
+        sessionId: session.id,
+        userId: session.userId,
+        deviceId: session.deviceId,
+      })
+    });
   }
 );
 
@@ -713,7 +758,14 @@ sessionRoutes.post(
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: `desk-start-${sessionId}`,
       type: 'start_desktop',
-      payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}), ...(gpuVendor ? { gpuVendor } : {}) }
+      payload: {
+        sessionId,
+        offer: data.offer,
+        iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
+        ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
+        ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
+        ...(gpuVendor ? { gpuVendor } : {})
+      }
     });
 
     if (!agentReachable) {
@@ -850,7 +902,9 @@ sessionRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: sessionId } = c.req.valid('param');
-    const body = await c.req.json<{ bytesTransferred?: number; recordingUrl?: string }>().catch(() => ({}));
+    const body: { bytesTransferred?: number; recordingUrl?: string } = await c.req
+      .json<{ bytesTransferred?: number; recordingUrl?: string }>()
+      .catch(() => ({}));
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
     if (!result) {
@@ -874,8 +928,14 @@ sessionRoutes.post(
     const startedAt = session.startedAt || session.createdAt;
     const durationSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
 
-    // Type guard for body properties
-    const typedBody = body as { bytesTransferred?: number; recordingUrl?: string };
+    let recordingUrl: string | null;
+    try {
+      recordingUrl = normalizeRecordingUrl(body.recordingUrl, {
+        requestOrigin: new URL(c.req.url).origin,
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid recordingUrl' }, 400);
+    }
 
     const [updated] = await db
       .update(remoteSessions)
@@ -883,8 +943,8 @@ sessionRoutes.post(
         status: 'disconnected',
         endedAt,
         durationSeconds,
-        bytesTransferred: typedBody.bytesTransferred !== undefined ? BigInt(typedBody.bytesTransferred) : session.bytesTransferred,
-        recordingUrl: typedBody.recordingUrl || session.recordingUrl
+        bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
+        recordingUrl: recordingUrl ?? session.recordingUrl
       })
       .where(eq(remoteSessions.id, sessionId))
       .returning();
@@ -892,6 +952,8 @@ sessionRoutes.post(
     if (!updated) {
       return c.json({ error: 'Failed to update session' }, 500);
     }
+
+    await revokeViewerSession(sessionId);
 
     // Log audit event
     await logSessionAudit(

@@ -409,9 +409,9 @@ describe('state routes', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           entries: [
-            { filePath: '/etc/a', configKey: 'port', configValue: 8080 },
-            { filePath: '/etc/b', configKey: 'debug', configValue: false },
-            { filePath: '/etc/c', configKey: 'nil', configValue: null },
+            { filePath: '/etc/ssh/sshd_config', configKey: 'MaxAuthTries', configValue: 4 },
+            { filePath: '/etc/ssh/sshd_config', configKey: 'X11Forwarding', configValue: false },
+            { filePath: '/etc/sysctl.conf', configKey: 'net.ipv4.ip_forward', configValue: 0 },
           ],
         }),
       });
@@ -419,6 +419,51 @@ describe('state routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.count).toBe(3);
+    });
+
+    it('drops unsafe config state entries before persistence', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, agentId: AGENT_ID, orgId: 'org-1' }]),
+          }),
+        }),
+      } as any);
+
+      const values = vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+        const tx = {
+          delete: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(undefined),
+          }),
+          insert: vi.fn().mockReturnValue({ values }),
+        };
+        return fn(tx);
+      });
+
+      const res = await app.request(`/agents/${AGENT_ID}/config-state`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries: [
+            { filePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configValue: 'no' },
+            { filePath: '/etc/breeze/agent.yaml', configKey: 'auth_token', configValue: 'secret-token' },
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.count).toBe(1);
+      expect(values).toHaveBeenCalledWith([
+        expect.objectContaining({
+          filePath: '/etc/ssh/sshd_config',
+          configKey: 'PermitRootLogin',
+          configValue: 'no',
+        }),
+      ]);
     });
   });
 

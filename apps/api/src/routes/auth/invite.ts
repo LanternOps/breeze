@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
@@ -10,7 +11,7 @@ import {
   createTokenPair,
   rateLimiter,
 } from '../../services';
-import { acceptInviteSchema } from './schemas';
+import { acceptInviteSchema, invitePreviewSchema } from './schemas';
 import {
   getClientRateLimitKey,
   resolveCurrentUserTokenContext,
@@ -27,8 +28,13 @@ const { db, withSystemDbAccessContext } = dbModule;
 
 export const inviteRoutes = new Hono();
 
-inviteRoutes.get('/invite/preview/:token', async (c) => {
-  const token = c.req.param('token');
+function setInviteTokenNoStore(c: Context): void {
+  c.header('Cache-Control', 'no-store');
+  c.header('Pragma', 'no-cache');
+}
+
+async function handleInvitePreview(c: Context, token: string) {
+  setInviteTokenNoStore(c);
   if (!token) return c.json({ error: 'missing token' }, 400);
 
   const rateLimitClient = getClientRateLimitKey(c);
@@ -67,9 +73,23 @@ inviteRoutes.get('/invite/preview/:token', async (c) => {
     partnerName: row.partnerName ?? undefined,
     orgName: row.orgName ?? undefined,
   });
+}
+
+inviteRoutes.post('/invite/preview', zValidator('json', invitePreviewSchema), async (c) => {
+  const { token } = c.req.valid('json');
+  return handleInvitePreview(c, token);
+});
+
+inviteRoutes.get('/invite/preview/:token', async (c) => {
+  if (process.env.AUTH_LEGACY_INVITE_PREVIEW_PATH !== '1') {
+    setInviteTokenNoStore(c);
+    return c.json({ error: 'Invite preview tokens must be submitted in the request body' }, 410);
+  }
+  return handleInvitePreview(c, c.req.param('token'));
 });
 
 inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), async (c) => {
+  setInviteTokenNoStore(c);
   const { token, password } = c.req.valid('json');
   const rateLimitClient = getClientRateLimitKey(c);
 

@@ -1,7 +1,17 @@
 import archiver from 'archiver';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { getBinarySource, getGithubAgentPkgUrl, getGithubInstallerAppUrl, getGithubRegularMsiUrl } from './binarySource';
+import {
+  getBinarySource,
+  getGithubAgentPkgUrl,
+  getGithubExpectedReleaseTag,
+  getGithubInstallerAppUrl,
+  getGithubRegularMsiUrl,
+  getGithubReleaseArtifactManifestSignatureUrl,
+  getGithubReleaseArtifactManifestUrl,
+  getGithubReleaseRepository,
+} from './binarySource';
+import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 
 // --- Enrollment key validation ---
 
@@ -194,7 +204,17 @@ export async function fetchRegularMsi(): Promise<Buffer> {
     const url = getGithubRegularMsiUrl();
     const resp = await fetch(url, { redirect: 'follow' });
     if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await verifyGithubReleaseArtifactBuffer({
+      assetName: 'breeze-agent.msi',
+      assetBuffer: buffer,
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: 'windows-authenticode-required',
+    });
+    return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   return readFile(join(binaryDir, 'breeze-agent.msi'));
@@ -205,7 +225,17 @@ export async function fetchMacosPkg(): Promise<Buffer> {
     const url = getGithubAgentPkgUrl('darwin', 'arm64');
     const resp = await fetch(url, { redirect: 'follow' });
     if (!resp.ok) throw new Error(`Failed to fetch macOS PKG: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await verifyGithubReleaseArtifactBuffer({
+      assetName: 'breeze-agent-darwin-arm64.pkg',
+      assetBuffer: buffer,
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: 'macos-developer-id-notarization-required',
+    });
+    return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   return readFile(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
@@ -223,7 +253,17 @@ export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
     const resp = await fetch(url, { redirect: 'follow' });
     if (resp.status === 404) return null;
     if (!resp.ok) throw new Error(`Failed to fetch installer app zip: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await verifyGithubReleaseArtifactBuffer({
+      assetName: 'Breeze Installer.app.zip',
+      assetBuffer: buffer,
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: 'macos-developer-id-notarization-required',
+    });
+    return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   const path = join(binaryDir, 'Breeze Installer.app.zip');

@@ -228,10 +228,11 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// Wrap auth token in a mutable holder so IPC token updates are visible
 	// to every goroutine that reads the token (failover client, updater, etc.).
 	tokenStore := &tokenHolder{}
-	if cfg.AuthToken != "" {
-		tokenStore.token = secmem.NewSecureString(cfg.AuthToken)
-		cfg.AuthToken = "" // Clear from config struct.
+	if cfg.WatchdogAuthToken != "" {
+		tokenStore.token = secmem.NewSecureString(cfg.WatchdogAuthToken)
+		cfg.WatchdogAuthToken = "" // Clear from config struct.
 	}
+	cfg.AuthToken = "" // Watchdog must not use the normal agent credential.
 
 	// Try initial IPC connection.
 	if err := ipcClient.Connect(); err != nil {
@@ -447,9 +448,9 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 		}
 		journal.Log(watchdog.LevelInfo, "token.updated", nil)
 		tokens.Replace(update.Token)
-		// Persist the new token. We store it via config.SetAndPersist so
-		// that the next Load() picks it up automatically.
-		if err := config.SetAndPersist("auth_token", update.Token); err != nil {
+		// Persist the new role-scoped token in secrets.yaml so that the next
+		// Load() picks it up without exposing it through agent.yaml.
+		if err := config.SetSecretAndPersist("watchdog_auth_token", update.Token); err != nil {
 			journal.Log(watchdog.LevelError, "token.persist_failed", map[string]any{
 				"error": err.Error(),
 			})
@@ -688,6 +689,7 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHol
 		ServerURL:      cfg.ServerURL,
 		AuthToken:      tok,
 		CurrentVersion: version,
+		Component:      "watchdog",
 		BinaryPath:     exePath,
 		BackupPath:     exePath + ".bak",
 	})

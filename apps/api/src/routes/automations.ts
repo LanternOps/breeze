@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
@@ -12,6 +12,8 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
+import { getRedis } from '../services/redis';
+import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 import {
   AutomationValidationError,
   createAutomationRunRecord,
@@ -26,6 +28,8 @@ export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
 const requireAutomationRead = requirePermission(PERMISSIONS.AUTOMATIONS_READ.resource, PERMISSIONS.AUTOMATIONS_READ.action);
 const requireAutomationWrite = requirePermission(PERMISSIONS.AUTOMATIONS_WRITE.resource, PERMISSIONS.AUTOMATIONS_WRITE.action);
+const AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS = 5 * 60 * 1000;
+const automationWebhookReplayCache = new Map<string, number>();
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -39,6 +43,150 @@ function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isMaskedSecret(value: unknown): boolean {
+  if (typeof value === 'string') return /^\*+$/.test(value.trim());
+  return isPlainRecord(value) && (value.redacted === true || value.hasSecret === true || value.masked === '********');
+}
+
+function encryptAutomationTriggerSecret(trigger: unknown, existing?: unknown): unknown {
+  if (!isPlainRecord(trigger) || trigger.type !== 'webhook') return trigger;
+  const existingTrigger = isPlainRecord(existing) ? existing : {};
+  const output: Record<string, unknown> = { ...trigger };
+  const value = output.secret ?? output.webhookSecret;
+  if (isMaskedSecret(value)) {
+    output.secret = existingTrigger.secret ?? existingTrigger.webhookSecret;
+  } else if (typeof value === 'string' && value.length > 0) {
+    output.secret = encryptSecret(value);
+  }
+  delete output.webhookSecret;
+  return output;
+}
+
+function decryptAutomationTriggerSecret(trigger: unknown): unknown {
+  if (!isPlainRecord(trigger) || trigger.type !== 'webhook') return trigger;
+  const output: Record<string, unknown> = { ...trigger };
+  const value = output.secret ?? output.webhookSecret;
+  if (typeof value === 'string') {
+    output.secret = decryptSecret(value);
+  }
+  delete output.webhookSecret;
+  return output;
+}
+
+function redactAutomationTrigger(trigger: unknown): unknown {
+  if (!isPlainRecord(trigger) || trigger.type !== 'webhook') return trigger;
+  return {
+    ...trigger,
+    secret: {
+      redacted: true,
+      hasSecret: Boolean(trigger.secret ?? trigger.webhookSecret),
+      masked: '********',
+    },
+    webhookSecret: undefined,
+  };
+}
+
+function envFlag(name: string): boolean {
+  return /^(1|true|yes)$/i.test(process.env[name] ?? '');
+}
+
+function pruneAutomationWebhookReplayCache(now = Date.now()): void {
+  for (const [key, expiresAt] of automationWebhookReplayCache) {
+    if (expiresAt <= now) automationWebhookReplayCache.delete(key);
+  }
+}
+
+function shouldAllowLocalWebhookReplayFallback(): boolean {
+  return process.env.NODE_ENV !== 'production'
+    || envFlag('AUTOMATION_WEBHOOK_ALLOW_LOCAL_REPLAY_FALLBACK');
+}
+
+function checkLocalAutomationWebhookReplay(replayKey: string, now: number): boolean {
+  pruneAutomationWebhookReplayCache(now);
+  if (automationWebhookReplayCache.has(replayKey)) {
+    return false;
+  }
+  automationWebhookReplayCache.set(replayKey, now + AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS);
+  return true;
+}
+
+async function reserveAutomationWebhookReplayNonce(replayKey: string, now: number): Promise<
+  { ok: true } | { ok: false; error: string; status: 409 | 503 }
+> {
+  const redis = getRedis();
+  if (!redis) {
+    if (shouldAllowLocalWebhookReplayFallback()) {
+      return checkLocalAutomationWebhookReplay(replayKey, now)
+        ? { ok: true }
+        : { ok: false, error: 'Duplicate webhook delivery', status: 409 };
+    }
+    return { ok: false, error: 'Webhook replay protection is temporarily unavailable', status: 503 };
+  }
+
+  try {
+    const result = await redis.set(
+      `automation-webhook-replay:${replayKey}`,
+      '1',
+      'PX',
+      AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS,
+      'NX',
+    );
+    if (result !== 'OK') {
+      return { ok: false, error: 'Duplicate webhook delivery', status: 409 };
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error('[automation-webhook] Redis replay nonce write failed:', error);
+    if (shouldAllowLocalWebhookReplayFallback()) {
+      return checkLocalAutomationWebhookReplay(replayKey, now)
+        ? { ok: true }
+        : { ok: false, error: 'Duplicate webhook delivery', status: 409 };
+    }
+    return { ok: false, error: 'Webhook replay protection is temporarily unavailable', status: 503 };
+  }
+}
+
+async function verifyAutomationWebhookSignature(input: {
+  automationId: string;
+  secret: string;
+  payload: string;
+  signatureHeader?: string | null;
+  timestampHeader?: string | null;
+  eventIdHeader?: string | null;
+}): Promise<{ ok: true } | { ok: false; error: string; status: 400 | 401 | 409 | 503 }> {
+  const signature = input.signatureHeader?.trim();
+  if (!signature) return { ok: false, error: 'Missing webhook signature', status: 401 };
+
+  const timestamp = input.timestampHeader?.trim();
+  if (!timestamp) return { ok: false, error: 'Missing webhook timestamp', status: 401 };
+
+  const parsedTimestamp = Number(timestamp);
+  if (!Number.isFinite(parsedTimestamp) || parsedTimestamp <= 0) {
+    return { ok: false, error: 'Invalid webhook timestamp', status: 400 };
+  }
+
+  const timestampMs = parsedTimestamp > 1_000_000_000_000
+    ? parsedTimestamp
+    : parsedTimestamp * 1000;
+  const now = Date.now();
+  if (Math.abs(now - timestampMs) > AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS) {
+    return { ok: false, error: 'Webhook signature timestamp is outside the replay window', status: 401 };
+  }
+
+  const expected = `sha256=${createHmac('sha256', input.secret).update(`${timestamp}.${input.payload}`).digest('hex')}`;
+  const normalizedSignature = signature.startsWith('sha256=') ? signature : `sha256=${signature}`;
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  const providedBuffer = Buffer.from(normalizedSignature, 'utf8');
+  if (expectedBuffer.length !== providedBuffer.length || !timingSafeEqual(expectedBuffer, providedBuffer)) {
+    return { ok: false, error: 'Invalid webhook signature', status: 401 };
+  }
+
+  const replayNonce = input.eventIdHeader?.trim() || normalizedSignature;
+  const replayNonceHash = createHash('sha256').update(replayNonce).digest('hex');
+  const replayKey = `${input.automationId}:${replayNonceHash}`;
+  return reserveAutomationWebhookReplayNonce(replayKey, now);
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -148,6 +296,7 @@ function shapeAutomationForResponse(automation: typeof automations.$inferSelect)
 
   return {
     ...automation,
+    trigger: redactAutomationTrigger(automation.trigger),
     triggerType,
     triggerConfig,
     notifyOnFailureChannelId: channelIds[0],
@@ -496,6 +645,7 @@ automationRoutes.post(
         automationId,
         c.req.url,
       );
+      const storedTrigger = encryptAutomationTriggerSecret(trigger);
       const actions = normalizeAutomationActions(data.actions);
       const notificationTargets = normalizeNotificationTargets(
         normalizeIncomingNotificationTargets(data),
@@ -509,7 +659,7 @@ automationRoutes.post(
           name: data.name,
           description: data.description,
           enabled: data.enabled,
-          trigger,
+          trigger: storedTrigger,
           conditions: data.conditions,
           actions,
           onFailure: data.onFailure,
@@ -582,7 +732,9 @@ async function handleUpdateAutomation(c: Context) {
 
       let nextTrigger = normalizeAutomationTrigger(triggerInput);
       if (nextTrigger.type === 'webhook' && !nextTrigger.secret) {
-        const currentTrigger = isPlainRecord(automation.trigger) ? automation.trigger : {};
+        const currentTrigger = isPlainRecord(automation.trigger)
+          ? decryptAutomationTriggerSecret(automation.trigger) as Record<string, unknown>
+          : {};
         const currentSecret = asNonEmptyString(currentTrigger.secret) ?? asNonEmptyString(currentTrigger.webhookSecret);
         if (currentSecret) {
           nextTrigger = {
@@ -597,10 +749,13 @@ async function handleUpdateAutomation(c: Context) {
         return c.json({ error: 'Webhook automations require a secret' }, 400);
       }
 
-      updates.trigger = withWebhookDefaults(
-        nextTrigger,
-        automation.id,
-        c.req.url,
+      updates.trigger = encryptAutomationTriggerSecret(
+        withWebhookDefaults(
+          nextTrigger,
+          automation.id,
+          c.req.url,
+        ),
+        automation.trigger,
       );
     }
 
@@ -809,7 +964,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
 
   let trigger;
   try {
-    trigger = normalizeAutomationTrigger(automation.trigger);
+    trigger = normalizeAutomationTrigger(decryptAutomationTriggerSecret(automation.trigger));
   } catch {
     return c.json({ error: 'Invalid automation trigger configuration' }, 400);
   }
@@ -818,28 +973,55 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Automation is not configured for webhook triggering' }, 400);
   }
 
+  if (!trigger.secret) {
+    return c.json({ error: 'Webhook secret is not configured for this automation' }, 403);
+  }
+
+  const rawBody = await c.req.text();
+  const signatureHeader = c.req.header('x-breeze-signature');
+  const timestampHeader = c.req.header('x-breeze-timestamp');
+  const eventIdHeader = c.req.header('x-breeze-event-id') ?? c.req.header('x-breeze-nonce');
   const headerSecret = c.req.header('x-automation-secret')
     ?? c.req.header('x-webhook-secret');
   const querySecret = c.req.query('secret');
 
-  if (querySecret && !headerSecret) {
-    console.warn(`[webhook] Automation ${automationId}: secret passed via query string is deprecated. Use x-automation-secret header instead.`);
-  }
-
-  const providedSecret = headerSecret ?? querySecret;
-
-  if (trigger.secret) {
-    if (!providedSecret) {
-      return c.json({ error: 'Invalid webhook secret' }, 401);
+  if (signatureHeader || timestampHeader) {
+    const signatureCheck = await verifyAutomationWebhookSignature({
+      automationId,
+      secret: trigger.secret,
+      payload: rawBody,
+      signatureHeader,
+      timestampHeader,
+      eventIdHeader,
+    });
+    if (!signatureCheck.ok) {
+      return c.json({ error: signatureCheck.error }, signatureCheck.status);
     }
+  } else {
+    if (querySecret && !envFlag('AUTOMATION_WEBHOOK_ALLOW_QUERY_SECRET')) {
+      return c.json({ error: 'Query-string webhook secrets are no longer accepted' }, 401);
+    }
+    if (!headerSecret && !querySecret) {
+      return c.json({ error: 'Missing signed webhook verification' }, 401);
+    }
+    if (!envFlag('AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET')) {
+      return c.json({ error: 'Signed webhook verification is required' }, 401);
+    }
+
+    const providedSecret = headerSecret ?? querySecret;
     const expected = Buffer.from(trigger.secret, 'utf8');
-    const provided = Buffer.from(providedSecret, 'utf8');
+    const provided = Buffer.from(providedSecret ?? '', 'utf8');
     if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
       return c.json({ error: 'Invalid webhook secret' }, 401);
     }
   }
 
-  const payload = await c.req.json().catch(() => ({}));
+  let payload: unknown = {};
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    return c.json({ error: 'Invalid JSON payload' }, 400);
+  }
 
   const { run, targetDeviceIds } = await createAutomationRunRecord({
     automation,

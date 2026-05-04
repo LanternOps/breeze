@@ -18,6 +18,10 @@ const insertMock = vi.fn(() => chainMock([]));
 const selectMock = vi.fn(() => chainMock([]));
 const deleteMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false },
+}));
 
 let authState = {
   user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -103,6 +107,18 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authState);
     return next();
   }),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  }),
 }));
 
 vi.mock('../auth/helpers', () => ({
@@ -147,6 +163,8 @@ describe('m365 auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     process.env.NODE_ENV = 'test';
     process.env.JWT_SECRET = 'jwt-secret-for-test';
     authState = {
@@ -193,6 +211,24 @@ describe('m365 auth routes', () => {
     expect(res.headers.get('set-cookie')).toContain('breeze_c2c_m365_consent=');
   });
 
+  it('requires explicit permission and MFA before starting consent', async () => {
+    permissionGate.deny = true;
+    const noPermission = await authApp.request('/c2c/m365/consent-url?displayName=Contoso', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(noPermission.status).toBe(403);
+
+    permissionGate.deny = false;
+    mfaGate.deny = true;
+    const noMfa = await authApp.request('/c2c/m365/consent-url?displayName=Contoso', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(noMfa.status).toBe(403);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   it('rejects callback requests without the binding cookie', async () => {
     const res = await callbackApp.request('/api/v1/c2c/m365/callback?state=test-state&tenant=tenant-1&admin_consent=True');
 
@@ -233,5 +269,9 @@ describe('m365 auth routes', () => {
     expect(callbackRes.status).toBe(302);
     expect(callbackRes.headers.get('location')).toContain(`c2c_connected=true&connectionId=${CONNECTION_ID}`);
     expect(updateMock).toHaveBeenCalled();
+    const updateValues = updateMock.mock.results[0]?.value.set.mock.calls[0]?.[0];
+    expect(updateValues.scopes).toContain('token_scope=https://graph.microsoft.com/.default');
+    expect(updateValues.scopes).toContain('requested_display_scopes=Mail.Read');
+    expect(updateValues.scopes).toContain('actual_grants=Entra admin-consented application permissions');
   });
 });

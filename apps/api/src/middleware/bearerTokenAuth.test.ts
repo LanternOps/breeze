@@ -27,6 +27,7 @@ vi.mock('../config/env', () => ({
 // stub to a passthrough.
 const dbState = vi.hoisted(() => ({
   rows: [] as unknown[][],
+  wherePredicates: [] as unknown[],
 }));
 
 vi.mock('../db', () => {
@@ -35,7 +36,8 @@ vi.mock('../db', () => {
     // lookup) OR `.where(...)` alone (organizations enumeration). Both must
     // be thenable/iterable to the same row list for the mock to be correct.
     const limit = vi.fn(async () => rows);
-    const where = vi.fn(() => {
+    const where = vi.fn((predicate: unknown) => {
+      dbState.wherePredicates.push(predicate);
       const thenable = Promise.resolve(rows) as Promise<unknown[]> & { limit: typeof limit };
       thenable.limit = limit;
       return thenable;
@@ -60,6 +62,11 @@ vi.mock('../oauth/revocationCache', () => ({
   isGrantRevoked: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('jose', async () => {
   const actual = await vi.importActual<typeof import('jose')>('jose');
   return {
@@ -74,6 +81,7 @@ vi.mock('jose', async () => {
 import { importJWK, jwtVerify, type JWK } from 'jose';
 import { withDbAccessContext } from '../db';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { generateTestKeypair, signTestJwt, type TestKeypair } from '../oauth/testHelpers';
 import { _resetJwksCacheForTests, bearerTokenAuthMiddleware } from './bearerTokenAuth';
 
@@ -121,6 +129,34 @@ async function expectUnauthorized(
   expect(next).not.toHaveBeenCalled();
 }
 
+function collectPredicateFacts(value: unknown, seen = new Set<unknown>()): { columns: string[]; params: unknown[] } {
+  const facts = { columns: [] as string[], params: [] as unknown[] };
+  const walk = (node: unknown) => {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+
+    const record = node as Record<string, unknown>;
+    if (typeof record.name === 'string' && typeof record.columnType === 'string') {
+      facts.columns.push(record.name);
+    }
+    if (node.constructor?.name === 'Param') {
+      facts.params.push(record.value);
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+
+    if (Array.isArray(record.queryChunks)) {
+      for (const chunk of record.queryChunks) walk(chunk);
+    }
+  };
+
+  walk(value);
+  return facts;
+}
+
 describe('bearerTokenAuthMiddleware', () => {
   beforeAll(async () => {
     keypair = await generateTestKeypair();
@@ -130,11 +166,13 @@ describe('bearerTokenAuthMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbState.rows = [];
+    dbState.wherePredicates = [];
     _resetJwksCacheForTests();
     envState.issuer = issuer;
     envState.resourceUrl = audience;
     vi.mocked(isJtiRevoked).mockResolvedValue(false);
     vi.mocked(isGrantRevoked).mockResolvedValue(false);
+    vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
   });
 
   it('fails fast when OAuth issuer and resource URL are not configured', async () => {
@@ -273,6 +311,18 @@ describe('bearerTokenAuthMiddleware', () => {
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'token missing required claims');
   });
 
+  it('rejects OAuth bearer tokens for inactive or deleted tenant contexts', async () => {
+    vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      jti: 'inactive-tenant-jti',
+    });
+
+    await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'tenant inactive');
+  });
+
   it('maps legacy mcp:write to read/write/execute (back-compat through 2026-05-15)', async () => {
     // Pre-split refresh tokens carried mcp:write expecting ai:execute. We
     // continue granting ai:execute when mcp:execute is NOT also present so
@@ -403,6 +453,11 @@ describe('bearerTokenAuthMiddleware', () => {
       expect.any(Function)
     );
     expect(next).toHaveBeenCalledOnce();
+
+    const orgPredicate = dbState.wherePredicates[1];
+    const facts = collectPredicateFacts(orgPredicate);
+    expect(facts.columns).toEqual(expect.arrayContaining(['partner_id', 'status', 'deleted_at']));
+    expect(facts.params).toEqual(expect.arrayContaining(['active', 'trial']));
   });
 
   it('passes [] (not null) for partner-scope tokens whose partner has no orgs (M-B1)', async () => {

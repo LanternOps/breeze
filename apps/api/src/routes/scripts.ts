@@ -12,7 +12,7 @@ import {
   deviceCommands
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { sendCommandToAgent } from './agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
@@ -67,6 +67,15 @@ function resolveScriptAuditOrgId(
   deviceOrgId?: string | null
 ): string | null {
   return scriptOrgId ?? deviceOrgId ?? auth.orgId ?? null;
+}
+
+function getAllowedSiteIds(c: { get: (key: string) => unknown }): string[] | undefined {
+  return (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+}
+
+function canAccessDeviceSite(siteId: string | null | undefined, userPerms: UserPermissions | undefined): boolean {
+  if (!userPerms?.allowedSiteIds) return true;
+  return typeof siteId === 'string' && canAccessSite(userPerms, siteId);
 }
 
 // Validation schemas
@@ -827,12 +836,25 @@ scriptRoutes.get(
     }
 
     const whereCondition = and(...conditions);
+    const allowedSiteIds = getAllowedSiteIds(c);
+
+    if (allowedSiteIds?.length === 0) {
+      return c.json({
+        data: [],
+        pagination: { page, limit, total: 0 }
+      });
+    }
+
+    const siteRestrictedWhereCondition = allowedSiteIds
+      ? and(whereCondition, inArray(devices.siteId, allowedSiteIds))
+      : whereCondition;
 
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(scriptExecutions)
-      .where(whereCondition);
+      .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
+      .where(siteRestrictedWhereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
     // Get executions with device info
@@ -855,7 +877,7 @@ scriptRoutes.get(
       })
       .from(scriptExecutions)
       .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
-      .where(whereCondition)
+      .where(siteRestrictedWhereCondition)
       .orderBy(desc(scriptExecutions.createdAt))
       .limit(limit)
       .offset(offset);
@@ -898,7 +920,8 @@ scriptRoutes.get(
         scriptLanguage: scripts.language,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
-        deviceOrgId: devices.orgId
+        deviceOrgId: devices.orgId,
+        deviceSiteId: devices.siteId
       })
       .from(scriptExecutions)
       .leftJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
@@ -916,6 +939,9 @@ scriptRoutes.get(
       if (!hasAccess) {
         return c.json({ error: 'Access denied' }, 403);
       }
+    }
+    if (!canAccessDeviceSite(execution.deviceSiteId, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     return c.json(execution);

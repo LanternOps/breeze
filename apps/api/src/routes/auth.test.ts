@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { authRoutes } from './auth';
 
@@ -34,6 +34,13 @@ vi.mock('../services', () => ({
     setex: vi.fn(),
     get: vi.fn(),
     del: vi.fn()
+  }))
+}));
+
+vi.mock('../services/twilio', () => ({
+  getTwilioService: vi.fn(() => ({
+    sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
+    checkVerificationCode: vi.fn().mockResolvedValue({ valid: true })
   }))
 }));
 
@@ -76,8 +83,23 @@ vi.mock('../db/schema', () => ({
   },
   organizations: {
     id: 'organizations.id',
-    partnerId: 'organizations.partnerId'
+    partnerId: 'organizations.partnerId',
+    name: 'organizations.name'
+  },
+  partners: {
+    id: 'partners.id',
+    name: 'partners.name'
   }
+}));
+
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock('./auth/ssoPolicy', () => ({
+  SsoPasswordAuthRequiredError: class SsoPasswordAuthRequiredError extends Error {},
+  assertPasswordAuthAllowedBySso: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -106,13 +128,18 @@ import {
   rateLimiter,
   getRedis
 } from '../services';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './auth/ssoPolicy';
 import { db } from '../db';
 
 describe('auth routes', () => {
   let app: Hono;
+  const originalLegacyInvitePreviewPath = process.env.AUTH_LEGACY_INVITE_PREVIEW_PATH;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
+    vi.mocked(assertPasswordAuthAllowedBySso).mockResolvedValue(undefined);
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
@@ -121,13 +148,16 @@ describe('auth routes', () => {
     app.route('/auth', authRoutes);
   });
 
+  afterEach(() => {
+    if (originalLegacyInvitePreviewPath === undefined) {
+      delete process.env.AUTH_LEGACY_INVITE_PREVIEW_PATH;
+    } else {
+      process.env.AUTH_LEGACY_INVITE_PREVIEW_PATH = originalLegacyInvitePreviewPath;
+    }
+  });
+
   describe('POST /auth/register', () => {
-    it('returns generic success for legacy /register (no-op shim)', async () => {
-      // Legacy /register is now a no-op that returns a generic success
-      // message. Real registration flows go through /register-partner which
-      // creates the partner + user + first org together. This test exists
-      // to catch accidental reintroduction of the pre-RLS partnerless-user
-      // path, not to validate real registration behavior.
+    it('returns not found when self-service registration is disabled', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -147,14 +177,10 @@ describe('auth routes', () => {
         })
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(body.tokens).toBeUndefined();
-      expect(body.user).toBeUndefined();
+      expect(res.status).toBe(404);
     });
 
-    it('should reject weak passwords', async () => {
+    it('does not validate passwords while self-service registration is disabled', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({
         valid: false,
         errors: ['Password must contain a number']
@@ -170,12 +196,11 @@ describe('auth routes', () => {
         })
       });
 
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toContain('Password');
+      expect(res.status).toBe(404);
+      expect(isPasswordStrong).not.toHaveBeenCalled();
     });
 
-    it('should rate limit registration', async () => {
+    it('does not rate limit while self-service registration is disabled', async () => {
       vi.mocked(rateLimiter).mockResolvedValue({
         allowed: false,
         remaining: 0,
@@ -192,7 +217,8 @@ describe('auth routes', () => {
         })
       });
 
-      expect(res.status).toBe(429);
+      expect(res.status).toBe(404);
+      expect(rateLimiter).not.toHaveBeenCalled();
     });
 
     it('should validate required fields', async () => {
@@ -208,7 +234,7 @@ describe('auth routes', () => {
       expect(res.status).toBe(400);
     });
 
-    it('should return generic success for duplicate email', async () => {
+    it('does not disclose duplicate emails while self-service registration is disabled', async () => {
       vi.mocked(rateLimiter).mockResolvedValue({
         allowed: true,
         remaining: 4,
@@ -233,10 +259,57 @@ describe('auth routes', () => {
         })
       });
 
+      expect(res.status).toBe(404);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /auth/invite/preview', () => {
+    it('previews invite tokens from the request body with no-store caching', async () => {
+      vi.mocked(getRedis).mockReturnValue({
+        setex: vi.fn(),
+        get: vi.fn().mockResolvedValue('user-1'),
+        del: vi.fn()
+      } as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  email: 'invitee@example.com',
+                  name: 'Invitee',
+                  status: 'invited',
+                  partnerName: null,
+                  orgName: 'Acme'
+                }])
+              })
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/invite/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'raw-invite-token' })
+      });
+
       expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(body.tokens).toBeUndefined();
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(await res.json()).toMatchObject({
+        email: 'invitee@example.com',
+        orgName: 'Acme'
+      });
+    });
+
+    it('rejects legacy GET path tokens by default', async () => {
+      const res = await app.request('/auth/invite/preview/raw-invite-token');
+
+      expect(res.status).toBe(410);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(getRedis).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 
@@ -282,6 +355,111 @@ describe('auth routes', () => {
       expect(body.tokens).toBeDefined();
       expect(body.user).toBeDefined();
       expect(body.mfaRequired).toBe(false);
+    });
+
+    it('returns generic 401 when password login resolves to an inactive tenant', async () => {
+      vi.mocked(rateLimiter).mockResolvedValue({
+        allowed: true,
+        remaining: 4,
+        resetAt: new Date()
+      });
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                name: 'Test User',
+                passwordHash: '$argon2id$hash',
+                status: 'active',
+                mfaEnabled: false
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-deleted', roleId: 'role-1' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'test@example.com',
+          password: 'password123'
+        })
+      });
+
+      expect(res.status).toBe(401);
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('returns generic 401 when organization SSO policy disables password login', async () => {
+      vi.mocked(rateLimiter).mockResolvedValue({
+        allowed: true,
+        remaining: 4,
+        resetAt: new Date()
+      });
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                name: 'Test User',
+                passwordHash: '$argon2id$hash',
+                status: 'active',
+                mfaEnabled: true,
+                mfaSecret: 'secret'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ orgId: 'org-sso', roleId: 'role-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'test@example.com',
+          password: 'password123'
+        })
+      });
+
+      expect(res.status).toBe(401);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid email or password');
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
 
     it('should return 401 for invalid credentials', async () => {
@@ -663,6 +841,53 @@ describe('auth routes', () => {
       }));
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
     });
+
+    it('rejects refresh when current tenant context is inactive or deleted', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-old',
+        orgId: null,
+        partnerId: 'partner-old',
+        scope: 'partner',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-tenant'
+      });
+      vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                status: 'active'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-deleted', roleId: 'role-1' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=refresh-token-inactive-tenant; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /auth/forgot-password', () => {
@@ -711,13 +936,66 @@ describe('auth routes', () => {
       // Should still return success to prevent enumeration
       expect(res.status).toBe(200);
     });
+
+    it('does not issue reset tokens when organization SSO policy disables passwords', async () => {
+      vi.mocked(rateLimiter).mockResolvedValue({
+        allowed: true,
+        remaining: 2,
+        resetAt: new Date()
+      });
+      vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+      const mockRedis = {
+        get: vi.fn(),
+        del: vi.fn(),
+        setex: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ orgId: 'org-sso', roleId: 'role-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'test@example.com' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockRedis.setex).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /auth/reset-password', () => {
     it('should reset password successfully', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
       const mockRedis = {
-        get: vi.fn().mockResolvedValue('user-123'),
+        getdel: vi.fn().mockResolvedValue('user-123'),
         del: vi.fn().mockResolvedValue(1),
         setex: vi.fn()
       };
@@ -741,6 +1019,7 @@ describe('auth routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+      expect(mockRedis.getdel).toHaveBeenCalledTimes(1);
     });
 
     it('should reject weak new password', async () => {
@@ -764,7 +1043,7 @@ describe('auth routes', () => {
     it('should reject invalid/expired token', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
       const mockRedis = {
-        get: vi.fn().mockResolvedValue(null), // Token not found
+        getdel: vi.fn().mockResolvedValue(null), // Token not found
         del: vi.fn(),
         setex: vi.fn()
       };
@@ -780,6 +1059,64 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('rejects reset token redemption when organization SSO policy disables passwords', async () => {
+      vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
+      vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+      const mockRedis = {
+        getdel: vi.fn().mockResolvedValue('user-123'),
+        del: vi.fn().mockResolvedValue(1),
+        setex: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+
+      const res = await app.request('/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: 'valid-reset-token',
+          password: 'NewStrongPass123'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(hashPassword).not.toHaveBeenCalled();
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(mockRedis.del).not.toHaveBeenCalled();
+    });
+
+    it('consumes reset tokens atomically so concurrent redemption only succeeds once', async () => {
+      vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
+      const mockRedis = {
+        getdel: vi.fn()
+          .mockResolvedValueOnce('user-123')
+          .mockResolvedValueOnce(null),
+        del: vi.fn(),
+        setex: vi.fn()
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const request = () => app.request('/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: 'same-reset-token',
+          password: 'NewStrongPass123'
+        })
+      });
+
+      const [first, second] = await Promise.all([request(), request()]);
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(400);
+      expect(mockRedis.getdel).toHaveBeenCalledTimes(2);
+      expect(hashPassword).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -819,6 +1156,26 @@ describe('auth routes', () => {
       expect(hashPassword).toHaveBeenCalledWith('NewStrongPass123');
       expect(invalidateAllUserSessions).toHaveBeenCalledWith('user-123');
       expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+    });
+
+    it('POST /auth/change-password should reject when organization SSO policy disables passwords', async () => {
+      vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+
+      const res = await app.request('/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          currentPassword: 'OldStrongPass123',
+          newPassword: 'NewStrongPass123'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(hashPassword).not.toHaveBeenCalled();
     });
 
     it('POST /auth/mfa/enable should enable MFA and return recovery codes', async () => {
@@ -958,7 +1315,15 @@ describe('auth routes', () => {
     it('POST /auth/mfa/recovery-codes should rotate recovery codes when MFA is enabled', async () => {
       const newRecoveryCodes = ['NEW-0001', 'NEW-0002'];
       vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+            })
+          })
+        } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -984,7 +1349,8 @@ describe('auth routes', () => {
         headers: {
           'Authorization': 'Bearer valid-token',
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
       });
 
       expect(res.status).toBe(200);
@@ -992,6 +1358,54 @@ describe('auth routes', () => {
       expect(body.success).toBe(true);
       expect(body.recoveryCodes).toEqual(newRecoveryCodes);
       expect(body.message).toBe('Recovery codes generated successfully');
+    });
+
+    it('POST /auth/mfa/recovery-codes should reject missing currentPassword', async () => {
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /auth/mfa/sms/enable should reject missing currentPassword', async () => {
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /auth/mfa/sms/enable should reject wrong currentPassword', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ currentPassword: 'WrongPass' })
+      });
+
+      expect(res.status).toBe(401);
     });
   });
 

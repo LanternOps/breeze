@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'http';
+import { EventEmitter } from 'events';
 import type { AddressInfo } from 'net';
 import { safeFetch, isPrivateIp, SsrfBlockedError, __setLookupForTests } from './urlSafety';
 
@@ -82,6 +83,41 @@ describe('safeFetch — SSRF policy', () => {
     const err = await safeFetch('https://sneaky.example/x').catch((e) => e);
     expect(err).toBeInstanceOf(SsrfBlockedError);
     expect((err as SsrfBlockedError).resolvedIps).toEqual(['10.0.0.5', '192.168.1.1']);
+  });
+
+  it('derives Host from the URL instead of preserving caller-supplied Host', async () => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    let capturedOptions: http.RequestOptions | undefined;
+    const requestSpy = vi.spyOn(http, 'request').mockImplementation((options: any, callback?: any) => {
+      capturedOptions = options;
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.statusMessage = 'OK';
+        res.headers = {};
+        callback?.(res);
+        res.emit('end');
+      });
+      return req;
+    });
+
+    const response = await safeFetch('http://tenant.example.test/path', {
+      headers: {
+        Host: '169.254.169.254',
+        'X-Test': 'ok'
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect(capturedOptions?.headers).toMatchObject({
+      Host: 'tenant.example.test',
+      'X-Test': 'ok'
+    });
+    requestSpy.mockRestore();
   });
 });
 

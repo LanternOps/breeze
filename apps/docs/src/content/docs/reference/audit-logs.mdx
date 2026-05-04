@@ -104,7 +104,7 @@ Audit events are written asynchronously via `createAuditLogAsync`, which inserts
 
 Two helper functions are available in application code:
 
-- **`writeAuditEvent(c, event)`** -- Low-level function that accepts a request-like context and an `AuditEventInput` object. Extracts the client IP from `X-Forwarded-For` and the user-agent from request headers. Events with no `orgId` are silently dropped (with a console warning in non-test environments).
+- **`writeAuditEvent(c, event)`** -- Low-level function that accepts a request-like context and an `AuditEventInput` object. Extracts the client IP via `getTrustedClientIp`, which prefers `cf-connecting-ip`, then `x-forwarded-for`, then `x-real-ip`, and is gated by the `TRUST_PROXY_HEADERS` env var so untrusted hops can't spoof the source IP. Events with no `orgId` are silently dropped (with a console warning in non-test environments).
 - **`writeRouteAudit(c, event)`** -- Convenience wrapper for route handlers that automatically extracts `actorId` and `actorEmail` from the Hono auth context.
 
 ### Filtering and Searching

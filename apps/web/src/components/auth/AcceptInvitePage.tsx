@@ -8,6 +8,7 @@ import {
   useAuthStore,
 } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { scrubQueryParamsFromCurrentUrl } from '../../lib/sensitiveUrl';
 
 type TokenState =
   | { phase: 'loading' }
@@ -30,6 +31,9 @@ export default function AcceptInvitePage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenParam = params.get('token');
+    if (tokenParam) {
+      scrubQueryParamsFromCurrentUrl(['token']);
+    }
     setTokenState(
       tokenParam ? { phase: 'present', token: tokenParam } : { phase: 'absent' },
     );

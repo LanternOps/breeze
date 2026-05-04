@@ -67,7 +67,13 @@ function resolveOrgId(
 const integrationUpsertSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
-  managementUrl: z.string().url().max(2_000),
+  managementUrl: z.string().url().max(2_000).refine((value) => {
+    try {
+      return new URL(value).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, { message: 'managementUrl must use HTTPS' }),
   apiToken: z.string().max(10_000).optional(),
   isActive: z.boolean().optional()
 });
@@ -111,6 +117,11 @@ const siteMapSchema = z.object({
   siteName: z.string().min(1).max(200),
   orgId: z.string().uuid().nullable()
 });
+
+function normalizedHost(value: string): string {
+  const parsed = new URL(value);
+  return parsed.host.toLowerCase();
+}
 
 sentinelOneRoutes.get(
   '/integration',
@@ -172,13 +183,20 @@ sentinelOneRoutes.post(
 
     // Check if integration already exists (needed to validate token presence)
     const [existing] = await db
-      .select({ id: s1Integrations.id, apiTokenEncrypted: s1Integrations.apiTokenEncrypted })
+      .select({
+        id: s1Integrations.id,
+        managementUrl: s1Integrations.managementUrl,
+        apiTokenEncrypted: s1Integrations.apiTokenEncrypted
+      })
       .from(s1Integrations)
       .where(eq(s1Integrations.orgId, orgResult.orgId))
       .limit(1);
 
     if (!existing && !encryptedToken) {
       return c.json({ error: 'API token is required for new integrations' }, 400);
+    }
+    if (existing && !encryptedToken && normalizedHost(existing.managementUrl) !== normalizedHost(body.managementUrl)) {
+      return c.json({ error: 'API token must be re-entered when changing the SentinelOne management host' }, 400);
     }
 
     const now = new Date();

@@ -2,16 +2,30 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
-import { c2cBackupConfigs, c2cConnections } from '../../db/schema';
+import { backupConfigs, c2cBackupConfigs, c2cConnections } from '../../db/schema';
+import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { createC2cConfigSchema, updateC2cConfigSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 
 export const c2cConfigsRoutes = new Hono();
+const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireC2cWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+
+async function verifyStorageConfigForOrg(storageConfigId: string | null | undefined, orgId: string) {
+  if (!storageConfigId) return true;
+  const [storageConfig] = await db
+    .select({ id: backupConfigs.id })
+    .from(backupConfigs)
+    .where(and(eq(backupConfigs.id, storageConfigId), eq(backupConfigs.orgId, orgId)))
+    .limit(1);
+  return Boolean(storageConfig);
+}
 
 // ── List configs ────────────────────────────────────────────────────────────
 
-c2cConfigsRoutes.get('/configs', async (c) => {
+c2cConfigsRoutes.get('/configs', requireC2cRead, async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -28,6 +42,8 @@ c2cConfigsRoutes.get('/configs', async (c) => {
 
 c2cConfigsRoutes.post(
   '/configs',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('json', createC2cConfigSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -49,6 +65,9 @@ c2cConfigsRoutes.post(
       .limit(1);
 
     if (!conn) return c.json({ error: 'Connection not found' }, 404);
+    if (!(await verifyStorageConfigForOrg(payload.storageConfigId, orgId))) {
+      return c.json({ error: 'Storage config not found' }, 404);
+    }
 
     const now = new Date();
     const [row] = await db
@@ -87,6 +106,8 @@ c2cConfigsRoutes.post(
 
 c2cConfigsRoutes.patch(
   '/configs/:id',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', updateC2cConfigSchema),
   async (c) => {
@@ -96,6 +117,10 @@ c2cConfigsRoutes.patch(
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
+
+    if (!(await verifyStorageConfigForOrg(payload.storageConfigId, orgId))) {
+      return c.json({ error: 'Storage config not found' }, 404);
+    }
 
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     if (payload.name !== undefined) updateData.name = payload.name;
@@ -131,6 +156,8 @@ c2cConfigsRoutes.patch(
 
 c2cConfigsRoutes.delete(
   '/configs/:id',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');

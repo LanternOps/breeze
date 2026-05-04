@@ -14,6 +14,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint --ext .ts src",
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
+    "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
     "start": "node dist/index.cjs",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",

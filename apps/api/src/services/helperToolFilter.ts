@@ -58,7 +58,6 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'manage_services',
     'disk_cleanup',
     'file_operations',
-    'computer_control',
   ],
   extended: [
     'take_screenshot',

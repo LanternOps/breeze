@@ -49,6 +49,13 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com' },
       canAccessOrg: (orgId: string) => orgId === 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
     });
+    c.set('permissions', {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      roleId: 'role-1',
+      scope: 'organization'
+    });
     return next();
   }),
   requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
@@ -78,6 +85,13 @@ describe('api keys routes', () => {
         orgId: ORG_ID,
         user: { id: 'user-123', email: 'test@example.com' },
         canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', {
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization'
       });
       return next();
     });
@@ -169,6 +183,78 @@ describe('api keys routes', () => {
     expect(body.warning).toBeDefined();
   });
 
+  it('rejects wildcard scopes on API key creation', async () => {
+    const res = await app.request('/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID,
+        name: 'Wildcard Key',
+        scopes: ['*'],
+        rateLimit: 1000
+      })
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Wildcard API key scopes are not supported');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown scopes on API key creation', async () => {
+    const res = await app.request('/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID,
+        name: 'Unknown Scope Key',
+        scopes: ['devices:read', 'not:a-real-scope'],
+        rateLimit: 1000
+      })
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Unsupported API key scope: not:a-real-scope');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects delegated scopes the creator does not hold', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        partnerId: null,
+        orgId: ORG_ID,
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'limited-role',
+        scope: 'organization'
+      });
+      return next();
+    });
+
+    const res = await app.request('/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID,
+        name: 'Overdelegated Key',
+        scopes: ['devices:execute'],
+        rateLimit: 1000
+      })
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Cannot delegate API key scope "devices:execute" without devices.execute');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('should fetch an API key by id', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -224,7 +310,7 @@ describe('api keys routes', () => {
             orgId: ORG_ID,
             name: 'Updated Key',
             keyPrefix: 'brz_abc12345',
-            scopes: ['read', 'write'],
+            scopes: ['devices:read', 'devices:write'],
             expiresAt: null,
             lastUsedAt: null,
             usageCount: 0,
@@ -243,7 +329,7 @@ describe('api keys routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: 'Updated Key',
-        scopes: ['read', 'write'],
+        scopes: ['devices:read', 'devices:write'],
         rateLimit: 2000
       })
     });
@@ -252,6 +338,32 @@ describe('api keys routes', () => {
     const body = await res.json();
     expect(body.name).toBe('Updated Key');
     expect(body.rateLimit).toBe(2000);
+  });
+
+  it('rejects wildcard scopes on API key update', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: KEY_ID,
+            orgId: ORG_ID,
+            name: 'Primary Key',
+            status: 'active'
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/api-keys/${KEY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopes: ['*'] })
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Wildcard API key scopes are not supported');
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('should revoke an API key', async () => {

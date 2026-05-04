@@ -38,6 +38,12 @@ vi.mock('../services/jwt', () => ({
   verifyViewerAccessToken: vi.fn(),
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true),

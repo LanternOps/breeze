@@ -81,6 +81,10 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     osType: 'osType'
   },
+  sites: {
+    id: 'id',
+    orgId: 'orgId'
+  },
   groupMembershipLog: {
     id: 'id',
     groupId: 'groupId',
@@ -242,6 +246,35 @@ describe('groups routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('should reject siteId outside the existing group organization', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeGroup()])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ siteId: SITE_ID })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Site not found');
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { reportRoutes } from './reports';
+
+const permissionState = vi.hoisted(() => ({
+  deny: false,
+  last: null as { resource: string; action: string } | null
+}));
 
 vi.mock('../services', () => ({}));
 
@@ -54,7 +58,14 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    permissionState.last = { resource, action };
+    if (permissionState.deny) {
+      return c.text('Permission denied', 403);
+    }
+    return next();
+  })
 }));
 
 import { db } from '../db';
@@ -62,10 +73,50 @@ import { db } from '../db';
 describe('reports routes', () => {
   let app: Hono;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    permissionState.deny = false;
+    permissionState.last = null;
+    const { reportRoutes } = await import('./reports');
     app = new Hono();
     app.route('/reports', reportRoutes);
+  });
+
+  it('requires reports:export for report data routes', async () => {
+    permissionState.deny = true;
+
+    const res = await app.request('/reports/data/device-inventory', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(permissionState.last).toEqual({ resource: 'reports', action: 'export' });
+  });
+
+  it('requires reports:export for ad-hoc report generation', async () => {
+    permissionState.deny = true;
+
+    const res = await app.request('/reports/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ type: 'device_inventory', format: 'csv' })
+    });
+
+    expect(res.status).toBe(403);
+    expect(permissionState.last).toEqual({ resource: 'reports', action: 'export' });
+  });
+
+  it('requires reports:delete for deleting report definitions', async () => {
+    permissionState.deny = true;
+
+    const res = await app.request('/reports/report-1', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(permissionState.last).toEqual({ resource: 'reports', action: 'delete' });
   });
 
   it('should generate a saved report run', async () => {

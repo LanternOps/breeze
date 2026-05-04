@@ -1,7 +1,9 @@
 package updater
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +17,94 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
+
+func signedDownloadInfo(t *testing.T, version, component, rawURL string, content []byte) downloadInfo {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKeys := trustedUpdateManifestPublicKeys
+	trustedUpdateManifestPublicKeys = []string{base64.StdEncoding.EncodeToString(publicKey)}
+	t.Cleanup(func() {
+		trustedUpdateManifestPublicKeys = oldKeys
+	})
+
+	sum := sha256.Sum256(content)
+	manifest := updateManifest{
+		Version:   version,
+		Component: component,
+		Platform:  manifestPlatform(),
+		Arch:      runtime.GOARCH,
+		URL:       rawURL,
+		Checksum:  hex.EncodeToString(sum[:]),
+		Size:      int64(len(content)),
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := ed25519.Sign(privateKey, payload)
+	return downloadInfo{
+		URL:               rawURL,
+		Checksum:          manifest.Checksum,
+		Manifest:          string(payload),
+		ManifestSignature: base64.StdEncoding.EncodeToString(signature),
+	}
+}
+
+func signedReleaseArtifactDownloadInfo(t *testing.T, version, assetName, rawURL string, content []byte) downloadInfo {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKeys := trustedUpdateManifestPublicKeys
+	trustedUpdateManifestPublicKeys = []string{base64.StdEncoding.EncodeToString(publicKey)}
+	t.Cleanup(func() {
+		trustedUpdateManifestPublicKeys = oldKeys
+	})
+
+	sum := sha256.Sum256(content)
+	checksum := hex.EncodeToString(sum[:])
+	manifest := struct {
+		SchemaVersion int    `json:"schemaVersion"`
+		Release       string `json:"release"`
+		Assets        []struct {
+			Name          string `json:"name"`
+			SHA256        string `json:"sha256"`
+			Size          int64  `json:"size"`
+			PlatformTrust string `json:"platformTrust"`
+		} `json:"assets"`
+	}{
+		SchemaVersion: 1,
+		Release:       "v" + version,
+		Assets: []struct {
+			Name          string `json:"name"`
+			SHA256        string `json:"sha256"`
+			Size          int64  `json:"size"`
+			PlatformTrust string `json:"platformTrust"`
+		}{
+			{
+				Name:          assetName,
+				SHA256:        checksum,
+				Size:          int64(len(content)),
+				PlatformTrust: "release-workflow-produced",
+			},
+		},
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := ed25519.Sign(privateKey, payload)
+	return downloadInfo{
+		URL:               rawURL,
+		Checksum:          checksum,
+		Manifest:          string(payload),
+		ManifestSignature: base64.StdEncoding.EncodeToString(signature),
+	}
+}
 
 func TestNewCreatesUpdater(t *testing.T) {
 	cfg := &Config{
@@ -216,10 +306,6 @@ func TestRollbackNoBackup(t *testing.T) {
 
 func TestDownloadBinary(t *testing.T) {
 	binaryContent := []byte("fake binary v1.0.0")
-	hasher := sha256.New()
-	hasher.Write(binaryContent)
-	checksum := hex.EncodeToString(hasher.Sum(nil))
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
@@ -236,10 +322,7 @@ func TestDownloadBinary(t *testing.T) {
 
 			// Return JSON with download info
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(downloadInfo{
-				URL:      "http://" + r.Host + "/binary/breeze-agent",
-				Checksum: checksum,
-			})
+			json.NewEncoder(w).Encode(signedDownloadInfo(t, "1.0.0", "agent", "http://"+r.Host+"/binary/breeze-agent", binaryContent))
 
 		case r.URL.Path == "/binary/breeze-agent":
 			// Serve the actual binary
@@ -258,23 +341,158 @@ func TestDownloadBinary(t *testing.T) {
 	})
 	u.client = server.Client()
 
-	tempPath, gotChecksum, err := u.downloadBinary("1.0.0")
+	tempPath, manifest, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download failed: %v", err)
 	}
 	defer os.Remove(tempPath)
 
-	if gotChecksum != checksum {
-		t.Fatalf("checksum mismatch: got %s, want %s", gotChecksum, checksum)
-	}
-
 	downloaded, _ := os.ReadFile(tempPath)
 	if string(downloaded) != string(binaryContent) {
 		t.Fatalf("downloaded content mismatch")
 	}
+	if manifest.Checksum == "" {
+		t.Fatal("expected signed manifest checksum")
+	}
 }
 
-func TestDownloadBinaryRedirectResponse(t *testing.T) {
+func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
+	binaryContent := []byte("fake binary v1.0.0")
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKeys := trustedUpdateManifestPublicKeys
+	trustedUpdateManifestPublicKeys = []string{base64.StdEncoding.EncodeToString(publicKey)}
+	t.Cleanup(func() {
+		trustedUpdateManifestPublicKeys = oldKeys
+	})
+
+	sum := sha256.Sum256(binaryContent)
+	manifest := updateManifest{
+		Version:   "1.0.0",
+		Component: "agent",
+		Platform:  manifestPlatform(),
+		Arch:      runtime.GOARCH,
+		URL:       "http://example.invalid/binary/breeze-agent",
+		Checksum:  hex.EncodeToString(sum[:]),
+		Size:      int64(len(binaryContent)),
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := ed25519.Sign(privateKey, payload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			var tampered updateManifest
+			if err := json.Unmarshal(payload, &tampered); err != nil {
+				t.Fatal(err)
+			}
+			tampered.URL = "http://" + r.Host + "/binary/breeze-agent"
+			tamperedPayload, err := json.Marshal(tampered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(downloadInfo{
+				URL:               tampered.URL,
+				Checksum:          tampered.Checksum,
+				Manifest:          string(tamperedPayload),
+				ManifestSignature: base64.StdEncoding.EncodeToString(signature),
+			})
+		case r.URL.Path == "/binary/breeze-agent":
+			w.Write(binaryContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	u := New(&Config{
+		ServerURL: server.URL,
+		AuthToken: secmem.NewSecureString("test-token"),
+	})
+	u.client = server.Client()
+
+	_, _, err = u.downloadBinary("1.0.0")
+	if err == nil {
+		t.Fatal("tampered manifest metadata should fail signature verification")
+	}
+}
+
+func TestDownloadBinaryAcceptsSignedReleaseArtifactManifest(t *testing.T) {
+	binaryContent := []byte("fake binary v1.0.0 from release manifest")
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	assetName := "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(signedReleaseArtifactDownloadInfo(t, "1.0.0", assetName, "http://"+r.Host+"/binary/"+assetName, binaryContent))
+		case r.URL.Path == "/binary/"+assetName:
+			w.Write(binaryContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	u := New(&Config{
+		ServerURL: server.URL,
+		AuthToken: secmem.NewSecureString("test-token"),
+	})
+	u.client = server.Client()
+
+	tempPath, manifest, err := u.downloadBinary("1.0.0")
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	defer os.Remove(tempPath)
+
+	if manifest.Checksum == "" {
+		t.Fatal("expected signed release artifact manifest checksum")
+	}
+	if manifest.Size != int64(len(binaryContent)) {
+		t.Fatalf("manifest size mismatch: %d", manifest.Size)
+	}
+}
+
+func TestDownloadBinaryRejectsWrongSignedReleaseArtifact(t *testing.T) {
+	binaryContent := []byte("fake helper artifact")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(signedReleaseArtifactDownloadInfo(t, "1.0.0", "breeze-helper-linux.AppImage", "http://"+r.Host+"/binary/breeze-helper-linux.AppImage", binaryContent))
+		case r.URL.Path == "/binary/breeze-helper-linux.AppImage":
+			w.Write(binaryContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	u := New(&Config{
+		ServerURL: server.URL,
+		AuthToken: secmem.NewSecureString("test-token"),
+	})
+	u.client = server.Client()
+
+	_, _, err := u.downloadBinary("1.0.0")
+	if err == nil {
+		t.Fatal("wrong signed release artifact should fail")
+	}
+}
+
+func TestDownloadBinaryRejectsRedirectResponseWithoutSignedManifest(t *testing.T) {
 	binaryContent := []byte("fake binary from redirect")
 	hasher := sha256.New()
 	hasher.Write(binaryContent)
@@ -304,19 +522,9 @@ func TestDownloadBinaryRedirectResponse(t *testing.T) {
 	})
 	u.client = server.Client()
 
-	tempPath, gotChecksum, err := u.downloadBinary("1.0.0")
-	if err != nil {
-		t.Fatalf("download failed: %v", err)
-	}
-	defer os.Remove(tempPath)
-
-	if gotChecksum != checksum {
-		t.Fatalf("checksum mismatch: got %s, want %s", gotChecksum, checksum)
-	}
-
-	downloaded, _ := os.ReadFile(tempPath)
-	if string(downloaded) != string(binaryContent) {
-		t.Fatalf("downloaded content mismatch")
+	_, _, err := u.downloadBinary("1.0.0")
+	if err == nil {
+		t.Fatal("redirect response without signed manifest should fail")
 	}
 }
 
@@ -363,18 +571,11 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	os.WriteFile(binaryPath, []byte("old binary"), 0755)
 
 	newContent := []byte("new binary v1.0.0")
-	hasher := sha256.New()
-	hasher.Write(newContent)
-	checksum := hex.EncodeToString(hasher.Sum(nil))
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(downloadInfo{
-				URL:      "http://" + r.Host + "/binary/breeze-agent",
-				Checksum: checksum,
-			})
+			json.NewEncoder(w).Encode(signedDownloadInfo(t, "1.0.0", "agent", "http://"+r.Host+"/binary/breeze-agent", newContent))
 		case r.URL.Path == "/binary/breeze-agent":
 			w.Write(newContent)
 		default:
@@ -394,13 +595,13 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 
 	// We can't test the full UpdateTo because Restart() would fail,
 	// but we can test the download -> verify -> backup -> replace pipeline manually
-	tempPath, dlChecksum, err := u.downloadBinary("1.0.0")
+	tempPath, manifest, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	defer os.Remove(tempPath)
 
-	if err := u.verifyChecksum(tempPath, dlChecksum); err != nil {
+	if err := u.verifyChecksum(tempPath, manifest.Checksum); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 

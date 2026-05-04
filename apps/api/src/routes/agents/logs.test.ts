@@ -59,9 +59,11 @@ function mockDeviceLookup(found: boolean) {
 }
 
 function mockInsertSuccess() {
+  const values = vi.fn().mockResolvedValue(undefined);
   vi.mocked(db.insert).mockReturnValue({
-    values: vi.fn().mockResolvedValue(undefined),
+    values,
   } as any);
+  return values;
 }
 
 function makeLogEntry(overrides: Partial<Record<string, unknown>> = {}) {
@@ -158,6 +160,40 @@ describe('agent logs routes', () => {
       });
 
       expect(res.status).toBe(201);
+    });
+
+    it('redacts secrets before storing log rows', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [
+            makeLogEntry({
+              message: 'install failed token=raw-token password=hunter2',
+              fields: {
+                apiKey: 'raw-api-key',
+                nested: { authPassword: 'raw-auth-password' },
+                output: 'Authorization: Bearer raw-bearer-token',
+              },
+            }),
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith([
+        expect.objectContaining({
+          message: 'install failed token=[REDACTED] password=[REDACTED]',
+          fields: {
+            apiKey: '[REDACTED]',
+            nested: { authPassword: '[REDACTED]' },
+            output: 'Authorization: Bearer [REDACTED]',
+          },
+        }),
+      ]);
     });
   });
 });

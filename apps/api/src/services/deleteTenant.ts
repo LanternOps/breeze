@@ -25,6 +25,7 @@ import { partners } from '../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
+import { revokePartnerTenantAccess } from './tenantLifecycle';
 
 interface DeleteTenantInput {
   tenant_id: string;
@@ -90,6 +91,8 @@ export async function runDeleteTenant(
     .update(partners)
     .set({ status: 'churned', deletedAt: now, updatedAt: now })
     .where(eq(partners.id, input.tenant_id));
+
+  await revokePartnerTenantAccess(input.tenant_id);
 
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {

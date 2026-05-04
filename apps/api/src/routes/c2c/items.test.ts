@@ -4,6 +4,10 @@ import { Hono } from 'hono';
 import { c2cItemsRoutes } from './items';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false },
+}));
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -72,6 +76,18 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authState);
     return next();
   }),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  }),
 }));
 
 import { authMiddleware } from '../../middleware/auth';
@@ -81,9 +97,36 @@ describe('c2c items routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/c2c', c2cItemsRoutes);
+  });
+
+  it('requires explicit write permission and MFA before restoring C2C items', async () => {
+    permissionGate.deny = true;
+    const deniedPermission = await app.request('/c2c/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        itemIds: ['11111111-1111-4111-8111-111111111111'],
+      }),
+    });
+    expect(deniedPermission.status).toBe(403);
+
+    permissionGate.deny = false;
+    mfaGate.deny = true;
+    const deniedMfa = await app.request('/c2c/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        itemIds: ['11111111-1111-4111-8111-111111111111'],
+      }),
+    });
+    expect(deniedMfa.status).toBe(403);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueAddMock).not.toHaveBeenCalled();
   });
 
   it('rejects restore requests that span multiple configs', async () => {

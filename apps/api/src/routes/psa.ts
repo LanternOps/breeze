@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { db } from '../db';
 import { psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -316,6 +316,7 @@ psaRoutes.post(
   '/connections',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -418,6 +419,7 @@ psaRoutes.patch(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -496,6 +498,7 @@ psaRoutes.delete(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -529,6 +532,7 @@ psaRoutes.post(
   '/connections/:id/test',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -570,6 +574,7 @@ psaRoutes.post(
   '/connections/:id/sync',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -616,6 +621,7 @@ psaRoutes.post(
   '/connections/:id/status',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;

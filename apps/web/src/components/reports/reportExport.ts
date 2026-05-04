@@ -7,6 +7,23 @@ function cellToString(value: unknown): string {
   return String(value);
 }
 
+const FORMULA_PREFIXES = new Set(['=', '+', '-', '@', '\t', '\r', '\n']);
+
+export function neutralizeSpreadsheetFormula(value: string): string {
+  if (value.length === 0) return value;
+  return FORMULA_PREFIXES.has(value[0]!) ? `'${value}` : value;
+}
+
+export function escapeCsvCell(value: string): string {
+  const safe = neutralizeSpreadsheetFormula(value);
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+export function escapeTsvCell(value: string): string {
+  const safe = neutralizeSpreadsheetFormula(value);
+  return /[\t\r\n"]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
 /** Extract column headers and string[][] body from raw row objects. */
 function extractTable(rows: unknown[]): { headers: string[]; body: string[][] } {
   const headers = Object.keys(rows[0] as Record<string, unknown>);
@@ -57,11 +74,7 @@ export function exportReport(
     const csvContent = [
       headers.join(','),
       ...body.map(row =>
-        row.map(cell =>
-          cell.includes(',') || cell.includes('"') || cell.includes('\n') || cell.includes('\r')
-            ? `"${cell.replace(/"/g, '""')}"`
-            : cell
-        ).join(',')
+        row.map(escapeCsvCell).join(',')
       ),
     ].join('\n');
     downloadBlob(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }), `${baseFilename}.csv`);
@@ -73,7 +86,7 @@ export function exportReport(
     const { headers, body } = extractTable(rows);
     const tsvContent = [
       headers.join('\t'),
-      ...body.map(row => row.join('\t')),
+      ...body.map(row => row.map(escapeTsvCell).join('\t')),
     ].join('\n');
     downloadBlob(new Blob([tsvContent], { type: 'application/vnd.ms-excel' }), `${baseFilename}.xls`);
     return;

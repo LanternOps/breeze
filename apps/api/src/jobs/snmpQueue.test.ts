@@ -39,6 +39,8 @@ vi.mock('../db/schema', () => ({
   snmpTemplates: {
     oids: 'snmpTemplates.oids',
     id: 'snmpTemplates.id',
+    orgId: 'snmpTemplates.orgId',
+    isBuiltIn: 'snmpTemplates.isBuiltIn',
   },
   devices: {
     agentId: 'devices.agentId',
@@ -58,7 +60,8 @@ vi.mock('../routes/agentWs', () => ({
   isAgentConnected: vi.fn(),
 }));
 
-import { enqueueSnmpPoll, enqueueSnmpPollResults, shutdownSnmpWorker } from './snmpWorker';
+import { buildSnmpPollCommand, enqueueSnmpPoll, enqueueSnmpPollResults, shutdownSnmpWorker } from './snmpWorker';
+import { encryptSecret } from '../services/secretCrypto';
 
 describe('snmp queue helpers', () => {
   beforeEach(async () => {
@@ -103,5 +106,30 @@ describe('snmp queue helpers', () => {
 
     expect(addMock).not.toHaveBeenCalled();
     expect(jobId).toBe('existing-job');
+  });
+
+  it('decrypts stored SNMP secrets only when building agent poll commands', () => {
+    const command = buildSnmpPollCommand(
+      'device-1',
+      {
+        ipAddress: '10.0.0.1',
+        port: 161,
+        snmpVersion: 'v3',
+        community: encryptSecret('private'),
+        username: 'poller',
+        authProtocol: 'sha',
+        authPassword: encryptSecret('auth-secret'),
+        privProtocol: 'aes',
+        privPassword: encryptSecret('priv-secret'),
+      },
+      ['1.3.6.1.2.1.1.5.0'],
+      'test'
+    );
+
+    expect(command.payload).toMatchObject({
+      community: 'private',
+      authPassword: 'auth-secret',
+      privPassword: 'priv-secret',
+    });
   });
 });

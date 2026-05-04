@@ -47,6 +47,76 @@ Windows signing references:
 5. Log and monitor signing events in Azure and GitHub.
 6. Define emergency procedure: revoke/disable profile, rotate identity, rebuild, republish.
 
+### Release artifact manifest and installer fallback prerequisite
+
+Enrollment-key installer fallback paths can fetch release assets such as
+`breeze-agent.msi`, `breeze-agent-darwin-arm64.pkg`, and
+`Breeze Installer.app.zip` before wrapping enrollment material. The release
+workflow publishes `checksums.txt`; that is useful for detecting accidental
+corruption, but it is not a trust root because a release asset writer can
+replace both the asset and the checksum file.
+
+Tag releases must also publish:
+
+- `release-artifact-manifest.json`
+- `release-artifact-manifest.json.minisig`
+- `release-artifact-manifest.json.ed25519`
+
+The manifest is signed in `.github/workflows/release.yml` with minisign for
+operator tooling and with a raw Ed25519 signature that the API can verify in
+Node.js before wrapping release assets. The tag release job fails closed unless
+these GitHub secrets are configured:
+
+- `RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY`
+- `RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY`
+- `RELEASE_MANIFEST_ED25519_PRIVATE_KEY`
+- `RELEASE_MANIFEST_ED25519_PUBLIC_KEY`
+
+The Ed25519 private key secret must be a base64 PKCS#8 DER private key or PEM
+private key. The Ed25519 public key secret should be the base64 raw 32-byte
+public key; SPKI DER and PEM public keys are also accepted by the workflow.
+Generate a key pair with:
+
+```bash
+node - <<'NODE'
+const { generateKeyPairSync } = require('node:crypto');
+const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const publicDer = publicKey.export({ format: 'der', type: 'spki' });
+console.log('RELEASE_MANIFEST_ED25519_PRIVATE_KEY=' + privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'));
+console.log('RELEASE_MANIFEST_ED25519_PUBLIC_KEY=' + publicDer.subarray(publicDer.length - 32).toString('base64'));
+NODE
+```
+
+The manifest covers every released artifact with:
+
+1. Artifact filename.
+2. SHA-256 digest.
+3. Size in bytes.
+4. Release tag/version.
+5. Platform trust expectation, for example Windows Authenticode or macOS
+   Developer ID notarization.
+
+The manifest key must be separate from platform signing keys and usable by
+non-interactive CI signing. If the private key is stored as a GitHub secret,
+restrict it to the protected tag release environment and plan migration to an
+external/HSM-backed signer.
+
+API fallback wrapping enforces the signed manifest when one of these API
+environment variables is configured with one or more comma-separated Ed25519
+public keys:
+
+- `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`
+- `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`
+
+When configured and `BINARY_SOURCE=github`, the API fetches
+`release-artifact-manifest.json` and `release-artifact-manifest.json.ed25519`,
+verifies the Ed25519 signature in Node.js, then enforces the selected asset's
+SHA-256 digest and size before returning a wrapped MSI/PKG/app zip. Production
+API startup and runtime fallback fetching fail closed when `BINARY_SOURCE=github`
+and the public-key trust root is not configured. Non-production environments can
+omit the key for compatibility, but those fetches do not claim release-manifest
+verification.
+
 ## Model B: Independent Self-Host or Fork Distribution
 
 ### Goal

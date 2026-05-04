@@ -10,6 +10,7 @@ import {
   unassignPolicy,
   listAssignments,
   listAssignmentsForTarget,
+  validateAssignmentTarget,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
@@ -55,6 +56,11 @@ assignmentRoutes.post(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    const targetValidation = await validateAssignmentTarget(policy.orgId, data.level, data.targetId);
+    if (!targetValidation.valid) {
+      return c.json({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' }, 403);
+    }
 
     try {
       const assignment = await assignPolicy(

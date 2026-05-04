@@ -1,6 +1,7 @@
 export type BinarySource = 'local' | 'github';
 
 const GITHUB_RELEASE_BASE = 'https://github.com/lanternops/breeze/releases';
+const GITHUB_REPOSITORY = 'lanternops/breeze';
 
 let binarySourceWarned = false;
 
@@ -32,6 +33,24 @@ function githubDownloadBase(): string {
     return `${GITHUB_RELEASE_BASE}/latest/download`;
   }
   return `${GITHUB_RELEASE_BASE}/download/v${version}`;
+}
+
+export function getGithubReleaseRepository(): string {
+  return process.env.BINARY_GITHUB_REPOSITORY?.trim() || GITHUB_REPOSITORY;
+}
+
+export function getGithubExpectedReleaseTag(): string | null {
+  const version = getGithubReleaseVersion();
+  if (version === 'latest') return null;
+  return version.startsWith('v') ? version : `v${version}`;
+}
+
+export function getGithubReleaseArtifactManifestUrl(): string {
+  return `${githubDownloadBase()}/release-artifact-manifest.json`;
+}
+
+export function getGithubReleaseArtifactManifestSignatureUrl(): string {
+  return `${githubDownloadBase()}/release-artifact-manifest.json.ed25519`;
 }
 
 export function getGithubAgentUrl(os: string, arch: string): string {

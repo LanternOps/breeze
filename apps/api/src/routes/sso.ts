@@ -33,6 +33,8 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
+import { envFlag } from '../utils/envFlag';
+import { setRefreshTokenCookie } from './auth/helpers';
 
 export const ssoRoutes = new Hono();
 
@@ -994,10 +996,14 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
     return c.json({ error: 'Invalid or expired token exchange code' }, 400);
   }
 
+  setRefreshTokenCookie(c, grant.refreshToken);
+
   return c.json({
     accessToken: grant.accessToken,
-    refreshToken: grant.refreshToken,
-    expiresInSeconds: grant.expiresInSeconds
+    expiresInSeconds: grant.expiresInSeconds,
+    ...(envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', false)
+      ? { refreshToken: grant.refreshToken }
+      : {}),
   });
 });
 

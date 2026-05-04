@@ -457,6 +457,40 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       expect(json.error).toMatch(/[Nn]o updates/);
     });
 
+    it('returns 400 when updated siteId does not belong to the group org', async () => {
+      mockSelect
+        .mockReturnValueOnce(chainSelect([groupInOrgA]))
+        .mockReturnValueOnce(chainSelect([]));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toMatch(/[Ss]ite/);
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when updated parentId does not belong to the group org', async () => {
+      mockSelect
+        .mockReturnValueOnce(chainSelect([groupInOrgA]))
+        .mockReturnValueOnce(chainSelect([]));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parentId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toMatch(/[Pp]arent/);
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
     it('allows system scope to update any group', async () => {
       const systemApp = buildApp(makeAuth({ scope: 'system', orgId: null }));
 

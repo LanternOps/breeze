@@ -2,7 +2,7 @@
  * Helper Chat Routes
  *
  * REST + SSE endpoints for the Breeze Helper (tray) AI chat.
- * Auth: Agent bearer token (brz_ prefix) via helperAuth middleware.
+ * Auth: Helper-scoped bearer token (brz_ prefix) via helperAuth middleware.
  * Sessions are scoped to the device (no user ID required).
  */
 
@@ -17,7 +17,8 @@ import { aiSessions, aiMessages, aiToolExecutions, devices, organizations } from
 import { approveToolSchema } from '@breeze/shared/validators/ai';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
-import { getHelperAllowedMcpToolNames, validateHelperToolAccess, type HelperPermissionLevel } from '../../services/helperToolFilter';
+import { getHelperAllowedMcpToolNames, type HelperPermissionLevel } from '../../services/helperToolFilter';
+import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot } from '../../services/screenshotStorage';
 import { checkBudget, getRemainingBudgetUsd } from '../../services/aiCostTracker';
@@ -35,7 +36,7 @@ const DEFAULT_PERMISSION_LEVEL: HelperPermissionLevel = 'standard';
 export const helperRoutes = new Hono();
 
 // ============================================
-// Helper Auth Middleware (agent token based)
+// Helper Auth Middleware (helper-scoped token based)
 // ============================================
 
 interface HelperDevice {
@@ -56,7 +57,7 @@ declare module 'hono' {
 }
 
 /**
- * Authenticate helper requests using agent bearer token.
+ * Authenticate helper requests using the helper-scoped bearer token.
  * Similar to agentAuthMiddleware but sets helperDevice context
  * and creates a synthetic AuthContext for the streaming session manager.
  */
@@ -84,24 +85,24 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
         osType: devices.osType,
         osVersion: devices.osVersion,
         agentVersion: devices.agentVersion,
-        agentTokenHash: devices.agentTokenHash,
-        previousTokenHash: devices.previousTokenHash,
-        previousTokenExpiresAt: devices.previousTokenExpiresAt,
+        helperTokenHash: devices.helperTokenHash,
+        previousHelperTokenHash: devices.previousHelperTokenHash,
+        previousHelperTokenExpiresAt: devices.previousHelperTokenExpiresAt,
         status: devices.status,
         partnerId: organizations.partnerId,
       })
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
-      .where(or(eq(devices.agentTokenHash, tokenHash), eq(devices.previousTokenHash, tokenHash)))
+      .where(or(eq(devices.helperTokenHash, tokenHash), eq(devices.previousHelperTokenHash, tokenHash)))
       .limit(1);
     return row ?? null;
   });
 
   const match = device
     ? matchAgentTokenHash({
-        agentTokenHash: device.agentTokenHash,
-        previousTokenHash: device.previousTokenHash,
-        previousTokenExpiresAt: device.previousTokenExpiresAt,
+        agentTokenHash: device.helperTokenHash,
+        previousTokenHash: device.previousHelperTokenHash,
+        previousTokenExpiresAt: device.previousHelperTokenExpiresAt,
         tokenHash,
       })
     : null;
@@ -239,12 +240,9 @@ async function runHelperPreFlight(
     console.warn('[Helper] Input sanitization flags:', flags, 'session:', sessionId);
   }
 
-  // Permission level from session context or default
-  const permissionLevel: HelperPermissionLevel =
-    (session.contextSnapshot as Record<string, unknown> | null)?.permissionLevel as HelperPermissionLevel
-    ?? DEFAULT_PERMISSION_LEVEL;
+  const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
 
-  const systemPrompt = session.systemPrompt ?? buildHelperSystemPrompt({
+  const systemPrompt = buildHelperSystemPrompt({
     hostname: device.hostname,
     deviceId: device.id,
     orgId: device.orgId,
@@ -286,13 +284,15 @@ function generateSessionTitle(content: string): string {
 helperRoutes.post(
   '/chat/sessions',
   zValidator('json', z.object({
-    permissionLevel: z.enum(['basic', 'standard', 'extended']).optional(),
     helperUser: z.string().max(100).optional(),
   }).optional()),
   async (c) => {
     const device = c.get('helperDevice');
     const body = c.req.valid('json') ?? {};
-    const permissionLevel: HelperPermissionLevel = body.permissionLevel ?? DEFAULT_PERMISSION_LEVEL;
+    const permissionLevel: HelperPermissionLevel = await resolveHelperPermissionLevelForDevice(
+      device.id,
+      DEFAULT_PERMISSION_LEVEL,
+    );
 
     const systemPrompt = buildHelperSystemPrompt({
       hostname: device.hostname,
@@ -479,10 +479,11 @@ helperRoutes.get('/device-info', async (c) => {
 
 helperRoutes.get('/config', async (c) => {
   const device = c.get('helperDevice');
+  const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
 
   return c.json({
     enabled: true,
-    permissionLevel: DEFAULT_PERMISSION_LEVEL,
+    permissionLevel,
     allowScreenCapture: true,
     sessionRetentionHours: 24,
   });

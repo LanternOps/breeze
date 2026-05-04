@@ -55,8 +55,7 @@ Expected shape:
 ## Files to inspect after logout or reboot
 
 - `/Library/Logs/Breeze/desktop-helper.log`
-- `/tmp/breeze-desktop-helper-loginwindow.log`
-- `/tmp/breeze-desktop-helper-user.log`
+- `/Library/Logs/Breeze/desktop-helper.log` when the helper can write it
 
 Look for:
 

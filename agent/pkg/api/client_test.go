@@ -41,7 +41,7 @@ func TestRotateToken(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_, _ = w.Write([]byte(`{"authToken":"brz_rotated","rotatedAt":"2026-03-31T20:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"authToken":"brz_rotated","watchdogAuthToken":"brz_watchdog","helperAuthToken":"brz_helper","rotatedAt":"2026-03-31T20:00:00Z"}`))
 	}))
 	defer ts.Close()
 
@@ -55,6 +55,12 @@ func TestRotateToken(t *testing.T) {
 	}
 	if resp.AuthToken != "brz_rotated" {
 		t.Fatalf("AuthToken = %q, want %q", resp.AuthToken, "brz_rotated")
+	}
+	if resp.WatchdogAuthToken != "brz_watchdog" {
+		t.Fatalf("WatchdogAuthToken = %q, want %q", resp.WatchdogAuthToken, "brz_watchdog")
+	}
+	if resp.HelperAuthToken != "brz_helper" {
+		t.Fatalf("HelperAuthToken = %q, want %q", resp.HelperAuthToken, "brz_helper")
 	}
 	if resp.RotatedAt != "2026-03-31T20:00:00Z" {
 		t.Fatalf("RotatedAt = %q, want %q", resp.RotatedAt, "2026-03-31T20:00:00Z")

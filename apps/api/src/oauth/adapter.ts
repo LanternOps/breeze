@@ -11,6 +11,7 @@ import {
 } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 // Grant-revocation marker TTL must outlive the longest-lived access token
 // minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
@@ -295,6 +296,28 @@ export class BreezeOidcAdapter {
       if (this.model === 'RefreshToken') {
         const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, id));
         if (!row) return undefined;
+        try {
+          await assertActiveTenantContext({
+            scope: row.orgId ? 'organization' : 'partner',
+            partnerId: row.partnerId,
+            orgId: row.orgId,
+          });
+        } catch (err) {
+          if (err instanceof TenantInactiveError) {
+            logOauthError({
+              errorId: ERROR_IDS.OAUTH_PROVIDER_GRANT_ERROR,
+              message: 'Refresh token lookup rejected for inactive tenant',
+              context: {
+                client_id: row.clientId,
+                partner_id: row.partnerId,
+                org_id: row.orgId,
+                user_id: row.userId,
+              },
+            });
+            return undefined;
+          }
+          throw err;
+        }
         if (row.revokedAt) {
           const payload = row.payload as { grantId?: string; clientId?: string; accountId?: string } | null;
           const grantId = typeof payload?.grantId === 'string' ? payload.grantId : undefined;

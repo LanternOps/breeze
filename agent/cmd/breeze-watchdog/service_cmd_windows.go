@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/serviceinstall"
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -33,6 +34,13 @@ func serviceInstallCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to determine executable path: %w", err)
 			}
+			serviceExePath, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-watchdog.exe")
+			if err != nil {
+				return fmt.Errorf("failed to install service binary in protected Program Files location: %w", err)
+			}
+			if copied {
+				fmt.Printf("Copied service binary to protected location: %s\n", serviceExePath)
+			}
 
 			m, err := mgr.Connect()
 			if err != nil {
@@ -40,7 +48,7 @@ func serviceInstallCmd() *cobra.Command {
 			}
 			defer m.Disconnect()
 
-			s, err := m.CreateService(windowsWatchdogServiceName, exePath, mgr.Config{
+			s, err := m.CreateService(windowsWatchdogServiceName, serviceExePath, mgr.Config{
 				DisplayName:  "Breeze RMM Watchdog",
 				Description:  "Breeze Agent Watchdog - monitors and recovers the agent process",
 				StartType:    mgr.StartAutomatic,

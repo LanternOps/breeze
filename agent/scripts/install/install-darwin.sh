@@ -14,6 +14,31 @@ fi
 
 echo "Installing Breeze Agent..."
 
+ensure_breeze_group() {
+    if dscl . -read /Groups/breeze &>/dev/null; then
+        if ! dscl . -read /Groups/breeze PrimaryGroupID &>/dev/null; then
+            echo "Error: existing 'breeze' group has no PrimaryGroupID; refusing to continue" >&2
+            exit 1
+        fi
+        return
+    fi
+
+    local gid
+    gid=350
+    while [ "$gid" -le 499 ]; do
+        if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
+            dscl . -create /Groups/breeze
+            dscl . -create /Groups/breeze PrimaryGroupID "$gid"
+            echo "Created 'breeze' group for IPC socket access (gid $gid)."
+            return
+        fi
+        gid=$((gid + 1))
+    done
+
+    echo "Error: no free local system GID available for 'breeze' group" >&2
+    exit 1
+}
+
 # Stop existing service before replacing binary (safe for upgrades).
 if [ -f "$PLIST_DST" ]; then
     if launchctl unload "$PLIST_DST" 2>&1; then
@@ -101,11 +126,7 @@ else
 fi
 
 # Create breeze group for IPC socket access
-if ! dscl . -read /Groups/breeze &>/dev/null; then
-    dscl . -create /Groups/breeze
-    dscl . -create /Groups/breeze PrimaryGroupID 399
-    echo "Created 'breeze' group for IPC socket access."
-fi
+ensure_breeze_group
 
 # Create IPC socket directory
 mkdir -p "$CONFIG_DIR"

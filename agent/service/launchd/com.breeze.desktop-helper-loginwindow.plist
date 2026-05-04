@@ -17,9 +17,9 @@
     <key>LimitLoadToSessionType</key>
     <string>LoginWindow</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>

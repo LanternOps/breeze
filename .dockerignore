@@ -20,10 +20,20 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # Environment files (secrets)
-.env
-.env.local
-.env.*.local
+.env*
+**/.env*
+*.env
+*.env.*
+**/*.env
+**/*.env.*
 !.env.example
+!.env.*.example
+!*.env.example
+!*.env.*.example
+!**/.env.example
+!**/.env.*.example
+!**/*.env.example
+!**/*.env.*.example
 
 # IDE
 .vscode

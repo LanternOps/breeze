@@ -3,6 +3,94 @@ import { roles, permissions, rolePermissions, scripts, alertTemplates, partners,
 import { eq, and } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
 
+const DEV_BOOTSTRAP_ADMIN_EMAIL = 'admin@breeze.local';
+const DEV_BOOTSTRAP_ADMIN_PASSWORD = 'BreezeAdmin123!';
+const INSECURE_BOOTSTRAP_PASSWORD_PATTERNS = [
+  'changeme',
+  'change-me',
+  'change_me',
+  'password',
+  'your-secret',
+  'generate-a',
+  'change-in-production',
+];
+
+export interface BootstrapAdminConfig {
+  email: string;
+  name: string;
+  password: string;
+  logPassword: boolean;
+}
+
+function requireValidBootstrapEmail(email: string): void {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error('BREEZE_BOOTSTRAP_ADMIN_EMAIL must be a valid email address.');
+  }
+}
+
+function looksLikeInsecureBootstrapPassword(password: string): boolean {
+  const lower = password.toLowerCase().trim();
+  return INSECURE_BOOTSTRAP_PASSWORD_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+/**
+ * Resolve the initial admin used only when the database has no users.
+ *
+ * Development/test keep a known local convenience account. Production must be
+ * explicitly bootstrapped by the operator so a fresh internet-reachable deploy
+ * never creates a fixed public admin/password pair.
+ */
+export function resolveBootstrapAdminConfig(
+  env: Record<string, string | undefined> = process.env,
+): BootstrapAdminConfig {
+  const isProduction = env.NODE_ENV === 'production';
+  const email = env.BREEZE_BOOTSTRAP_ADMIN_EMAIL?.trim();
+  const password = env.BREEZE_BOOTSTRAP_ADMIN_PASSWORD;
+  const name = env.BREEZE_BOOTSTRAP_ADMIN_NAME?.trim() || (isProduction ? 'Bootstrap Admin' : 'Breeze Admin');
+
+  if (!isProduction) {
+    const resolvedEmail = email || DEV_BOOTSTRAP_ADMIN_EMAIL;
+    requireValidBootstrapEmail(resolvedEmail);
+    return {
+      email: resolvedEmail,
+      name,
+      password: password || DEV_BOOTSTRAP_ADMIN_PASSWORD,
+      logPassword: !password,
+    };
+  }
+
+  if (!email || !password) {
+    throw new Error(
+      'Production bootstrap requires BREEZE_BOOTSTRAP_ADMIN_EMAIL and BREEZE_BOOTSTRAP_ADMIN_PASSWORD when the users table is empty.',
+    );
+  }
+
+  requireValidBootstrapEmail(email);
+
+  if (email.toLowerCase() === DEV_BOOTSTRAP_ADMIN_EMAIL) {
+    throw new Error('BREEZE_BOOTSTRAP_ADMIN_EMAIL must not use the development default admin address in production.');
+  }
+
+  if (password === DEV_BOOTSTRAP_ADMIN_PASSWORD) {
+    throw new Error('BREEZE_BOOTSTRAP_ADMIN_PASSWORD must not use the development default password in production.');
+  }
+
+  if (password.length < 16) {
+    throw new Error('BREEZE_BOOTSTRAP_ADMIN_PASSWORD must be at least 16 characters in production.');
+  }
+
+  if (looksLikeInsecureBootstrapPassword(password)) {
+    throw new Error('BREEZE_BOOTSTRAP_ADMIN_PASSWORD must be a generated one-time secret in production.');
+  }
+
+  return {
+    email,
+    name,
+    password,
+    logPassword: false,
+  };
+}
+
 // Default permissions
 const DEFAULT_PERMISSIONS = [
   // Backup / recovery
@@ -49,6 +137,15 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'audit', action: 'read', description: 'View audit logs' },
   { resource: 'audit', action: 'export', description: 'Export audit logs' },
 
+  // Reports
+  { resource: 'reports', action: 'read', description: 'View reports and report data' },
+  { resource: 'reports', action: 'write', description: 'Create, update, and generate reports' },
+  { resource: 'reports', action: 'delete', description: 'Delete reports' },
+  { resource: 'reports', action: 'export', description: 'Export report output' },
+
+  // Billing
+  { resource: 'billing', action: 'manage', description: 'Manage partner billing and billing portal access' },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -70,6 +167,7 @@ const SYSTEM_ROLES = [
       'devices:read', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
+      'reports:read', 'reports:write',
       'sites:read',
       'organizations:read'
     ]
@@ -82,6 +180,7 @@ const SYSTEM_ROLES = [
       'devices:read',
       'scripts:read',
       'alerts:read',
+      'reports:read',
       'sites:read',
       'organizations:read'
     ]
@@ -95,6 +194,7 @@ const SYSTEM_ROLES = [
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
+      'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',
       'remote:access',
@@ -109,6 +209,7 @@ const SYSTEM_ROLES = [
       'devices:read', 'devices:write', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
+      'reports:read', 'reports:write',
       'sites:read',
       'remote:access'
     ]
@@ -121,6 +222,7 @@ const SYSTEM_ROLES = [
       'devices:read',
       'scripts:read',
       'alerts:read',
+      'reports:read',
       'sites:read'
     ]
   }
@@ -781,16 +883,15 @@ export async function seedDefaultAdmin() {
   // partner_user) passes RLS on the partner-scoped and org-scoped tables
   // without each insert needing its own elevation.
   return withSystemDbAccessContext(async () => {
-  console.log('Seeding default admin user...');
+  console.log('Seeding bootstrap admin user...');
 
-  const adminEmail = 'admin@breeze.local';
-  const adminPassword = 'BreezeAdmin123!';
+  const admin = resolveBootstrapAdminConfig();
 
   // Check if admin user already exists
   const [existingUser] = await db
     .select()
     .from(users)
-    .where(eq(users.email, adminEmail))
+    .where(eq(users.email, admin.email))
     .limit(1);
 
   if (existingUser) {
@@ -895,7 +996,7 @@ export async function seedDefaultAdmin() {
   }
 
   // Hash the password
-  const passwordHash = await hashPassword(adminPassword);
+  const passwordHash = await hashPassword(admin.password);
 
   // Create the admin user (setupCompletedAt left null so the setup wizard
   // triggers on first login). Partner-scope admin → partnerId set, orgId
@@ -904,10 +1005,11 @@ export async function seedDefaultAdmin() {
     .insert(users)
     .values({
       partnerId,
-      email: adminEmail,
-      name: 'Breeze Admin',
+      email: admin.email,
+      name: admin.name,
       passwordHash,
       status: 'active',
+      preferences: { bootstrapSetupRequired: true },
     })
     .returning();
 
@@ -920,10 +1022,14 @@ export async function seedDefaultAdmin() {
   });
 
   console.log('');
-  console.log('Default admin created:');
-  console.log('  Email: admin@breeze.local');
-  console.log('  Password: BreezeAdmin123!');
-  console.log('  \u26A0\uFE0F  Change this password immediately after first login!');
+  console.log('Bootstrap admin created:');
+  console.log(`  Email: ${admin.email}`);
+  if (admin.logPassword) {
+    console.log(`  Password: ${DEV_BOOTSTRAP_ADMIN_PASSWORD}`);
+    console.log('  Development convenience credential only. Change it before exposing this instance.');
+  } else {
+    console.log('  Password: set from BREEZE_BOOTSTRAP_ADMIN_PASSWORD (not logged).');
+  }
   });
 }
 

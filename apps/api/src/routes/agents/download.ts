@@ -72,11 +72,11 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       console.error(`[agent-download] Failed to read binary ${filename}:`, err);
       return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
     }
+    console.warn('[agent-download] Local binary missing', { filename });
     return c.json(
       {
         error: 'Binary not found',
-        message: `Agent binary "${filename}" is not available. Ensure the binary has been built and placed in the configured AGENT_BINARY_DIR (${binaryDir}).`,
-        hint: `Run "cd agent && GOOS=${os} GOARCH=${arch} make build" to build the binary.`,
+        message: `Agent binary "${filename}" is not available.`,
       },
       404
     );
@@ -183,6 +183,7 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
       console.error(`[helper-download] Failed to read binary ${filename}:`, err);
       return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
     }
+    console.warn('[helper-download] Local binary missing', { filename });
     return c.json({
       error: 'Binary not found',
       message: `Helper binary "${filename}" is not available.`,
@@ -333,6 +334,7 @@ fi
 BINARY_NAME="breeze-agent"
 DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}"
 PKG_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}/pkg"
+VERSION_METADATA_URL="\${BREEZE_SERVER}/api/v1/agent-versions/latest?platform=\${OS}&arch=\${ARCH}&component=agent"
 
 info "Breeze RMM Agent Installer"
 info "  Server:       \$BREEZE_SERVER"
@@ -350,6 +352,38 @@ fi
 if ! command -v curl &>/dev/null; then
   fatal "curl is required but not installed. Install it and try again."
 fi
+
+sha256_file() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+    return
+  fi
+  if command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+    return
+  fi
+  fatal "sha256sum or shasum is required but not installed. Install one and try again."
+}
+
+extract_checksum() {
+  grep -oE '"checksum"[[:space:]]*:[[:space:]]*"[a-fA-F0-9]{64}"' "$1" | head -1 | sed -E 's/.*"([a-fA-F0-9]{64})".*/\\1/' | tr 'A-F' 'a-f'
+}
+
+verify_sha256() {
+  local file="$1"
+  local expected="$2"
+  local actual
+
+  if [[ ! "$expected" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    fatal "Release metadata did not include a valid SHA-256 checksum for \$OS/\$ARCH."
+  fi
+
+  actual="$(sha256_file "$file" | tr 'A-F' 'a-f')"
+  if [[ "$actual" != "\${expected,,}" ]]; then
+    rm -f "$file"
+    fatal "Checksum verification failed for downloaded agent binary. Expected \$expected, got \$actual."
+  fi
+}
 
 # ----- macOS: use .pkg installer -----
 if [[ "\$OS" == "darwin" ]]; then
@@ -407,9 +441,24 @@ if [[ "\$OS" == "darwin" ]]; then
 fi
 
 # ----- Linux: download binary directly -----
+info "Fetching release integrity metadata..."
+METADATA_FILE="$(mktemp)"
+trap 'rm -f "\$METADATA_FILE"' EXIT
+
+METADATA_HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$METADATA_FILE" "\$VERSION_METADATA_URL" 2>/dev/null)" || true
+if [[ "\$METADATA_HTTP_CODE" != "200" ]]; then
+  fatal "Failed to fetch release integrity metadata (HTTP \$METADATA_HTTP_CODE). Refusing to install without a trusted checksum."
+fi
+
+EXPECTED_SHA256="$(extract_checksum "\$METADATA_FILE")"
+if [[ -z "\$EXPECTED_SHA256" ]]; then
+  fatal "Release integrity metadata did not include a valid checksum. Refusing to install."
+fi
+success "Release checksum metadata fetched"
+
 info "Downloading agent binary..."
 TMPFILE="$(mktemp)"
-trap 'rm -f "\$TMPFILE"' EXIT
+trap 'rm -f "\$TMPFILE" "\$METADATA_FILE"' EXIT
 
 HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$TMPFILE" "\$DOWNLOAD_URL" 2>/dev/null)" || true
 
@@ -422,6 +471,10 @@ if [[ ! -s "\$TMPFILE" ]]; then
 fi
 
 success "Downloaded agent binary ($(wc -c < "\$TMPFILE" | tr -d ' ') bytes)"
+
+info "Verifying agent binary checksum..."
+verify_sha256 "\$TMPFILE" "\$EXPECTED_SHA256"
+success "Verified agent binary checksum"
 
 # ----- Stop existing service before replacing binary (safe for upgrades) -----
 if command -v systemctl &>/dev/null && systemctl is-active --quiet breeze-agent 2>/dev/null; then

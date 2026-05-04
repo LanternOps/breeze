@@ -16,7 +16,7 @@ import {
   organizations
 } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const accessReviewRoutes = new Hono();
@@ -452,11 +452,11 @@ accessReviewRoutes.post(
         )
       );
 
+    const revokedUserIds = revokedItems.map((item) => item.userId);
+
     const result = await db.transaction(async (tx) => {
       // Apply revocations - remove users from the scope
-      if (revokedItems.length > 0) {
-        const revokedUserIds = revokedItems.map((item) => item.userId);
-
+      if (revokedUserIds.length > 0) {
         if (scopeContext.scope === 'partner') {
           await tx
             .delete(partnerUsers)
@@ -502,6 +502,8 @@ accessReviewRoutes.post(
         revokedCount: revokedItems.length
       };
     });
+
+    await Promise.all([...new Set(revokedUserIds)].map((userId) => clearPermissionCache(userId)));
 
     writeRouteAudit(c, {
       orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,

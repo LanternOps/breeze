@@ -1,4 +1,5 @@
 import { captureException } from '../sentry';
+import { safeFetch } from '../urlSafety';
 
 type HttpMethod = 'GET' | 'POST';
 
@@ -71,6 +72,26 @@ interface S1ClientOptions {
 
 const DEFAULT_MAX_PAGES = 25;
 
+function normalizeManagementUrl(rawUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('SentinelOneClient: managementUrl must be a valid URL');
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('SentinelOneClient: managementUrl must use HTTPS');
+  }
+
+  parsed.username = '';
+  parsed.password = '';
+  parsed.hash = '';
+  parsed.search = '';
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+  return parsed.toString().replace(/\/+$/, '');
+}
+
 function parseMaxPages(raw: string | undefined): number | null {
   if (!raw) return null;
   const parsed = Number.parseInt(raw.trim(), 10);
@@ -124,7 +145,7 @@ export class SentinelOneClient {
     if (!opts.apiToken || opts.apiToken.trim().length === 0) {
       throw new Error('SentinelOneClient: apiToken is required');
     }
-    this.baseUrl = opts.managementUrl.replace(/\/+$/, '');
+    this.baseUrl = normalizeManagementUrl(opts.managementUrl);
     this.apiToken = opts.apiToken;
     this.timeoutMs = Math.max(1_000, opts.timeoutMs ?? 30_000);
     const envMaxPages = parseMaxPages(process.env.S1_SYNC_MAX_PAGES);
@@ -360,14 +381,15 @@ export class SentinelOneClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const response = await fetch(url, {
+      const response = await safeFetch(url.toString(), {
         method,
         headers: {
           Authorization: `ApiToken ${this.apiToken}`,
           'Content-Type': 'application/json'
         },
         body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal
+        signal: controller.signal,
+        timeoutMs: this.timeoutMs
       });
 
       if (!response.ok) {

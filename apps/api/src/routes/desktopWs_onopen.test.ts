@@ -40,6 +40,12 @@ vi.mock('../services/jwt', () => ({
   createAccessToken: vi.fn(async () => 'mock-access-token-xyz')
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
@@ -82,6 +88,7 @@ vi.mock('../services/clientIp', () => ({
 import { db } from '../db';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createAccessToken } from '../services/jwt';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleDesktopFrame,
@@ -531,6 +538,9 @@ describe('desktopWs', () => {
         (s: any) => typeof s === 'string' && s.includes('"AGENT_SEND_FAILED"')
       );
       expect(errorMsg).toBeDefined();
+      expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(false);
+      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Agent send failed');
     });
   });
 

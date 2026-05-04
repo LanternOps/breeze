@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceCommands } from '../../db/schema';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
   commandResultSchema,
@@ -22,6 +23,7 @@ import {
 import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
+import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -108,6 +110,28 @@ const commandResultParamSchema = z.object({
   commandId: z.string().min(1),
 });
 
+commandsRoutes.get('/:id/commands', async (c) => {
+  const agent = c.get('agent') as AgentAuthContext | undefined;
+
+  if (!agent?.deviceId) {
+    return c.json({ error: 'Agent context not found' }, 401);
+  }
+
+  const commands = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      claimPendingCommandsForDevice(agent.deviceId, 10, agent.role)
+    )
+  );
+
+  return c.json({
+    commands: commands.map(cmd => ({
+      id: cmd.id,
+      type: cmd.type,
+      payload: cmd.payload,
+    })),
+  });
+});
+
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -115,7 +139,7 @@ commandsRoutes.post(
   async (c) => {
     const { id: agentId, commandId } = c.req.valid('param');
     const data = c.req.valid('json');
-    const agent = c.get('agent') as { orgId?: string; agentId?: string; deviceId?: string } | undefined;
+    const agent = c.get('agent') as AgentAuthContext | undefined;
 
     if (!agent?.deviceId) {
       return c.json({ error: 'Agent context not found' }, 401);
@@ -149,6 +173,11 @@ commandsRoutes.post(
       return c.json({ error: 'Command not found' }, 404);
     }
 
+    const commandTargetRole = command.targetRole === 'watchdog' ? 'watchdog' : 'agent';
+    if (commandTargetRole !== agent.role) {
+      return c.json({ error: 'Command role mismatch' }, 403);
+    }
+
     if (
       command.status &&
       !ACCEPTED_COMMAND_RESULT_STATUSES.includes(command.status as typeof ACCEPTED_COMMAND_RESULT_STATUSES[number])
@@ -173,6 +202,7 @@ commandsRoutes.post(
         .where(and(
           eq(deviceCommands.id, commandId),
           eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.targetRole, agent.role),
           inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
         )) as any;
 

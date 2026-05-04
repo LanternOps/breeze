@@ -23,9 +23,19 @@ vi.mock('./auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
 }));
 
+vi.mock('./tenantLifecycle', () => ({
+  revokePartnerTenantAccess: vi.fn().mockResolvedValue({
+    apiKeysRevoked: 0,
+    userSessionsRevoked: 0,
+    oauthGrantsRevoked: 0,
+    oauthRefreshTokensRevoked: 0,
+  }),
+}));
+
 import { runDeleteTenant } from './deleteTenant';
 import { db } from '../db';
 import { writeAuditEvent } from './auditEvents';
+import { revokePartnerTenantAccess } from './tenantLifecycle';
 import type { AuthContext } from '../middleware/auth';
 
 const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
@@ -170,6 +180,7 @@ describe('delete_tenant', () => {
     expect(setPayload.status).toBe('churned');
     expect(setPayload.deletedAt).toBeInstanceOf(Date);
     expect(setPayload.updatedAt).toBeInstanceOf(Date);
+    expect(revokePartnerTenantAccess).toHaveBeenCalledWith(PARTNER_ID);
 
     // Audit event written with api_key actor.
     expect(writeAuditEvent).toHaveBeenCalledTimes(1);

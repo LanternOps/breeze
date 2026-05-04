@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
-import { storageEncryptionKeys } from '../../db/schema';
+import { backupSnapshots, storageEncryptionKeys } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -62,6 +62,7 @@ encryptionRoutes.post(
         name: payload.name,
         keyType: payload.keyType,
         publicKeyPem: payload.publicKeyPem ?? null,
+        encryptedPrivateKey: payload.encryptedPrivateKey ?? null,
         keyHash: payload.keyHash,
         isActive: true,
         createdAt: now,
@@ -134,6 +135,23 @@ encryptionRoutes.delete(
     }
 
     const { id: keyId } = c.req.valid('param');
+    const [referencingSnapshot] = await db
+      .select({ id: backupSnapshots.id })
+      .from(backupSnapshots)
+      .where(
+        and(
+          eq(backupSnapshots.encryptionKeyId, keyId),
+          eq(backupSnapshots.orgId, orgId)
+        )
+      )
+      .limit(1);
+
+    if (referencingSnapshot) {
+      return c.json({
+        error: 'Encryption key is referenced by backup snapshots and must remain available for restore',
+      }, 409);
+    }
+
     const [row] = await db
       .update(storageEncryptionKeys)
       .set({ isActive: false })
@@ -216,6 +234,7 @@ encryptionRoutes.post(
           name: `${oldKey.name} (rotated)`,
           keyType: oldKey.keyType,
           publicKeyPem: payload.newPublicKeyPem ?? null,
+          encryptedPrivateKey: payload.newEncryptedPrivateKey ?? null,
           keyHash: payload.newKeyHash,
           isActive: true,
           createdAt: now,
@@ -252,6 +271,8 @@ function toKeyResponse(row: typeof storageEncryptionKeys.$inferSelect) {
     keyType: row.keyType,
     keyHash: row.keyHash,
     isActive: row.isActive,
+    hasDecryptMaterial: typeof row.encryptedPrivateKey === 'string' && row.encryptedPrivateKey.length > 0,
+    managedRestoreSupported: typeof row.encryptedPrivateKey === 'string' && row.encryptedPrivateKey.length > 0,
     createdAt: row.createdAt.toISOString(),
     rotatedAt: row.rotatedAt?.toISOString() ?? null,
     expiresAt: row.expiresAt?.toISOString() ?? null,

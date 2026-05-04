@@ -1,7 +1,9 @@
 package updater
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +31,7 @@ type Config struct {
 	ServerURL      string
 	AuthToken      *secmem.SecureString
 	CurrentVersion string
+	Component      string
 	BinaryPath     string
 	BackupPath     string
 }
@@ -54,6 +58,120 @@ var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
 // This is transient — the unlink-before-write in replaceBinary handles it,
 // but this sentinel prevents misclassification as ErrReadOnlyFS.
 var ErrTextBusy = fmt.Errorf("binary is currently executing")
+
+const maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
+
+var trustedUpdateManifestPublicKeys = []string{
+	// Breeze production update manifest trust root. Self-hosters can append
+	// additional base64 raw Ed25519 public keys with BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS.
+	"7eYBdr5+J5Rnwlil8FccFX/uAO8AnYxHmzVlhJnr++c=",
+}
+
+type updateManifest struct {
+	Version   string `json:"version"`
+	Component string `json:"component"`
+	Platform  string `json:"platform"`
+	Arch      string `json:"arch"`
+	URL       string `json:"url"`
+	Checksum  string `json:"checksum"`
+	Size      int64  `json:"size,omitempty"`
+}
+
+type releaseArtifactManifest struct {
+	SchemaVersion int                    `json:"schemaVersion"`
+	Release       string                 `json:"release"`
+	Assets        []releaseArtifactAsset `json:"assets"`
+}
+
+type releaseArtifactAsset struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+func (u *Updater) component() string {
+	if u.config != nil && strings.TrimSpace(u.config.Component) != "" {
+		return strings.TrimSpace(u.config.Component)
+	}
+	return "agent"
+}
+
+func manifestPlatform() string {
+	if runtime.GOOS == "darwin" {
+		return "macos"
+	}
+	return runtime.GOOS
+}
+
+func releaseTagMatchesVersion(tag, version string) bool {
+	return tag == version || tag == "v"+version
+}
+
+func assetNameFromURL(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(strings.TrimRight(parsed.Path, "/"), "/")
+	if len(parts) == 0 || parts[len(parts)-1] == "" {
+		return "", fmt.Errorf("download URL does not include an asset filename")
+	}
+	name, err := url.PathUnescape(parts[len(parts)-1])
+	if err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
+	switch u.component() {
+	case "agent":
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
+		}
+		return map[string]struct{}{
+			fmt.Sprintf("breeze-agent-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
+		}
+	case "helper":
+		switch runtime.GOOS {
+		case "windows":
+			return map[string]struct{}{"breeze-helper-windows.msi": {}}
+		case "darwin":
+			return map[string]struct{}{"breeze-helper-macos.dmg": {}}
+		case "linux":
+			return map[string]struct{}{"breeze-helper-linux.AppImage": {}}
+		}
+	case "viewer":
+		switch manifestPlatform() {
+		case "windows":
+			return map[string]struct{}{"breeze-viewer-windows.msi": {}}
+		case "macos":
+			return map[string]struct{}{"breeze-viewer-macos.dmg": {}}
+		case "linux":
+			return map[string]struct{}{"breeze-viewer-linux.AppImage": {}}
+		}
+	}
+	return map[string]struct{}{}
+}
+
+func trustedManifestKeys() []ed25519.PublicKey {
+	configured := strings.TrimSpace(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"))
+	rawKeys := append([]string{}, trustedUpdateManifestPublicKeys...)
+	if configured != "" {
+		rawKeys = append(rawKeys, strings.Split(configured, ",")...)
+	}
+
+	keys := make([]ed25519.PublicKey, 0, len(rawKeys))
+	for _, raw := range rawKeys {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+		if err != nil || len(decoded) != ed25519.PublicKeySize {
+			continue
+		}
+		keys = append(keys, ed25519.PublicKey(decoded))
+	}
+	return keys
+}
 
 func normalizePreflightErr(err error) error {
 	if err == nil {
@@ -98,13 +216,13 @@ func (u *Updater) UpdateTo(version string) error {
 	}
 
 	// 1. Download binary to temp file
-	tempPath, checksum, err := u.downloadBinary(version)
+	tempPath, manifest, err := u.downloadBinary(version)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 
 	// 2. Verify checksum
-	if err := u.verifyChecksum(tempPath, checksum); err != nil {
+	if err := u.verifyChecksum(tempPath, manifest.Checksum); err != nil {
 		removeCleanup(tempPath)
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
@@ -174,8 +292,10 @@ func (u *Updater) UpdateTo(version string) error {
 
 // downloadInfo holds the JSON response from the download endpoint
 type downloadInfo struct {
-	URL      string `json:"url"`
-	Checksum string `json:"checksum"`
+	URL               string `json:"url"`
+	Checksum          string `json:"checksum"`
+	Manifest          string `json:"manifest"`
+	ManifestSignature string `json:"manifestSignature"`
 }
 
 func (u *Updater) requestWithoutRedirect(req *http.Request) (*http.Response, error) {
@@ -196,6 +316,9 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		if info.URL == "" || info.Checksum == "" {
 			return downloadInfo{}, fmt.Errorf("download info missing url or checksum")
 		}
+		if info.Manifest == "" || info.ManifestSignature == "" {
+			return downloadInfo{}, fmt.Errorf("download info missing signed release manifest")
+		}
 		return info, nil
 
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
@@ -203,76 +326,179 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		if err != nil {
 			return downloadInfo{}, fmt.Errorf("download redirect missing location: %w", err)
 		}
-		checksum := resp.Header.Get("X-Checksum")
-		if checksum == "" {
-			return downloadInfo{}, fmt.Errorf("download redirect missing X-Checksum header")
-		}
-		return downloadInfo{
-			URL:      location.String(),
-			Checksum: checksum,
-		}, nil
+		return downloadInfo{}, fmt.Errorf("download redirects are not trusted without a signed release manifest (location %s)", location.String())
 
 	default:
 		return downloadInfo{}, fmt.Errorf("download info request failed with status %d", resp.StatusCode)
 	}
 }
 
+func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updateManifest, error) {
+	signature, err := base64.StdEncoding.DecodeString(info.ManifestSignature)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return updateManifest{}, fmt.Errorf("invalid update manifest signature encoding")
+	}
+
+	keys := trustedManifestKeys()
+	if len(keys) == 0 {
+		return updateManifest{}, fmt.Errorf("no trusted update manifest public keys configured")
+	}
+
+	payload := []byte(info.Manifest)
+	verified := false
+	for _, key := range keys {
+		if ed25519.Verify(key, payload, signature) {
+			verified = true
+			break
+		}
+	}
+	if !verified {
+		return updateManifest{}, fmt.Errorf("update manifest signature verification failed")
+	}
+
+	var manifest updateManifest
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		return updateManifest{}, fmt.Errorf("invalid update manifest JSON: %w", err)
+	}
+	if manifest.Version == "" && manifest.Checksum == "" {
+		return u.verifyReleaseArtifactManifest(payload, info, version)
+	}
+
+	if manifest.Version != version {
+		return updateManifest{}, fmt.Errorf("update manifest version mismatch: expected %s, got %s", version, manifest.Version)
+	}
+	if manifest.Component != u.component() {
+		return updateManifest{}, fmt.Errorf("update manifest component mismatch: expected %s, got %s", u.component(), manifest.Component)
+	}
+	if manifest.Platform != manifestPlatform() {
+		return updateManifest{}, fmt.Errorf("update manifest platform mismatch: expected %s, got %s", manifestPlatform(), manifest.Platform)
+	}
+	if manifest.Arch != runtime.GOARCH {
+		return updateManifest{}, fmt.Errorf("update manifest architecture mismatch: expected %s, got %s", runtime.GOARCH, manifest.Arch)
+	}
+	if manifest.URL != info.URL || manifest.Checksum != info.Checksum {
+		return updateManifest{}, fmt.Errorf("update manifest does not match download metadata")
+	}
+	if len(manifest.Checksum) != 64 {
+		return updateManifest{}, fmt.Errorf("update manifest checksum must be SHA-256 hex")
+	}
+	if _, err := hex.DecodeString(manifest.Checksum); err != nil {
+		return updateManifest{}, fmt.Errorf("update manifest checksum is not valid hex: %w", err)
+	}
+	if manifest.Size < 0 || manifest.Size > maxUpdateBinaryBytes {
+		return updateManifest{}, fmt.Errorf("update manifest size %d exceeds allowed bounds", manifest.Size)
+	}
+
+	return manifest, nil
+}
+
+func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInfo, version string) (updateManifest, error) {
+	var manifest releaseArtifactManifest
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		return updateManifest{}, fmt.Errorf("invalid release artifact manifest JSON: %w", err)
+	}
+	if manifest.SchemaVersion != 1 {
+		return updateManifest{}, fmt.Errorf("unsupported release artifact manifest schema version %d", manifest.SchemaVersion)
+	}
+	if !releaseTagMatchesVersion(manifest.Release, version) {
+		return updateManifest{}, fmt.Errorf("release artifact manifest version mismatch: expected %s, got %s", version, manifest.Release)
+	}
+
+	assetName, err := assetNameFromURL(info.URL)
+	if err != nil {
+		return updateManifest{}, fmt.Errorf("invalid release artifact download URL: %w", err)
+	}
+	if expected := u.expectedReleaseAssetNames(); len(expected) > 0 {
+		if _, ok := expected[assetName]; !ok {
+			return updateManifest{}, fmt.Errorf("release artifact manifest asset mismatch: expected %v, got %s", expected, assetName)
+		}
+	}
+
+	var selected *releaseArtifactAsset
+	for i := range manifest.Assets {
+		if manifest.Assets[i].Name == assetName {
+			selected = &manifest.Assets[i]
+			break
+		}
+	}
+	if selected == nil {
+		return updateManifest{}, fmt.Errorf("release artifact manifest does not include %s", assetName)
+	}
+	if len(selected.SHA256) != 64 {
+		return updateManifest{}, fmt.Errorf("release artifact manifest checksum must be SHA-256 hex")
+	}
+	if _, err := hex.DecodeString(selected.SHA256); err != nil {
+		return updateManifest{}, fmt.Errorf("release artifact manifest checksum is not valid hex: %w", err)
+	}
+	if selected.SHA256 != info.Checksum {
+		return updateManifest{}, fmt.Errorf("release artifact manifest does not match download metadata")
+	}
+	if selected.Size < 0 || selected.Size > maxUpdateBinaryBytes {
+		return updateManifest{}, fmt.Errorf("release artifact manifest size %d exceeds allowed bounds", selected.Size)
+	}
+
+	return updateManifest{
+		Version:   version,
+		Component: u.component(),
+		Platform:  manifestPlatform(),
+		Arch:      runtime.GOARCH,
+		URL:       info.URL,
+		Checksum:  selected.SHA256,
+		Size:      selected.Size,
+	}, nil
+}
+
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
-func (u *Updater) downloadBinary(version string) (string, string, error) {
+func (u *Updater) downloadBinary(version string) (string, updateManifest, error) {
 	if u.config.AuthToken == nil {
-		return "", "", fmt.Errorf("auth token not available")
+		return "", updateManifest{}, fmt.Errorf("auth token not available")
 	}
 	// Step 1: Get download URL + checksum from API.
-	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s",
-		u.config.ServerURL, version, runtime.GOOS, runtime.GOARCH)
+	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s&component=%s",
+		u.config.ServerURL, version, runtime.GOOS, runtime.GOARCH, url.QueryEscape(u.component()))
 
 	req, err := http.NewRequest("GET", infoURL, nil)
 	if err != nil {
-		return "", "", err
+		return "", updateManifest{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
 	resp, err := u.requestWithoutRedirect(req)
 	if err != nil {
-		return "", "", err
+		return "", updateManifest{}, err
 	}
 	defer resp.Body.Close()
 
 	info, err := u.parseDownloadInfo(resp)
 	if err != nil {
-		return "", "", err
+		return "", updateManifest{}, err
 	}
 
-	// Step 2: Download the actual binary from the URL
-	binReq, err := http.NewRequest("GET", info.URL, nil)
+	manifest, err := u.verifyUpdateManifest(info, version)
 	if err != nil {
-		return "", "", err
+		return "", updateManifest{}, err
 	}
 
-	binResp, err := u.client.Do(binReq)
+	// Step 2: Download the actual binary from the manifest URL. downloadFromURL
+	// enforces scheme and origin against the configured control-plane URL.
+	tempPath, err := u.downloadFromURL(info.URL)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to download binary: %w", err)
+		return "", updateManifest{}, err
 	}
-	defer binResp.Body.Close()
-
-	if binResp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("binary download failed with status %d", binResp.StatusCode)
-	}
-
-	// Write to temp file
-	tempFile, err := os.CreateTemp("", "breeze-agent-*")
-	if err != nil {
-		return "", "", err
-	}
-	defer tempFile.Close()
-
-	if _, err := io.Copy(tempFile, binResp.Body); err != nil {
-		removeCleanup(tempFile.Name())
-		return "", "", err
+	if manifest.Size > 0 {
+		stat, err := os.Stat(tempPath)
+		if err != nil {
+			removeCleanup(tempPath)
+			return "", updateManifest{}, err
+		}
+		if stat.Size() != manifest.Size {
+			removeCleanup(tempPath)
+			return "", updateManifest{}, fmt.Errorf("downloaded binary size mismatch: expected %d, got %d", manifest.Size, stat.Size())
+		}
 	}
 
-	return tempFile.Name(), info.Checksum, nil
+	return tempPath, manifest, nil
 }
 
 // verifyChecksum verifies the SHA256 checksum of a file

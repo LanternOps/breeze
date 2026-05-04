@@ -20,7 +20,6 @@ static CHAT_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentConfig {
     pub api_url: String,
-    pub token: String,
     pub agent_id: String,
     pub has_mtls: bool,
     pub os_username: String,
@@ -50,7 +49,9 @@ fn agent_config_path() -> PathBuf {
     {
         let program_data =
             std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-        PathBuf::from(program_data).join("Breeze").join("agent.yaml")
+        PathBuf::from(program_data)
+            .join("Breeze")
+            .join("agent.yaml")
     }
     #[cfg(target_os = "linux")]
     {
@@ -75,6 +76,18 @@ fn log_helper_error(msg: &str) {
     }
 }
 
+fn helper_token_from_config(
+    yaml: &serde_yaml::Value,
+    secrets: Option<&serde_yaml::Value>,
+) -> Option<String> {
+    secrets
+        .and_then(|s| s.get("helper_auth_token"))
+        .and_then(|v| v.as_str())
+        .or_else(|| yaml.get("helper_auth_token").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Parse the agent YAML config from disk.
 fn load_agent_config_full() -> Result<AgentConfigFull, String> {
     let path = agent_config_path();
@@ -85,8 +98,13 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
     })?;
 
     let yaml: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(|e| {
-        log_helper_error(&format!("failed to parse agent config at {}: {}", path.display(), e));
-        "Agent configuration is corrupt. Reinstall the Breeze agent or contact your administrator.".to_string()
+        log_helper_error(&format!(
+            "failed to parse agent config at {}: {}",
+            path.display(),
+            e
+        ));
+        "Agent configuration is corrupt. Reinstall the Breeze agent or contact your administrator."
+            .to_string()
     })?;
 
     let api_url = yaml
@@ -98,23 +116,18 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
         })?
         .to_string();
 
-    // Read secrets from secrets.yaml (same directory, different file) for tokens/mTLS creds.
-    // secrets.yaml is chmod 0640 (group-readable by breeze group) while agent.yaml is 0644.
+    // Read secrets from secrets.yaml for mTLS material only. The helper uses
+    // a helper-scoped token from agent.yaml and must never fall back to the
+    // full agent bearer token.
     let secrets_path = path.with_file_name("secrets.yaml");
     let secrets: Option<serde_yaml::Value> = std::fs::read_to_string(&secrets_path)
         .ok()
         .and_then(|s| serde_yaml::from_str(&s).ok());
 
-    let token = secrets
-        .as_ref()
-        .and_then(|s| s.get("auth_token"))
-        .and_then(|v| v.as_str())
-        .or_else(|| yaml.get("auth_token").and_then(|v| v.as_str())) // fallback to agent.yaml
-        .ok_or_else(|| {
-            log_helper_error("secrets.yaml not found and no auth_token in agent.yaml");
-            "The Breeze agent is still setting up. Wait a moment and retry, or contact your administrator.".to_string()
-        })?
-        .to_string();
+    let token = helper_token_from_config(&yaml, secrets.as_ref()).ok_or_else(|| {
+        log_helper_error("missing helper_auth_token in agent config");
+        "The Breeze agent is still setting up. Wait a moment and retry, or contact your administrator.".to_string()
+    })?;
 
     let agent_id = yaml
         .get("agent_id")
@@ -202,6 +215,34 @@ fn load_helper_config() -> HelperConfig {
     }
 }
 
+fn load_agent_server_url() -> Result<String, String> {
+    let path = agent_config_path();
+    let contents = std::fs::read_to_string(&path).map_err(|e| {
+        log_helper_error(&format!(
+            "agent config not found at {}: {}",
+            path.display(),
+            e
+        ));
+        "Breeze agent configuration is unavailable.".to_string()
+    })?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(|e| {
+        log_helper_error(&format!(
+            "failed to parse agent config at {}: {}",
+            path.display(),
+            e
+        ));
+        "Agent configuration is corrupt.".to_string()
+    })?;
+    yaml.get("server_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            log_helper_error("missing required field 'server_url' in agent config");
+            "Agent configuration is incomplete.".to_string()
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Helper status file (read by Go agent for idle detection before updates)
 // ---------------------------------------------------------------------------
@@ -277,7 +318,10 @@ async fn ensure_http_state() -> Result<(), String> {
     if guard.is_none() {
         let cfg = load_agent_config_full()?;
         let client = build_client(&cfg)?;
-        *guard = Some(HttpClientState { client, config: cfg });
+        *guard = Some(HttpClientState {
+            client,
+            config: cfg,
+        });
     }
     Ok(())
 }
@@ -343,7 +387,6 @@ async fn read_agent_config() -> Result<AgentConfig, String> {
 
     Ok(AgentConfig {
         api_url: state.config.api_url.clone(),
-        token: state.config.token.clone(),
         agent_id: state.config.agent_id.clone(),
         has_mtls: state.config.mtls_cert_pem.is_some() && state.config.mtls_key_pem.is_some(),
         os_username: get_os_username(),
@@ -410,6 +453,110 @@ struct StreamChunkEvent {
     error: Option<String>,
 }
 
+fn request_url_allowed(api_url: &str, request_url: &str) -> Result<(), String> {
+    let base = reqwest::Url::parse(api_url)
+        .map_err(|e| format!("Configured API URL is invalid: {}", e))?;
+    let requested =
+        reqwest::Url::parse(request_url).map_err(|e| format!("Request URL is invalid: {}", e))?;
+
+    if base.scheme() != "https" && base.scheme() != "http" {
+        return Err("Configured API URL must use http or https".to_string());
+    }
+
+    if requested.username() != "" || requested.password().is_some() {
+        return Err("Request URL must not contain credentials".to_string());
+    }
+
+    let same_origin = base.scheme() == requested.scheme()
+        && base.host_str() == requested.host_str()
+        && base.port_or_known_default() == requested.port_or_known_default();
+    if !same_origin {
+        return Err(format!(
+            "Request URL must target the configured API origin ({})",
+            base.origin().ascii_serialization()
+        ));
+    }
+
+    let base_path = base.path();
+    if base_path != "/" {
+        let request_path = requested.path();
+        if path_has_dot_segment(request_path) {
+            return Err("Request URL path must not contain dot segments".to_string());
+        }
+        let in_base_path = if base_path.ends_with('/') {
+            request_path.starts_with(base_path)
+        } else {
+            request_path == base_path || request_path.starts_with(&format!("{}/", base_path))
+        };
+        if !in_base_path {
+            return Err(format!(
+                "Request URL path must stay under the configured API base path ({})",
+                base_path
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn path_has_dot_segment(path: &str) -> bool {
+    path.split('/').any(|segment| {
+        let segment = segment.to_ascii_lowercase();
+        matches!(
+            segment.as_str(),
+            "." | ".." | "%2e" | ".%2e" | "%2e." | "%2e%2e"
+        )
+    })
+}
+
+fn host_is_breeze_portal(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "breezermm.com"
+        || host.ends_with(".breezermm.com")
+        || host == "2breeze.app"
+        || host.ends_with(".2breeze.app")
+}
+
+fn same_https_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == "https"
+        && right.scheme() == "https"
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn validate_portal_open_url(portal_url: &str, api_url: Option<&str>) -> Result<String, String> {
+    let requested =
+        reqwest::Url::parse(portal_url).map_err(|e| format!("Portal URL is invalid: {}", e))?;
+
+    if requested.scheme() != "https" {
+        return Err("Portal URL must use https".to_string());
+    }
+    if requested.username() != "" || requested.password().is_some() {
+        return Err("Portal URL must not contain credentials".to_string());
+    }
+
+    let host = requested
+        .host_str()
+        .ok_or_else(|| "Portal URL must include a host".to_string())?;
+
+    if host_is_breeze_portal(host) {
+        return Ok(requested.to_string());
+    }
+
+    if let Some(api_url) = api_url {
+        if let Ok(api) = reqwest::Url::parse(api_url) {
+            if api.username() == ""
+                && api.password().is_none()
+                && same_https_origin(&requested, &api)
+            {
+                return Ok(requested.to_string());
+            }
+        }
+    }
+
+    Err("Portal URL must target an approved Breeze portal origin".to_string())
+}
+
 #[tauri::command]
 async fn helper_fetch(
     app: AppHandle,
@@ -423,17 +570,16 @@ async fn helper_fetch(
         let state = guard
             .as_ref()
             .ok_or_else(|| "HTTP state not initialized".to_string())?;
-        (state.client.clone(), state.config.token.clone(), state.config.api_url.clone())
+        (
+            state.client.clone(),
+            state.config.token.clone(),
+            state.config.api_url.clone(),
+        )
     };
 
     // Validate that the request URL targets the configured API server.
     // This prevents SSRF and token leakage to arbitrary hosts.
-    if !request.url.starts_with(&api_url) {
-        return Err(format!(
-            "Request URL must start with the configured API URL ({})",
-            api_url
-        ));
-    }
+    request_url_allowed(&api_url, &request.url)?;
 
     // Build the request
     let method: Method = request
@@ -594,7 +740,10 @@ fn uuid_v4() -> String {
 // Tray menu builder
 // ---------------------------------------------------------------------------
 
-fn build_tray_menu(app: &AppHandle, config: &HelperConfig) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
+fn build_tray_menu(
+    app: &AppHandle,
+    config: &HelperConfig,
+) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let mut builder = MenuBuilder::new(app);
 
     if config.show_request_support {
@@ -670,15 +819,14 @@ pub fn run() {
             {
                 let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
                 if local.to_lowercase().contains("systemprofile") || local.is_empty() {
-                    let pd = std::env::var("ProgramData")
-                        .unwrap_or_else(|_| "C:\\ProgramData".into());
-                    let data_dir = PathBuf::from(pd)
-                        .join("Breeze")
-                        .join("helper-webview");
+                    let pd =
+                        std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
+                    let data_dir = PathBuf::from(pd).join("Breeze").join("helper-webview");
                     if let Err(e) = std::fs::create_dir_all(&data_dir) {
                         let msg = format!(
                             "[helper] Failed to create WebView2 data dir {}: {}",
-                            data_dir.display(), e
+                            data_dir.display(),
+                            e
                         );
                         log_helper_error(&msg);
                         return Err(msg.into());
@@ -751,41 +899,49 @@ pub fn run() {
 
             // Handle menu item clicks
             let menu_handle = handle.clone();
-            app.on_menu_event(move |app_handle, event| {
-                match event.id().as_ref() {
-                    "request_support" => {
-                        show_window(&menu_handle);
-                    }
-                    "open_portal" => {
-                        let config = load_helper_config();
-                        let url = config.portal_url.filter(|u| !u.is_empty()).unwrap_or_else(|| {
-                            // Fallback: read API URL from agent.yaml
-                            load_agent_config_full()
-                                .map(|c| c.api_url)
-                                .unwrap_or_default()
-                        });
-                        if !url.is_empty() {
-                            let _ = tauri_plugin_shell::ShellExt::shell(app_handle)
-                                .open(&url, None::<open::Program>);
-                        }
-                    }
-                    "device_info" => {
-                        if let Err(e) = menu_handle.emit("show-device-info", ()) {
-                            eprintln!("[helper] Failed to emit show-device-info: {}", e);
-                        }
-                        show_window(&menu_handle);
-                    }
-                    "exit" => {
-                        app_handle.exit(0);
-                    }
-                    _ => {}
+            app.on_menu_event(move |app_handle, event| match event.id().as_ref() {
+                "request_support" => {
+                    show_window(&menu_handle);
                 }
+                "open_portal" => {
+                    let config = load_helper_config();
+                    let agent_api_url = load_agent_server_url().ok();
+                    let url = config
+                        .portal_url
+                        .filter(|u| !u.is_empty())
+                        .or_else(|| agent_api_url.clone());
+                    if let Some(url) = url {
+                        match validate_portal_open_url(&url, agent_api_url.as_deref()) {
+                            Ok(safe_url) => {
+                                let _ = tauri_plugin_shell::ShellExt::shell(app_handle)
+                                    .open(&safe_url, None::<open::Program>);
+                            }
+                            Err(e) => {
+                                log_helper_error(&format!(
+                                    "[helper] Refusing to open unsafe portal URL: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                }
+                "device_info" => {
+                    if let Err(e) = menu_handle.emit("show-device-info", ()) {
+                        eprintln!("[helper] Failed to emit show-device-info: {}", e);
+                    }
+                    show_window(&menu_handle);
+                }
+                "exit" => {
+                    app_handle.exit(0);
+                }
+                _ => {}
             });
 
             // Periodic config reload — rebuild tray menu every 60s on config change
             let reload_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                let mut last_config = serde_yaml::to_string(&load_helper_config()).unwrap_or_default();
+                let mut last_config =
+                    serde_yaml::to_string(&load_helper_config()).unwrap_or_default();
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     let new_config = load_helper_config();
@@ -814,4 +970,184 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_agent_config_omits_bearer_token() {
+        let config = AgentConfig {
+            api_url: "https://api.example.test".to_string(),
+            agent_id: "agent-1".to_string(),
+            has_mtls: true,
+            os_username: "alice".to_string(),
+            helper_version: "test".to_string(),
+        };
+
+        let value = serde_json::to_value(config).expect("serialize agent config");
+        assert!(value.get("token").is_none());
+        assert_eq!(value["api_url"], "https://api.example.test");
+        assert_eq!(value["agent_id"], "agent-1");
+    }
+
+    #[test]
+    fn helper_token_does_not_fallback_to_full_agent_token() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+server_url: https://api.example.test
+agent_id: agent-1
+auth_token: brz_full_agent
+"#,
+        )
+        .expect("parse yaml");
+
+        assert_eq!(helper_token_from_config(&yaml, None), None);
+    }
+
+    #[test]
+    fn helper_token_prefers_helper_scoped_secret() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+server_url: https://api.example.test
+agent_id: agent-1
+helper_auth_token: brz_helper_agent_yaml
+"#,
+        )
+        .expect("parse yaml");
+        let secrets: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+auth_token: brz_full_agent
+helper_auth_token: brz_helper_secret
+"#,
+        )
+        .expect("parse secrets");
+
+        assert_eq!(
+            helper_token_from_config(&yaml, Some(&secrets)).as_deref(),
+            Some("brz_helper_secret")
+        );
+    }
+
+    #[test]
+    fn request_url_allows_same_origin_and_base_path() {
+        assert!(request_url_allowed(
+            "https://api.example.test/rmm",
+            "https://api.example.test/rmm/api/v1/helper/chat"
+        )
+        .is_ok());
+
+        assert!(request_url_allowed(
+            "https://api.example.test:8443/",
+            "https://api.example.test:8443/api/v1/helper/chat"
+        )
+        .is_ok());
+
+        assert!(request_url_allowed(
+            "http://localhost:3001/",
+            "http://localhost:3001/api/v1/helper/chat"
+        )
+        .is_ok());
+
+        assert!(request_url_allowed(
+            "https://API.example.test/",
+            "https://api.EXAMPLE.test/api/v1/helper/chat"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn request_url_rejects_sibling_domains_and_scheme_mismatch() {
+        assert!(request_url_allowed(
+            "https://api.example.test",
+            "https://api.example.test.evil.invalid/api/v1/helper/chat"
+        )
+        .is_err());
+
+        assert!(request_url_allowed(
+            "https://api.example.test",
+            "http://api.example.test/api/v1/helper/chat"
+        )
+        .is_err());
+
+        assert!(request_url_allowed(
+            "https://api.example.test:8443",
+            "https://api.example.test/api/v1/helper/chat"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn request_url_rejects_userinfo_and_base_path_escape() {
+        assert!(request_url_allowed(
+            "https://api.example.test",
+            "https://user:pass@api.example.test/api/v1/helper/chat"
+        )
+        .is_err());
+
+        assert!(request_url_allowed(
+            "https://api.example.test/rmm",
+            "https://api.example.test/rmmx/api/v1/helper/chat"
+        )
+        .is_err());
+
+        assert!(request_url_allowed(
+            "https://api.example.test/rmm/",
+            "https://api.example.test/rmmx/api/v1/helper/chat"
+        )
+        .is_err());
+
+        assert!(request_url_allowed(
+            "https://api.example.test/rmm",
+            "https://api.example.test/rmm/%2e%2e/api/v1/helper/chat"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn request_url_rejects_unsupported_base_scheme() {
+        assert!(request_url_allowed(
+            "file:///tmp/breeze.sock",
+            "file:///tmp/breeze.sock/api/v1/helper/chat"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn portal_url_allows_breeze_and_same_https_api_origin() {
+        assert_eq!(
+            validate_portal_open_url("https://app.breezermm.com/devices", None).as_deref(),
+            Ok("https://app.breezermm.com/devices")
+        );
+
+        assert_eq!(
+            validate_portal_open_url(
+                "https://console.example.test/devices",
+                Some("https://console.example.test/api")
+            )
+            .as_deref(),
+            Ok("https://console.example.test/devices")
+        );
+
+        assert!(validate_portal_open_url("https://tenant.2breeze.app", None).is_ok());
+    }
+
+    #[test]
+    fn portal_url_rejects_unapproved_schemes_hosts_and_userinfo() {
+        assert!(validate_portal_open_url("http://app.breezermm.com", None).is_err());
+        assert!(validate_portal_open_url("javascript:alert(1)", None).is_err());
+        assert!(validate_portal_open_url("https://breezermm.com.evil.test", None).is_err());
+        assert!(validate_portal_open_url("https://user:pass@app.breezermm.com", None).is_err());
+        assert!(validate_portal_open_url(
+            "https://evil.example.test",
+            Some("https://console.example.test")
+        )
+        .is_err());
+        assert!(validate_portal_open_url(
+            "https://console.example.test",
+            Some("http://console.example.test")
+        )
+        .is_err());
+    }
 }

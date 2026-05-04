@@ -83,13 +83,13 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       });
 
       rfb.addEventListener('credentialsrequired', (e: CustomEvent) => {
-        console.log('[VNC] credentialsrequired', e.detail);
         if (disposed) return;
         // `detail.types` tells us what the selected security scheme needs.
         // Apple Remote Desktop auth (type 30) requires ["username", "password"];
         // standard VNC auth (type 2) requires just ["password"].
         // Always prompt the operator — the agent no longer generates ephemeral passwords.
         const types = (e.detail?.types ?? ['password']) as string[];
+        console.debug('[VNC] credentials required', { fields: types });
         const requiresUsername = types.includes('username');
         setNeedsUsername(requiresUsername);
         setStatus('password_required');

@@ -1,6 +1,6 @@
 # Local build overrides — builds native arm64 images on Apple Silicon
 # (GHCR images are linux/amd64 only)
-# Usage: docker compose up --build -d
+# Usage: docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build up --build -d
 
 services:
   binaries-init:
@@ -13,12 +13,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
-    ports:
-      - '3001:3001'
     environment:
-      BINARY_SOURCE: disabled
-      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER}
-      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER}
+      BINARY_SOURCE: local
+      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
+      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-Lax}
@@ -26,12 +24,6 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
-      DEV_PUSH_ENABLED: "true"
-      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://2breeze.app}
-
-  caddy:
-    # Uses canonical docker/Caddyfile.prod mounted by the base compose.
-    # No command override needed — Caddy reads the volume-mounted config.
 
   web:
     image: breeze-web:local
@@ -42,8 +34,7 @@ services:
       args:
         PUBLIC_API_URL: ""
         PUBLIC_APP_VERSION: ${BREEZE_VERSION:-dev}
-    ports:
-      - '4321:4321'
+        PUBLIC_ENABLE_REGISTRATION: ${PUBLIC_ENABLE_REGISTRATION:-false}
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       interval: 30s

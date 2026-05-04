@@ -118,6 +118,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { sentinelOneRoutes } from './sentinelOne';
+import { db } from '../db';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -167,6 +168,48 @@ describe('sentinel one routes', () => {
     });
 
     expect(res.status).toBe(500);
+  });
+
+  it('rejects non-HTTPS management URLs', async () => {
+    const res = await app.request('/s1/integration', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'SentinelOne Prod',
+        managementUrl: 'http://example.sentinelone.net',
+        apiToken: 'token'
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('requires token re-entry when changing the SentinelOne management host', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => [{
+            id: 'integration-1',
+            managementUrl: 'https://old.sentinelone.net',
+            apiTokenEncrypted: 'enc:stored-token'
+          }])
+        }))
+      }))
+    } as any);
+
+    const res = await app.request('/s1/integration', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'SentinelOne Prod',
+        managementUrl: 'https://new.sentinelone.net'
+      })
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(String(body.error)).toContain('re-entered');
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rejects isolate action when MFA check fails', async () => {

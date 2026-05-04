@@ -17,20 +17,39 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze (javascript-typescript)
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, go]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.9'
+          cache-dependency-path: agent/go.sum
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: javascript-typescript
+          languages: ${{ matrix.language }}
 
-      - name: Autobuild
+      - name: Autobuild JavaScript/TypeScript
+        if: matrix.language == 'javascript-typescript'
         uses: github/codeql-action/autobuild@v4
+
+      - name: Build Go agent for CodeQL
+        if: matrix.language == 'go'
+        working-directory: agent
+        run: |
+          go mod download
+          CGO_ENABLED=0 go build ./...
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

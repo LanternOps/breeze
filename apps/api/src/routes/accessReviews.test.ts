@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { accessReviewRoutes } from './accessReviews';
 
 vi.mock('../services/permissions', () => ({
+  clearPermissionCache: vi.fn(),
   PERMISSIONS: {
     USERS_READ: { resource: 'users', action: 'read' },
     USERS_WRITE: { resource: 'users', action: 'write' }
@@ -66,6 +67,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { clearPermissionCache } from '../services/permissions';
 
 describe('access review routes', () => {
   let app: Hono;
@@ -414,6 +416,8 @@ describe('access review routes', () => {
       const body = await res.json();
       expect(body.status).toBe('completed');
       expect(body.revokedCount).toBe(2);
+      expect(clearPermissionCache).toHaveBeenCalledWith('user-1');
+      expect(clearPermissionCache).toHaveBeenCalledWith('user-2');
     });
 
     it('should reject completion with pending items', async () => {

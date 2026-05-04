@@ -17,6 +17,45 @@ const LEVEL_ORDER: Record<string, number> = {
   error: 2,
   critical: 3,
 };
+const MAX_EVENT_LOG_FUTURE_SKEW_MS = 10 * 60 * 1000;
+
+interface NormalizedEventLog {
+  timestamp: Date;
+  originalTimestamp?: string;
+  timestampClamped: boolean;
+}
+
+function normalizeEventLogTimestamp(value: unknown, receivedAt: Date): NormalizedEventLog {
+  const parsed = sanitizeTimestamp(value);
+  if (!parsed) {
+    return { timestamp: receivedAt, timestampClamped: false };
+  }
+
+  if (parsed.getTime() > receivedAt.getTime() + MAX_EVENT_LOG_FUTURE_SKEW_MS) {
+    return {
+      timestamp: receivedAt,
+      originalTimestamp: typeof value === 'string' ? value : undefined,
+      timestampClamped: true,
+    };
+  }
+
+  return { timestamp: parsed, timestampClamped: false };
+}
+
+function mergeEventDetails(
+  details: Record<string, unknown> | undefined,
+  normalized: NormalizedEventLog
+): Record<string, unknown> | null {
+  if (!normalized.timestampClamped) {
+    return details || null;
+  }
+
+  return {
+    ...(details || {}),
+    originalTimestamp: normalized.originalTimestamp,
+    timestampClamped: true,
+  };
+}
 
 export const eventLogsRoutes = new Hono();
 
@@ -80,17 +119,20 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
   }
 
   const now = new Date();
-  const rows = filteredEvents.map((event: any) => ({
-    deviceId: device.id,
-    orgId: device.orgId,
-    timestamp: sanitizeTimestamp(event.timestamp) ?? now,
-    level: event.level,
-    category: event.category,
-    source: event.source,
-    eventId: event.eventId || null,
-    message: event.message,
-    details: event.details || null
-  }));
+  const rows = filteredEvents.map((event: any) => {
+    const normalized = normalizeEventLogTimestamp(event.timestamp, now);
+    return {
+      deviceId: device.id,
+      orgId: device.orgId,
+      timestamp: normalized.timestamp,
+      level: event.level,
+      category: event.category,
+      source: event.source,
+      eventId: event.eventId || null,
+      message: event.message,
+      details: mergeEventDetails(event.details, normalized)
+    };
+  });
 
   let inserted = 0;
   let insertError: unknown = null;
@@ -114,12 +156,12 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
           orgId: device.orgId,
           deviceId: device.id,
           hostname: device.hostname,
-          events: filteredEvents.map((e: any) => ({
+          events: filteredEvents.map((e: any, index: number) => ({
             category: e.category,
             level: e.level,
             source: e.source,
             message: e.message,
-            timestamp: e.timestamp,
+            timestamp: rows[index]?.timestamp.toISOString() ?? now.toISOString(),
             rawData: e.rawData,
           })),
         });

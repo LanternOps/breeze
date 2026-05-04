@@ -3,18 +3,22 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
 import { c2cConnections } from '../../db/schema';
+import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { ensureFreshToken } from '../../services/c2cM365';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { createConnectionSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId, maskSecret } from './helpers';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const connectionsRoutes = new Hono();
+const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireC2cWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 // ── List connections ────────────────────────────────────────────────────────
 
-connectionsRoutes.get('/connections', async (c) => {
+connectionsRoutes.get('/connections', requireC2cRead, async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -31,6 +35,7 @@ connectionsRoutes.get('/connections', async (c) => {
 
 connectionsRoutes.get(
   '/connections/:id',
+  requireC2cRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -53,6 +58,8 @@ connectionsRoutes.get(
 
 connectionsRoutes.post(
   '/connections',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('json', createConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -104,6 +111,8 @@ connectionsRoutes.post(
 
 connectionsRoutes.delete(
   '/connections/:id',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -135,6 +144,8 @@ connectionsRoutes.delete(
 
 connectionsRoutes.post(
   '/connections/:id/test',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');

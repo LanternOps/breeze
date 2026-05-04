@@ -3,6 +3,13 @@ use std::sync::{Mutex, MutexGuard};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
+use url::Url;
+
+const MAX_DEEP_LINK_BYTES: usize = 4096;
+const MAX_SESSION_WINDOWS: usize = 16;
+const MAX_ID_PARAM_BYTES: usize = 128;
+const MAX_CODE_PARAM_BYTES: usize = 512;
+const MAX_API_PARAM_BYTES: usize = 2048;
 
 /// Register this app bundle with macOS Launch Services so the `breeze://`
 /// URL scheme always resolves to the current install location (not a stale
@@ -63,6 +70,94 @@ fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> 
             poisoned.into_inner()
         }
     }
+}
+
+fn is_localhost(host: &str) -> bool {
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "::1" | "[::1]"
+    )
+}
+
+fn validate_api_url(raw: &str) -> Result<(), String> {
+    if raw.is_empty() || raw.len() > MAX_API_PARAM_BYTES {
+        return Err("api parameter is missing or too large".to_string());
+    }
+
+    let api = Url::parse(raw).map_err(|_| "api parameter is not a valid URL".to_string())?;
+    match api.scheme() {
+        "https" => Ok(()),
+        "http" if api.host_str().is_some_and(is_localhost) => Ok(()),
+        _ => Err("api parameter must use https, except localhost development URLs".to_string()),
+    }
+}
+
+fn require_param(parsed: &Url, name: &str, max_bytes: usize) -> Result<String, String> {
+    let value = parsed
+        .query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+        .ok_or_else(|| format!("missing {name} parameter"))?;
+    if value.is_empty() || value.len() > max_bytes {
+        return Err(format!("{name} parameter is empty or too large"));
+    }
+    Ok(value)
+}
+
+fn parse_breeze_deep_link(url: &str) -> Result<Url, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_DEEP_LINK_BYTES {
+        return Err("deep link is empty or too large".to_string());
+    }
+
+    let normalized = if let Some(rest) = trimmed.strip_prefix("breeze://") {
+        format!("https://breeze/{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("breeze:") {
+        format!("https://breeze/{rest}")
+    } else {
+        return Err("deep link must use the breeze scheme".to_string());
+    };
+
+    let parsed = Url::parse(&normalized).map_err(|_| "deep link is not a valid URL".to_string())?;
+    if parsed.host_str() != Some("breeze") {
+        return Err("deep link host is invalid".to_string());
+    }
+    Ok(parsed)
+}
+
+fn validate_deep_link(url: &str) -> Result<String, String> {
+    let parsed = parse_breeze_deep_link(url)?;
+    let path = parsed.path().trim_matches('/');
+
+    match path {
+        "" | "connect" => {
+            require_param(&parsed, "session", MAX_ID_PARAM_BYTES)?;
+            require_param(&parsed, "code", MAX_CODE_PARAM_BYTES)?;
+            let api = require_param(&parsed, "api", MAX_API_PARAM_BYTES)?;
+            validate_api_url(&api)?;
+        }
+        "vnc" => {
+            require_param(&parsed, "tunnel", MAX_ID_PARAM_BYTES)?;
+            require_param(&parsed, "device", MAX_ID_PARAM_BYTES)?;
+            require_param(&parsed, "code", MAX_CODE_PARAM_BYTES)?;
+            let api = require_param(&parsed, "api", MAX_API_PARAM_BYTES)?;
+            validate_api_url(&api)?;
+        }
+        _ => return Err("deep link path is not supported".to_string()),
+    }
+
+    Ok(url.trim().to_string())
+}
+
+fn active_session_window_count(app: &tauri::AppHandle) -> usize {
+    let counter = app.state::<WindowCounter>();
+    let n = *lock_or_recover(&counter.0, "window_counter");
+    (1..=n)
+        .filter(|i| {
+            let label = format!("session-{}", i);
+            app.get_webview_window(&label).is_some()
+        })
+        .count()
 }
 
 /// Extract the `session=` query parameter from a breeze:// deep link URL.
@@ -134,7 +229,13 @@ fn register_session(
     state: tauri::State<'_, SessionMap>,
 ) {
     let mut map = lock_or_recover(&state.0, "session_map");
-    map.insert(session_id, SessionEntry { window_label: window.label().to_string(), hostname: None });
+    map.insert(
+        session_id,
+        SessionEntry {
+            window_label: window.label().to_string(),
+            hostname: None,
+        },
+    );
 }
 
 /// Called by the frontend on disconnect (session no longer active).
@@ -205,6 +306,15 @@ fn focus_any_session_window(app: &tauri::AppHandle) {
 /// - If the session is already active in a window, focus that window.
 /// - Otherwise, create a new session window for it.
 fn route_deep_link(app: &tauri::AppHandle, url: String) {
+    let url = match validate_deep_link(&url) {
+        Ok(url) => url,
+        Err(err) => {
+            eprintln!("Rejected invalid deep link: {}", err);
+            focus_any_session_window(app);
+            return;
+        }
+    };
+
     // Check device-id dedup first: if a window is already viewing this device,
     // focus it and discard the new deep link entirely.
     // Clone the label and drop the lock BEFORE calling set_focus(); on macOS
@@ -219,10 +329,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         if let Some(label) = existing_label {
             if let Some(window) = app.get_webview_window(&label) {
                 if let Err(err) = window.set_focus() {
-                    eprintln!(
-                        "Failed to focus existing device window {}: {}",
-                        label, err
-                    );
+                    eprintln!("Failed to focus existing device window {}: {}", label, err);
                 }
                 return;
             }
@@ -239,10 +346,7 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
         if let Some(label) = existing_label {
             if let Some(window) = app.get_webview_window(&label) {
                 if let Err(err) = window.set_focus() {
-                    eprintln!(
-                        "Failed to focus existing session window {}: {}",
-                        label, err
-                    );
+                    eprintln!("Failed to focus existing session window {}: {}", label, err);
                 }
             }
             return;
@@ -268,10 +372,7 @@ fn emit_with_retry(app: &tauri::AppHandle, label: &str, url: String) {
                 return;
             }
             if let Err(err) = handle.emit_to(&label, "deep-link-received", url.clone()) {
-                eprintln!(
-                    "Failed to emit deep-link-received to {}: {}",
-                    label, err
-                );
+                eprintln!("Failed to emit deep-link-received to {}: {}", label, err);
             }
         }
     });
@@ -279,6 +380,23 @@ fn emit_with_retry(app: &tauri::AppHandle, label: &str, url: String) {
 
 /// Create a new WebviewWindow for an independent remote desktop session.
 fn create_session_window(app: &tauri::AppHandle, url: String) {
+    let url = match validate_deep_link(&url) {
+        Ok(url) => url,
+        Err(err) => {
+            eprintln!("Rejected invalid deep link before window creation: {}", err);
+            return;
+        }
+    };
+
+    if active_session_window_count(app) >= MAX_SESSION_WINDOWS {
+        eprintln!(
+            "Rejected deep link because session window limit ({}) is reached",
+            MAX_SESSION_WINDOWS
+        );
+        focus_any_session_window(app);
+        return;
+    }
+
     let n = {
         let counter = app.state::<WindowCounter>();
         let mut c = lock_or_recover(&counter.0, "window_counter");
@@ -456,9 +574,8 @@ pub fn run() {
                 .flatten()
                 .and_then(|urls| urls.first().map(|u| u.to_string()));
 
-            let initial_url = initial_url.or_else(|| {
-                std::env::args().find(|arg| arg.starts_with("breeze:"))
-            });
+            let initial_url =
+                initial_url.or_else(|| std::env::args().find(|arg| arg.starts_with("breeze:")));
 
             app.manage(DeepLinkState(Mutex::new(HashMap::new())));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
@@ -580,5 +697,47 @@ mod tests {
                 "extract_device_id({url:?})"
             );
         }
+    }
+
+    #[test]
+    fn validate_deep_link_accepts_supported_desktop_and_vnc_links() {
+        assert!(validate_deep_link(
+            "breeze://connect?session=s&code=c&api=https%3A%2F%2Fapi.example.com"
+        )
+        .is_ok());
+        assert!(validate_deep_link(
+            "breeze:connect?session=s&code=c&api=http%3A%2F%2Flocalhost%3A3000"
+        )
+        .is_ok());
+        assert!(validate_deep_link(
+            "breeze://vnc?tunnel=t&device=d&code=c&api=https%3A%2F%2Fapi.example.com"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_deep_link_rejects_malformed_or_incomplete_links() {
+        for url in [
+            "https://example.com/connect?session=s&code=c",
+            "breeze://settings?session=s&code=c&api=https%3A%2F%2Fapi.example.com",
+            "breeze://connect?session=s&api=https%3A%2F%2Fapi.example.com",
+            "breeze://vnc?tunnel=t&device=d&api=https%3A%2F%2Fapi.example.com",
+            "breeze://connect?session=s&code=c&api=javascript%3Aalert(1)",
+            "breeze://connect?session=s&code=c&api=http%3A%2F%2F10.0.0.5",
+        ] {
+            assert!(
+                validate_deep_link(url).is_err(),
+                "validate_deep_link({url:?}) should reject"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_deep_link_rejects_oversized_parameters() {
+        let huge_code = "a".repeat(MAX_CODE_PARAM_BYTES + 1);
+        let url = format!(
+            "breeze://connect?session=s&code={huge_code}&api=https%3A%2F%2Fapi.example.com"
+        );
+        assert!(validate_deep_link(&url).is_err());
     }
 }
