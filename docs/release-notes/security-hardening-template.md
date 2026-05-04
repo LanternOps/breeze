@@ -6,15 +6,16 @@ Copy this into the GitHub Release body when tagging the version that ships PR #5
 
 # v0.XX.0 — Security hardening (SR-001..SR-024)
 
-> ⚠️ **Self-hosters: this release has required pre-deploy steps.** Read [`UPGRADING.md`](https://github.com/LanternOps/breeze/blob/main/UPGRADING.md) before upgrading.
->
-> **TL;DR before you `docker compose up`:**
+## TL;DR — self-hosters, do this before `docker compose up`
+
+> ⚠️ **This release has required pre-deploy steps.** Full runbook: [`UPGRADING.md`](https://github.com/LanternOps/breeze/blob/main/UPGRADING.md).
 >
 > 1. Run the FORCE-RLS ownership pre-check (one SQL query — see UPGRADING.md).
-> 2. Add to `.env`: `APP_ENCRYPTION_KEY` (set to your current `JWT_SECRET`), `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER`.
-> 3. If you're behind a reverse proxy with `TRUST_PROXY_HEADERS=true`, set `TRUSTED_PROXY_CIDRS` to your proxy IPs.
+> 2. Add to `.env`: `APP_ENCRYPTION_KEY` (set to your **current** `JWT_SECRET`), `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER`.
+> 3. If behind a reverse proxy with `TRUST_PROXY_HEADERS=true`: set `TRUSTED_PROXY_CIDRS` to your proxy IPs.
+> 4. Deploy. Watch the API logs for warnings — each tells you which legacy path is still live.
 >
-> The release is designed to be backward-compatible — if you skip these steps, the API still starts and existing users keep working, but you'll see warnings in the logs and lose some defense-in-depth until the env vars are set.
+> Designed to be backward-compatible: if you skip these, the API still starts and existing users keep working, but you'll see warnings and lose some defense-in-depth until the env vars are set.
 
 ## What's in this release
 

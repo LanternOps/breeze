@@ -1,6 +1,20 @@
 # Upgrading Breeze
 
-This file describes upgrade steps that are not safe to handle automatically — env-var changes, one-time data migrations, breaking-config changes, and pre-deploy checks. Routine schema migrations run on container start (`autoMigrate`); only steps listed here need operator action.
+> ## TL;DR — Upgrading to the SR-001..SR-024 security-hardening release
+>
+> 1. **Run the FORCE-RLS ownership pre-check** (one SQL query — section below) before deploying.
+> 2. **Add to `.env`:**
+>    - `APP_ENCRYPTION_KEY` = your **current** `JWT_SECRET` value
+>    - `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER` = random hex strings (`openssl rand -hex 32`)
+> 3. **If behind a reverse proxy** with `TRUST_PROXY_HEADERS=true`: set `TRUSTED_PROXY_CIDRS` to your proxy IPs.
+> 4. **Deploy API**, watch logs for the warnings in the [Post-deploy](#post-deploy) table — each is a backlog item, not an outage.
+> 5. **Plan the next release.** Several flag defaults are temporary (see [Backward-compatibility windows](#backward-compatibility-windows-will-tighten-in-the-next-release)).
+
+---
+
+## About this file
+
+Describes upgrade steps that are not safe to handle automatically — env-var changes, one-time data migrations, breaking-config changes, and pre-deploy checks. Routine schema migrations run on container start (`autoMigrate`); only steps listed here need operator action.
 
 When upgrading across multiple versions, apply each section in order — later sections assume earlier ones are done.
 
@@ -8,7 +22,7 @@ When upgrading across multiple versions, apply each section in order — later s
 
 ## Upgrading to the SR-001..SR-024 security-hardening release
 
-> Released as part of the cross-cutting security review fixing 24 audit areas. If you are upgrading from a release prior to this and you are running production, **read the entire section** — there are pre-deploy steps.
+Cross-cutting security review fixing 24 audit areas. If you are upgrading to this from an earlier release, **read the entire section** — there are pre-deploy steps.
 
 ### Pre-deploy
 
@@ -50,6 +64,7 @@ Deploy the API first; agents update on their own schedule and remain compatible 
 
 ### Post-deploy
 
+<a id="post-deploy"></a>
 Watch the API container logs for these one-time warnings. Each is a backlog item, not an outage:
 
 | Log line | Action |
@@ -60,6 +75,7 @@ Watch the API container logs for these one-time warnings. Each is a backlog item
 | `[config] TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS is empty` | Set `TRUSTED_PROXY_CIDRS` to your reverse-proxy IPs. |
 | `[agentWs] Device ... has no token hash — predates hash migration` | Re-enroll the affected device. |
 
+<a id="backward-compatibility-windows-will-tighten-in-the-next-release"></a>
 ### Backward-compatibility windows (will tighten in the **next** release)
 
 The following defaults are temporary to avoid stranding existing deployments:
