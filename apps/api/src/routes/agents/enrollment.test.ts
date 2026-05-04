@@ -46,6 +46,7 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
+  hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
 }));
 
 vi.mock('../../services/clientIp', () => ({

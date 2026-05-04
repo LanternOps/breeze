@@ -27,6 +27,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
+  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed-${key}`]),
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
 }));
 

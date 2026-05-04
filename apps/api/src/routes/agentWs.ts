@@ -704,12 +704,18 @@ type AgentDbContext = {
   role?: AgentCredentialRole;
 };
 
+type AgentTokenValidation =
+  | { ok: true; ctx: AgentDbContext }
+  | { ok: false; reason: 'unauthorized' | 're_enrollment_required' };
+
 /**
  * Validate agent token by hashing it and comparing against the stored hash.
+ * Returns `re_enrollment_required` when the device row exists but predates the
+ * token-hash migration so the agent can prompt the operator instead of looping.
  */
-async function validateAgentToken(agentId: string, token: string): Promise<AgentDbContext | null> {
+async function validateAgentToken(agentId: string, token: string): Promise<AgentTokenValidation> {
   if (!token || !token.startsWith('brz_')) {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
   const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -735,16 +741,23 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
     return row ?? null;
   });
 
-  if (!device || (!device.agentTokenHash && !device.watchdogTokenHash)) {
-    return null;
+  if (!device) {
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  if (!device.agentTokenHash && !device.watchdogTokenHash) {
+    console.warn(
+      `[agentWs] Device ${agentId} has no token hash — predates hash migration; signaling re_enrollment_required`
+    );
+    return { ok: false, reason: 're_enrollment_required' };
   }
 
   if (device.status === 'decommissioned') {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
   if (device.status === 'quarantined') {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
   const match = matchRoleScopedAgentTokenHash({
@@ -757,13 +770,16 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
     tokenHash,
   });
   if (!match || match.role !== 'agent') {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
   return {
-    deviceId: device.id,
-    orgId: device.orgId,
-    role: match.role,
+    ok: true,
+    ctx: {
+      deviceId: device.id,
+      orgId: device.orgId,
+      role: match.role,
+    },
   };
 }
 
@@ -2127,13 +2143,16 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
-      const agentCtx = await validateAgentToken(agentId, token);
-      if (!agentCtx) {
+      const result = await validateAgentToken(agentId, token);
+      if (!result.ok) {
+        if (result.reason === 're_enrollment_required') {
+          return c.json({ error: 'Re-enrollment required', code: 're_enrollment_required' }, 401);
+        }
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
       // Store validated device context for the upgrade handler to access
-      c.set('agentDb', agentCtx);
+      c.set('agentDb', result.ctx);
       return next();
     },
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {

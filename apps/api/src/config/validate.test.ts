@@ -349,7 +349,8 @@ describe('validateConfig', () => {
     });
   });
 
-  it('requires pinned trusted proxy CIDRs when proxy headers are trusted in production', () => {
+  it('warns and defaults to loopback when TRUSTED_PROXY_CIDRS is empty in production (does not crash)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({
       ...validEnv,
       NODE_ENV: 'production',
@@ -357,8 +358,14 @@ describe('validateConfig', () => {
       TRUST_PROXY_HEADERS: 'true',
       TRUSTED_PROXY_CIDRS: '',
     }, () => {
-      expect(() => validateConfig()).toThrow('TRUSTED_PROXY_CIDRS');
+      // Should NOT throw — operators upgrading without setting the new env var
+      // would otherwise crash on first boot. Runtime falls back to loopback-only.
+      expect(() => validateConfig()).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('TRUSTED_PROXY_CIDRS is empty')
+      );
     });
+    warnSpy.mockRestore();
   });
 
   it('rejects broad private trusted proxy CIDRs in production', () => {

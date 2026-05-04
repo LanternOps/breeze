@@ -70,6 +70,7 @@ vi.mock("../services/auditService", () => ({
 
 vi.mock("../services/enrollmentKeySecurity", () => ({
   hashEnrollmentKey: vi.fn((raw: string) => `hashed:${raw}`),
+  hashEnrollmentKeyCandidates: vi.fn((raw: string) => [`hashed:${raw}`]),
 }));
 
 vi.mock("../services/msiSigning", () => ({

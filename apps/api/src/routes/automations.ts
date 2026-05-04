@@ -88,8 +88,10 @@ function redactAutomationTrigger(trigger: unknown): unknown {
   };
 }
 
-function envFlag(name: string): boolean {
-  return /^(1|true|yes)$/i.test(process.env[name] ?? '');
+function envFlag(name: string, defaultValue = false): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultValue;
+  return /^(1|true|yes|on)$/i.test(raw);
 }
 
 function pruneAutomationWebhookReplayCache(now = Date.now()): void {
@@ -1004,9 +1006,17 @@ automationWebhookRoutes.post('/:id', async (c) => {
     if (!headerSecret && !querySecret) {
       return c.json({ error: 'Missing signed webhook verification' }, 401);
     }
-    if (!envFlag('AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET')) {
+    // Default to TRUE for one release after HMAC was introduced so existing
+    // third-party webhook senders that pass the secret as a header keep working.
+    // Operators can opt into HMAC-only by setting AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET=false.
+    // Next release flips the default to false.
+    if (!envFlag('AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET', true)) {
       return c.json({ error: 'Signed webhook verification is required' }, 401);
     }
+    console.warn(
+      `[automations] Webhook ${automationId} accepted via legacy header secret. ` +
+      'Migrate sender to HMAC (x-breeze-signature + x-breeze-timestamp) before AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET defaults to false in the next release.'
+    );
 
     const providedSecret = headerSecret ?? querySecret;
     const expected = Buffer.from(trigger.secret, 'utf8');

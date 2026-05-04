@@ -59,6 +59,7 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed_${key}`),
+  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed_${key}`]),
 }));
 
 vi.mock('../services/redis', () => ({

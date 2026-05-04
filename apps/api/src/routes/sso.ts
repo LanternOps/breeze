@@ -998,12 +998,23 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
 
   setRefreshTokenCookie(c, grant.refreshToken);
 
+  // Default to including refreshToken in the JSON response for one release after
+  // the cookie-based default flipped, so existing callers reading `response.refreshToken`
+  // continue to work. Operators can set SSO_EXCHANGE_RETURN_REFRESH_TOKEN=false to opt
+  // into the cookie-only behavior immediately. Next release flips the default to false.
+  const returnRefreshToken = envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', true);
+  if (returnRefreshToken) {
+    c.header('Deprecation', 'true');
+    c.header('Sunset', 'Fri, 01 Aug 2026 00:00:00 GMT');
+    c.header(
+      'Link',
+      '<https://breezermm.com/docs/api-changes/sso-refresh-cookie>; rel="deprecation"',
+    );
+  }
   return c.json({
     accessToken: grant.accessToken,
     expiresInSeconds: grant.expiresInSeconds,
-    ...(envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', false)
-      ? { refreshToken: grant.refreshToken }
-      : {}),
+    ...(returnRefreshToken ? { refreshToken: grant.refreshToken } : {}),
   });
 });
 

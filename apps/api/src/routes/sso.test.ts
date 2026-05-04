@@ -614,10 +614,16 @@ describe('sso routes', () => {
 
     expect(exchangeRes.status).toBe(200);
     const body = await exchangeRes.json();
+    // SSO_EXCHANGE_RETURN_REFRESH_TOKEN defaults to true for one release after
+    // the cookie-based default flipped, so existing callers that read
+    // response.refreshToken keep working. The Deprecation header signals the
+    // pending flip back to cookie-only.
     expect(body).toEqual({
       accessToken: 'access-token',
-      expiresInSeconds: 900
+      expiresInSeconds: 900,
+      refreshToken: 'refresh-token'
     });
+    expect(exchangeRes.headers.get('deprecation')).toBe('true');
     const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('breeze_refresh_token=');
     expect(setCookie).toContain('HttpOnly');

@@ -16,6 +16,7 @@ vi.mock("../db", () => ({
 
 vi.mock("../services/enrollmentKeySecurity", () => ({
   hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
+  hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
 }));
 
 // ============================================================

@@ -217,12 +217,18 @@ function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: 
     .filter(Boolean);
 
   if (entries.length === 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['TRUSTED_PROXY_CIDRS'],
-      message:
-        'TRUSTED_PROXY_CIDRS must list the exact proxy source IPs/CIDRs when TRUST_PROXY_HEADERS is enabled in production.',
-    });
+    // Don't fail startup. Operators upgrading from a release that didn't require
+    // this would otherwise crash on first boot behind their existing reverse proxy.
+    // Default to loopback-only (effectively: trust no upstream proxy) and warn.
+    // Real IP detection downstream falls back to the socket-level remote address,
+    // which is correct for direct connections and conservative for proxied ones.
+    if (process.env.NODE_ENV !== 'test') {
+      console.warn(
+        '[config] TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS is empty. ' +
+        'Defaulting to loopback only (127.0.0.1/32, ::1/128). ' +
+        'Set TRUSTED_PROXY_CIDRS to your reverse-proxy IPs to restore real-IP detection.'
+      );
+    }
     return;
   }
 

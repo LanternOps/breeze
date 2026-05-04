@@ -6,11 +6,37 @@ const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
 const KEY_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 let cachedEncryptionKey: Buffer | null = null;
+let cachedLegacyKeys: Buffer[] | null = null;
 let cachedKeyringRaw: string | undefined;
 let cachedKeyring: Map<string, Buffer> | null = null;
 
 function deriveEncryptionKey(keySource: string): Buffer {
   return createHash('sha256').update(keySource).digest();
+}
+
+// Read-only fallback keys consulted when the primary APP_ENCRYPTION_KEY fails to
+// decrypt a v1 ciphertext. Lets us decrypt rows written before APP_ENCRYPTION_KEY
+// was mandatory (when the code derived a key from JWT_SECRET / SESSION_SECRET).
+// New writes always use the active key. After running scripts/re-encrypt-secrets.ts
+// to migrate rows, these fallbacks become unreachable.
+function getLegacyDecryptionKeys(): Buffer[] {
+  if (cachedLegacyKeys) return cachedLegacyKeys;
+
+  const dedicatedKey =
+    process.env.APP_ENCRYPTION_KEY ||
+    process.env.SSO_ENCRYPTION_KEY ||
+    process.env.SECRET_ENCRYPTION_KEY;
+
+  const sources = [
+    process.env.JWT_SECRET,
+    process.env.SESSION_SECRET,
+  ];
+
+  cachedLegacyKeys = sources
+    .map((source) => source?.trim())
+    .filter((source): source is string => !!source && source !== dedicatedKey)
+    .map(deriveEncryptionKey);
+  return cachedLegacyKeys;
 }
 
 function getEncryptionKey(): Buffer {
@@ -245,7 +271,29 @@ export function decryptSecret(value: string | null | undefined): string | null {
   }
 
   if (value.startsWith(ENCRYPTED_V1_PREFIX)) {
-    return decryptWithKey(value.slice(ENCRYPTED_V1_PREFIX.length), getEncryptionKey());
+    const payload = value.slice(ENCRYPTED_V1_PREFIX.length);
+    try {
+      return decryptWithKey(payload, getEncryptionKey());
+    } catch (primaryError) {
+      // Fall back to legacy keys (JWT_SECRET / SESSION_SECRET) for rows written
+      // before APP_ENCRYPTION_KEY was mandatory. Run scripts/re-encrypt-secrets.ts
+      // to migrate them off the legacy keys; once migrated this path is dead code.
+      for (const legacyKey of getLegacyDecryptionKeys()) {
+        try {
+          const plaintext = decryptWithKey(payload, legacyKey);
+          if (process.env.NODE_ENV !== 'test') {
+            console.warn(
+              '[secretCrypto] Decrypted enc:v1: row with legacy fallback key. ' +
+              'Run scripts/re-encrypt-secrets.ts to re-encrypt under APP_ENCRYPTION_KEY.'
+            );
+          }
+          return plaintext;
+        } catch {
+          // Try the next fallback.
+        }
+      }
+      throw primaryError;
+    }
   }
 
   const encoded = value.slice(ENCRYPTED_V2_PREFIX.length);

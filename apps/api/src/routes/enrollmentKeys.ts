@@ -18,7 +18,7 @@ import { userRateLimit } from "../middleware/userRateLimit";
 import { randomBytes } from "crypto";
 import { createAuditLogAsync } from "../services/auditService";
 import { PERMISSIONS } from "../services/permissions";
-import { hashEnrollmentKey } from "../services/enrollmentKeySecurity";
+import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enrollmentKeySecurity";
 import {
   getTrustedClientIp,
   getTrustedClientIpOrUndefined,
@@ -1479,8 +1479,9 @@ enrollmentKeyRoutes.post(
     const hasAccess = await ensureOrgAccess(row.orgId, auth);
     if (!hasAccess) return c.json({ error: "Not found" }, 404);
 
-    // Verify the raw token matches the stored hash.
-    if (row.key !== hashEnrollmentKey(body.rawToken)) {
+    // Verify the raw token matches the stored hash. Accept legacy-pepper hashes
+    // for keys created before ENROLLMENT_KEY_PEPPER was mandatory.
+    if (!hashEnrollmentKeyCandidates(body.rawToken).includes(row.key)) {
       return c.json({ error: "Invalid token" }, 400);
     }
 
@@ -1723,14 +1724,16 @@ publicEnrollmentRoutes.get(
     // also scoped correctly — otherwise the breeze_app role's RLS UPDATE
     // policy silently drops the row modification and download quotas are
     // never enforced.
-    const keyHash = hashEnrollmentKey(rawToken);
+    // Try primary + legacy peppers so keys created before ENROLLMENT_KEY_PEPPER
+    // was mandatory still resolve.
+    const keyHashCandidates = hashEnrollmentKeyCandidates(rawToken);
     // Capture in const so the closure below has a non-null narrowed type.
     const finalToken = rawToken;
     return withSystemDbAccessContext(async () => {
       const [enrollmentKey] = await db
         .select()
         .from(enrollmentKeys)
-        .where(eq(enrollmentKeys.key, keyHash))
+        .where(inArray(enrollmentKeys.key, keyHashCandidates))
         .limit(1);
 
       if (!enrollmentKey) {

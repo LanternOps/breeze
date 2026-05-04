@@ -192,8 +192,21 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     return row ?? null;
   });
 
-  if (!device || (!device.agentTokenHash && !device.watchdogTokenHash)) {
+  if (!device) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
+  }
+
+  // A device row exists but neither token hash is populated — this is the
+  // pre-hashed-token migration state. Surface a distinct error so the agent
+  // can prompt for re-enrollment instead of silently retrying forever.
+  if (!device.agentTokenHash && !device.watchdogTokenHash) {
+    throw new HTTPException(401, {
+      message: 'Re-enrollment required: device predates token-hash migration',
+      res: new Response(
+        JSON.stringify({ error: 'Re-enrollment required', code: 're_enrollment_required' }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    });
   }
 
   const match = matchRoleScopedAgentTokenHash({

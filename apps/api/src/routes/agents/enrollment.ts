@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -13,7 +13,7 @@ import {
   partners,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurity';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -92,13 +92,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     return c.json({ error: 'Enrollment rate limit exceeded' }, 429);
   }
 
-  const hashedEnrollmentKey = hashEnrollmentKey(data.enrollmentKey);
+  // Try the primary pepper first, then any legacy fallback peppers (APP_ENCRYPTION_KEY,
+  // JWT_SECRET, etc.) so keys hashed before ENROLLMENT_KEY_PEPPER was mandatory still match.
+  const enrollmentKeyCandidates = hashEnrollmentKeyCandidates(data.enrollmentKey);
 
   return withSystemDbAccessContext(async () => {
     // Re-validated in the UPDATE WHERE below to close the TOCTOU window between
     // this initial lookup and the usage_count bump.
     const validEnrollmentKeyConditions = [
-      eq(enrollmentKeys.key, hashedEnrollmentKey),
+      inArray(enrollmentKeys.key, enrollmentKeyCandidates),
       sql`(${enrollmentKeys.expiresAt} IS NULL OR ${enrollmentKeys.expiresAt} > NOW())`,
       sql`(${enrollmentKeys.maxUsage} IS NULL OR ${enrollmentKeys.usageCount} < ${enrollmentKeys.maxUsage})`,
     ] as const;
@@ -117,7 +119,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         usageCount: enrollmentKeys.usageCount,
       })
       .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.key, hashedEnrollmentKey))
+      .where(inArray(enrollmentKeys.key, enrollmentKeyCandidates))
       .limit(1);
 
     if (!matchingKey) {
@@ -238,20 +240,44 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // In production, require at least one form of enrollment secret (global
       // or per-key) to prevent open enrollment if AGENT_ENROLLMENT_SECRET is
       // accidentally omitted from the deployment.
-      console.error(
-        '[enrollment] Production enrollment blocked: neither AGENT_ENROLLMENT_SECRET nor per-key secret is configured'
-      );
-      writeAuditEvent(c, {
-        orgId: null,
-        actorType: 'system',
-        action: 'agent.enroll',
-        resourceType: 'device',
-        resourceName: data.hostname,
-        details: { reason: 'no_enrollment_secret_configured' },
-        result: 'denied',
-        errorMessage: 'Enrollment secret required in production',
-      });
-      return c.json({ error: 'Enrollment secret required' }, 403);
+      //
+      // ENROLLMENT_SECRET_ENFORCEMENT_MODE controls behavior when no secret is
+      // configured: 'enforce' (default) blocks the request; 'warn' lets it
+      // through but emits a loud warning. The 'warn' mode exists for the first
+      // release after this gate was introduced — operators who upgraded without
+      // setting AGENT_ENROLLMENT_SECRET would otherwise be unable to enroll any
+      // new devices until they redeploy with the env var set.
+      const mode = (process.env.ENROLLMENT_SECRET_ENFORCEMENT_MODE ?? 'enforce').trim().toLowerCase();
+      if (mode === 'warn') {
+        console.error(
+          '[enrollment] WARNING: Production enrollment proceeding WITHOUT enrollment secret. ' +
+          'Set AGENT_ENROLLMENT_SECRET (or per-key secrets) and remove ENROLLMENT_SECRET_ENFORCEMENT_MODE=warn.'
+        );
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'no_enrollment_secret_configured', enforcementMode: 'warn' },
+          result: 'success',
+        });
+      } else {
+        console.error(
+          '[enrollment] Production enrollment blocked: neither AGENT_ENROLLMENT_SECRET nor per-key secret is configured'
+        );
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'no_enrollment_secret_configured' },
+          result: 'denied',
+          errorMessage: 'Enrollment secret required in production',
+        });
+        return c.json({ error: 'Enrollment secret required' }, 403);
+      }
     }
 
     if (!matchingKey.siteId) {

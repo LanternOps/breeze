@@ -20,10 +20,25 @@ function shouldTrustProxyHeaders(): boolean {
 }
 
 function trustedProxyCidrs(): string[] {
-  return (process.env.TRUSTED_PROXY_CIDRS ?? '')
+  const configured = (process.env.TRUSTED_PROXY_CIDRS ?? '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+
+  // In production, when proxy-header trust is enabled but no CIDRs are
+  // configured, fall back to loopback-only so we never silently honor
+  // X-Forwarded-For from arbitrary upstreams. Pairs with the config validator's
+  // loopback-default warning. In dev/test, an empty list keeps the legacy
+  // "trust headers from any source" behavior (handled in isTrustedProxySource).
+  if (
+    configured.length === 0
+    && shouldTrustProxyHeaders()
+    && process.env.NODE_ENV === 'production'
+  ) {
+    return ['127.0.0.1/32', '::1/128'];
+  }
+
+  return configured;
 }
 
 function normalizeIpCandidate(value: string): string | null {
