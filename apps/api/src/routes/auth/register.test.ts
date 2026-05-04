@@ -46,6 +46,16 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
+vi.mock('../../services/emailVerification', () => ({
+  generateVerificationToken: vi.fn(async () => 'verify-token'),
+}));
+
+vi.mock('../../services/email', () => ({
+  getEmailService: vi.fn(() => ({
+    sendVerificationEmail: vi.fn(async () => undefined),
+  })),
+}));
+
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {

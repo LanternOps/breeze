@@ -64,3 +64,4 @@ export * from './incidentResponse';
 export * from './tunnels';
 export * from './installerBootstrapTokens';
 export * from './deploymentInvites';
+export * from './emailVerificationTokens';
