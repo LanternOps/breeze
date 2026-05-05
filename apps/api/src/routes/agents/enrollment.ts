@@ -609,3 +609,4 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     }, 201);
   });
 });
+
