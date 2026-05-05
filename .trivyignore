@@ -1,0 +1,15 @@
+# Trivy vulnerability ignore list
+#
+# Format: one CVE / advisory ID per line. Trivy auto-loads this file when
+# present at the scan working directory. The aquasecurity/trivy-action
+# honours it for both filesystem and image scans.
+#
+# Each entry must include a justification comment so future reviewers can
+# decide whether the ignore is still warranted.
+
+# node-ip — public IP detection package, transitive dep in our pnpm tree.
+# Upstream has no patch available as of 2026-05; tracked at
+# https://github.com/indutny/node-ip/issues. Risk surface is limited:
+# we don't use it for SSRF protection or trust-boundary decisions.
+# Re-evaluate when node-ip publishes a fix.
+CVE-2024-29415
