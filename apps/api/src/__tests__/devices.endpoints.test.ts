@@ -40,6 +40,22 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   }),
 }));
 
+// Bypass tenant active-status checks (queries organizations/partners which the
+// simple db mock can't reasonably emulate). Real check runs in authMiddleware
+// after SR-001..SR-024 hardening landed (see services/tenantStatus.ts).
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn(async () => {}),
+  getActivePartner: vi.fn(async (id: string) => ({ id })),
+  getActiveOrgTenant: vi.fn(async (id: string) => ({ orgId: id, partnerId: 'test-partner-id' })),
+}));
+
+// Bypass token revocation lookup (Redis-backed).
+vi.mock('../services/tokenRevocation', () => ({
+  isUserTokenRevoked: vi.fn(async () => false),
+  revokeUserTokens: vi.fn(async () => {}),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({

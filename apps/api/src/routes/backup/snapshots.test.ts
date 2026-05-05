@@ -320,7 +320,7 @@ describe('snapshot routes', () => {
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/immutability`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ reason: 'Try shorten', extendUntil: '2026-05-01T00:00:00.000Z', enforcement: 'application' }),
+      body: JSON.stringify({ reason: 'Try shorten', extendUntil: '2026-05-15T00:00:00.000Z', enforcement: 'application' }),
     });
 
     expect(res.status).toBe(409);

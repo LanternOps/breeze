@@ -188,6 +188,16 @@ describe('backup routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clear any leaked mockReturnValueOnce queues from prior tests so a
+    // failing test cannot bleed mocks into subsequent ones.
+    selectMock.mockReset();
+    insertMock.mockReset();
+    updateMock.mockReset();
+    deleteMock.mockReset();
+    selectMock.mockImplementation(() => chainMock([]));
+    insertMock.mockImplementation(() => chainMock([]));
+    updateMock.mockImplementation(() => chainMock([]));
+    deleteMock.mockImplementation(() => chainMock([]));
     queueCommandForExecutionMock.mockResolvedValue({
       command: { id: RESTORE_COMMAND_ID, status: 'pending' },
     });
@@ -236,6 +246,9 @@ describe('backup routes', () => {
       isActive: false,
       providerConfig: { storageClass: 'GLACIER' },
     };
+    // PATCH now does a pre-update SELECT to merge provider config secrets and
+    // assert encryption support before applying the update.
+    selectMock.mockReturnValueOnce(chainMock([configRecord]));
     updateMock.mockReturnValueOnce(chainMock([updatedRecord]));
 
     const updateRes = await app.request(`/backup/configs/${CONFIG_ID}`, {

@@ -9,6 +9,23 @@ import {
 } from './provider';
 import { clearPartnerScopePolicyCache } from './partnerScopePolicy';
 
+// Mock the tenant-status assertion so provider tests stay hermetic — the
+// real implementation issues `getActivePartner`/`getActiveOrgTenant` Drizzle
+// queries against `partners` / `organizations`, which require a live DB and
+// real UUIDs. The buildExtraTokenClaims tests below pass non-UUID fixtures
+// like 'p1'/'o1' on purpose, so we no-op the assertion here.
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {
+    constructor(message = 'Tenant is not active') {
+      super(message);
+      this.name = 'TenantInactiveError';
+    }
+  },
+  assertActiveTenantContext: vi.fn(async () => {}),
+  getActivePartner: vi.fn(async () => null),
+  getActiveOrgTenant: vi.fn(async () => null),
+}));
+
 // Mock the policy module so provider tests stay hermetic — the real
 // lookup touches the DB, which isn't wired up in unit tests.
 vi.mock('./partnerScopePolicy', async () => {
