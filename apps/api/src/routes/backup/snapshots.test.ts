@@ -140,7 +140,7 @@ describe('snapshot routes', () => {
         legalHold: true,
         legalHoldReason: 'Regulatory matter',
         isImmutable: true,
-        immutableUntil: new Date('2026-06-01T00:00:00.000Z'),
+        immutableUntil: new Date('2030-06-01T00:00:00.000Z'),
         immutabilityEnforcement: 'application',
       }),
     ]));
@@ -238,7 +238,7 @@ describe('snapshot routes', () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({
         isImmutable: true,
-        immutableUntil: new Date('2026-06-01T00:00:00.000Z'),
+        immutableUntil: new Date('2030-06-01T00:00:00.000Z'),
         immutabilityEnforcement: 'provider',
       }),
     ]));
@@ -305,14 +305,14 @@ describe('snapshot routes', () => {
       .mockReturnValueOnce(chainMock([
         makeSnapshot({
           isImmutable: true,
-          immutableUntil: new Date('2026-06-01T00:00:00.000Z'),
+          immutableUntil: new Date('2030-06-01T00:00:00.000Z'),
           immutabilityEnforcement: 'application',
         }),
       ]))
       .mockReturnValueOnce(chainMock([
         makeSnapshot({
           isImmutable: true,
-          immutableUntil: new Date('2026-06-01T00:00:00.000Z'),
+          immutableUntil: new Date('2030-06-01T00:00:00.000Z'),
           immutabilityEnforcement: 'application',
         }),
       ]));
@@ -320,7 +320,7 @@ describe('snapshot routes', () => {
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/immutability`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ reason: 'Try shorten', extendUntil: '2026-05-01T00:00:00.000Z', enforcement: 'application' }),
+      body: JSON.stringify({ reason: 'Try shorten', extendUntil: '2030-05-01T00:00:00.000Z', enforcement: 'application' }),
     });
 
     expect(res.status).toBe(409);
