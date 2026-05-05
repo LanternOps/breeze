@@ -626,6 +626,52 @@ export async function apiResetPassword(token: string, password: string): Promise
   }
 }
 
+export async function apiVerifyEmail(token: string): Promise<{
+  success: boolean;
+  error?: 'invalid' | 'expired' | 'consumed' | string;
+  partnerId?: string;
+  email?: string;
+  autoActivated?: boolean;
+}> {
+  try {
+    const response = await fetch(buildApiUrl('/auth/verify-email'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, error: data.error };
+    }
+
+    return {
+      success: true,
+      partnerId: data.partnerId,
+      email: data.email,
+      autoActivated: data.autoActivated,
+    };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiResendVerification(): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetchWithAuth(buildApiUrl('/auth/resend-verification'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { success: false, error: data?.error ?? 'Failed to resend verification email' };
+    }
+    return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
 export async function apiSendSmsMfaCode(tempToken: string): Promise<{
   success: boolean;
   error?: string;

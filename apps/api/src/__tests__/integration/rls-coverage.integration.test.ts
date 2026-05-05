@@ -54,6 +54,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // the column name; the policy's `partner_id IS NULL OR ...` clause is
   // checked by the policy's own qual, not this allowlist.
   ['oauth_grants', 'partner_id'],
+  ['email_verification_tokens', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

@@ -36,7 +36,8 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     email: 'email',
     name: 'name',
-    status: 'status'
+    status: 'status',
+    isPlatformAdmin: 'isPlatformAdmin'
   },
   partnerUsers: {
     userId: 'partnerUsers.userId',
@@ -73,14 +74,16 @@ const activeUser = {
   id: 'user-123',
   email: 'test@example.com',
   name: 'Test User',
-  status: 'active'
+  status: 'active',
+  isPlatformAdmin: false
 };
 
 const baseAuth = {
   user: {
     id: 'user-123',
     email: 'test@example.com',
-    name: 'Test User'
+    name: 'Test User',
+    isPlatformAdmin: false
   },
   token: basePayload,
   partnerId: basePayload.partnerId,

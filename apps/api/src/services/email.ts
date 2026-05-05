@@ -23,6 +23,13 @@ export interface PasswordResetEmailParams {
   supportEmail?: string;
 }
 
+export interface VerificationEmailParams {
+  to: string | string[];
+  name?: string;
+  verificationUrl: string;
+  supportEmail?: string;
+}
+
 export interface InviteEmailParams {
   to: string | string[];
   name?: string;
@@ -170,6 +177,16 @@ export class EmailService {
 
   async sendPasswordReset(params: PasswordResetEmailParams): Promise<void> {
     const template = buildPasswordResetTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text
+    });
+  }
+
+  async sendVerificationEmail(params: VerificationEmailParams): Promise<void> {
+    const template = buildVerificationTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -472,6 +489,38 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
     'A password reset was requested for your Breeze account.',
     `Reset your password: ${params.resetUrl}`,
     'If you did not request this, you can safely ignore this email.',
+    support ? `Need help? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
+function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {
+  const name = params.name?.trim() || 'there';
+  const subject = 'Verify your email for Breeze RMM';
+  const preheader = 'Confirm your email address to finish setting up Breeze.';
+  const body = `
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">Welcome to Breeze. Please confirm your email address so we can finish setting up your account.</p>
+      ${renderButton('Verify email', params.verificationUrl)}
+      <p style="${MUTED_PARA}">This link expires in 24 hours. If you did not sign up for Breeze, you can safely ignore this email.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: 'Verify your email',
+    body,
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    `Hi ${name},`,
+    'Welcome to Breeze. Please confirm your email address so we can finish setting up your account.',
+    `Verify your email: ${params.verificationUrl}`,
+    'This link expires in 24 hours. If you did not sign up for Breeze, you can safely ignore this email.',
     support ? `Need help? Contact ${support}.` : null,
   ]
     .filter(Boolean)

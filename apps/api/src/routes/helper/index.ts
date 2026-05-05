@@ -136,6 +136,7 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
       id: device.id, // Use device ID as the "user" ID for helper sessions
       email: `helper@${device.hostname}`,
       name: device.hostname,
+      isPlatformAdmin: false,
     },
     token: {
       sub: device.id,

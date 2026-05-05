@@ -14,6 +14,7 @@ export interface AuthContext {
     id: string;
     email: string;
     name: string;
+    isPlatformAdmin: boolean;
   };
   token: TokenPayload;
   partnerId: string | null;
@@ -91,7 +92,8 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
         id: users.id,
         email: users.email,
         name: users.name,
-        status: users.status
+        status: users.status,
+        isPlatformAdmin: users.isPlatformAdmin
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -139,7 +141,8 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
           user: {
             id: user.id,
             email: user.email,
-            name: user.name
+            name: user.name,
+            isPlatformAdmin: user.isPlatformAdmin
           },
           token: payload,
           partnerId: payload.partnerId,
@@ -300,7 +303,8 @@ export async function authMiddleware(c: Context, next: Next) {
         id: users.id,
         email: users.email,
         name: users.name,
-        status: users.status
+        status: users.status,
+        isPlatformAdmin: users.isPlatformAdmin
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -360,7 +364,8 @@ export async function authMiddleware(c: Context, next: Next) {
         user: {
           id: user.id,
           email: user.email,
-          name: user.name
+          name: user.name,
+          isPlatformAdmin: user.isPlatformAdmin
         },
         token: payload,
         partnerId: payload.partnerId,
