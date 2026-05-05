@@ -408,6 +408,18 @@ jobs:
           TURN_SECRET=ci-smoke-turn-secret
           TURN_HOST=127.0.0.1
           TRUST_PROXY_HEADERS=false
+          # Image refs — base docker-compose.yml requires these via ${VAR:?...}.
+          # The CI override builds api/web from source and disables caddy/coturn,
+          # but Compose still parses interpolation in the base file before
+          # profile filtering, so all refs must resolve. Mutable tags are fine
+          # here since this stack is ephemeral (torn down in Teardown step).
+          BREEZE_API_IMAGE_REF=ghcr.io/lanternops/breeze/api:latest
+          BREEZE_WEB_IMAGE_REF=ghcr.io/lanternops/breeze/web:latest
+          BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
+          CADDY_IMAGE_REF=caddy:2-alpine
+          POSTGRES_IMAGE_REF=postgres:16-alpine
+          REDIS_IMAGE_REF=redis:7-alpine
+          COTURN_IMAGE_REF=coturn/coturn:latest
           EOF
 
       - name: Build and start containers
