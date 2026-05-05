@@ -56,8 +56,24 @@ vi.mock('../db/schema', () => ({
   users: { id: 'id', email: 'email', name: 'name', status: 'status' },
   devices: {},
   organizations: {},
+  partners: {},
   partnerUsers: {},
   organizationUsers: {}
+}));
+
+// Bypass tenant active-status checks (queries organizations/partners tables
+// which the simple db mock can't reasonably emulate).
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn(async () => {}),
+  getActivePartner: vi.fn(async (id: string) => ({ id })),
+  getActiveOrgTenant: vi.fn(async (id: string) => ({ orgId: id, partnerId: 'test-partner-id' })),
+}));
+
+// Bypass token revocation lookup (Redis-backed).
+vi.mock('../services/tokenRevocation', () => ({
+  isUserTokenRevoked: vi.fn(async () => false),
+  revokeUserTokens: vi.fn(async () => {}),
 }));
 
 import { db } from '../db';

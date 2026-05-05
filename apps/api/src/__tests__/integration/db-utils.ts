@@ -71,19 +71,29 @@ export interface CreatePartnerOptions {
   slug?: string;
   type?: 'msp' | 'enterprise' | 'internal';
   plan?: 'free' | 'pro' | 'enterprise' | 'unlimited';
+  /** Defaults to 'active'. Use 'suspended' / 'churned' / 'pending' to test the tenant-status gate. */
+  status?: 'pending' | 'active' | 'suspended' | 'churned';
+  /** Set to a Date to soft-delete the partner (drives the deletedAt branch in tenantStatus.ts). */
+  deletedAt?: Date | null;
 }
 
 export async function createPartner(options: CreatePartnerOptions = {}) {
   const database = db();
   const timestamp = Date.now();
+  // Random suffix prevents slug collisions when multiple partners are created
+  // within the same millisecond in a single test (status-gate suite needs a
+  // suspended partner + an active partner side-by-side).
+  const rand = Math.random().toString(36).slice(2, 8);
 
   const [partner] = await database
     .insert(partners)
     .values({
-      name: options.name || `Test Partner ${timestamp}`,
-      slug: options.slug || `test-partner-${timestamp}`,
+      name: options.name || `Test Partner ${timestamp}-${rand}`,
+      slug: options.slug || `test-partner-${timestamp}-${rand}`,
       type: options.type || 'msp',
-      plan: options.plan || 'pro'
+      plan: options.plan || 'pro',
+      status: options.status || 'active',
+      deletedAt: options.deletedAt ?? null
     })
     .returning();
 
@@ -100,20 +110,24 @@ export interface CreateOrganizationOptions {
   slug?: string;
   type?: 'customer' | 'internal';
   status?: 'active' | 'suspended' | 'trial' | 'churned';
+  /** Set to a Date to soft-delete the org (drives the deletedAt branch in tenantStatus.ts). */
+  deletedAt?: Date | null;
 }
 
 export async function createOrganization(options: CreateOrganizationOptions) {
   const database = db();
   const timestamp = Date.now();
+  const rand = Math.random().toString(36).slice(2, 8);
 
   const [org] = await database
     .insert(organizations)
     .values({
       partnerId: options.partnerId,
-      name: options.name || `Test Organization ${timestamp}`,
-      slug: options.slug || `test-org-${timestamp}`,
+      name: options.name || `Test Organization ${timestamp}-${rand}`,
+      slug: options.slug || `test-org-${timestamp}-${rand}`,
       type: options.type || 'customer',
-      status: options.status || 'active'
+      status: options.status || 'active',
+      deletedAt: options.deletedAt ?? null
     })
     .returning();
 

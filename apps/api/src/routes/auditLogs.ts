@@ -7,6 +7,7 @@ import { auditLogs as auditLogsTable, users } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { csvRow } from '../services/spreadsheetExport';
 
 export const auditLogRoutes = new Hono();
 const requireAuditLogRead = requirePermission(
@@ -43,6 +44,25 @@ const idParamSchema = z.object({
   id: z.string().min(1)
 });
 
+const auditExportColumns = [
+  'id',
+  'timestamp',
+  'actorId',
+  'actorName',
+  'actorEmail',
+  'action',
+  'resourceType',
+  'resourceId',
+  'resourceName',
+  'category',
+  'result',
+  'ipAddress',
+  'userAgent',
+  'details'
+] as const;
+
+type AuditExportColumn = typeof auditExportColumns[number];
+
 const exportSchema = z.object({
   format: z.enum(['csv', 'json']).default('json'),
   filters: z.object({
@@ -53,7 +73,9 @@ const exportSchema = z.object({
   dateRange: z.object({
     from: z.string().datetime().optional(),
     to: z.string().datetime().optional()
-  }).optional()
+  }).optional(),
+  columns: z.array(z.enum(auditExportColumns)).optional(),
+  includeDetails: z.boolean().default(true)
 });
 
 const reportQuerySchema = z.object({
@@ -186,11 +208,11 @@ function flattenEntry(row: DbRow) {
   };
 }
 
-function toFullEntry(row: DbRow) {
+function toFullEntry(row: DbRow, includeDetails = true) {
   const log = row.log;
   const details = log.details as Record<string, unknown> | null;
   const actorName = resolveActorName(row, details);
-  return {
+  const entry: Record<string, unknown> = {
     id: log.id,
     timestamp: log.timestamp.toISOString(),
     user: {
@@ -210,8 +232,11 @@ function toFullEntry(row: DbRow) {
     ipAddress: log.ipAddress ?? '',
     userAgent: log.userAgent ?? '',
     initiatedBy: log.initiatedBy ?? null,
-    details: details ?? {}
   };
+  if (includeDetails) {
+    entry.details = details ?? {};
+  }
+  return entry;
 }
 
 function buildFilterConditions(
@@ -293,35 +318,48 @@ async function fetchAllForReports(orgCond: SQL | undefined, filters: { from?: st
   return queryRows(where, 5000, 0);
 }
 
-function toCsv(rows: DbRow[]): string {
-  const headers = [
-    'id', 'timestamp', 'actorId', 'actorName', 'actorEmail',
-    'action', 'resourceType', 'resourceId', 'resourceName',
-    'category', 'result', 'ipAddress', 'userAgent', 'details'
-  ];
+function normalizeExportColumns(columns: AuditExportColumn[] | undefined, includeDetails: boolean): AuditExportColumn[] {
+  const requested = columns === undefined ? [...auditExportColumns] : columns;
+  return requested.filter((column) => includeDetails || column !== 'details');
+}
 
-  const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
+function toExportRecord(row: DbRow, includeDetails: boolean): Record<AuditExportColumn, string> {
+  const log = row.log;
+  const actorName = resolveActorName(row, log.details as Record<string, unknown> | null);
+  return {
+    id: log.id,
+    timestamp: log.timestamp.toISOString(),
+    actorId: log.actorId,
+    actorName,
+    actorEmail: log.actorEmail ?? '',
+    action: log.action,
+    resourceType: log.resourceType,
+    resourceId: log.resourceId ?? '',
+    resourceName: log.resourceName ?? '',
+    category: deriveCategory(log.action),
+    result: log.result,
+    ipAddress: log.ipAddress ?? '',
+    userAgent: log.userAgent ?? '',
+    details: includeDetails ? JSON.stringify(log.details ?? {}) : ''
+  };
+}
+
+function pickExportColumns(
+  row: DbRow,
+  columns: AuditExportColumn[],
+  includeDetails: boolean
+): Record<string, string> {
+  const record = toExportRecord(row, includeDetails);
+  return Object.fromEntries(columns.map((column) => [column, record[column]]));
+}
+
+function toCsv(rows: DbRow[], options: { columns?: AuditExportColumn[]; includeDetails?: boolean } = {}): string {
+  const includeDetails = options.includeDetails ?? true;
+  const headers = normalizeExportColumns(options.columns, includeDetails);
 
   const csvRows = rows.map((row) => {
-    const log = row.log;
-    const actorName = resolveActorName(row, log.details as Record<string, unknown> | null);
-    const values = [
-      log.id,
-      log.timestamp.toISOString(),
-      log.actorId,
-      actorName,
-      log.actorEmail ?? '',
-      log.action,
-      log.resourceType,
-      log.resourceId ?? '',
-      log.resourceName ?? '',
-      deriveCategory(log.action),
-      log.result,
-      log.ipAddress ?? '',
-      log.userAgent ?? '',
-      JSON.stringify(log.details ?? {})
-    ];
-    return values.map((v) => escape(String(v))).join(',');
+    const record = toExportRecord(row, includeDetails);
+    return csvRow(headers.map((header) => record[header]));
   });
 
   return [headers.join(','), ...csvRows].join('\n');
@@ -471,7 +509,7 @@ auditLogRoutes.get(
     ]);
 
     return c.json({
-      data: rows.map(toFullEntry),
+      data: rows.map((row) => toFullEntry(row)),
       query: query.q,
       pagination: {
         page,
@@ -501,6 +539,7 @@ auditLogRoutes.post(
     });
 
     const rows = await queryRows(where, 10000, 0);
+    const exportColumns = normalizeExportColumns(body.columns, body.includeDetails);
 
     writeRouteAudit(c, {
       orgId: auth.orgId,
@@ -508,23 +547,33 @@ auditLogRoutes.post(
       resourceType: 'audit_log',
       details: {
         format: body.format,
-        rowCount: rows.length
+        rowCount: rows.length,
+        filters: body.filters ?? {},
+        dateRange: body.dateRange ?? {},
+        columns: exportColumns,
+        includeDetails: body.includeDetails
       }
     });
 
     if (body.format === 'csv') {
       c.header('Content-Type', 'text/csv');
       c.header('Content-Disposition', 'attachment; filename="audit-logs.csv"');
-      return c.body(toCsv(rows));
+      return c.body(toCsv(rows, { columns: exportColumns, includeDetails: body.includeDetails }));
     }
 
-    return c.json({ data: rows.map(toFullEntry), total: rows.length });
+    const data = body.columns === undefined
+      ? rows.map((row) => toFullEntry(row, body.includeDetails))
+      : rows.map((row) => pickExportColumns(row, exportColumns, body.includeDetails));
+
+    return c.json({ data, total: rows.length });
   }
 );
 
 // GET /export — used by AuditLogViewer export button (CSV download)
 const exportGetSchema = z.object({
-  userId: z.string().uuid().optional()
+  userId: z.string().uuid().optional(),
+  columns: z.string().optional(),
+  includeDetails: z.enum(['true', 'false']).optional().default('true')
 });
 
 auditLogRoutes.get(
@@ -536,7 +585,13 @@ auditLogRoutes.get(
     const auth = c.get('auth');
     const orgCond = auth.orgCondition(auditLogsTable.orgId);
 
-    const { userId } = c.req.valid('query');
+    const { userId, columns, includeDetails: includeDetailsRaw } = c.req.valid('query');
+    const includeDetails = includeDetailsRaw !== 'false';
+    const parsedColumns = columns
+      ?.split(',')
+      .map((column) => column.trim())
+      .filter((column): column is AuditExportColumn => (auditExportColumns as readonly string[]).includes(column));
+    const exportColumns = normalizeExportColumns(parsedColumns, includeDetails);
     const conditions: SQL[] = [];
     if (orgCond) conditions.push(orgCond);
     if (userId) conditions.push(eq(auditLogsTable.actorId, userId));
@@ -544,9 +599,22 @@ auditLogRoutes.get(
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const rows = await queryRows(where, 10000, 0);
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'audit_logs.export',
+      resourceType: 'audit_log',
+      details: {
+        format: 'csv',
+        rowCount: rows.length,
+        filters: { userId: userId ?? null },
+        columns: exportColumns,
+        includeDetails
+      }
+    });
+
     c.header('Content-Type', 'text/csv');
     c.header('Content-Disposition', 'attachment; filename="audit-logs.csv"');
-    return c.body(toCsv(rows));
+    return c.body(toCsv(rows, { columns: exportColumns, includeDetails }));
   }
 );
 
@@ -562,7 +630,7 @@ auditLogRoutes.get(
     const rows = await fetchAllForReports(orgCond, query);
 
     const actionsPerUser = summarizeUsers(rows);
-    const recentActivity = rows.slice(0, 10).map(toFullEntry);
+    const recentActivity = rows.slice(0, 10).map((row) => toFullEntry(row));
 
     return c.json({
       totalUsers: actionsPerUser.length,
@@ -597,7 +665,7 @@ auditLogRoutes.get(
       failedLogins,
       permissionChanges,
       byAction,
-      recentEvents: securityRows.slice(0, 10).map(toFullEntry)
+      recentEvents: securityRows.slice(0, 10).map((row) => toFullEntry(row))
     });
   }
 );
@@ -627,7 +695,7 @@ auditLogRoutes.get(
       dataChanges,
       exports,
       byAction,
-      recentEvents: complianceRows.slice(0, 10).map(toFullEntry)
+      recentEvents: complianceRows.slice(0, 10).map((row) => toFullEntry(row))
     });
   }
 );

@@ -5,6 +5,7 @@ import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import AssetMonitoringSection from './AssetMonitoringSection';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 
 export type AssetDetail = DiscoveredAsset & {
   openPorts?: OpenPortEntry[];
@@ -204,18 +205,9 @@ export default function AssetDetailModal({
         throw new Error(err.error || 'Failed to create proxy tunnel');
       }
       const tunnel = await response.json();
-      const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, { method: 'POST' });
-      if (!ticketRes.ok) throw new Error('Failed to get tunnel ticket');
-      const { ticket } = await ticketRes.json();
-
-      const apiUrl = (import.meta as any).env?.PUBLIC_API_URL || window.location.origin;
-      const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
-      const wsHost = apiUrl.replace(/^https?:\/\//, '');
-      const wsUrl = `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
 
       // Open proxy info in a new tab
-      const proxyUrl = `/remote/proxy/${tunnel.id}?target=${encodeURIComponent(`${asset.ip}:${port}`)}&ws=${encodeURIComponent(wsUrl)}`;
-      window.open(proxyUrl, '_blank');
+      window.open(buildRemoteProxyPageUrl(tunnel.id, `${asset.ip}:${port}`), '_blank');
     } catch (err) {
       setProxyError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

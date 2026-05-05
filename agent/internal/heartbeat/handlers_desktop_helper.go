@@ -414,9 +414,9 @@ var darwinHelperPlists = map[string]string{
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>
@@ -443,9 +443,9 @@ var darwinHelperPlists = map[string]string{
     <key>LimitLoadToSessionType</key>
     <string>LoginWindow</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>

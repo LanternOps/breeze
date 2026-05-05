@@ -23,14 +23,18 @@ function withEnv(overrides: Record<string, string>, fn: () => void) {
 const validEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/breeze',
   JWT_SECRET: 'a7f3b9c2d1e4f6a8b0c3d5e7f9a1b3c5e7d9f1a3b5c7d9e1f3a5b7c9d1e3f5',
-  APP_ENCRYPTION_KEY: 'x9y8z7w6v5u4t3s2r1q0p9o8n7m6l5k4j3i2h1g0f9e8d7c6b5a4',
-  MFA_ENCRYPTION_KEY: 'k4j3i2h1g0f9e8d7c6b5a4x9y8z7w6v5u4t3s2r1q0p9o8n7m6l5',
+  APP_ENCRYPTION_KEY: '440e7e4bafb77c92cc38f818c90ad2e4c155089a438e6a790572a328e532b60a',
+  MFA_ENCRYPTION_KEY: 'a725b6546832661a86e27bf46ea556099f163efc5a5f1daa58697f13f6204510',
   NODE_ENV: 'development',
+  TRUSTED_PROXY_CIDRS: '172.30.0.11/32',
   // Production-required (now mandatory in prod). Provide a strong random
   // value here so the suite's many "production happy-path" tests don't trip
   // the new fail-loud check; tests that assert the missing-secret throw
   // override this explicitly.
   AGENT_ENROLLMENT_SECRET: 'prod-test-agent-enrollment-secret-32-chars-min-strong-random',
+  ENROLLMENT_KEY_PEPPER: 'prod-test-enrollment-pepper-32-chars-min-strong-random',
+  MFA_RECOVERY_CODE_PEPPER: 'prod-test-mfa-recovery-pepper-32-chars-min-strong-random',
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'prod-test-release-manifest-public-key',
 };
 
 describe('validateConfig', () => {
@@ -59,6 +63,45 @@ describe('validateConfig', () => {
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('accepts explicit production bootstrap admin credentials', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      BREEZE_BOOTSTRAP_ADMIN_EMAIL: 'owner@example.test',
+      BREEZE_BOOTSTRAP_ADMIN_PASSWORD: 'operator-generated-credential-32-chars',
+    }, () => {
+      const config = validateConfig();
+      expect(config.BREEZE_BOOTSTRAP_ADMIN_EMAIL).toBe('owner@example.test');
+    });
+  });
+
+  it('rejects partial production bootstrap admin credentials', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      BREEZE_BOOTSTRAP_ADMIN_PASSWORD: 'operator-generated-credential-32-chars',
+    }, () => {
+      expect(() => validateConfig()).toThrow('BREEZE_BOOTSTRAP_ADMIN_EMAIL');
+    });
+  });
+
+  it('rejects production bootstrap admin development defaults', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      BREEZE_BOOTSTRAP_ADMIN_EMAIL: 'admin@breeze.local',
+      BREEZE_BOOTSTRAP_ADMIN_PASSWORD: 'BreezeAdmin123!',
+    }, () => {
+      expect(() => validateConfig()).toThrow('development default');
     });
   });
 
@@ -125,6 +168,134 @@ describe('validateConfig', () => {
     });
   });
 
+  it('rejects malformed APP_ENCRYPTION_KEY in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      APP_ENCRYPTION_KEY: 'short-non-placeholder-key-material',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('APP_ENCRYPTION_KEY');
+      expect(() => validateConfig()).toThrow('32 random bytes');
+    });
+  });
+
+  it('rejects low-entropy encryption keys in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      APP_ENCRYPTION_KEY: '0'.repeat(64),
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('low-entropy');
+    });
+  });
+
+  it('rejects structured sequential encryption keys in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      APP_ENCRYPTION_KEY: '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
+      MFA_ENCRYPTION_KEY: 'BggflybQysOuzKYNrLNdVFyWG3bw7ntqMUJS3Qdv2xM=',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('low-entropy');
+    });
+  });
+
+  it('rejects repeated-block encryption keys in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      APP_ENCRYPTION_KEY: '440e7e4bafb77c92440e7e4bafb77c92440e7e4bafb77c92440e7e4bafb77c92',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('low-entropy');
+    });
+  });
+
+  it('rejects reused encryption key domains in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      MFA_ENCRYPTION_KEY: validEnv.APP_ENCRYPTION_KEY,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('must not reuse secret material');
+    });
+  });
+
+  it('rejects reused encryption key material across different encodings in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      MFA_ENCRYPTION_KEY: 'RA5+S6+3fJLMOPgYyQrS5MFVCJpDjmp5BXKjKOUytgo=',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('key material');
+    });
+  });
+
+  it('rejects encryption keys reused with configured peppers in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      ENROLLMENT_KEY_PEPPER: validEnv.APP_ENCRYPTION_KEY,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('must not reuse secret material');
+    });
+  });
+
+  it('requires a release artifact manifest public key for production GitHub binaries', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      BINARY_SOURCE: 'github',
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS');
+    });
+  });
+
+  it('does not require a release artifact manifest public key for local production binaries', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      BINARY_SOURCE: 'local',
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('accepts documented 32-byte base64 encryption keys in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      APP_ENCRYPTION_KEY: 'BggflybQysOuzKYNrLNdVFyWG3bw7ntqMUJS3Qdv2xM=',
+      MFA_ENCRYPTION_KEY: 'uA8dTOTNSgE+XrFrurrahEYdyGwdJu6IU5eDXDsXIJ8=',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
   it('allows any JWT_SECRET value in development', () => {
     withEnv({
       ...validEnv,
@@ -175,6 +346,50 @@ describe('validateConfig', () => {
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
     }, () => {
       expect(() => validateConfig()).toThrow('TRUST_PROXY_HEADERS');
+    });
+  });
+
+  it('warns and defaults to loopback when TRUSTED_PROXY_CIDRS is empty in production (does not crash)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      TRUSTED_PROXY_CIDRS: '',
+    }, () => {
+      // Should NOT throw — operators upgrading without setting the new env var
+      // would otherwise crash on first boot. Runtime falls back to loopback-only.
+      expect(() => validateConfig()).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('TRUSTED_PROXY_CIDRS is empty')
+      );
+    });
+    warnSpy.mockRestore();
+  });
+
+  it('rejects broad private trusted proxy CIDRs in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      TRUSTED_PROXY_CIDRS: '172.30.0.0/24',
+    }, () => {
+      expect(() => validateConfig()).toThrow('Private-network trusted proxies');
+    });
+  });
+
+  it('allows proxy trust without CIDRs when proxy headers are disabled in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'false',
+      TRUSTED_PROXY_CIDRS: '',
+    }, () => {
+      const config = validateConfig();
+      expect(config.TRUST_PROXY_HEADERS).toBe('false');
     });
   });
 
@@ -301,15 +516,27 @@ describe('validateConfig', () => {
     });
   });
 
-  it('allows missing ENROLLMENT_KEY_PEPPER in production so APP_ENCRYPTION_KEY can be used as fallback', () => {
+  it('rejects missing ENROLLMENT_KEY_PEPPER in production', () => {
     withEnv({
       ...validEnv,
       NODE_ENV: 'production',
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
       TRUST_PROXY_HEADERS: 'true',
+      ENROLLMENT_KEY_PEPPER: '',
     }, () => {
-      const config = validateConfig();
-      expect(config.NODE_ENV).toBe('production');
+      expect(() => validateConfig()).toThrow('ENROLLMENT_KEY_PEPPER');
+    });
+  });
+
+  it('rejects missing MFA_RECOVERY_CODE_PEPPER in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      MFA_RECOVERY_CODE_PEPPER: '',
+    }, () => {
+      expect(() => validateConfig()).toThrow('MFA_RECOVERY_CODE_PEPPER');
     });
   });
 

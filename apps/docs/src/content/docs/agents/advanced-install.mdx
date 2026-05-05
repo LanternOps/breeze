@@ -1,0 +1,242 @@
+---
+title: Advanced Install Methods
+description: Alternate, scripted, and unattended ways to install the Breeze agent — ZIP bundles, MSI properties, direct binary + enroll, and the full enroll/service flag reference.
+sidebar:
+  order: 1.5
+  label: Advanced Install Methods
+---
+
+import { Tabs, TabItem, Aside, FileTree } from '@astrojs/starlight/components';
+
+The [Quick Install](/agents/installation/) page covers the happy path — a pre-configured MSI or PKG built by the dashboard. This page documents the alternate paths used for **silent deployment, MDM, scripted rollouts, air-gapped installs, and environments where Breeze's MSI signing service is not configured**.
+
+If you just want to install on a single machine, use the dashboard installer instead.
+
+## Picking a Method
+
+| Method | When to use |
+|---|---|
+| [ZIP bundle](#zip-bundle-msi--enrollmentjson--installbat) | Default fallback when no remote MSI signing service is wired up. Self-contained: signed MSI + credentials + script. |
+| [MSI with properties](#msi-with-properties-silent-install) | Available when the signing service is configured. Single signed file, properties embedded at sign time or passed at `msiexec`. |
+| [Direct binary + `enroll`](#direct-binary--manual-enroll) | Custom packaging, MDM, Ansible/Chef/Puppet, or container images. Most flexible. |
+| [Public installer link](/agents/installation/#public-installer-links) | Hand off install to an on-site contact via a token-authenticated URL. |
+
+---
+
+## ZIP Bundle (MSI + enrollment.json + install.bat)
+
+When the API does **not** have an MSI signing service configured, the dashboard generates a **zip bundle** instead of a property-injected MSI. The same fallback exists for macOS (PKG + `install.sh`).
+
+This is also the format you get if you call the underlying `buildWindowsInstallerZip` / `buildMacosInstallerZip` paths directly — for example from your own automation calling the enrollment-key download endpoint.
+
+### Windows zip contents
+
+<FileTree>
+- breeze-agent-windows.zip
+  - breeze-agent.msi      The unmodified, signed agent MSI
+  - enrollment.json       Server URL + enrollment key + secret + site ID
+  - install.bat           Calls msiexec, then `breeze-agent enroll`
+</FileTree>
+
+### macOS zip contents
+
+<FileTree>
+- breeze-agent-macos.zip
+  - breeze-agent.pkg      The notarized agent PKG
+  - enrollment.json       Server URL + enrollment key + secret + site ID
+  - install.sh            Calls `installer -pkg`, then `breeze-agent enroll`
+</FileTree>
+
+### Running the bundle
+
+<Tabs>
+  <TabItem label="Windows">
+    Extract the zip to any directory, then run `install.bat` **as Administrator**:
+
+    ```powershell
+    Expand-Archive breeze-agent-windows.zip -DestinationPath C:\breeze-install
+    cd C:\breeze-install
+    Start-Process -FilePath .\install.bat -Verb RunAs -Wait
+    ```
+
+    The script will:
+
+    1. Run `msiexec /i breeze-agent.msi /quiet /norestart`
+    2. Wait 5 seconds for install to settle
+    3. Read `enrollment.json` and invoke `"%ProgramFiles%\Breeze\breeze-agent.exe" enroll <key> --server <url> [--enrollment-secret <secret>]`
+    4. Delete `enrollment.json` so credentials do not persist on disk
+  </TabItem>
+  <TabItem label="macOS">
+    ```bash
+    unzip breeze-agent-macos.zip -d ~/breeze-install
+    cd ~/breeze-install
+    sudo ./install.sh
+    ```
+
+    The script will:
+
+    1. `sudo installer -pkg breeze-agent.pkg -target /`
+    2. Read `enrollment.json` via `plutil -extract`
+    3. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>] [--site-id <id>]`
+    4. Delete `enrollment.json`
+  </TabItem>
+</Tabs>
+
+<Aside type="caution">
+  `enrollment.json` contains a one-time enrollment secret and a usage-limited child enrollment key. Treat the zip the same as you would any short-lived credential — distribute over a trusted channel and let the bundled script delete the file on first run.
+</Aside>
+
+### `enrollment.json` schema
+
+```json
+{
+  "serverUrl": "https://breeze.yourdomain.com",
+  "enrollmentKey": "64-char-lowercase-hex",
+  "enrollmentSecret": "shared-AGENT_ENROLLMENT_SECRET",
+  "siteId": "uuid-of-target-site"
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `serverUrl` | yes | Passed as `--server` to the agent. Validated server-side at zip generation. |
+| `enrollmentKey` | yes | 64 lowercase hex chars. Server-side regex: `^[a-f0-9]{64}$`. |
+| `enrollmentSecret` | optional | Only set when `AGENT_ENROLLMENT_SECRET` is required by the server. Maps to `--enrollment-secret`. |
+| `siteId` | yes | Site UUID. The MSI install script does not pass `--site-id` (Windows pins site via the enrollment key); the macOS script does. |
+
+If you write your own wrapper, you can ignore the bundled `install.bat` / `install.sh` and just feed the JSON values straight into `breeze-agent enroll` — see [Direct binary + manual enroll](#direct-binary--manual-enroll).
+
+---
+
+## MSI with Properties (Silent Install)
+
+When the API **does** have an MSI signing service configured, the dashboard returns a single signed MSI with credentials baked into the WiX properties at sign time. You can also pass these properties yourself via `msiexec`:
+
+```powershell
+msiexec /i breeze-agent.msi /qn `
+  SERVER_URL=https://breeze.yourdomain.com `
+  ENROLLMENT_KEY=<64-hex-enrollment-key> `
+  ENROLLMENT_SECRET=<shared-enrollment-secret>
+```
+
+| Property | Purpose |
+|---|---|
+| `SERVER_URL` | Breeze API base URL. |
+| `ENROLLMENT_KEY` | 64-hex enrollment key. Marked `Hidden="yes"` so it does not appear in MSI logs. |
+| `ENROLLMENT_SECRET` | Optional `AGENT_ENROLLMENT_SECRET`. Marked `Hidden="yes"`. |
+
+The MSI's `EnrollAgent` custom action runs `breeze-agent.exe enroll "[ENROLLMENT_KEY]" --server "[SERVER_URL]" --enrollment-secret "[ENROLLMENT_SECRET]" --quiet` directly during install — there is no PowerShell wrapper. A WiX `Launch Condition` enforces that `SERVER_URL` and `ENROLLMENT_KEY` are provided together (both or neither).
+
+If neither property is set, the MSI installs the binaries but skips enrollment. You can then enroll later by running `breeze-agent.exe enroll …` manually, which is useful when staging an image for cloning.
+
+<Aside>
+  There is no `SITE_ID` MSI property. Site assignment is encoded in the enrollment key on the server, so a key created against site X can only enroll devices into site X.
+</Aside>
+
+---
+
+## Direct Binary + Manual Enroll
+
+For MDM, configuration management (Ansible, Chef, Puppet, Salt), golden images, or container/VM templates, install the agent binary yourself and call `enroll` once the host is provisioned.
+
+<Tabs>
+  <TabItem label="Linux">
+    ```bash
+    curl -fsSL -o /usr/local/bin/breeze-agent \
+      https://breeze.yourdomain.com/api/v1/agents/download/linux/amd64
+    chmod +x /usr/local/bin/breeze-agent
+
+    sudo /usr/local/bin/breeze-agent enroll <ENROLLMENT_KEY> \
+      --server https://breeze.yourdomain.com \
+      --enrollment-secret <ENROLLMENT_SECRET> \
+      --site-id <SITE_UUID> \
+      --quiet
+
+    sudo /usr/local/bin/breeze-agent service install
+    ```
+  </TabItem>
+  <TabItem label="macOS">
+    ```bash
+    curl -fsSL -o /usr/local/bin/breeze-agent \
+      https://breeze.yourdomain.com/api/v1/agents/download/darwin/arm64
+    chmod +x /usr/local/bin/breeze-agent
+
+    sudo /usr/local/bin/breeze-agent enroll <ENROLLMENT_KEY> \
+      --server https://breeze.yourdomain.com \
+      --enrollment-secret <ENROLLMENT_SECRET> \
+      --site-id <SITE_UUID> \
+      --quiet
+
+    sudo /usr/local/bin/breeze-agent service install
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    Invoke-WebRequest `
+      -Uri "https://breeze.yourdomain.com/api/v1/agents/download/windows/amd64" `
+      -OutFile "C:\Program Files\Breeze\breeze-agent.exe"
+
+    & "C:\Program Files\Breeze\breeze-agent.exe" enroll <ENROLLMENT_KEY> `
+      --server https://breeze.yourdomain.com `
+      --enrollment-secret <ENROLLMENT_SECRET> `
+      --quiet
+
+    & "C:\Program Files\Breeze\breeze-agent.exe" service install
+    ```
+  </TabItem>
+</Tabs>
+
+### `breeze-agent enroll` — flag reference
+
+| Flag | Required | Notes |
+|---|---|---|
+| `<enrollment-key>` (positional) | yes | Single positional argument. 64-char enrollment key. |
+| `--server <url>` | yes | API base URL. May also be set in the config file. |
+| `--enrollment-secret <secret>` | optional | The server's `AGENT_ENROLLMENT_SECRET`. Required when configured server-side. |
+| `--site-id <uuid>` | optional | Override the enrollment key's default site assignment. Must be a site the key is authorized for. |
+| `--device-role <role>` | optional | Override the inferred device role (e.g. `workstation`, `server`). |
+| `--force` | optional | Re-enroll a host that already has a config. Replaces `agent_id` and `auth_token` only on success — a failed re-enroll leaves the existing config untouched. |
+| `--quiet` | optional | Suppress stdout progress output. Errors still go to stderr. Use for unattended installs. |
+| `--config <path>` | optional (persistent) | Override the default config path (`/etc/breeze/agent.yaml`, `/Library/Application Support/Breeze/agent.yaml`, or `C:\ProgramData\Breeze\agent.yaml`). |
+
+The agent refuses to enroll with an empty hostname — if your provisioning pipeline runs `enroll` before `hostnamectl` / `scutil --set ComputerName`, set the hostname first.
+
+### `breeze-agent service install` — flag reference
+
+| Flag | Platform | Notes |
+|---|---|---|
+| `--no-watchdog` | all | Skip auto-fetching and registering the watchdog. Use for air-gapped hosts where the agent cannot reach GitHub releases. |
+| `--with-user-helper` | Linux, macOS | Also install the per-user desktop helper unit (systemd user unit / LaunchAgent). Not needed on Windows — the helper is spawned per-session by the service. |
+
+`service install` is safe to re-run — it overwrites the binary at the install path, restarts the agent service, and registers any missing watchdog. Use this to add the watchdog to a previously agent-only install. To install only the watchdog without touching the agent, run `breeze-watchdog service install` directly.
+
+`service uninstall` stops and removes both the agent and the watchdog services, but does **not** remove `agent.yaml` or `secrets.yaml` — wipe `/etc/breeze`, `/Library/Application Support/Breeze`, or `C:\ProgramData\Breeze` manually if you want a clean uninstall.
+
+---
+
+## Pre-Staging Without Enrollment
+
+You can install the agent binary and service on an image **without** enrolling, then enroll on first boot. This is the standard pattern for VM templates and golden images.
+
+1. Install the agent binary (or run the MSI/PKG with no `ENROLLMENT_KEY`).
+2. Install the service: `breeze-agent service install`. The service starts in a "waiting for enrollment" state and will not contact the server.
+3. On first boot of a cloned VM, run `breeze-agent enroll <key> --server <url>` from a startup script. The service auto-detects the new config and connects.
+
+If you skip step 2 and run `enroll` after `service install`, the service picks up the new credentials within a few seconds without needing a restart.
+
+---
+
+## Programmatic Bundle Generation
+
+If you are building your own provisioning system, the same zip bundles the dashboard produces are available via the enrollment-key API:
+
+```http
+POST /api/v1/enrollment-keys/:id/installer-link
+```
+
+This issues a token-authenticated download URL that returns either:
+
+- A signed MSI / PKG with properties baked in (when the signing service is configured)
+- A zip bundle (`breeze-agent-windows.zip` / the equivalent macOS zip) when not
+
+Both responses set `Cache-Control: no-store` and `Content-Disposition: attachment`. The download is single-use by default and decrements the parent enrollment key's `maxUsage` atomically. See [Enrollment Keys](/agents/enrollment-keys/) for the full API.

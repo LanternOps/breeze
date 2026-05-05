@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
-import { revokeAllUserOauthArtifacts } from './grantRevocation';
+import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts, revokeAllUserOauthArtifacts } from './grantRevocation';
 
 vi.mock('../db', () => ({
   db: { select: vi.fn(), update: vi.fn() },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('./revocationCache', () => ({
@@ -15,6 +17,8 @@ vi.mock('./revocationCache', () => ({
 
 const selectMock = vi.mocked(db.select);
 const updateMock = vi.mocked(db.update);
+const runOutsideDbContextMock = vi.mocked(runOutsideDbContext);
+const withSystemDbAccessContextMock = vi.mocked(withSystemDbAccessContext);
 const revokeJtiMock = vi.mocked(revokeJti);
 const revokeGrantMock = vi.mocked(revokeGrant);
 
@@ -89,6 +93,44 @@ describe('revokeAllUserOauthArtifacts', () => {
     });
     expect(fromCalls).toContain(oauthRefreshTokens);
     expect(fromCalls).toContain(oauthGrants);
+  });
+
+  it('runs exported revocation helpers in explicit system DB context', async () => {
+    mockSelectRows([]);
+    mockSelectRows([]);
+
+    await revokeAllUserOauthArtifacts('33333333-3333-3333-3333-333333333333');
+
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('revokes partner-wide OAuth artifacts for tenant lifecycle changes', async () => {
+    mockSelectRows([
+      { id: 'rt-partner', payload: { jti: 'jti-partner', grantId: 'grant-partner' }, expiresAt: new Date(Date.now() + 60_000) },
+    ]);
+    mockSelectRows([{ id: 'grant-partner' }]);
+    mockUpdateChain();
+
+    const result = await revokeAllPartnerOauthArtifacts('66666666-6666-6666-8666-666666666666');
+
+    expect(revokeJtiMock).toHaveBeenCalledWith('jti-partner', expect.any(Number));
+    expect(revokeGrantMock).toHaveBeenCalledWith('grant-partner', expect.any(Number));
+    expect(result.refreshTokensRevoked).toBe(1);
+  });
+
+  it('revokes org-wide OAuth artifacts for tenant lifecycle changes', async () => {
+    mockSelectRows([
+      { id: 'rt-org', payload: { jti: 'jti-org', grantId: 'grant-org' }, expiresAt: new Date(Date.now() + 60_000) },
+    ]);
+    mockSelectRows([{ id: 'grant-org' }]);
+    mockUpdateChain();
+
+    const result = await revokeAllOrgOauthArtifacts('77777777-7777-7777-8777-777777777777');
+
+    expect(revokeJtiMock).toHaveBeenCalledWith('jti-org', expect.any(Number));
+    expect(revokeGrantMock).toHaveBeenCalledWith('grant-org', expect.any(Number));
+    expect(result.refreshTokensRevoked).toBe(1);
   });
 
   it('propagates revokeJti cache failures', async () => {

@@ -3,17 +3,21 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte } from 'drizzle-orm';
 import { db } from '../../db';
 import { c2cBackupJobs, c2cBackupConfigs } from '../../db/schema';
+import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueueC2cSync } from '../../jobs/c2cEnqueue';
 import { c2cJobListSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 import { createC2cSyncJobIfIdle } from '../../services/c2cJobCreation';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const c2cJobsRoutes = new Hono();
+const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireC2cWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 // ── List jobs ───────────────────────────────────────────────────────────────
 
-c2cJobsRoutes.get('/jobs', zValidator('query', c2cJobListSchema), async (c) => {
+c2cJobsRoutes.get('/jobs', requireC2cRead, zValidator('query', c2cJobListSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -38,7 +42,7 @@ c2cJobsRoutes.get('/jobs', zValidator('query', c2cJobListSchema), async (c) => {
 
 // ── Get single job ──────────────────────────────────────────────────────────
 
-c2cJobsRoutes.get('/jobs/:id', zValidator('param', idParamSchema), async (c) => {
+c2cJobsRoutes.get('/jobs/:id', requireC2cRead, zValidator('param', idParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -58,6 +62,8 @@ c2cJobsRoutes.get('/jobs/:id', zValidator('param', idParamSchema), async (c) => 
 
 c2cJobsRoutes.post(
   '/configs/:id/run',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');

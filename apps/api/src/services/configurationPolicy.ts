@@ -14,8 +14,10 @@ import {
   configPolicyMonitoringWatches,
   configPolicyBackupSettings,
   devices,
+  deviceGroups,
   organizations,
   deviceGroupMemberships,
+  sites,
   patchPolicies,
   alertRules,
   backupConfigs,
@@ -36,7 +38,7 @@ import { normalizePatchInlineSettings } from './configPolicyPatching';
 // ============================================
 
 type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access';
-type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
+export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
@@ -927,6 +929,77 @@ export async function assignPolicy(
   return assignment;
 }
 
+export async function validateAssignmentTarget(
+  policyOrgId: string,
+  level: ConfigAssignmentLevel,
+  targetId: string
+): Promise<{ valid: boolean; error?: string }> {
+  switch (level) {
+    case 'organization': {
+      if (targetId !== policyOrgId) {
+        return { valid: false, error: 'Configuration policies can only be assigned within their owning organization' };
+      }
+
+      const [org] = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, policyOrgId))
+        .limit(1);
+      return org
+        ? { valid: true }
+        : { valid: false, error: 'Policy organization not found' };
+    }
+
+    case 'site': {
+      const [site] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, targetId), eq(sites.orgId, policyOrgId)))
+        .limit(1);
+      return site
+        ? { valid: true }
+        : { valid: false, error: 'Site target not found in the policy organization' };
+    }
+
+    case 'device_group': {
+      const [group] = await db
+        .select({ id: deviceGroups.id })
+        .from(deviceGroups)
+        .where(and(eq(deviceGroups.id, targetId), eq(deviceGroups.orgId, policyOrgId)))
+        .limit(1);
+      return group
+        ? { valid: true }
+        : { valid: false, error: 'Device group target not found in the policy organization' };
+    }
+
+    case 'device': {
+      const [device] = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.id, targetId), eq(devices.orgId, policyOrgId)))
+        .limit(1);
+      return device
+        ? { valid: true }
+        : { valid: false, error: 'Device target not found in the policy organization' };
+    }
+
+    case 'partner': {
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, policyOrgId))
+        .limit(1);
+      if (!org?.partnerId || org.partnerId !== targetId) {
+        return { valid: false, error: 'Partner target does not match the policy organization partner' };
+      }
+      return { valid: true };
+    }
+
+    default:
+      return { valid: false, error: 'Unsupported assignment target level' };
+  }
+}
+
 export async function unassignPolicy(assignmentId: string, configPolicyId: string) {
   const [deleted] = await db
     .delete(configPolicyAssignments)
@@ -1053,7 +1126,8 @@ async function resolveEffectiveConfigWithExecutor(
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, and(
       eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-      eq(configurationPolicies.status, 'active')
+      eq(configurationPolicies.status, 'active'),
+      eq(configurationPolicies.orgId, device.orgId)
     ))
     .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
     .where(sql`(${sql.join(targetConditions, sql` OR `)})`)

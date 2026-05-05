@@ -8,7 +8,7 @@
  * - run_script (Tier 3): Execute a script on one or more devices
  * - manage_services (Tier 3): List, start, stop, or restart system services
  * - list_scripts (Tier 1): Search and filter scripts in the org library
- * - get_script_details (Tier 1): Get full script details with content/versions/stats
+ * - get_script_details (Tier 1): Get script metadata with optional content/versions/stats
  * - list_script_templates (Tier 1): Browse available script templates
  * - get_script_execution_history (Tier 1): Get past execution results for a script
  * - search_script_library (Tier 1): Search scripts and templates together
@@ -361,12 +361,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'get_script_details',
-      description: 'Get full script details including content, parameters, version history, and execution statistics.',
+      description: 'Get script details including parameters, version history, and execution statistics. Script content is omitted unless explicitly requested and may be minimized in AI transcripts.',
       input_schema: {
         type: 'object' as const,
         properties: {
           scriptId: { type: 'string', description: 'UUID of the script' },
-          includeContent: { type: 'boolean', description: 'Include the script content (default true)' },
+          includeContent: { type: 'boolean', description: 'Include the script content (default false)' },
           includeVersionHistory: { type: 'boolean', description: 'Include version history (default false)' },
           includeExecutionStats: { type: 'boolean', description: 'Include execution statistics (default false)' },
         },
@@ -375,7 +375,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const scriptId = input.scriptId as string;
-      const includeContent = (input.includeContent as boolean) ?? true;
+      const includeContent = (input.includeContent as boolean) ?? false;
       const includeVersionHistory = (input.includeVersionHistory as boolean) ?? false;
       const includeExecutionStats = (input.includeExecutionStats as boolean) ?? false;
 

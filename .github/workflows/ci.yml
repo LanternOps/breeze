@@ -23,7 +23,7 @@ concurrency:
 
 env:
   NODE_VERSION: '22'
-  PNPM_VERSION: '9.15.0'
+  PNPM_VERSION: '9.15.7'
   GO_VERSION: '1.25.9'
 
 jobs:
@@ -33,6 +33,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Guard production compose defaults
+        run: |
+          if [ -e docker-compose.override.yml ]; then
+            echo "docker-compose.override.yml must not be tracked or present in CI; Compose auto-loads it for production defaults."
+            exit 1
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
@@ -181,6 +188,33 @@ jobs:
 
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run critical npm audit
+        run: pnpm audit --audit-level=critical
+
+      - name: Run supply-chain hardening guard
+        run: bash scripts/security/check-supply-chain-hardening.sh
 
   build-api:
     name: Build API
@@ -363,13 +397,29 @@ jobs:
           REDIS_PASSWORD=ci-smoke-redis-pw
           JWT_SECRET=ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
           AGENT_ENROLLMENT_SECRET=ci-smoke-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
-          APP_ENCRYPTION_KEY=ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
-          MFA_ENCRYPTION_KEY=ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          BREEZE_BOOTSTRAP_ADMIN_EMAIL=ci-admin@breeze.local
+          BREEZE_BOOTSTRAP_ADMIN_PASSWORD=ci-smoke-bootstrap-credential-32-chars
+          APP_ENCRYPTION_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+          MFA_ENCRYPTION_KEY=202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+          ENROLLMENT_KEY_PEPPER=ci-smoke-enrollment-pepper-Hy4Bz9Mp2Wq6Tv0Lk3
+          MFA_RECOVERY_CODE_PEPPER=ci-smoke-mfa-recovery-pepper-Nq8Zx2Vm5Tr9Lp1
           BREEZE_DOMAIN=localhost
           ACME_EMAIL=ci@breeze.local
           TURN_SECRET=ci-smoke-turn-secret
           TURN_HOST=127.0.0.1
           TRUST_PROXY_HEADERS=false
+          # Image refs — base docker-compose.yml requires these via ${VAR:?...}.
+          # The CI override builds api/web from source and disables caddy/coturn,
+          # but Compose still parses interpolation in the base file before
+          # profile filtering, so all refs must resolve. Mutable tags are fine
+          # here since this stack is ephemeral (torn down in Teardown step).
+          BREEZE_API_IMAGE_REF=ghcr.io/lanternops/breeze/api:latest
+          BREEZE_WEB_IMAGE_REF=ghcr.io/lanternops/breeze/web:latest
+          BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
+          CADDY_IMAGE_REF=caddy:2-alpine
+          POSTGRES_IMAGE_REF=postgres:16-alpine
+          REDIS_IMAGE_REF=redis:7-alpine
+          COTURN_IMAGE_REF=coturn/coturn:latest
           EOF
 
       - name: Build and start containers
@@ -393,13 +443,13 @@ jobs:
         run: |
           RESPONSE=$(curl -sf -X POST http://localhost:3001/api/v1/auth/login \
             -H 'Content-Type: application/json' \
-            -d '{"email":"admin@breeze.local","password":"BreezeAdmin123!"}')
-          echo "Login response: ${RESPONSE}"
+            -d '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
           TOKEN=$(echo "${RESPONSE}" | jq -r '.tokens.accessToken // .token // .accessToken // empty')
           if [ -z "${TOKEN}" ]; then
             echo "Login failed — no token in response"
             exit 1
           fi
+          echo "::add-mask::${TOKEN}"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
           echo "Login successful."
 
@@ -583,7 +633,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, build-api, build-web, build-agent, test-agent, smoke-test]
+    needs: [lint, typecheck, test-api, test-web, security-audit, build-api, build-web, build-agent, test-agent, smoke-test]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -592,6 +642,7 @@ jobs:
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
+          SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
@@ -603,6 +654,7 @@ jobs:
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
+             [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \

@@ -17,6 +17,11 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     agentId: 'devices.agentId',
     agentTokenHash: 'devices.agentTokenHash',
+    previousTokenHash: 'devices.previousTokenHash',
+    previousTokenExpiresAt: 'devices.previousTokenExpiresAt',
+    watchdogTokenHash: 'devices.watchdogTokenHash',
+    previousWatchdogTokenHash: 'devices.previousWatchdogTokenHash',
+    previousWatchdogTokenExpiresAt: 'devices.previousWatchdogTokenExpiresAt',
     orgId: 'devices.orgId',
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
@@ -26,6 +31,7 @@ vi.mock('../db/schema', () => ({
     id: 'deviceCommands.id',
     deviceId: 'deviceCommands.deviceId',
     status: 'deviceCommands.status',
+    targetRole: 'deviceCommands.targetRole',
   },
   discoveryJobs: {
     id: 'discoveryJobs.id',
@@ -37,6 +43,13 @@ vi.mock('../db/schema', () => ({
     id: 'remoteSessions.id',
     deviceId: 'remoteSessions.deviceId',
     status: 'remoteSessions.status',
+  },
+  tunnelSessions: {
+    id: 'tunnelSessions.id',
+    deviceId: 'tunnelSessions.deviceId',
+    status: 'tunnelSessions.status',
+    errorMessage: 'tunnelSessions.errorMessage',
+    endedAt: 'tunnelSessions.endedAt',
   },
   scriptExecutions: {
     id: 'scriptExecutions.id',
@@ -81,6 +94,12 @@ vi.mock('./desktopWs', () => ({
   isDesktopSessionOwnedByAgent: vi.fn(() => true)
 }));
 
+vi.mock('./tunnelWs', () => ({
+  handleTunnelDataFromAgent: vi.fn(),
+  isTunnelOwnedByAgent: vi.fn(() => true),
+  registerTunnelOwnership: vi.fn(),
+}));
+
 vi.mock('../jobs/discoveryWorker', () => ({
   enqueueDiscoveryResults: vi.fn()
 }));
@@ -97,6 +116,10 @@ vi.mock('../jobs/monitorWorker', () => ({
 vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false),
   getRedis: vi.fn(() => null)
+}));
+
+vi.mock('../services/viewerTokenRevocation', () => ({
+  revokeViewerSession: vi.fn(async () => undefined),
 }));
 
 vi.mock('../services/rate-limit', () => ({
@@ -122,9 +145,11 @@ import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
 import { getActiveTerminalSession, handleTerminalOutput } from './terminalWs';
+import { registerTunnelOwnership } from './tunnelWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 
 function wsMock() {
   return {
@@ -166,10 +191,11 @@ function selectWithInnerJoin(rows: unknown[]) {
 }
 
 function updateResult(rows: unknown[] = []) {
+  const returning = vi.fn().mockResolvedValue(rows);
   return {
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(rows),
-      returning: vi.fn().mockResolvedValue(rows),
+      where: vi.fn().mockReturnValue({ returning }),
+      returning,
     })
   };
 }
@@ -235,6 +261,39 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.update).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('rejects watchdog-targeted command results on the agent websocket', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-1',
+          type: 'update_agent',
+          payload: {},
+          deviceId: 'device-123',
+          targetRole: 'watchdog',
+        }
+      ]) as any);
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-1' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '33333333-3333-4333-8333-333333333333',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'spoofed'
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
@@ -335,6 +394,49 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.select).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('does not register tunnel ownership when a tunnel open result is not DB-bound to the authenticated device', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'tun-open-44444444-4444-4444-8444-444444444444',
+        status: 'completed'
+      })
+    } as any, ws as any);
+
+    expect(registerTunnelOwnership).not.toHaveBeenCalled();
+    expect(revokeViewerSession).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('registers tunnel ownership only after a DB-backed transition for the authenticated device', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([
+      { id: '44444444-4444-4444-8444-444444444444', deviceId: 'device-123' }
+    ]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'tun-open-44444444-4444-4444-8444-444444444444',
+        status: 'completed'
+      })
+    } as any, ws as any);
+
+    expect(registerTunnelOwnership).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444', 'agent-123');
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

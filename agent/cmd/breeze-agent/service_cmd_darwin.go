@@ -23,6 +23,9 @@ const (
 	darwinLogDir                     = "/Library/Logs/Breeze"
 	darwinConfigDir                  = "/Library/Application Support/Breeze"
 	darwinLabel                      = "com.breeze.agent"
+	darwinWatchdogBinaryPath         = "/usr/local/bin/breeze-watchdog"
+	darwinWatchdogPlistDst           = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
+	darwinWatchdogLabel              = "com.breeze.watchdog"
 )
 
 // Embedded plist — matches agent/service/launchd/com.breeze.agent.plist
@@ -85,9 +88,9 @@ const darwinDesktopUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>
@@ -115,9 +118,9 @@ const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <key>LimitLoadToSessionType</key>
     <string>LoginWindow</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>
@@ -229,15 +232,9 @@ var serviceInstallCmd = &cobra.Command{
 		// right away rather than waiting for the first heartbeat.
 		bootstrapDesktopHelperPlists()
 
-		// Create breeze group for IPC socket access (best-effort)
-		if err := exec.Command("dscl", ".", "-read", "/Groups/breeze").Run(); err != nil {
-			if err2 := exec.Command("dscl", ".", "-create", "/Groups/breeze").Run(); err2 != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to create 'breeze' group: %v\n", err2)
-			} else if err3 := exec.Command("dscl", ".", "-create", "/Groups/breeze", "PrimaryGroupID", "399").Run(); err3 != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to set group ID: %v\n", err3)
-			} else {
-				fmt.Println("Created 'breeze' group for IPC socket access.")
-			}
+		// Create breeze group for IPC socket access without assuming a fixed GID.
+		if err := ensureDarwinBreezeGroup(); err != nil {
+			return err
 		}
 
 		fmt.Println()
@@ -314,6 +311,8 @@ var serviceUninstallCmd = &cobra.Command{
 			fmt.Println("Service stopped.")
 		}
 
+		uninstallDarwinWatchdog()
+
 		// Remove plists
 		if err := os.Remove(darwinPlistDst); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinPlistDst, err)
@@ -338,6 +337,27 @@ var serviceUninstallCmd = &cobra.Command{
 		fmt.Printf("To remove config: sudo rm -rf '%s'\n", darwinConfigDir)
 		return nil
 	},
+}
+
+func uninstallDarwinWatchdog() {
+	if isLaunchdLoaded(darwinWatchdogLabel) {
+		out, err := exec.Command("launchctl", "bootout", "system/"+darwinWatchdogLabel).CombinedOutput()
+		if err != nil {
+			out2, err2 := exec.Command("launchctl", "unload", darwinWatchdogPlistDst).CombinedOutput()
+			if err2 != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to stop watchdog service: %s / %s\n",
+					strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+			}
+		} else {
+			_ = out
+		}
+	}
+	if err := os.Remove(darwinWatchdogPlistDst); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinWatchdogPlistDst, err)
+	}
+	if err := os.Remove(darwinWatchdogBinaryPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinWatchdogBinaryPath, err)
+	}
 }
 
 var serviceStartCmd = &cobra.Command{
@@ -584,4 +604,29 @@ func bootstrapDesktopHelperPlists() {
 			fmt.Println("Login-window desktop helper bootstrapped.")
 		}
 	}
+}
+
+func ensureDarwinBreezeGroup() error {
+	const script = `
+set -e
+if dscl . -read /Groups/breeze >/dev/null 2>&1; then
+  dscl . -read /Groups/breeze PrimaryGroupID >/dev/null
+  exit 0
+fi
+gid=350
+while [ "$gid" -le 499 ]; do
+  if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
+    dscl . -create /Groups/breeze
+    dscl . -create /Groups/breeze PrimaryGroupID "$gid"
+    exit 0
+  fi
+  gid=$((gid + 1))
+done
+echo "no free local system GID available for breeze group" >&2
+exit 1
+`
+	if out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to ensure breeze group: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

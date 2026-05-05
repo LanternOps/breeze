@@ -108,6 +108,36 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.logs[0].timestamp).toBe('2026-02-15T10:00:00.000Z');
     });
 
+    it('redacts legacy raw secrets before returning log search results', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'log-1',
+                deviceId: 'dev-1',
+                timestamp: new Date('2026-02-15T10:00:00Z'),
+                level: 'error',
+                component: 'heartbeat',
+                message: 'failed token=raw-token',
+                fields: { apiKey: 'raw-key' },
+                agentVersion: '1.0.0',
+              }]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const tool = tools.get('search_agent_logs')!;
+      const result = await tool.handler({}, makeAuth('org-1'));
+
+      const parsed = JSON.parse(result);
+      expect(parsed.logs[0]).toMatchObject({
+        message: 'failed token=[REDACTED]',
+        fields: { apiKey: '[REDACTED]' },
+      });
+    });
+
     it('should cap limit at 500', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({

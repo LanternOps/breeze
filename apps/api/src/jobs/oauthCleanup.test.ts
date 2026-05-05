@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, getRepeatableJobsMock, removeRepeatableByKeyMock, queueCloseMock, workerCloseMock, cleanupHelperMock, withSystemDbAccessContextMock, capturedWorkerProcessor } = vi.hoisted(() => ({
+const { addMock, getRepeatableJobsMock, removeRepeatableByKeyMock, queueCloseMock, workerCloseMock, cleanupHelperMock, lifecycleCleanupHelperMock, withSystemDbAccessContextMock, capturedWorkerProcessor } = vi.hoisted(() => ({
   addMock: vi.fn(),
   getRepeatableJobsMock: vi.fn(),
   removeRepeatableByKeyMock: vi.fn(),
   queueCloseMock: vi.fn(),
   workerCloseMock: vi.fn(),
   cleanupHelperMock: vi.fn(),
+  lifecycleCleanupHelperMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   capturedWorkerProcessor: { current: null as null | ((job: unknown) => Promise<unknown>) },
 }));
@@ -54,6 +55,7 @@ vi.mock('../services/sentry', () => ({
 
 vi.mock('../oauth/provider', () => ({
   cleanupStaleOauthClients: (...args: unknown[]) => cleanupHelperMock(...(args as [])),
+  cleanupExpiredOauthLifecycleRows: (...args: unknown[]) => lifecycleCleanupHelperMock(...(args as [])),
 }));
 
 import {
@@ -75,6 +77,14 @@ describe('oauthCleanup worker', () => {
     removeRepeatableByKeyMock.mockResolvedValue(undefined);
     queueCloseMock.mockResolvedValue(undefined);
     workerCloseMock.mockResolvedValue(undefined);
+    cleanupHelperMock.mockResolvedValue(0);
+    lifecycleCleanupHelperMock.mockResolvedValue({
+      authCodes: 0,
+      interactions: 0,
+      sessions: 0,
+      grants: 0,
+      refreshTokens: 0,
+    });
     capturedWorkerProcessor.current = null;
     delete process.env.OAUTH_CLEANUP_ENABLED;
   });
@@ -135,8 +145,15 @@ describe('oauthCleanup worker', () => {
     expect(addMock).not.toHaveBeenCalled();
   });
 
-  it('worker processor delegates to cleanupStaleOauthClients within system DB context', async () => {
+  it('worker processor delegates stale-client and lifecycle cleanup within system DB context', async () => {
     cleanupHelperMock.mockResolvedValue(7);
+    lifecycleCleanupHelperMock.mockResolvedValue({
+      authCodes: 1,
+      interactions: 2,
+      sessions: 3,
+      grants: 4,
+      refreshTokens: 5,
+    });
     createOauthCleanupWorker();
     expect(capturedWorkerProcessor.current).toBeTypeOf('function');
 
@@ -144,7 +161,17 @@ describe('oauthCleanup worker', () => {
 
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
     expect(cleanupHelperMock).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ deletedCount: 7 });
+    expect(lifecycleCleanupHelperMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      deletedCount: 7,
+      lifecycleCounts: {
+        authCodes: 1,
+        interactions: 2,
+        sessions: 3,
+        grants: 4,
+        refreshTokens: 5,
+      },
+    });
   });
 
   it('worker processor ignores unknown job names without invoking the helper', async () => {

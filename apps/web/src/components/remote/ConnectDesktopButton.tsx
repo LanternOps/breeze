@@ -3,6 +3,7 @@ import { Monitor, MonitorOff, ExternalLink, Download, X, Globe } from 'lucide-re
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
+import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 
 interface Props {
   deviceId: string;
@@ -82,7 +83,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   const [error, setError] = useState<string | null>(null);
   // Populated when the VNC auto-fallback path times out — carries the info needed
   // for the "Open in Browser" fallback card so we don't navigate away automatically.
-  const [vncFallback, setVncFallback] = useState<{ tunnelId: string; wsUrl: string } | null>(null);
+  const [vncFallback, setVncFallback] = useState<{ tunnelId: string } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const autoDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sessionIdRef = useRef<string | null>(null);
@@ -139,24 +140,6 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
         const tunnel = await tunnelRes.json();
 
-        // Get WS ticket — retained for the browser-fallback noVNC path
-        const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, {
-          method: 'POST',
-        });
-        if (!ticketRes.ok) {
-          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
-          throw new Error('Failed to obtain VNC tunnel ticket');
-        }
-        const ticketData = await ticketRes.json();
-        const ticket = ticketData.ticket?.ticket;
-        if (!ticket) {
-          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
-          throw new Error('Invalid ticket response from server');
-        }
-
-        // Build the browser-fallback URL (kept for the "Open in Browser" card below)
-        const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
-
         // Issue a short-lived connect code for the Tauri viewer deep link (keeps JWT out of URL)
         const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
         if (!codeRes.ok) {
@@ -203,7 +186,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           if (vncPollCount >= vncMaxPolls) {
             // Viewer didn't pick it up in time — show the fallback card so the
             // user can choose to open noVNC in the browser instead.
-            setVncFallback({ tunnelId: tunnel.id, wsUrl });
+            setVncFallback({ tunnelId: tunnel.id });
             setStatus((cur) => cur === 'launching' ? 'fallback' : cur);
 
             if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
@@ -328,8 +311,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // VNC-specific: open noVNC in the browser when the viewer didn't pick up
   const handleOpenInBrowser = useCallback(() => {
     if (vncFallback) {
-      const viewerUrl = `/remote/vnc/${vncFallback.tunnelId}?ws=${encodeURIComponent(vncFallback.wsUrl)}`;
-      window.open(viewerUrl, '_blank');
+      window.open(buildRemoteVncPageUrl(vncFallback.tunnelId), '_blank');
     }
     setVncFallback(null);
     setStatus('idle');

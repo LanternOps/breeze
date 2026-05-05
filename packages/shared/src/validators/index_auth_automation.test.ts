@@ -75,7 +75,7 @@ describe('automationTriggerSchema', () => {
       cron: '0 */6 * * *',
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.data.type === 'schedule') {
       expect(result.data.timezone).toBe('UTC'); // default
     }
   });
@@ -106,11 +106,11 @@ describe('automationTriggerSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('should accept webhook trigger', () => {
+  it('should reject webhook trigger without a signing secret', () => {
     const result = automationTriggerSchema.safeParse({
       type: 'webhook',
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('should accept webhook trigger with secret', () => {

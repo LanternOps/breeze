@@ -20,6 +20,8 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
+    secrets:
+      - metrics_scrape_token
     depends_on:
       api:
         condition: service_healthy
@@ -108,7 +110,7 @@ services:
     command: -config.file=/etc/promtail/config.yml
     volumes:
       - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - promtail_positions:/var/lib/promtail
     depends_on:
       loki:
@@ -120,8 +122,13 @@ services:
     image: oliver006/redis_exporter:v1.61.0
     container_name: breeze-redis-exporter
     restart: unless-stopped
+    command: >
+      sh -ec 'export REDIS_PASSWORD="$$(cat /run/secrets/redis_password)";
+      exec /redis_exporter'
     environment:
       REDIS_ADDR: redis://redis:6379
+    secrets:
+      - redis_password
     depends_on:
       redis:
         condition: service_healthy
@@ -146,3 +153,7 @@ volumes:
   alertmanager_data:
   loki_data:
   promtail_positions:
+
+secrets:
+  metrics_scrape_token:
+    environment: METRICS_SCRAPE_TOKEN

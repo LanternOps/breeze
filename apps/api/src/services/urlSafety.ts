@@ -9,9 +9,9 @@
  * `safeFetch()` closes that window: it resolves the hostname ONCE, filters out
  * private/loopback/link-local addresses, and dials the request with a custom
  * `lookup` function that always returns the validated IP. The hostname is
- * preserved as SNI and as the `Host` header so TLS cert verification still
- * works against the original name. Certificate chain validation is NEVER
- * disabled.
+ * preserved as SNI. `safeFetch` derives the `Host` header from the URL and
+ * ignores caller-supplied Host values so tenant-controlled headers cannot
+ * redirect virtual-host routing. Certificate chain validation is NEVER disabled.
  */
 import { lookup as dnsLookup } from 'dns/promises';
 import type { LookupAddress } from 'dns';
@@ -115,7 +115,7 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
 /**
  * Resolve `url.hostname` once, reject if all resolved IPs are private, and
  * dispatch the request pinned to a validated IP. The hostname is preserved as
- * SNI/Host so TLS verification succeeds normally.
+ * SNI and used to derive Host so TLS verification succeeds normally.
  *
  * Throws `SsrfBlockedError` for policy violations and `Error` (with `cause`)
  * for transport/TLS/timeout failures. Returns a standard `Response`.
@@ -180,19 +180,22 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   if (init.headers) {
     if (init.headers instanceof Headers) {
       init.headers.forEach((v, k) => {
-        headers[k] = v;
+        if (k.toLowerCase() !== 'host') headers[k] = v;
       });
     } else if (Array.isArray(init.headers)) {
-      for (const [k, v] of init.headers) headers[k] = v;
+      for (const [k, v] of init.headers) {
+        if (k.toLowerCase() !== 'host') headers[k] = v;
+      }
     } else {
-      Object.assign(headers, init.headers as Record<string, string>);
+      for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+        if (k.toLowerCase() !== 'host') headers[k] = v;
+      }
     }
   }
-  // Preserve the original hostname as Host header — required so the server
-  // routes us to the right vhost and TLS cert validates normally.
-  if (!Object.keys(headers).some((k) => k.toLowerCase() === 'host')) {
-    headers['Host'] = u.host; // includes port if non-default
-  }
+  // Derive Host from the URL every time. Callers may pass tenant-controlled
+  // headers, so preserving a supplied Host would let tenants override vhost
+  // routing metadata.
+  headers['Host'] = u.host; // includes port if non-default
 
   // Body serialization: support string, Buffer, URLSearchParams, and
   // ArrayBuffer/TypedArray. Callers shouldn't hand us streams/FormData here.

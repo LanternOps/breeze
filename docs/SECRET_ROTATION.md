@@ -91,55 +91,93 @@ Schedule hard rotations during a maintenance window and notify users in advance.
 
 ## 3. APP_ENCRYPTION_KEY
 
-**What it protects:** Encrypts sensitive data at rest in the database (SSO client secrets, integration tokens, etc.). Uses AES-256-GCM with a versioned prefix (`enc:v1:`).
+**What it protects:** Encrypts sensitive data at rest in the database (SSO client secrets, integration tokens, etc.). Uses AES-256-GCM with versioned prefixes (`enc:v1:` legacy ciphertexts and `enc:v2:<keyId>:` key-id ciphertexts).
 
-**Current implementation:** `apps/api/src/services/secretCrypto.ts` derives a 256-bit key via SHA-256 from this env var.
+**Current implementation:** `apps/api/src/services/secretCrypto.ts` derives 256-bit AES keys via SHA-256 from configured secret strings. Legacy `enc:v1:` values use `APP_ENCRYPTION_KEY` (or the existing fallback chain). When `APP_ENCRYPTION_KEY_ID` or `SECRET_ENCRYPTION_KEY_ID` is configured, new writes use `enc:v2:<keyId>:` and decrypt by key ID from the active key or keyring.
 
 > **WARNING:** Rotating this key without re-encrypting existing data will make all previously encrypted values unreadable. This causes permanent data loss if you do not follow the re-encryption procedure.
 
+### Rotation Status
+
+Breeze can read both legacy `enc:v1:` values and key-id based
+`enc:v2:<keyId>:` values. New encryption remains `enc:v1:` unless an active key
+ID is configured, which preserves compatibility for deployments that have not
+started a key-id migration.
+
+Supported key-id environment variables:
+
+```bash
+APP_ENCRYPTION_KEY_ID=app-2026-05
+APP_ENCRYPTION_KEYRING='{"app-2026-05":"current-secret","app-2025-11":"previous-secret"}'
+```
+
+`SECRET_ENCRYPTION_KEY_ID` and `SECRET_ENCRYPTION_KEYRING` are supported aliases.
+If both `APP_ENCRYPTION_KEY` and `APP_ENCRYPTION_KEYRING` are present, the
+keyring entry for the active key ID is used for new `enc:v2` writes. This lets
+operators keep the legacy `APP_ENCRYPTION_KEY` available to decrypt old
+`enc:v1` ciphertext while writing new ciphertext with the active keyring key.
+Unknown `enc:v2` key IDs fail closed.
+
+Routine in-place rotation is supported through the encrypted-column registry in
+`apps/api/src/services/encryptedColumnRegistry.ts` and the dry-run-capable
+script at `scripts/re-encrypt-secrets.ts`. Do not perform manual SQL rewrites;
+the registry covers text, text-array, and JSON secret locations used by
+`encryptSecret()`.
+
 ### Rotation Procedure
 
-**Step 1 -- Generate a new key:**
+1. Keep the old `APP_ENCRYPTION_KEY` configured so legacy `enc:v1` values remain readable.
+2. Generate the new key: `openssl rand -hex 32`.
+3. Configure a new active key ID and keyring entry:
 
 ```bash
-openssl rand -hex 32
+APP_ENCRYPTION_KEY=<old-key-that-can-read-enc-v1>
+APP_ENCRYPTION_KEY_ID=app-2026-05
+APP_ENCRYPTION_KEYRING='{"app-2026-05":"<new-key>"}'
 ```
 
-**Step 2 -- Record the old key.** Store it securely -- you need it for the re-encryption migration.
-
-**Step 3 -- Run the re-encryption migration.** This script must:
-
-1. Read each encrypted value from the database using the old key.
-2. Decrypt it with the old key.
-3. Re-encrypt it with the new key.
-4. Write it back to the database.
+4. Run a dry run:
 
 ```bash
-# Example migration (to be created in scripts/re-encrypt-secrets.ts)
-OLD_ENCRYPTION_KEY=<old-key> \
-APP_ENCRYPTION_KEY=<new-key> \
-npx tsx scripts/re-encrypt-secrets.ts
+pnpm --filter @breeze/api secrets:reencrypt
 ```
 
-Tables and columns that contain encrypted values (prefixed with `enc:v1:`):
-- SSO provider `clientSecret` fields
-- Any integration credentials stored via `encryptSecret()`
+5. Review the JSON summary. `errors` must be empty.
+6. Apply the migration:
 
-**Step 4 -- Verify the migration.** Spot-check decryption of several records with the new key.
+```bash
+pnpm --filter @breeze/api secrets:reencrypt -- --apply
+```
 
-**Step 5 -- Update `APP_ENCRYPTION_KEY` in your environment to the new key.
+7. Run the dry run again. `changed` should be `0`.
+8. After backups and application checks pass, remove the old key material from
+   the keyring/vault when no `enc:v1` or old-key `enc:v2` values remain.
 
-**Step 6 -- Deploy the API.**
+Emergency compromise response should prefer restoring from a known-good backup
+and reissuing affected integration credentials over ad hoc database rewrites.
 
-**Step 7 -- Delete the old key from your vault after confirming everything works.
+### Registry Coverage
 
-### Rollback
+The registry currently covers:
 
-If the migration fails partway through, the database may contain a mix of old-key and new-key encrypted values. To recover:
+- SSO provider client secrets and SSO identity tokens.
+- C2C OAuth client secrets and tokens.
+- Webhook secrets and encrypted webhook headers.
+- Notification channel secret config.
+- SNMP community strings and credential JSON.
+- Automation webhook trigger secrets.
+- PSA, Huntress, SentinelOne, DNS filter, backup private-key, and organization
+  log-forwarding secrets.
 
-1. Keep both keys available.
-2. Identify which records were migrated (check timestamps or run decryption attempts with both keys).
-3. Re-run the migration for any remaining records.
+### Validation
+
+Focused tests cover mixed-key reads, explicit re-encryption, registry JSON
+transforms, and dry-run stats. Run:
+
+```bash
+cd apps/api
+./node_modules/.bin/vitest run src/services/secretCrypto.test.ts src/services/encryptedColumnRegistry.test.ts
+```
 
 ---
 

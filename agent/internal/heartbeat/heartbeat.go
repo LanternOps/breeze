@@ -89,15 +89,15 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands        []Command       `json:"commands"`
-	ConfigUpdate    map[string]any  `json:"configUpdate,omitempty"`
-	UpgradeTo       string          `json:"upgradeTo,omitempty"`
-	RenewCert       bool            `json:"renewCert,omitempty"`
-	RotateToken     bool            `json:"rotateToken,omitempty"`
-	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
-	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
-	HelperUpgradeTo          string          `json:"helperUpgradeTo,omitempty"`
-	ManageRemoteManagement   bool            `json:"manageRemoteManagement,omitempty"`
+	Commands               []Command       `json:"commands"`
+	ConfigUpdate           map[string]any  `json:"configUpdate,omitempty"`
+	UpgradeTo              string          `json:"upgradeTo,omitempty"`
+	RenewCert              bool            `json:"renewCert,omitempty"`
+	RotateToken            bool            `json:"rotateToken,omitempty"`
+	HelperEnabled          bool            `json:"helperEnabled,omitempty"`
+	HelperSettings         *HelperSettings `json:"helperSettings,omitempty"`
+	HelperUpgradeTo        string          `json:"helperUpgradeTo,omitempty"`
+	ManageRemoteManagement bool            `json:"manageRemoteManagement,omitempty"`
 }
 
 type HelperSettings struct {
@@ -2306,12 +2306,24 @@ func (h *Heartbeat) handleTokenRotation() {
 		log.Error("agent token rotation response missing auth token")
 		return
 	}
+	if rotateResp.WatchdogAuthToken == "" {
+		log.Error("agent token rotation response missing watchdog auth token")
+		return
+	}
+	if rotateResp.HelperAuthToken == "" {
+		log.Error("agent token rotation response missing helper auth token")
+		return
+	}
 
 	h.mu.Lock()
 	h.secureToken.Replace(rotateResp.AuthToken)
 	h.config.AuthToken = rotateResp.AuthToken
+	h.config.WatchdogAuthToken = rotateResp.WatchdogAuthToken
+	h.config.HelperAuthToken = rotateResp.HelperAuthToken
 	saveErr := config.Save(h.config)
 	h.config.AuthToken = ""
+	h.config.WatchdogAuthToken = ""
+	h.config.HelperAuthToken = ""
 	h.mu.Unlock()
 
 	if saveErr != nil {
@@ -2320,8 +2332,8 @@ func (h *Heartbeat) handleTokenRotation() {
 		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
 	}
 
-	// Notify the watchdog of the new token so it can use it for failover heartbeats.
-	h.sendWatchdogTokenUpdate(rotateResp.AuthToken)
+	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
+	h.sendWatchdogTokenUpdate(rotateResp.WatchdogAuthToken)
 
 	if h.wsClient != nil {
 		h.wsClient.ForceReconnect()

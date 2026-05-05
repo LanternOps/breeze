@@ -15,12 +15,13 @@ import {
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { authMiddleware } from '../../middleware/auth';
-import { ENABLE_2FA, phoneVerifySchema, phoneConfirmSchema, smsSendSchema } from './schemas';
+import { ENABLE_2FA, phoneVerifySchema, phoneConfirmSchema, smsSendSchema, smsMfaEnableSchema } from './schemas';
 import {
   mfaDisabledResponse,
   hashRecoveryCodes,
   resolveUserAuditOrgId,
-  writeAuthAudit
+  writeAuthAudit,
+  requireCurrentPasswordStepUp
 } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -34,7 +35,10 @@ phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerify
   }
 
   const auth = c.get('auth');
-  const { phoneNumber } = c.req.valid('json');
+  const { phoneNumber, currentPassword } = c.req.valid('json');
+
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
+  if (passwordError) return passwordError;
 
   const twilio = getTwilioService();
   if (!twilio) {
@@ -96,7 +100,10 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   }
 
   const auth = c.get('auth');
-  const { phoneNumber, code } = c.req.valid('json');
+  const { phoneNumber, code, currentPassword } = c.req.valid('json');
+
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
+  if (passwordError) return passwordError;
 
   const twilio = getTwilioService();
   if (!twilio) {
@@ -162,12 +169,16 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
 });
 
 // SMS MFA enable (authenticated, requires verified phone)
-phoneRoutes.post('/mfa/sms/enable', authMiddleware, async (c) => {
+phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEnableSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
+  const { currentPassword } = c.req.valid('json');
+
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
+  if (passwordError) return passwordError;
 
   const [user] = await db
     .select({

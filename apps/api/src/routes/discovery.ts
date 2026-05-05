@@ -22,6 +22,14 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import {
+  encryptSnmpCommunities,
+  encryptSnmpCredentials,
+  maskSnmpCommunities,
+  maskSnmpCredentials,
+  mergeEncryptSnmpCommunities,
+  mergeEncryptSnmpCredentials,
+} from '../services/snmpSecrets';
 
 export const discoveryRoutes = new Hono();
 const requireDiscoveryRead = requirePermission(
@@ -134,6 +142,14 @@ async function validateRequestedDiscoveryAgent(
   }
 
   return { ok: true } as const;
+}
+
+function serializeDiscoveryProfile(profile: typeof discoveryProfiles.$inferSelect) {
+  return {
+    ...profile,
+    snmpCommunities: maskSnmpCommunities(profile.snmpCommunities),
+    snmpCredentials: maskSnmpCredentials(profile.snmpCredentials),
+  };
 }
 
 // --- Zod Schemas ---
@@ -346,8 +362,8 @@ discoveryRoutes.post(
       excludeIps: body.excludeIps ?? [],
       methods: body.methods as any,
       portRanges: body.portRanges ?? null,
-      snmpCommunities: body.snmpCommunities ?? [],
-      snmpCredentials: body.snmpCredentials ?? null,
+      snmpCommunities: encryptSnmpCommunities(body.snmpCommunities) ?? [],
+      snmpCredentials: body.snmpCredentials === undefined ? null : encryptSnmpCredentials(body.snmpCredentials),
       schedule: body.schedule,
       deepScan: body.deepScan ?? false,
       identifyOS: body.identifyOS ?? false,
@@ -365,7 +381,7 @@ discoveryRoutes.post(
       resourceName: profile?.name
     });
 
-    return c.json(profile, 201);
+    return c.json(profile ? serializeDiscoveryProfile(profile) : profile, 201);
   }
 );
 
@@ -386,7 +402,7 @@ discoveryRoutes.get(
       .where(and(...conditions)).limit(1);
     if (!profile) return c.json({ error: 'Profile not found' }, 404);
 
-    return c.json(profile);
+    return c.json(serializeDiscoveryProfile(profile));
   }
 );
 
@@ -410,7 +426,11 @@ discoveryRoutes.patch(
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
     if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
 
-    const [existing] = await db.select({ id: discoveryProfiles.id }).from(discoveryProfiles)
+    const [existing] = await db.select({
+      id: discoveryProfiles.id,
+      snmpCommunities: discoveryProfiles.snmpCommunities,
+      snmpCredentials: discoveryProfiles.snmpCredentials,
+    }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
 
@@ -421,8 +441,8 @@ discoveryRoutes.patch(
     if (updates.excludeIps !== undefined) setValues.excludeIps = updates.excludeIps;
     if (updates.methods !== undefined) setValues.methods = updates.methods;
     if (updates.portRanges !== undefined) setValues.portRanges = updates.portRanges;
-    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = updates.snmpCommunities;
-    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = updates.snmpCredentials;
+    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = mergeEncryptSnmpCommunities(updates.snmpCommunities, existing.snmpCommunities);
+    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = mergeEncryptSnmpCredentials(updates.snmpCredentials, existing.snmpCredentials);
     if (updates.schedule !== undefined) setValues.schedule = updates.schedule;
     if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
     if (updates.deepScan !== undefined) setValues.deepScan = updates.deepScan;
@@ -446,7 +466,7 @@ discoveryRoutes.patch(
       details: { changedFields: Object.keys(updates) }
     });
 
-    return c.json(updated);
+    return c.json(updated ? serializeDiscoveryProfile(updated) : updated);
   }
 );
 

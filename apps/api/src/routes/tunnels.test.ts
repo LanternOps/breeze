@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { tunnelRoutes, vncExchangeRoutes } from './tunnels';
+import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './tunnels';
 
 // --- UUID constants ---
 const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -88,7 +88,7 @@ vi.mock('../services/viewerTokenRevocation', () => ({
 import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
 import { createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
-import { createViewerAccessToken } from '../services/jwt';
+import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 
 // Reusable device fixture (online, agent connected)
 const onlineDevice = {
@@ -130,6 +130,17 @@ function makeSelectChain(rows: any[]) {
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue(whereResult),
+    }),
+  };
+}
+
+function makeJoinedSelectChain(rows: any[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
     }),
   };
 }
@@ -321,6 +332,18 @@ describe('POST /tunnels/:id/connect-code', () => {
     const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
     expect(res.status).toBe(403);
   });
+
+  it('rejects connect codes for closed VNC tunnels', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, status: 'disconnected' }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'Cannot mint VNC connect code for tunnel in current state',
+      status: 'disconnected',
+    }));
+  });
 });
 
 // ─── POST /vnc-exchange/:code ─────────────────────────────────────────────────
@@ -386,5 +409,63 @@ describe('POST /vnc-exchange/:code', () => {
 
     const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
     expect(res.status).toBe(404);
+  });
+
+  it('rejects VNC exchange when the tunnel has already closed', async () => {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(vncCodeRecord);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, status: 'disconnected' }]) as any);
+
+    const res = await app.request('/vnc-exchange/closed-code', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'Tunnel session is not available for connection',
+      status: 'disconnected',
+    }));
+    expect(createViewerAccessToken).not.toHaveBeenCalled();
+  });
+});
+
+// ─── POST /vnc-viewer/upgrade-to-webrtc ──────────────────────────────────────
+
+describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+  });
+
+  it('rejects upgrade when the bound VNC tunnel has closed', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-1',
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'disconnected',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'Tunnel session is not available for upgrade',
+      status: 'disconnected',
+    }));
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });

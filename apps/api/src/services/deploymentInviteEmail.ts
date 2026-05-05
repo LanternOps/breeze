@@ -23,7 +23,21 @@ export interface DeploymentInviteEmailTemplate {
 
 function sanitizeCustomMessage(raw: string | undefined): string {
   if (!raw) return '';
-  return raw.replace(/<[^>]+>/g, '').slice(0, 500);
+  // Strip HTML-like tags, then drop any residual angle brackets. A single
+  // pass of /<[^>]+>/g leaves residue on overlapping/nested patterns
+  // (e.g. "<<x>>" -> ">"), which is the multi-character sanitization
+  // pitfall flagged by CodeQL. Looping the strip and then nuking any
+  // remaining '<'/'>' guarantees no angle-bracket characters survive.
+  // The HTML body downstream also calls escapeHtml() on this value;
+  // this keeps the plain-text body safe too.
+  let prev: string;
+  let out = raw;
+  do {
+    prev = out;
+    out = out.replace(/<[^>]*>/g, '');
+  } while (out !== prev);
+  out = out.replace(/[<>]/g, '');
+  return out.slice(0, 500);
 }
 
 export function buildDeploymentInviteEmail(

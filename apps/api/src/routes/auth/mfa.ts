@@ -13,8 +13,7 @@ import {
   generateRecoveryCodes,
   rateLimiter,
   mfaLimiter,
-  getRedis,
-  verifyPassword
+  getRedis
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { authMiddleware } from '../../middleware/auth';
@@ -25,6 +24,7 @@ import {
   toPublicTokens,
   encryptMfaSecret,
   decryptMfaSecret,
+  decryptMfaSecretForMigration,
   hashRecoveryCodes,
   mfaDisabledResponse,
   resolveCurrentUserTokenContext,
@@ -32,7 +32,8 @@ import {
   writeAuthAudit,
   auditUserLoginFailure,
   auditLogin,
-  userRequiresSetup
+  userRequiresSetup,
+  requireCurrentPasswordStepUp
 } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -51,43 +52,6 @@ const mfaDisableSchema = mfaVerifySchema.extend({
   currentPassword: z.string().min(1).max(256)
 });
 
-// Verify the user's current password and rate-limit by user id. Returns
-// null on success, or a Response on failure (caller must return it).
-async function requirePasswordReprompt(
-  c: any,
-  userId: string,
-  currentPassword: string
-): Promise<Response | null> {
-  const redis = getRedis();
-  if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
-  }
-  const rateKey = `mfa:pwd:${userId}`;
-  const rateCheck = await rateLimiter(redis, rateKey, 5, 5 * 60);
-  if (!rateCheck.allowed) {
-    return c.json({
-      error: 'Too many attempts. Please try again later.',
-      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
-    }, 429);
-  }
-
-  const [user] = await db
-    .select({ passwordHash: users.passwordHash })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-
-  if (!user?.passwordHash) {
-    return c.json({ error: 'Invalid credentials' }, 401);
-  }
-
-  const valid = await verifyPassword(user.passwordHash, currentPassword);
-  if (!valid) {
-    return c.json({ error: 'Invalid credentials' }, 401);
-  }
-  return null;
-}
-
 export const mfaRoutes = new Hono();
 
 // MFA setup (requires auth + current-password re-prompt)
@@ -102,7 +66,7 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', passwordOnlySche
   // Re-verify password before allowing MFA factor installation. A stolen
   // access token is not sufficient — the user must prove possession of
   // the password to attach a new TOTP secret.
-  const passwordError = await requirePasswordReprompt(c, auth.user.id, currentPassword);
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
   // Check if MFA is already enabled
@@ -198,6 +162,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     const effectiveMethod = pendingMfaMethod;
 
     let valid = false;
+    let migratedMfaSecret: string | null = null;
     if (effectiveMethod === 'sms') {
       const phone = user.phoneNumber;
       if (!phone) {
@@ -214,10 +179,12 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       valid = result.valid;
     } else {
       // TOTP verification
-      const decryptedMfaSecret = decryptMfaSecret(user.mfaSecret);
+      const decrypted = decryptMfaSecretForMigration(user.mfaSecret);
+      const decryptedMfaSecret = decrypted.plaintext;
       if (!decryptedMfaSecret) {
         return c.json({ error: 'Invalid MFA configuration' }, 400);
       }
+      migratedMfaSecret = decrypted.migratedSecret;
       valid = await verifyMFAToken(decryptedMfaSecret, code);
     }
 
@@ -256,7 +223,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // Update last login
     await db
       .update(users)
-      .set({ lastLoginAt: new Date() })
+      .set({
+        lastLoginAt: new Date(),
+        ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {})
+      })
       .where(eq(users.id, user.id));
 
     auditLogin(c, { orgId: mfaOrgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
@@ -350,7 +320,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   // possession of the second factor; the password proves the user is at
   // the keyboard right now (vs an attacker on a stolen access token who
   // somehow got an MFA code, e.g. social-engineered SMS).
-  const passwordError = await requirePasswordReprompt(c, auth.user.id, currentPassword);
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
   // Check org policy — if requireMfa is true, block disable
@@ -467,7 +437,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
   const { code, currentPassword } = c.req.valid('json');
 
   // Re-verify password before flipping mfaEnabled=true on the user row.
-  const passwordError = await requirePasswordReprompt(c, auth.user.id, currentPassword);
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
 
   const redis = getRedis();
@@ -540,12 +510,16 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
 });
 
 // Generate new MFA recovery codes for the authenticated user
-mfaRoutes.post('/mfa/recovery-codes', authMiddleware, async (c) => {
+mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwordOnlySchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
+  const { currentPassword } = c.req.valid('json');
+
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
+  if (passwordError) return passwordError;
 
   const [user] = await db
     .select({ mfaEnabled: users.mfaEnabled })

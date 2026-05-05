@@ -11,7 +11,10 @@ export interface AgentAuthContext {
   agentId: string;
   orgId: string;
   siteId: string;
+  role: AgentCredentialRole;
 }
+
+export type AgentCredentialRole = 'agent' | 'watchdog';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -78,6 +81,52 @@ export function matchAgentTokenHash(params: {
   return null;
 }
 
+export function matchRoleScopedAgentTokenHash(params: {
+  agentTokenHash: string | null | undefined;
+  previousTokenHash: string | null | undefined;
+  previousTokenExpiresAt: Date | null | undefined;
+  watchdogTokenHash: string | null | undefined;
+  previousWatchdogTokenHash: string | null | undefined;
+  previousWatchdogTokenExpiresAt: Date | null | undefined;
+  tokenHash: string;
+  now?: Date;
+}): ({ role: AgentCredentialRole; tokenRotationRequired: boolean }) | null {
+  const {
+    agentTokenHash,
+    previousTokenHash,
+    previousTokenExpiresAt,
+    watchdogTokenHash,
+    previousWatchdogTokenHash,
+    previousWatchdogTokenExpiresAt,
+    tokenHash,
+    now = new Date(),
+  } = params;
+
+  const agentMatch = matchAgentTokenHash({
+    agentTokenHash,
+    previousTokenHash,
+    previousTokenExpiresAt,
+    tokenHash,
+    now,
+  });
+  if (agentMatch) {
+    return { role: 'agent', tokenRotationRequired: agentMatch.tokenRotationRequired };
+  }
+
+  const watchdogMatch = matchAgentTokenHash({
+    agentTokenHash: watchdogTokenHash,
+    previousTokenHash: previousWatchdogTokenHash,
+    previousTokenExpiresAt: previousWatchdogTokenExpiresAt,
+    tokenHash,
+    now,
+  });
+  if (watchdogMatch) {
+    return { role: 'watchdog', tokenRotationRequired: watchdogMatch.tokenRotationRequired };
+  }
+
+  return null;
+}
+
 function getAgentTokenRotationMaxAgeDays(): number {
   const raw = Number.parseInt(process.env.AGENT_TOKEN_ROTATION_MAX_AGE_DAYS ?? '', 10);
   if (!Number.isFinite(raw) || raw <= 0) {
@@ -132,6 +181,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         agentTokenHash: devices.agentTokenHash,
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
+        watchdogTokenHash: devices.watchdogTokenHash,
+        previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
+        previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
         status: devices.status,
       })
       .from(devices)
@@ -140,14 +192,30 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     return row ?? null;
   });
 
-  if (!device || !device.agentTokenHash) {
+  if (!device) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
-  const match = matchAgentTokenHash({
+  // A device row exists but neither token hash is populated — this is the
+  // pre-hashed-token migration state. Surface a distinct error so the agent
+  // can prompt for re-enrollment instead of silently retrying forever.
+  if (!device.agentTokenHash && !device.watchdogTokenHash) {
+    throw new HTTPException(401, {
+      message: 'Re-enrollment required: device predates token-hash migration',
+      res: new Response(
+        JSON.stringify({ error: 'Re-enrollment required', code: 're_enrollment_required' }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    });
+  }
+
+  const match = matchRoleScopedAgentTokenHash({
     agentTokenHash: device.agentTokenHash,
     previousTokenHash: device.previousTokenHash,
     previousTokenExpiresAt: device.previousTokenExpiresAt,
+    watchdogTokenHash: device.watchdogTokenHash,
+    previousWatchdogTokenHash: device.previousWatchdogTokenHash,
+    previousWatchdogTokenExpiresAt: device.previousWatchdogTokenExpiresAt,
     tokenHash,
   });
   if (!match) {
@@ -202,6 +270,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     agentId: device.agentId,
     orgId: device.orgId,
     siteId: device.siteId,
+    role: match.role,
   });
 
   await withDbAccessContext(

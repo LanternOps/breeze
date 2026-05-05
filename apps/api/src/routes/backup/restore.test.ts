@@ -4,6 +4,9 @@ import { Hono } from 'hono';
 const queueCommandForExecutionMock = vi.fn();
 const queueBackupStopCommandMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
+const authzState = vi.hoisted(() => ({
+  allowedPermissions: new Set<string>(['*:*']),
+}));
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -73,7 +76,15 @@ vi.mock('../../db/schema', () => ({
 
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) => {
+    if (
+      !authzState.allowedPermissions.has('*:*') &&
+      !authzState.allowedPermissions.has(`${resource}:${action}`)
+    ) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
@@ -100,6 +111,8 @@ describe('restore routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    authzState.allowedPermissions.clear();
+    authzState.allowedPermissions.add('*:*');
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -115,6 +128,21 @@ describe('restore routes', () => {
       await next();
     });
     app.route('/', restoreRoutes);
+  });
+
+  it('denies restore creation without backup read permission even when device execution is allowed', async () => {
+    authzState.allowedPermissions.clear();
+    authzState.allowedPermissions.add('devices:execute');
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('creates a restore job and persists the queued command id', async () => {

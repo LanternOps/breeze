@@ -155,19 +155,32 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 
 ## Sentry
 
+Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.
+
 | Variable | Default | Description |
 |---|---|---|
-| `SENTRY_DSN` | — | Sentry DSN for error tracking |
+| `SENTRY_DSN` | — | API Sentry DSN. Leave blank to disable server-side error tracking. |
 | `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag |
 | `SENTRY_RELEASE` | — | Sentry release tag (e.g. git SHA) |
 | `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Sentry performance trace sample rate (0.0-1.0) |
+| `PUBLIC_SENTRY_DSN_WEB` | — | Web Sentry DSN. Leave blank to disable browser error tracking and on-error session replay. Inlined into the web bundle at build time. |
+| `SENTRY_AUTH_TOKEN` | — | Sentry auth token used during the web build to upload source maps. If unset, source map upload is skipped and the build still succeeds. |
 
 ## Rate Limiting
+
+Two rate-limit tiers protect the API. The generic per-user limit covers logged-in dashboard usage; the per-org agent limit caps how much traffic a single tenant's fleet can generate, even with thousands of agents.
 
 | Variable | Default | Description |
 |---|---|---|
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Sliding window duration (ms) |
 | `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window |
+| `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | Per-organization sliding-window rate limit on agent-authenticated endpoints. Returns `429` with `Retry-After: 60` when exceeded. Sized for ~5 active agents per org; raise for MSPs with very large fleets. |
+
+## Database
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_POOL_MAX` | `30` | Maximum postgres-js connection pool size. Tune up if you see cascading 504s during heartbeat storms; confirm Postgres `max_connections` has headroom (default 100 is fine for a single API replica). |
 
 ## File Transfer & Remote Sessions
 

@@ -14,22 +14,15 @@
 #                       Ignored for :80 (no TLS).
 
 # --- Global options ---------------------------------------------------------
-# Production traffic chain: Internet -> cloudflared (CF tunnel) -> Caddy -> API.
-# cloudflared bridges to Caddy over the docker network and sets
-# `CF-Connecting-IP: <real client>` on every request. Without `trusted_proxies`,
-# Caddy treats cloudflared's docker-network IP as the client and rewrites
-# X-Forwarded-For to that internal address — which is what landed in our audit
-# logs (#521).
-#
-# `trusted_proxies static private_ranges` tells Caddy that any peer in RFC1918
-# space is a trusted forwarder, so it should look at incoming
-# X-Forwarded-For / CF-Connecting-IP to determine the real client. Combined
-# with `client_ip_headers`, the X-Forwarded-For Caddy emits to upstream now
-# contains the real client at the head of the chain.
+# Production traffic chain for Cloudflare Tunnel deployments:
+# Internet -> cloudflared (fixed docker IP) -> Caddy -> API. Do not trust all
+# private ranges here; only the configured tunnel hop should be allowed to
+# supply client-IP headers. Self-hosted reverse-proxy deployments can override
+# CADDY_TRUSTED_PROXIES with their exact proxy CIDRs.
 {
   servers {
-    trusted_proxies static private_ranges
-    client_ip_headers CF-Connecting-IP X-Forwarded-For
+    trusted_proxies static {$CADDY_TRUSTED_PROXIES:127.0.0.1/32 ::1/128}
+    client_ip_headers {$CADDY_CLIENT_IP_HEADERS:CF-Connecting-IP X-Forwarded-For}
   }
 }
 

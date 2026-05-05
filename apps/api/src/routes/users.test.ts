@@ -7,6 +7,26 @@ const { sendInviteMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../services/permissions', () => ({
+  clearPermissionCache: vi.fn(),
+  getUserPermissions: vi.fn().mockResolvedValue({
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: 'partner-123',
+    orgId: null,
+    roleId: 'role-admin',
+    scope: 'partner'
+  }),
+  hasPermission: vi.fn((userPerms: any, resource: string, action: string) =>
+    userPerms.permissions.some((p: any) =>
+      (p.resource === resource || p.resource === '*') &&
+      (p.action === action || p.action === '*')
+    )
+  ),
+  isAssignablePermission: vi.fn((permission: any) =>
+    permission.resource !== '*' &&
+    permission.action !== '*' &&
+    ['users:read', 'users:invite', 'users:write', 'users:delete', 'devices:read', 'devices:write', 'devices:execute']
+      .includes(`${permission.resource}:${permission.action}`)
+  ),
   PERMISSIONS: {
     USERS_READ: { resource: 'users', action: 'read' },
     USERS_INVITE: { resource: 'users', action: 'invite' },
@@ -14,7 +34,8 @@ vi.mock('../services/permissions', () => ({
     USERS_DELETE: { resource: 'users', action: 'delete' },
     DEVICES_READ: { resource: 'devices', action: 'read' },
     DEVICES_WRITE: { resource: 'devices', action: 'write' },
-    DEVICES_EXECUTE: { resource: 'devices', action: 'execute' }
+    DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+    ADMIN_ALL: { resource: '*', action: '*' }
   }
 }));
 
@@ -56,6 +77,8 @@ vi.mock('../db/schema', () => ({
   partnerUsers: {},
   organizationUsers: {},
   roles: {},
+  permissions: {},
+  rolePermissions: {},
   organizations: {},
   patchPolicies: {},
   alertRules: {},
@@ -91,6 +114,7 @@ vi.mock('../services/email', () => ({
 }));
 
 import { db } from '../db';
+import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 
 describe('user routes', () => {
@@ -187,7 +211,21 @@ describe('user routes', () => {
             ])
           })
         })
-      } as any);
+      } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
 
       const txSelect = vi
         .fn()
@@ -246,6 +284,7 @@ describe('user routes', () => {
       const body = await res.json();
       expect(body.email).toBe('invitee@example.com');
       expect(body.status).toBe('invited');
+      expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
     it('should require orgIds when orgAccess is selected', async () => {
@@ -359,23 +398,39 @@ describe('user routes', () => {
 
   describe('POST /users/:id/role', () => {
     it('should assign a partner role', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              {
-                id: '44444444-4444-4444-4444-444444444444',
-                scope: 'partner',
-                name: 'Operator',
-                description: null,
-                isSystem: false,
-                partnerId: 'partner-123',
-                orgId: null
-              }
-            ])
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '44444444-4444-4444-4444-444444444444',
+                  scope: 'partner',
+                  name: 'Operator',
+                  description: null,
+                  isSystem: false,
+                  parentRoleId: null,
+                  partnerId: 'partner-123',
+                  orgId: null
+                }
+              ])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -396,6 +451,74 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    it('rejects self role assignment', async () => {
+      const res = await app.request('/users/user-123/role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roleId: '44444444-4444-4444-4444-444444444444'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('rejects assigning roles broader than the caller', async () => {
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'write' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-user-manager',
+        scope: 'partner'
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '44444444-4444-4444-4444-444444444444',
+                  scope: 'partner',
+                  name: 'Operator',
+                  description: null,
+                  isSystem: false,
+                  parentRoleId: null,
+                  partnerId: 'partner-123',
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: 'devices', action: 'write' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111/role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roleId: '44444444-4444-4444-4444-444444444444'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
   });
 });

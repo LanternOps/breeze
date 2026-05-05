@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tokens, User } from './auth';
-import { apiLogin, apiLogout, apiVerifyMFA, fetchWithAuth, useAuthStore } from './auth';
+import {
+  apiAcceptInvite,
+  apiLogin,
+  apiLogout,
+  apiPreviewInvite,
+  apiResetPassword,
+  apiVerifyMFA,
+  fetchWithAuth,
+  useAuthStore
+} from './auth';
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -261,5 +270,36 @@ describe('auth API helpers', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
+  });
+
+  it('apiPreviewInvite sends the token in a POST body, not in the URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({ email: 'invitee@example.com', orgName: 'Acme' })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await apiPreviewInvite('raw-invite-token');
+
+    expect(result.success).toBe(true);
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth/invite/preview');
+    expect(url).not.toContain('raw-invite-token');
+    expect(options.method).toBe('POST');
+    expect(options.referrerPolicy).toBe('no-referrer');
+    expect(options.body).toBe(JSON.stringify({ token: 'raw-invite-token' }));
+  });
+
+  it('token-bearing reset and invite requests suppress referrers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ ok: true }))
+      .mockResolvedValueOnce(makeResponse({ user: baseUser, tokens: baseTokens }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await apiResetPassword('reset-token', 'strong-password');
+    await apiAcceptInvite('invite-token', 'strong-password');
+
+    expect((fetchMock.mock.calls[0][1] as RequestInit).referrerPolicy).toBe('no-referrer');
+    expect((fetchMock.mock.calls[1][1] as RequestInit).referrerPolicy).toBe('no-referrer');
   });
 });

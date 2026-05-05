@@ -9,6 +9,7 @@ import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS } from '../services/permissions';
+import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -33,7 +34,9 @@ const createPartnerSchema = z.object({
   billingEmail: z.string().email().optional()
 });
 
-const updatePartnerSchema = createPartnerSchema.partial();
+const updatePartnerSchema = createPartnerSchema.partial().extend({
+  status: z.enum(['pending', 'active', 'suspended', 'churned']).optional()
+});
 
 const createOrganizationSchema = z.object({
   partnerId: z.string().uuid().optional(),
@@ -396,14 +399,9 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
   return c.json(partner);
 });
 
-orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
+orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
-
-  // Partner-scoped users may only update their own partner
-  if (auth.scope === 'partner' && auth.partnerId !== id) {
-    return c.json({ error: 'Forbidden' }, 403);
-  }
 
   const data = c.req.valid('json');
   const updates = { ...data, updatedAt: new Date() };
@@ -424,6 +422,9 @@ orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWr
 
   // Invalidate the OAuth scope-policy cache (settings may have changed).
   clearPartnerScopePolicyCache(partner.id);
+  if ('status' in data && data.status && data.status !== 'active') {
+    await revokePartnerTenantAccess(partner.id);
+  }
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -448,13 +449,15 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
 
   const [partner] = await db
     .update(partners)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
     .returning();
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
+
+  await revokePartnerTenantAccess(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -677,6 +680,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
+    await revokeOrganizationTenantAccess(organization.id);
+  }
+
   writeRouteAudit(c, {
     orgId: organization.id,
     action: 'organization.update',
@@ -704,13 +711,15 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
   const [organization] = await db
     .update(organizations)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
     .where(conditions)
     .returning();
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
+
+  await revokeOrganizationTenantAccess(organization.id);
 
   writeRouteAudit(c, {
     orgId: organization.id,

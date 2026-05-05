@@ -13,7 +13,14 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  deviceCommands: { id: 'id', deviceId: 'deviceId', createdAt: 'createdAt' },
+  deviceCommands: {
+    id: 'id',
+    deviceId: 'deviceId',
+    type: 'type',
+    payload: 'payload',
+    result: 'result',
+    createdAt: 'createdAt'
+  },
   devices: { id: 'id' }
 }));
 
@@ -30,7 +37,22 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (resource === 'devices' && action === 'read' && c.req.header('x-deny-read') === 'true') {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    if (c.req.header('x-site-restricted') === 'true') {
+      c.set('permissions', {
+        permissions: [{ resource, action }],
+        partnerId: null,
+        orgId: 'org-123',
+        roleId: 'role-123',
+        scope: 'organization',
+        allowedSiteIds: ['site-allowed']
+      });
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -46,6 +68,7 @@ vi.mock('../../services/auditEvents', () => ({
 import { commandsRoutes } from './commands';
 import { db } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -89,19 +112,100 @@ describe('device commands routes', () => {
       expect(body.failed).toEqual(['22222222-2222-2222-2222-222222222222']);
     });
 
-    it('rejects script command requests without scriptId', async () => {
+    it('rejects generic script command requests before device lookup', async () => {
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
           deviceIds: ['11111111-1111-1111-1111-111111111111'],
           type: 'script',
-          payload: {}
+          payload: {
+            scriptId: '33333333-3333-3333-3333-333333333333',
+            language: 'bash',
+            content: 'whoami'
+          }
         })
       });
 
       expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('scripts endpoint');
       expect(vi.mocked(getDeviceWithOrgCheck)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /devices/:id/commands', () => {
+    it('writes sanitized command payload details to audit logs', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-raw',
+            deviceId: 'device-a',
+            type: 'collect_evidence',
+            status: 'pending',
+            createdAt: new Date()
+          }])
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          type: 'collect_evidence',
+          payload: {
+            path: '/tmp/secret.txt',
+            content: 'super-secret-file-body',
+            token: 'abc123'
+          }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({
+          deviceId: 'device-a',
+          commandId: 'cmd-raw',
+          type: 'collect_evidence',
+          payload: expect.objectContaining({
+            path: '/tmp/secret.txt',
+            content: expect.objectContaining({ redacted: true })
+          })
+        })
+      }));
+      const auditPayload = JSON.stringify(vi.mocked(writeRouteAudit).mock.calls[0]?.[1]);
+      expect(auditPayload).not.toContain('super-secret-file-body');
+      expect(auditPayload).not.toContain('abc123');
+    });
+
+    it('rejects generic script command requests with caller-controlled content', async () => {
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          type: 'script',
+          payload: {
+            scriptId: '33333333-3333-3333-3333-333333333333',
+            language: 'bash',
+            content: 'id',
+            timeoutSeconds: 5,
+            runAs: 'root'
+          }
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('scripts endpoint');
+      expect(vi.mocked(getDeviceWithOrgCheck)).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 
@@ -157,6 +261,15 @@ describe('device commands routes', () => {
   });
 
   describe('GET /devices/:id/commands/:commandId', () => {
+    it('requires devices.read before returning command details', async () => {
+      const res = await app.request('/devices/device-a/commands/cmd-123', {
+        headers: { Authorization: 'Bearer token', 'x-deny-read': 'true' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(getDeviceWithOrgCheck).not.toHaveBeenCalled();
+    });
+
     it('returns a single command for the device', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
         id: 'device-a',
@@ -171,8 +284,13 @@ describe('device commands routes', () => {
             limit: vi.fn().mockResolvedValue([{
               id: 'cmd-123',
               deviceId: 'device-a',
-              type: 'filesystem_analysis',
-              status: 'sent'
+              type: 'script',
+              status: 'sent',
+              payload: {
+                content: 'Write-Host secret',
+                parameters: { password: 'hunter2' }
+              },
+              result: { status: 'completed', stdout: 'token=abc123' }
             }])
           })
         })
@@ -186,6 +304,28 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.data.id).toBe('cmd-123');
       expect(body.data.status).toBe('sent');
+      expect(JSON.stringify(body.data)).not.toContain('Write-Host secret');
+      expect(JSON.stringify(body.data)).not.toContain('hunter2');
+      expect(JSON.stringify(body.data)).not.toContain('abc123');
+    });
+  });
+
+  describe('GET /devices/:id/commands', () => {
+    it('denies command history when the device is outside the caller site restriction', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        siteId: 'site-denied',
+        status: 'online'
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        headers: { Authorization: 'Bearer token', 'x-site-restricted': 'true' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 });

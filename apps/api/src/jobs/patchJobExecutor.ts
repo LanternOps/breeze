@@ -35,6 +35,14 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const PATCH_JOB_QUEUE = 'patch-jobs';
 const PATCH_JOB_DEVICE_QUEUE = 'patch-job-devices';
+const PATCH_JOB_RETENTION = {
+  removeOnComplete: { count: 100 },
+  removeOnFail: { count: 200 },
+} as const;
+const PATCH_JOB_COMPLETION_RETENTION = {
+  removeOnComplete: { count: 50 },
+  removeOnFail: { count: 100 },
+} as const;
 
 // ============================================
 // Singleton queues
@@ -132,7 +140,9 @@ export async function enqueuePatchJob(patchJobId: string, delayMs?: number): Pro
   await queue.add(
     'execute-patch-job',
     { type: 'execute-patch-job', patchJobId } satisfies ExecutePatchJobData,
-    delayMs ? { delay: delayMs, jobId: stableJobId } : { jobId: stableJobId }
+    delayMs
+      ? { ...PATCH_JOB_RETENTION, delay: delayMs, jobId: stableJobId }
+      : { ...PATCH_JOB_RETENTION, jobId: stableJobId }
   );
 }
 
@@ -220,6 +230,7 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
           orgId: patchJob.orgId,
         } satisfies ExecutePatchJobDeviceData,
         {
+          ...PATCH_JOB_RETENTION,
           jobId: stableJobId,
         }
       );
@@ -234,7 +245,7 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
     await queue.add(
       'check-completion',
       { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
-      { delay: 35 * 60 * 1000, jobId: completionJobId }
+      { ...PATCH_JOB_COMPLETION_RETENTION, delay: 35 * 60 * 1000, jobId: completionJobId }
     );
   }
 
@@ -281,7 +292,7 @@ async function processCheckCompletion(data: CheckCompletionData): Promise<unknow
 // Per-device execution worker
 // ============================================
 
-function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
+export function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
   return new Worker<PatchJobDeviceData>(
     PATCH_JOB_DEVICE_QUEUE,
     async (job: Job<PatchJobDeviceData>) => {
@@ -309,8 +320,38 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     .where(eq(patchJobs.id, patchJobId))
     .limit(1);
 
-  if (!patchJob || patchJob.status === 'cancelled') {
-    return { skipped: true, reason: 'Job not found or cancelled' };
+  if (!patchJob || patchJob.status !== 'running') {
+    return { skipped: true, reason: 'Job not running' };
+  }
+
+  if (orgId !== patchJob.orgId) {
+    console.warn(
+      `[PatchJobExecutor] Rejected device job ${patchJobId}/${deviceId}: queue org ${orgId} does not match patch job org ${patchJob.orgId}`
+    );
+    return { skipped: true, reason: 'Queued org does not match patch job org' };
+  }
+
+  const targetDeviceIds = Array.isArray((patchJob.targets as { deviceIds?: unknown })?.deviceIds)
+    ? ((patchJob.targets as { deviceIds?: string[] }).deviceIds ?? [])
+    : [];
+  if (!targetDeviceIds.includes(deviceId)) {
+    console.warn(
+      `[PatchJobExecutor] Rejected device job ${patchJobId}/${deviceId}: device is not a target`
+    );
+    return { skipped: true, reason: 'Device is not targeted by patch job' };
+  }
+
+  const [device] = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, patchJob.orgId)))
+    .limit(1);
+
+  if (!device) {
+    console.warn(
+      `[PatchJobExecutor] Rejected device job ${patchJobId}/${deviceId}: device is not in patch job org`
+    );
+    return { skipped: true, reason: 'Device not found in patch job org' };
   }
 
   // Extract ring config from job's patches JSONB

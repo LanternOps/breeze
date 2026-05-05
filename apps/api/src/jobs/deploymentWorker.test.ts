@@ -47,6 +47,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   deployments: {
     id: 'deployments.id',
+    orgId: 'deployments.orgId',
     status: 'deployments.status',
   },
   deploymentDevices: {
@@ -54,8 +55,12 @@ vi.mock('../db/schema', () => ({
     deviceId: 'deploymentDevices.deviceId',
     batchNumber: 'deploymentDevices.batchNumber',
     status: 'deploymentDevices.status',
+    startedAt: 'deploymentDevices.startedAt',
   },
-  devices: {},
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+  },
   deviceCommands: {},
   scripts: {},
   users: {
@@ -101,6 +106,7 @@ import { db } from '../db';
 import {
   filterEligibleDevices,
   isDeviceInMaintenanceWindow,
+  updateDeploymentDeviceStatus,
 } from '../services/deploymentEngine';
 import {
   createDeploymentDeviceWorker,
@@ -126,6 +132,12 @@ function createUpdateChain(rows: any[] = []) {
   chain.returning = vi.fn(() => Promise.resolve(rows));
   return chain;
 }
+
+const ORG_A_ID = '00000000-0000-4000-8000-000000000001';
+const ORG_B_ID = '00000000-0000-4000-8000-000000000002';
+const DEPLOYMENT_ID = '10000000-0000-4000-8000-000000000001';
+const DEVICE_A_ID = '20000000-0000-4000-8000-000000000001';
+const DEVICE_B_ID = '20000000-0000-4000-8000-000000000002';
 
 describe('deployment worker queueing', () => {
   beforeEach(() => {
@@ -223,9 +235,9 @@ describe('deployment worker queueing', () => {
 
   it('uses a deferred stable job id for maintenance-window requeues', async () => {
     vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
-      id: 'deployment-1',
+      id: DEPLOYMENT_ID,
       name: 'Deploy 1',
-      orgId: 'org-1',
+      orgId: ORG_A_ID,
       status: 'running',
       payload: { type: 'script', scriptId: 'script-1' },
       rolloutConfig: {
@@ -233,14 +245,17 @@ describe('deployment worker queueing', () => {
         respectMaintenanceWindows: true,
       },
     }]) as any);
+    vi.mocked(db.update)
+      .mockImplementationOnce(() => createUpdateChain([{ deviceId: DEVICE_A_ID }]) as any)
+      .mockImplementation(() => createUpdateChain() as any);
     vi.mocked(isDeviceInMaintenanceWindow).mockResolvedValue(false);
     shared.getJobMock.mockResolvedValueOnce(null);
 
     createDeploymentDeviceWorker();
     const result = await shared.processorRefs.device({
       data: {
-        deploymentId: 'deployment-1',
-        deviceId: 'device-1',
+        deploymentId: DEPLOYMENT_ID,
+        deviceId: DEVICE_A_ID,
         batchNumber: 1,
       },
     });
@@ -248,18 +263,155 @@ describe('deployment worker queueing', () => {
     expect(shared.addMock).toHaveBeenCalledWith(
       'process-device',
       {
-        deploymentId: 'deployment-1',
-        deviceId: 'device-1',
+        deploymentId: DEPLOYMENT_ID,
+        deviceId: DEVICE_A_ID,
         batchNumber: 1,
       },
       expect.objectContaining({
-        jobId: 'deployment-device-deferred:deployment-1:device-1',
+        jobId: `deployment-device-deferred:${DEPLOYMENT_ID}:${DEVICE_A_ID}`,
       }),
     );
     expect(result).toEqual({
       delayed: true,
       reason: 'waiting for maintenance window',
     });
+  });
+});
+
+describe('deployment device worker claim validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    shared.processorRefs.device = undefined;
+    shared.getJobMock.mockResolvedValue(null);
+    shared.addMock.mockResolvedValue({ id: 'queue-job-1' });
+    vi.mocked(isDeviceInMaintenanceWindow).mockResolvedValue(true);
+    vi.mocked(db.update).mockImplementation(() => createUpdateChain() as any);
+  });
+
+  function mockRunningDeployment() {
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+      id: DEPLOYMENT_ID,
+      name: 'Deploy 1',
+      orgId: ORG_A_ID,
+      status: 'running',
+      payload: { type: 'software', packageId: 'pkg-1', action: 'install' },
+      rolloutConfig: {
+        type: 'immediate',
+        respectMaintenanceWindows: false,
+      },
+    }]) as any);
+  }
+
+  it('rejects malformed queue job data before database access', async () => {
+    createDeploymentDeviceWorker();
+
+    await expect(shared.processorRefs.device({
+      data: {
+        deploymentId: 'not-a-uuid',
+        deviceId: DEVICE_A_ID,
+        batchNumber: 1,
+      },
+    })).rejects.toThrow('Invalid deployment device job data');
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a forged queue job for a device outside the deployment', async () => {
+    mockRunningDeployment();
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([]) as any);
+
+    createDeploymentDeviceWorker();
+
+    await expect(shared.processorRefs.device({
+      data: {
+        deploymentId: DEPLOYMENT_ID,
+        deviceId: DEVICE_A_ID,
+        batchNumber: 1,
+      },
+    })).rejects.toThrow(`Device ${DEVICE_A_ID} is not part of deployment ${DEPLOYMENT_ID}`);
+
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(updateDeploymentDeviceStatus).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deployment-device row whose device belongs to another org', async () => {
+    mockRunningDeployment();
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+      status: 'pending',
+      batchNumber: 1,
+      deviceOrgId: ORG_B_ID,
+    }]) as any);
+
+    createDeploymentDeviceWorker();
+
+    await expect(shared.processorRefs.device({
+      data: {
+        deploymentId: DEPLOYMENT_ID,
+        deviceId: DEVICE_B_ID,
+        batchNumber: 1,
+      },
+    })).rejects.toThrow(`Device ${DEVICE_B_ID} does not belong to deployment organization ${ORG_A_ID}`);
+
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(updateDeploymentDeviceStatus).not.toHaveBeenCalled();
+  });
+
+  it('skips stale duplicate jobs after the deployment-device row has left pending', async () => {
+    mockRunningDeployment();
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+      status: 'completed',
+      batchNumber: 1,
+      deviceOrgId: ORG_A_ID,
+    }]) as any);
+
+    createDeploymentDeviceWorker();
+
+    const result = await shared.processorRefs.device({
+      data: {
+        deploymentId: DEPLOYMENT_ID,
+        deviceId: DEVICE_A_ID,
+        batchNumber: 1,
+      },
+    });
+
+    expect(result).toEqual({
+      skipped: true,
+      reason: 'Deployment device status is completed',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(updateDeploymentDeviceStatus).not.toHaveBeenCalled();
+  });
+
+  it('skips a duplicate job while another worker owns the running claim', async () => {
+    mockRunningDeployment();
+    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([{
+      status: 'running',
+      batchNumber: 1,
+      deviceOrgId: ORG_A_ID,
+    }]) as any);
+
+    createDeploymentDeviceWorker();
+
+    const result = await shared.processorRefs.device({
+      data: {
+        deploymentId: DEPLOYMENT_ID,
+        deviceId: DEVICE_A_ID,
+        batchNumber: 1,
+      },
+    });
+
+    expect(result).toEqual({
+      skipped: true,
+      reason: 'Deployment device status is running',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(updateDeploymentDeviceStatus).not.toHaveBeenCalled();
   });
 });
 

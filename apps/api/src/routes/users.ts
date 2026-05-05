@@ -5,9 +5,16 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations } from '../db/schema';
-import { authMiddleware, requirePermission } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import {
+  clearPermissionCache,
+  getUserPermissions,
+  hasPermission,
+  isAssignablePermission,
+  PERMISSIONS,
+  type UserPermissions
+} from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
@@ -96,6 +103,7 @@ async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
       name: roles.name,
       description: roles.description,
       isSystem: roles.isSystem,
+      parentRoleId: roles.parentRoleId,
       partnerId: roles.partnerId,
       orgId: roles.orgId
     })
@@ -117,6 +125,91 @@ async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
 
   if (scopeContext.scope === 'organization' && role.orgId === scopeContext.orgId) {
     return role;
+  }
+
+  return null;
+}
+
+async function getEffectiveRolePermissions(
+  roleId: string,
+  visited: Set<string> = new Set()
+): Promise<Array<{ resource: string; action: string }>> {
+  if (visited.has(roleId)) return [];
+  visited.add(roleId);
+
+  const [role] = await db
+    .select({ parentRoleId: roles.parentRoleId })
+    .from(roles)
+    .where(eq(roles.id, roleId))
+    .limit(1);
+
+  const directPermissions = await db
+    .select({
+      resource: permissions.resource,
+      action: permissions.action
+    })
+    .from(rolePermissions)
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(eq(rolePermissions.roleId, roleId));
+
+  if (!role?.parentRoleId) {
+    return directPermissions;
+  }
+
+  const inheritedPermissions = await getEffectiveRolePermissions(role.parentRoleId, visited);
+  const result = new Map<string, { resource: string; action: string }>();
+  for (const permission of [...directPermissions, ...inheritedPermissions]) {
+    result.set(`${permission.resource}:${permission.action}`, permission);
+  }
+  return [...result.values()];
+}
+
+async function getCallerPermissions(
+  c: any,
+  auth: { user: { id: string }; partnerId: string | null; orgId: string | null }
+): Promise<UserPermissions | null> {
+  const existing = c.get('permissions') as UserPermissions | undefined;
+  if (existing) return existing;
+
+  return getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined
+  });
+}
+
+async function validateAssignableRole(
+  c: any,
+  auth: { user: { id: string }; partnerId: string | null; orgId: string | null },
+  role: { id: string; isSystem: boolean }
+): Promise<string | null> {
+  const rolePermissionsForAssignment = await getEffectiveRolePermissions(role.id);
+  if (rolePermissionsForAssignment.length === 0) {
+    return null;
+  }
+
+  const callerPermissions = await getCallerPermissions(c, auth);
+  if (!callerPermissions) {
+    return 'No permissions found';
+  }
+
+  for (const permission of rolePermissionsForAssignment) {
+    if (permission.resource === '*' || permission.action === '*') {
+      if (!role.isSystem) {
+        return 'Custom roles with wildcard permissions cannot be assigned';
+      }
+      if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
+        return 'Cannot assign a role broader than caller permissions';
+      }
+      continue;
+    }
+
+    if (!isAssignablePermission(permission)) {
+      return `Role contains unknown permission: ${permission.resource}:${permission.action}`;
+    }
+
+    if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
+      return `Cannot assign a role with permission not held by caller: ${permission.resource}:${permission.action}`;
+    }
   }
 
   return null;
@@ -570,6 +663,7 @@ userRoutes.get(
 userRoutes.post(
   '/invite',
   requirePermission(PERMISSIONS.USERS_INVITE.resource, PERMISSIONS.USERS_INVITE.action),
+  requireMfa(),
   zValidator('json', inviteUserSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -596,6 +690,10 @@ userRoutes.post(
     const role = await getScopedRole(data.roleId, scopeContext);
     if (!role) {
       return c.json({ error: 'Invalid role for this scope' }, 400);
+    }
+    const rolePermissionError = await validateAssignableRole(c, auth, role);
+    if (rolePermissionError) {
+      return c.json({ error: rolePermissionError }, 403);
     }
 
     const normalizedEmail = data.email.toLowerCase();
@@ -706,6 +804,7 @@ userRoutes.post(
     if (!result.linkCreated) {
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
+    await clearPermissionCache(result.user.id);
 
     const invite = await generateAndDeliverInvite(
       result.user.id,
@@ -749,6 +848,7 @@ userRoutes.post(
 userRoutes.post(
   '/resend-invite',
   requirePermission(PERMISSIONS.USERS_INVITE.resource, PERMISSIONS.USERS_INVITE.action),
+  requireMfa(),
   zValidator('json', resendInviteSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -795,6 +895,7 @@ userRoutes.post(
 userRoutes.patch(
   '/:id',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateUserSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -864,6 +965,7 @@ userRoutes.patch(
         );
       }
     }
+    await clearPermissionCache(updated.id);
 
     writeUserAudit(c, auth, scopeContext, {
       action: becameInactive ? 'user.suspended' : 'user.update',
@@ -891,6 +993,7 @@ userRoutes.patch(
 userRoutes.delete(
   '/:id',
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
@@ -911,6 +1014,7 @@ userRoutes.delete(
         resourceId: userId,
         details: { scope: 'partner' }
       });
+      await clearPermissionCache(userId);
 
       return c.json({ success: true });
     }
@@ -929,6 +1033,7 @@ userRoutes.delete(
       resourceId: userId,
       details: { scope: 'organization' }
     });
+    await clearPermissionCache(userId);
 
     return c.json({ success: true });
   }
@@ -937,6 +1042,7 @@ userRoutes.delete(
 userRoutes.post(
   '/:id/role',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', assignRoleSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -944,9 +1050,17 @@ userRoutes.post(
     const userId = c.req.param('id')!;
     const { roleId } = c.req.valid('json');
 
+    if (userId === auth.user.id) {
+      return c.json({ error: 'Self role assignment is not allowed' }, 403);
+    }
+
     const role = await getScopedRole(roleId, scopeContext);
     if (!role) {
       return c.json({ error: 'Invalid role for this scope' }, 400);
+    }
+    const rolePermissionError = await validateAssignableRole(c, auth, role);
+    if (rolePermissionError) {
+      return c.json({ error: rolePermissionError }, 403);
     }
 
     if (scopeContext.scope === 'partner') {
@@ -969,6 +1083,7 @@ userRoutes.post(
           scope: 'partner'
         }
       });
+      await clearPermissionCache(userId);
 
       return c.json({ success: true });
     }
@@ -992,6 +1107,7 @@ userRoutes.post(
         scope: 'organization'
       }
     });
+    await clearPermissionCache(userId);
 
     return c.json({ success: true });
   }

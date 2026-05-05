@@ -450,7 +450,9 @@ Covers: corrupt database records, application bugs that wrote bad data, ransomwa
    ```sql
    -- Example: find records with corrupted encrypted values
    SELECT id, created_at FROM sso_providers
-   WHERE client_secret NOT LIKE 'enc:v1:%' AND client_secret IS NOT NULL;
+   WHERE client_secret NOT LIKE 'enc:v1:%'
+     AND client_secret NOT LIKE 'enc:v2:%'
+     AND client_secret IS NOT NULL;
 
    -- Example: find devices with invalid status
    SELECT id, status, updated_at FROM devices

@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 const multipartUploadThreshold = 100 * 1024 * 1024 // 100 MB
@@ -26,6 +27,8 @@ type S3Provider struct {
 	accessKeyID     string
 	secretAccessKey string
 	sessionToken    string
+	sseAlgorithm    string
+	sseKMSKeyID     string
 	client          *s3.Client
 	clientMu        sync.Mutex
 }
@@ -33,6 +36,12 @@ type S3Provider struct {
 // NewS3Provider creates a new S3Provider.
 func NewS3Provider(bucket, region, accessKeyID, secretAccessKey, sessionToken string) *S3Provider {
 	return NewS3ProviderWithEndpoint(bucket, region, "", accessKeyID, secretAccessKey, sessionToken)
+}
+
+// SetServerSideEncryption requires S3 server-side encryption on future uploads.
+func (s *S3Provider) SetServerSideEncryption(algorithm, kmsKeyID string) {
+	s.sseAlgorithm = algorithm
+	s.sseKMSKeyID = kmsKeyID
 }
 
 // NewS3ProviderWithEndpoint creates a new S3Provider with an optional custom endpoint.
@@ -87,6 +96,15 @@ func (s *S3Provider) UploadContext(ctx context.Context, localPath, remotePath st
 		Bucket: aws.String(s.Bucket),
 		Key:    aws.String(remotePath),
 		Body:   file,
+	}
+	switch s.sseAlgorithm {
+	case "AES256":
+		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
+	case "aws:kms":
+		input.ServerSideEncryption = s3types.ServerSideEncryptionAwsKms
+		if s.sseKMSKeyID != "" {
+			input.SSEKMSKeyId = aws.String(s.sseKMSKeyID)
+		}
 	}
 	if info.Size() > multipartUploadThreshold {
 		uploader := manager.NewUploader(client)

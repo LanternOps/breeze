@@ -1,39 +1,15 @@
 import { defineMiddleware } from 'astro:middleware';
+import { resolveConnectSrcDirective, resolveUnsafeInlineCspOptions } from './lib/csp';
 
 function readFlag(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   return raw === '1' || raw === 'true';
 }
 
-function resolveConnectSrcDirective(): string {
-  const sources = new Set<string>(["'self'", 'https:', 'ws:', 'wss:']);
-  const configuredApiUrl = process.env.PUBLIC_API_URL;
-
-  if (configuredApiUrl) {
-    try {
-      const parsed = new URL(configuredApiUrl);
-      sources.add(parsed.origin);
-      if (parsed.protocol === 'http:') {
-        sources.add(`ws://${parsed.host}`);
-      } else if (parsed.protocol === 'https:') {
-        sources.add(`wss://${parsed.host}`);
-      }
-    } catch {
-      // Ignore invalid URL configuration and fall back to default policy.
-    }
-  }
-
-  if (import.meta.env.DEV) {
-    sources.add('http://localhost:3001');
-    sources.add('ws://localhost:3001');
-  }
-
-  return `connect-src ${Array.from(sources).join(' ')}`;
-}
-
 function buildFallbackCspDirectives(options: {
   allowInlineScript: boolean;
   allowInlineStyle: boolean;
+  isDev: boolean;
 }): string {
   const directives: string[] = [
     "default-src 'self'",
@@ -50,7 +26,7 @@ function buildFallbackCspDirectives(options: {
     "worker-src 'self' blob:",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
-    resolveConnectSrcDirective()
+    resolveConnectSrcDirective({ isDev: options.isDev })
   ];
 
   // Monaco Editor and xterm.js inject both inline style attributes and <style>
@@ -72,7 +48,8 @@ function buildFallbackCspDirectives(options: {
 
 const strictFallbackCspDirectives = buildFallbackCspDirectives({
   allowInlineScript: false,
-  allowInlineStyle: false
+  allowInlineStyle: false,
+  isDev: import.meta.env.DEV
 });
 
 function relaxExistingCsp(
@@ -150,14 +127,13 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     });
   }
 
-  const allowUnsafeInlineInDev =
-    import.meta.env.DEV && (readFlag('CSP_ALLOW_DEV_UNSAFE_INLINE') || !strictDevCsp);
-  const allowUnsafeInlineScriptFlag =
-    readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT');
-  const allowUnsafeInlineStyleFlag =
-    readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE');
-  const allowUnsafeInlineScript = allowUnsafeInlineInDev || allowUnsafeInlineScriptFlag;
-  const allowUnsafeInlineStyle = allowUnsafeInlineInDev || allowUnsafeInlineStyleFlag;
+  const {
+    allowInlineScript: allowUnsafeInlineScript,
+    allowInlineStyle: allowUnsafeInlineStyle,
+  } = resolveUnsafeInlineCspOptions({
+    isDev: import.meta.env.DEV,
+    strictDevCsp,
+  });
 
   // Production is strict by default. Dev allows inline by default because Vite/Astro
   // inject inline script/style for HMR and hydration bootstrap.
@@ -177,7 +153,8 @@ export const onRequest = defineMiddleware(async (_context, next) => {
         'Content-Security-Policy',
         buildFallbackCspDirectives({
           allowInlineScript: allowUnsafeInlineScript,
-          allowInlineStyle: allowUnsafeInlineStyle
+          allowInlineStyle: allowUnsafeInlineStyle,
+          isDev: import.meta.env.DEV
         })
       );
     }

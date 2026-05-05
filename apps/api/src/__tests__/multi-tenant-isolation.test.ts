@@ -104,6 +104,7 @@ vi.mock('./agentWs', () => ({
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey:    vi.fn((k: string) => `hashed-${k}`),
+  hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed-${k}`]),
   generateEnrollmentKey: vi.fn(() => 'ek_test'),
 }));
 

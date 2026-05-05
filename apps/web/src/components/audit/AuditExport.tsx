@@ -10,14 +10,36 @@ type AuditExportProps = {
   onExport?: (format: 'csv' | 'json') => void;
 };
 
+type AuditExportColumn =
+  | 'id'
+  | 'timestamp'
+  | 'actorId'
+  | 'actorName'
+  | 'actorEmail'
+  | 'action'
+  | 'resourceType'
+  | 'resourceId'
+  | 'resourceName'
+  | 'category'
+  | 'result'
+  | 'ipAddress'
+  | 'userAgent'
+  | 'details';
+
+type ColumnOption = {
+  id: string;
+  label: string;
+  apiColumns: AuditExportColumn[];
+};
+
 const columnOptions = [
-  { id: 'timestamp', label: 'Timestamp' },
-  { id: 'user', label: 'User' },
-  { id: 'action', label: 'Action' },
-  { id: 'resource', label: 'Resource' },
-  { id: 'details', label: 'Details' },
-  { id: 'ipAddress', label: 'IP Address' }
-];
+  { id: 'timestamp', label: 'Timestamp', apiColumns: ['timestamp'] },
+  { id: 'user', label: 'User', apiColumns: ['actorName', 'actorEmail'] },
+  { id: 'action', label: 'Action', apiColumns: ['action', 'category', 'result'] },
+  { id: 'resource', label: 'Resource', apiColumns: ['resourceType', 'resourceId', 'resourceName'] },
+  { id: 'details', label: 'Details', apiColumns: ['details'] },
+  { id: 'ipAddress', label: 'IP Address', apiColumns: ['ipAddress'] }
+] satisfies ColumnOption[];
 
 const formatLabels: Record<'csv' | 'json', string> = {
   csv: 'CSV',
@@ -52,6 +74,12 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
     if (includeDetails) return selectedColumns;
     return selectedColumns.filter(column => column !== 'details');
   }, [includeDetails, selectedColumns]);
+  const exportColumns = useMemo(() => {
+    const selected = new Set(effectiveColumns);
+    return columnOptions.flatMap(option => (
+      selected.has(option.id) ? option.apiColumns : []
+    ));
+  }, [effectiveColumns]);
 
   const handleColumnToggle = (columnId: string) => {
     setSelectedColumns(prev => {
@@ -73,7 +101,9 @@ export default function AuditExport({ rangeLabel = 'Last 30 days', dateRange, fi
         body: JSON.stringify({
           format,
           filters: filters || {},
-          dateRange: dateRange || {}
+          dateRange: dateRange || {},
+          columns: exportColumns,
+          includeDetails
         })
       });
 

@@ -7,7 +7,7 @@ describe('buildDeploymentInviteEmail', () => {
       orgName: 'Acme',
       adminEmail: 'alex@acme.com',
       installUrl: 'https://us.2breeze.app/i/ABC12345',
-      customMessage: '<script>alert(1)</script>Please install ASAP.',
+      customMessage: '<<script>alert(1)</script>>Please install ASAP.',
     });
     expect(subject).toContain('Acme');
     expect(subject).toMatch(/install/i);
@@ -18,6 +18,9 @@ describe('buildDeploymentInviteEmail', () => {
     expect(text).toContain('https://us.2breeze.app/i/ABC12345');
     expect(text).toContain('Please install ASAP.');
     expect(text).not.toContain('<script>');
+    // Overlapping/nested tag regression: a single non-global strip of <[^>]+>
+    // would leave a residual '>' on the plaintext path.
+    expect(text).not.toMatch(/[<>]/);
   });
 
   it('works without a customMessage', () => {

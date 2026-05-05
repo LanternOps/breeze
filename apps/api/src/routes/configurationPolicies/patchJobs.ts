@@ -114,12 +114,22 @@ patchJobRoutes.post(
     const inaccessibleDeviceIds = targetDevices
       .filter((d) => !auth.canAccessOrg(d.orgId))
       .map((d) => d.id);
+    const crossOrgDeviceIds = accessibleDevices
+      .filter((d) => d.orgId !== policy.orgId)
+      .map((d) => d.id);
 
     if (accessibleDevices.length === 0) {
       return c.json({
         error: 'No accessible devices found for patch job',
         skipped: { missingDeviceIds, inaccessibleDeviceIds },
       }, 404);
+    }
+
+    if (crossOrgDeviceIds.length > 0) {
+      return c.json({
+        error: 'Configuration policy patch jobs can only target devices in the policy organization',
+        skipped: { missingDeviceIds, inaccessibleDeviceIds, crossOrgDeviceIds },
+      }, 403);
     }
 
     const maintenanceSuppressedDeviceIds: string[] = [];

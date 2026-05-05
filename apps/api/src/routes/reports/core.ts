@@ -3,8 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { reports, reportRuns } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, ensureOrgAccess, getReportWithOrgCheck } from './helpers';
 import { listReportsSchema, createReportSchema, updateReportSchema } from './schemas';
 
@@ -16,6 +17,7 @@ coreRoutes.use('*', authMiddleware);
 coreRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action),
   zValidator('query', listReportsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -90,6 +92,7 @@ coreRoutes.get(
 coreRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
@@ -123,6 +126,7 @@ coreRoutes.get(
 coreRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_WRITE.resource, PERMISSIONS.REPORTS_WRITE.action),
   zValidator('json', createReportSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -183,6 +187,7 @@ coreRoutes.post(
 coreRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_WRITE.resource, PERMISSIONS.REPORTS_WRITE.action),
   zValidator('json', updateReportSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -229,6 +234,7 @@ coreRoutes.put(
 coreRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_DELETE.resource, PERMISSIONS.REPORTS_DELETE.action),
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;

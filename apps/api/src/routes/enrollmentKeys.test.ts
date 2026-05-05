@@ -1,12 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Hono } from 'hono';
-import { randomUUID } from 'crypto';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Hono } from "hono";
+import { randomUUID } from "crypto";
 
 // ============================================================
 // Mocks — must appear before any `import` of the source
 // ============================================================
 
-vi.mock('../db', () => ({
+vi.mock("../db", () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -15,36 +15,38 @@ vi.mock('../db', () => ({
   },
 
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withDbAccessContext: vi.fn(
+    async (_ctx: unknown, fn: () => Promise<unknown>) => fn(),
+  ),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock("../db/schema", () => ({
   enrollmentKeys: {},
   installerBootstrapTokens: {},
 }));
 
-vi.mock('../db/schema/orgs', () => ({
+vi.mock("../db/schema/orgs", () => ({
   sites: {},
   enrollmentKeys: {},
 }));
 
-vi.mock('../db/schema/installerBootstrapTokens', () => ({
+vi.mock("../db/schema/installerBootstrapTokens", () => ({
   installerBootstrapTokens: {},
 }));
 
-vi.mock('../services/installerBootstrapToken', () => ({
-  generateBootstrapToken: vi.fn(() => 'ABC1234567'),
-  bootstrapTokenExpiresAt: vi.fn(() => new Date('2026-04-20T00:00:00.000Z')),
+vi.mock("../services/installerBootstrapToken", () => ({
+  generateBootstrapToken: vi.fn(() => "ABC1234567"),
+  bootstrapTokenExpiresAt: vi.fn(() => new Date("2026-04-20T00:00:00.000Z")),
   BOOTSTRAP_TOKEN_PATTERN: /^[A-Z0-9]{10}$/,
 }));
 
-vi.mock('../middleware/auth', () => ({
+vi.mock("../middleware/auth", () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
-      scope: 'system',
+    c.set("auth", {
+      scope: "system",
       orgId: null,
-      user: { id: 'user-system', email: 'system@example.com' },
+      user: { id: "user-system", email: "system@example.com" },
       canAccessOrg: () => true,
       accessibleOrgIds: [],
     });
@@ -55,57 +57,75 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: () => vi.fn((_c: any, next: any) => next()),
 }));
 
-vi.mock('../services/permissions', () => ({
+vi.mock("../services/permissions", () => ({
   PERMISSIONS: {
-    ORGS_READ: { resource: 'orgs', action: 'read' },
-    ORGS_WRITE: { resource: 'orgs', action: 'write' },
+    ORGS_READ: { resource: "orgs", action: "read" },
+    ORGS_WRITE: { resource: "orgs", action: "write" },
   },
 }));
 
-vi.mock('../services/auditService', () => ({
+vi.mock("../services/auditService", () => ({
   createAuditLogAsync: vi.fn(),
 }));
 
-vi.mock('../services/enrollmentKeySecurity', () => ({
+vi.mock("../services/enrollmentKeySecurity", () => ({
   hashEnrollmentKey: vi.fn((raw: string) => `hashed:${raw}`),
+  hashEnrollmentKeyCandidates: vi.fn((raw: string) => [`hashed:${raw}`]),
 }));
 
-vi.mock('../services/msiSigning', () => ({
+vi.mock("../services/msiSigning", () => ({
   MsiSigningService: { fromEnv: vi.fn(() => null) },
 }));
 
-vi.mock('../services/installerBuilder', () => ({
-  buildWindowsInstallerZip: vi.fn(async () => Buffer.from('windows-zip')),
-  buildMacosInstallerZip: vi.fn(async () => Buffer.from('macos-zip')),
-  fetchRegularMsi: vi.fn(async () => Buffer.from('regular-msi')),
-  fetchMacosPkg: vi.fn(async () => Buffer.from('macos-pkg')),
+vi.mock("../services/installerBuilder", () => ({
+  buildWindowsInstallerZip: vi.fn(async () => Buffer.from("windows-zip")),
+  buildMacosInstallerZip: vi.fn(async () => Buffer.from("macos-zip")),
+  fetchRegularMsi: vi.fn(async () => Buffer.from("regular-msi")),
+  fetchMacosPkg: vi.fn(async () => Buffer.from("macos-pkg")),
   fetchMacosInstallerAppZip: vi.fn(async () => null),
 }));
 
-vi.mock('../services/installerAppZip', () => ({
+vi.mock("../services/installerAppZip", () => ({
   renameAppInZip: vi.fn(async (buf: Buffer) => buf),
 }));
 
-vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
+vi.mock("../services/rate-limit", () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 10,
+    resetAt: new Date(),
+  })),
+}));
+
+const issueDownloadHandleMock = vi.fn(async () => `dlh_${"1".repeat(32)}`);
+const consumeDownloadHandleMock = vi.fn(async () => "a".repeat(64));
+vi.mock("../services/downloadHandle", () => ({
+  issueDownloadHandle: (...args: unknown[]) =>
+    issueDownloadHandleMock(...(args as [])),
+  consumeDownloadHandle: (...args: unknown[]) =>
+    consumeDownloadHandleMock(...(args as [])),
 }));
 
 // H6: dynamic-import path inside serveInstaller pulls getRedis from '../services'.
 // Provide a controllable mock so we can test fail-closed semantics.
-const mockGetRedis = vi.fn(() => ({} as any));
-vi.mock('../services', () => ({
+const mockGetRedis = vi.fn(() => ({}) as any);
+vi.mock("../services", () => ({
   getRedis: () => mockGetRedis(),
 }));
 
 // ============================================================
 // Import after mocks
 // ============================================================
-import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './enrollmentKeys';
-import { db, withSystemDbAccessContext } from '../db';
-import { MsiSigningService } from '../services/msiSigning';
-import { fetchMacosInstallerAppZip } from '../services/installerBuilder';
-import { renameAppInZip } from '../services/installerAppZip';
-import * as installerBootstrapTokenIssuance from '../services/installerBootstrapTokenIssuance';
+import {
+  enrollmentKeyRoutes,
+  publicEnrollmentRoutes,
+  publicShortLinkRoutes,
+} from "./enrollmentKeys";
+import { db, withSystemDbAccessContext } from "../db";
+import { MsiSigningService } from "../services/msiSigning";
+import { fetchMacosInstallerAppZip } from "../services/installerBuilder";
+import { renameAppInZip } from "../services/installerAppZip";
+import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
 
 // ============================================================
 // Helpers
@@ -121,15 +141,15 @@ function makeKeyRow(overrides: Record<string, unknown> = {}) {
     id: KEY_ID,
     orgId: ORG_ID,
     siteId: SITE_ID,
-    name: 'Test Key',
-    key: 'hashed:rawkey',
+    name: "Test Key",
+    key: "hashed:rawkey",
     keySecretHash: null,
     shortCode: null,
     installerPlatform: null,
     maxUsage: 10,
     usageCount: 0,
     expiresAt: new Date(Date.now() + 3_600_000), // 1 hour from now
-    createdBy: 'user-system',
+    createdBy: "user-system",
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -141,15 +161,15 @@ function makeChildKeyRow(overrides: Record<string, unknown> = {}) {
     id: CHILD_KEY_ID,
     orgId: ORG_ID,
     siteId: SITE_ID,
-    name: 'Test Key (link)',
-    key: 'hashed:childkey',
+    name: "Test Key (link)",
+    key: "hashed:childkey",
     keySecretHash: null,
-    shortCode: 'Ab3De5Fg7H',
-    installerPlatform: 'windows',
+    shortCode: "Ab3De5Fg7H",
+    installerPlatform: "windows",
     maxUsage: 1,
     usageCount: 0,
     expiresAt: new Date(Date.now() + 3_600_000),
-    createdBy: 'user-system',
+    createdBy: "user-system",
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -160,18 +180,19 @@ function makeChildKeyRow(overrides: Record<string, unknown> = {}) {
 // Tests
 // ============================================================
 
-describe('POST /enrollment-keys/:id/installer-link', () => {
+describe("POST /enrollment-keys/:id/installer-link", () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    process.env.PUBLIC_API_URL = "https://api.example.com";
+    delete process.env.MACOS_INSTALLER_FILENAME_TOKEN_COMPAT;
     app = new Hono();
-    app.route('/enrollment-keys', enrollmentKeyRoutes);
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
   });
 
-  it('returns shortUrl in response', async () => {
+  it("returns shortUrl in response", async () => {
     const parentRow = makeKeyRow();
     const childRow = makeChildKeyRow();
 
@@ -201,9 +222,9 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     } as any);
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'windows' }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
     });
 
     expect(res.status).toBe(200);
@@ -211,7 +232,7 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     expect(body.shortUrl).toMatch(/^https?:\/\/.+\/s\/[A-Za-z0-9]{10}$/);
   });
 
-  it('refuses to build an installer when parent key is within 60s of expiry', async () => {
+  it("refuses to build an installer when parent key is within 60s of expiry", async () => {
     // Parent with only 30s of life left. Previously the child inherited this
     // and was DOA. Now the route refuses with 410 so the admin can regenerate.
     // NOTE: handler returns 410 before calling db.insert. Using the persistent
@@ -233,17 +254,17 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'windows' }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
     });
     expect(res.status).toBe(410);
     const body = await res.json();
-    expect(body.error).toContain('expires too soon');
+    expect(body.error).toContain("expires too soon");
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it('child key gets a 24h TTL when parent has enough remaining life', async () => {
+  it("child key gets a 24h TTL when parent has enough remaining life", async () => {
     // Parent has 1h remaining (plenty) — child insert should fire with a
     // fresh ~24h expiresAt, independent of parent.
     const parentRow = makeKeyRow({
@@ -274,9 +295,9 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
 
     const before = Date.now();
     const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'windows' }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
     });
     const after = Date.now();
     expect(res.status).toBe(200);
@@ -293,7 +314,7 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     expect(childExpiryMs).not.toBe(parentRow.expiresAt.getTime());
   });
 
-  it('shortUrl and url share the same origin', async () => {
+  it("shortUrl and url share the same origin", async () => {
     const parentRow = makeKeyRow();
     const childRow = makeChildKeyRow();
 
@@ -320,9 +341,9 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     } as any);
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'windows' }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
     });
 
     expect(res.status).toBe(200);
@@ -332,8 +353,8 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     expect(urlOrigin).toBe(shortUrlOrigin);
   });
 
-  it('returns 429 when per-user rate limit is exceeded', async () => {
-    const { rateLimiter } = await import('../services/rate-limit');
+  it("returns 429 when per-user rate limit is exceeded", async () => {
+    const { rateLimiter } = await import("../services/rate-limit");
     vi.mocked(rateLimiter).mockResolvedValueOnce({
       allowed: false,
       remaining: 0,
@@ -341,9 +362,9 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
     });
 
     const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'windows' }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
     });
     expect(res.status).toBe(429);
   });
@@ -353,23 +374,23 @@ describe('POST /enrollment-keys/:id/installer-link', () => {
 // GET /s/:code  (publicShortLinkRoutes)
 // ============================================================
 
-describe('GET /s/:code', () => {
+describe("GET /s/:code", () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
-    app.route('/s', publicShortLinkRoutes);
+    app.route("/s", publicShortLinkRoutes);
   });
 
-  it('serves installer for valid code', async () => {
+  it("serves installer for valid code", async () => {
     const shortLinkRow = makeKeyRow({
-      shortCode: 'abc1234567',
-      installerPlatform: 'windows',
+      shortCode: "abc1234567",
+      installerPlatform: "windows",
     });
-    const childRow = makeChildKeyRow({ installerPlatform: 'windows' });
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
 
     // select: look up by shortCode
     vi.mocked(db.select).mockReturnValue({
@@ -399,14 +420,14 @@ describe('GET /s/:code', () => {
     // serveInstaller also calls db.update to increment child key usage
     // (second update call is handled by same mock — returns the same shape)
 
-    const res = await app.request('/s/abc1234567');
+    const res = await app.request("/s/abc1234567");
 
     expect(res.status).toBe(200);
     const buf = await res.arrayBuffer();
     expect(buf.byteLength).toBeGreaterThan(0);
   });
 
-  it('returns 404 for unknown code', async () => {
+  it("returns 404 for unknown code", async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -415,14 +436,14 @@ describe('GET /s/:code', () => {
       }),
     } as any);
 
-    const res = await app.request('/s/unknowncode');
+    const res = await app.request("/s/unknowncode");
     expect(res.status).toBe(404);
   });
 
-  it('returns 410 for expired key', async () => {
+  it("returns 410 for expired key", async () => {
     const expiredRow = makeKeyRow({
-      shortCode: 'expiredcode',
-      installerPlatform: 'windows',
+      shortCode: "expiredcode",
+      installerPlatform: "windows",
       expiresAt: new Date(Date.now() - 10_000), // past
     });
 
@@ -443,18 +464,18 @@ describe('GET /s/:code', () => {
       }),
     } as any);
 
-    const res = await app.request('/s/expiredcode');
+    const res = await app.request("/s/expiredcode");
     expect(res.status).toBe(410);
   });
 
-  it('returns 410 when atomic update returns empty (usage exhausted at increment)', async () => {
+  it("returns 410 when atomic update returns empty (usage exhausted at increment)", async () => {
     const shortLinkRow = makeKeyRow({
-      shortCode: 'fullcode567',
-      installerPlatform: 'windows',
+      shortCode: "fullcode567",
+      installerPlatform: "windows",
       maxUsage: 1,
       usageCount: 0, // pre-check passes...
     });
-    const childRow = makeChildKeyRow({ installerPlatform: 'windows' });
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
 
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -484,14 +505,14 @@ describe('GET /s/:code', () => {
       where: vi.fn().mockResolvedValue(undefined),
     } as any);
 
-    const res = await app.request('/s/fullcode567');
+    const res = await app.request("/s/fullcode567");
     expect(res.status).toBe(410);
   });
 
-  it('does not spawn a child key for an already-expired short-link parent', async () => {
+  it("does not spawn a child key for an already-expired short-link parent", async () => {
     const expiredRow = makeKeyRow({
-      installerPlatform: 'windows',
-      shortCode: 'test123',
+      installerPlatform: "windows",
+      shortCode: "test123",
       expiresAt: new Date(Date.now() - 1000),
     });
 
@@ -515,19 +536,19 @@ describe('GET /s/:code', () => {
     const insertValues = vi.fn();
     vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
 
-    const res = await app.request('/s/test123');
+    const res = await app.request("/s/test123");
     expect(res.status).toBe(410);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it('returns 404 for code longer than 12 chars', async () => {
-    const res = await app.request('/s/this-code-is-way-too-long-for-sure');
+  it("returns 404 for code longer than 12 chars", async () => {
+    const res = await app.request("/s/this-code-is-way-too-long-for-sure");
     expect(res.status).toBe(404);
   });
 
-  it('returns 404 when row has null installerPlatform', async () => {
+  it("returns 404 when row has null installerPlatform", async () => {
     const rowNoPlatform = makeKeyRow({
-      shortCode: 'noplatform1',
+      shortCode: "noplatform1",
       installerPlatform: null,
     });
 
@@ -539,7 +560,7 @@ describe('GET /s/:code', () => {
       }),
     } as any);
 
-    const res = await app.request('/s/noplatform1');
+    const res = await app.request("/s/noplatform1");
     expect(res.status).toBe(404);
   });
 });
@@ -548,18 +569,20 @@ describe('GET /s/:code', () => {
 // GET /public-download/:platform — RLS scoping regression test
 // ============================================================
 
-describe('GET /public-download/:platform', () => {
+describe("GET /public-download/:platform", () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    issueDownloadHandleMock.mockResolvedValue(`dlh_${"1".repeat(32)}`);
+    consumeDownloadHandleMock.mockResolvedValue("a".repeat(64));
+    process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
-    app.route('/enrollment-keys', publicEnrollmentRoutes);
+    app.route("/enrollment-keys", publicEnrollmentRoutes);
   });
 
-  it('does not bump child key usage_count on download — leaves the slot for the agent enroll call', async () => {
+  it("does not bump child key usage_count on download — leaves the slot for the agent enroll call", async () => {
     // Regression test for the root cause of the MSI "401 Invalid or
     // expired enrollment key" bug. Previously serveInstaller ran
     // `UPDATE enrollment_keys SET usage_count = usage_count + 1 WHERE
@@ -576,8 +599,8 @@ describe('GET /public-download/:platform', () => {
     // NOT bump usage_count. max_usage is "max successful enrollments,"
     // not "max downloads."
     const row = makeKeyRow({
-      shortCode: 'pubcode1234',
-      installerPlatform: 'windows',
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
       maxUsage: 1,
       usageCount: 0,
     });
@@ -594,36 +617,36 @@ describe('GET /public-download/:platform', () => {
     // db.update — the whole point of the fix is that the download path
     // is now read-only against the enrollment_keys row.
     vi.mocked(db.update).mockImplementation(() => {
-      throw new Error('db.update called on public-download — regression of the usage_count-burn bug');
+      throw new Error(
+        "db.update called on public-download — regression of the usage_count-burn bug",
+      );
     });
 
-    // Use a valid 64-char hex token (legacy ?token= path; new callers should use ?h=).
-    const legacyToken = 'a'.repeat(64);
     const res = await app.request(
-      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
 
     expect(res.status).toBe(200);
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('uses the remote signing service (no local binary fetch) when configured', async () => {
+  it("uses the remote signing service (no local binary fetch) when configured", async () => {
     // Regression guard for the most-hit installer path in production. When
     // MsiSigningService is configured, serveInstaller must:
     //   1. NOT call fetchRegularMsi / fetchMacosPkg / anything local,
     //   2. call buildAndSignMsi with the correct version + properties,
     //   3. serve the result as application/octet-stream.
-    process.env.BINARY_VERSION = '0.62.24';
+    process.env.BINARY_VERSION = "0.62.24";
 
-    const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-bytes'));
+    const buildAndSignMsi = vi.fn(async () => Buffer.from("signed-msi-bytes"));
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
       buildAndSignMsi,
       probe: vi.fn(async () => {}),
     } as any);
 
     const row = makeKeyRow({
-      shortCode: 'pubcode1234',
-      installerPlatform: 'windows',
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
       maxUsage: 1,
       usageCount: 0,
     });
@@ -636,33 +659,70 @@ describe('GET /public-download/:platform', () => {
       }),
     } as any);
 
-    const { fetchRegularMsi, fetchMacosPkg } = await import('../services/installerBuilder');
+    const { fetchRegularMsi, fetchMacosPkg } =
+      await import("../services/installerBuilder");
 
+    consumeDownloadHandleMock.mockResolvedValueOnce(
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
     const res = await app.request(
-      '/enrollment-keys/public-download/windows?token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
-    expect(res.headers.get('Content-Disposition')).toContain('breeze-agent.msi');
+    expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(res.headers.get("Content-Disposition")).toContain(
+      "breeze-agent.msi",
+    );
 
     expect(fetchRegularMsi).not.toHaveBeenCalled();
     expect(fetchMacosPkg).not.toHaveBeenCalled();
 
     expect(buildAndSignMsi).toHaveBeenCalledTimes(1);
-    const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
-      version: string;
-      properties: { SERVER_URL: string; ENROLLMENT_KEY: string; ENROLLMENT_SECRET?: string };
-    }])[0];
+    const req = (
+      buildAndSignMsi.mock.calls[0] as unknown as [
+        {
+          version: string;
+          properties: {
+            SERVER_URL: string;
+            ENROLLMENT_KEY: string;
+            ENROLLMENT_SECRET?: string;
+          };
+        },
+      ]
+    )[0];
     // Signing service uses GitHub release tags (v-prefixed) as cache keys
-    expect(req.version).toBe('v0.62.24');
-    expect(req.properties.SERVER_URL).toBe('https://api.example.com');
-    // The token from ?token= is embedded verbatim as ENROLLMENT_KEY.
+    expect(req.version).toBe("v0.62.24");
+    expect(req.properties.SERVER_URL).toBe("https://api.example.com");
+    // The token resolved from the one-time handle is embedded as ENROLLMENT_KEY.
     expect(req.properties.ENROLLMENT_KEY).toBe(
-      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     );
 
     delete process.env.BINARY_VERSION;
+  });
+
+  it("rejects legacy raw token query downloads by default", async () => {
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?token=${"a".repeat(64)}`,
+    );
+
+    expect(res.status).toBe(400);
+    expect(consumeDownloadHandleMock).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy raw token query downloads even behind the retired compatibility flag", async () => {
+    process.env.PUBLIC_INSTALLER_ALLOW_LEGACY_TOKEN_QUERY = "true";
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?token=${"b".repeat(64)}`,
+    );
+
+    expect(res.status).toBe(400);
+    expect(consumeDownloadHandleMock).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    delete process.env.PUBLIC_INSTALLER_ALLOW_LEGACY_TOKEN_QUERY;
   });
 });
 
@@ -670,20 +730,21 @@ describe('GET /public-download/:platform', () => {
 // H6: public installer rate limit — XFF spoofing + fail-closed
 // ============================================================
 
-describe('H6: public-installer rate limit hardening', () => {
+describe("H6: public-installer rate limit hardening", () => {
   let app: Hono;
   const originalEnv = { ...process.env };
 
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    consumeDownloadHandleMock.mockResolvedValue("a".repeat(64));
+    process.env.PUBLIC_API_URL = "https://api.example.com";
     // Ensure getTrustedClientIp is in production-strict mode by default in
     // these tests so spoofed XFF is ignored.
-    process.env.NODE_ENV = 'production';
-    process.env.TRUST_PROXY_HEADERS = 'false';
+    process.env.NODE_ENV = "production";
+    process.env.TRUST_PROXY_HEADERS = "false";
     mockGetRedis.mockReturnValue({} as any);
-    const { rateLimiter } = await import('../services/rate-limit');
+    const { rateLimiter } = await import("../services/rate-limit");
     vi.mocked(rateLimiter).mockResolvedValue({
       allowed: true,
       remaining: 9,
@@ -691,7 +752,7 @@ describe('H6: public-installer rate limit hardening', () => {
     });
 
     app = new Hono();
-    app.route('/enrollment-keys', publicEnrollmentRoutes);
+    app.route("/enrollment-keys", publicEnrollmentRoutes);
   });
 
   afterEach(() => {
@@ -700,8 +761,8 @@ describe('H6: public-installer rate limit hardening', () => {
 
   function mockKeyLookup() {
     const row = makeKeyRow({
-      shortCode: 'pubcode1234',
-      installerPlatform: 'windows',
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
       maxUsage: 1,
       usageCount: 0,
     });
@@ -716,17 +777,16 @@ describe('H6: public-installer rate limit hardening', () => {
 
   it('ignores spoofed X-Forwarded-For — buckets share an "unknown" key', async () => {
     mockKeyLookup();
-    const { rateLimiter } = await import('../services/rate-limit');
+    const { rateLimiter } = await import("../services/rate-limit");
 
-    const legacyToken = 'a'.repeat(64);
     await app.request(
-      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
-      { headers: { 'X-Forwarded-For': '1.2.3.4' } },
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+      { headers: { "X-Forwarded-For": "1.2.3.4" } },
     );
     mockKeyLookup();
     await app.request(
-      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
-      { headers: { 'X-Forwarded-For': '5.6.7.8' } },
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+      { headers: { "X-Forwarded-For": "5.6.7.8" } },
     );
 
     // Both requests must use the SAME bucket key — spoofed XFF must NOT
@@ -738,48 +798,47 @@ describe('H6: public-installer rate limit hardening', () => {
     expect(distinct.size).toBe(1);
     // Confirm we did NOT key off the spoofed IP.
     for (const k of keys) {
-      expect(k).not.toContain('1.2.3.4');
-      expect(k).not.toContain('5.6.7.8');
+      expect(k).not.toContain("1.2.3.4");
+      expect(k).not.toContain("5.6.7.8");
     }
   });
 
-  it('returns 503 when getRedis() is null (fail closed, NOT 200)', async () => {
+  it("returns 503 when getRedis() is null (fail closed, NOT 200)", async () => {
     mockKeyLookup();
     mockGetRedis.mockReturnValueOnce(null as any);
 
-    const legacyToken = 'a'.repeat(64);
     const res = await app.request(
-      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.error).toMatch(/temporarily unavailable/i);
   });
 
-  it('returns 503 when rateLimiter throws (fail closed, NOT 200)', async () => {
+  it("returns 503 when rateLimiter throws (fail closed, NOT 200)", async () => {
     mockKeyLookup();
-    const { rateLimiter } = await import('../services/rate-limit');
-    vi.mocked(rateLimiter).mockRejectedValueOnce(new Error('redis disconnected'));
+    const { rateLimiter } = await import("../services/rate-limit");
+    vi.mocked(rateLimiter).mockRejectedValueOnce(
+      new Error("redis disconnected"),
+    );
 
-    const legacyToken = 'a'.repeat(64);
     const res = await app.request(
-      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
     expect(res.status).toBe(503);
   });
 
-  it('returns 429 when over the rate limit', async () => {
+  it("returns 429 when over the rate limit", async () => {
     mockKeyLookup();
-    const { rateLimiter } = await import('../services/rate-limit');
+    const { rateLimiter } = await import("../services/rate-limit");
     vi.mocked(rateLimiter).mockResolvedValueOnce({
       allowed: false,
       remaining: 0,
       resetAt: new Date(Date.now() + 60_000),
     });
 
-    const legacyToken = 'a'.repeat(64);
     const res = await app.request(
-      `/enrollment-keys/public-download/windows?token=${legacyToken}`,
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
     expect(res.status).toBe(429);
   });
@@ -789,17 +848,17 @@ describe('H6: public-installer rate limit hardening', () => {
 // POST /:id/bootstrap-token
 // ============================================================
 
-describe('POST /:id/bootstrap-token', () => {
+describe("POST /:id/bootstrap-token", () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
-    app.route('/enrollment-keys', enrollmentKeyRoutes);
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
   });
 
-  it('issues a bootstrap token for a valid parent key', async () => {
+  it("issues a bootstrap token for a valid parent key", async () => {
     const parent = makeKeyRow();
 
     // select x2: route's access-control lookup + helper's business-rule lookup
@@ -817,24 +876,27 @@ describe('POST /:id/bootstrap-token', () => {
     // insert: create bootstrap token row — helper now uses .returning() to get the row id
     vi.mocked(db.insert).mockReturnValueOnce({
       values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: 'token-row-uuid-1' }]),
+        returning: vi.fn().mockResolvedValue([{ id: "token-row-uuid-1" }]),
       }),
     } as any);
 
-    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxUsage: 1 }),
-    });
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1 }),
+      },
+    );
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.token).toMatch(/^[A-Z0-9]{10}$/);
-    expect(body.expiresAt).toBeTypeOf('string');
+    expect(body.expiresAt).toBeTypeOf("string");
     expect(body.maxUsage).toBe(1);
   });
 
-  it('rejects unknown parent key with 404', async () => {
+  it("rejects unknown parent key with 404", async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -844,23 +906,26 @@ describe('POST /:id/bootstrap-token', () => {
     } as any);
 
     const missingId = randomUUID();
-    const res = await app.request(`/enrollment-keys/${missingId}/bootstrap-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxUsage: 1 }),
-    });
+    const res = await app.request(
+      `/enrollment-keys/${missingId}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1 }),
+      },
+    );
 
     expect(res.status).toBe(404);
   });
 
-  it('rejects when caller has no org access (403)', async () => {
+  it("rejects when caller has no org access (403)", async () => {
     // Override authMiddleware to return a scope where canAccessOrg returns false
-    const { authMiddleware: mockAuth } = await import('../middleware/auth');
+    const { authMiddleware: mockAuth } = await import("../middleware/auth");
     vi.mocked(mockAuth).mockImplementationOnce((c: any, next: any) => {
-      c.set('auth', {
-        scope: 'partner',
+      c.set("auth", {
+        scope: "partner",
         orgId: null,
-        user: { id: 'user-partner', email: 'partner@example.com' },
+        user: { id: "user-partner", email: "partner@example.com" },
         canAccessOrg: () => false,
         accessibleOrgIds: [],
       });
@@ -868,7 +933,7 @@ describe('POST /:id/bootstrap-token', () => {
     });
 
     const restrictedApp = new Hono();
-    restrictedApp.route('/enrollment-keys', enrollmentKeyRoutes);
+    restrictedApp.route("/enrollment-keys", enrollmentKeyRoutes);
 
     const parent = makeKeyRow();
 
@@ -880,16 +945,19 @@ describe('POST /:id/bootstrap-token', () => {
       }),
     } as any);
 
-    const res = await restrictedApp.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxUsage: 1 }),
-    });
+    const res = await restrictedApp.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1 }),
+      },
+    );
 
     expect(res.status).toBe(403);
   });
 
-  it('rejects expired parent key with 410', async () => {
+  it("rejects expired parent key with 410", async () => {
     const expiredParent = makeKeyRow({
       expiresAt: new Date(Date.now() - 10_000), // past
     });
@@ -906,11 +974,14 @@ describe('POST /:id/bootstrap-token', () => {
       .mockReturnValueOnce(expiredSelectMock)
       .mockReturnValueOnce(expiredSelectMock);
 
-    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxUsage: 1 }),
-    });
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1 }),
+      },
+    );
 
     expect(res.status).toBe(410);
   });
@@ -920,31 +991,33 @@ describe('POST /:id/bootstrap-token', () => {
 // GET /:id/installer/macos — app-bundle path
 // ============================================================
 
-describe('GET /:id/installer/macos — app-bundle path', () => {
+describe("GET /:id/installer/macos — app-bundle path", () => {
   let app: Hono;
   let issueSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
-    app.route('/enrollment-keys', enrollmentKeyRoutes);
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
 
     // Default: issueBootstrapTokenForKey succeeds with a fixed token
-    issueSpy = vi.spyOn(installerBootstrapTokenIssuance, 'issueBootstrapTokenForKey').mockResolvedValue({
-      id: 'token-row-uuid-1',
-      token: 'ABC1234567',
-      expiresAt: new Date('2026-04-20T00:00:00.000Z'),
-      parentKeyName: 'Test Key',
-    });
+    issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValue({
+        id: "token-row-uuid-1",
+        token: "ABC1234567",
+        expiresAt: new Date("2026-04-20T00:00:00.000Z"),
+        parentKeyName: "Test Key",
+      });
   });
 
   afterEach(() => {
     issueSpy.mockRestore();
   });
 
-  it('returns a renamed app zip when installer app is available', async () => {
+  it("returns a renamed app zip when installer app is available", async () => {
     const parentRow = makeKeyRow();
 
     vi.mocked(db.select).mockReturnValueOnce({
@@ -956,36 +1029,88 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
     } as any);
 
     // fetchMacosInstallerAppZip returns a fixture buffer
-    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(Buffer.from('fixture-app-zip'));
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
+      Buffer.from("fixture-app-zip"),
+    );
 
     // renameAppInZip returns a renamed buffer
-    vi.mocked(renameAppInZip).mockResolvedValueOnce(Buffer.from('renamed-app-zip'));
+    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+      Buffer.from("renamed-app-zip"),
+    );
 
     const res = await app.request(
       `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
-      { headers: { authorization: 'Bearer jwt' } },
+      { headers: { authorization: "Bearer jwt" } },
     );
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('Content-Type')).toBe('application/zip');
-    const cd = res.headers.get('Content-Disposition') ?? '';
-    // Should contain the bootstrap token + api host embedded in the filename
-    expect(cd).toMatch(/Breeze Installer \[ABC1234567@api\.example\.com\]\.app\.zip/);
-    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get("Content-Type")).toBe("application/zip");
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    expect(cd).toBe('attachment; filename="breeze-agent-macos-installer.zip"');
+    expect(cd).not.toContain("ABC1234567");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
 
     // renameAppInZip was called with correct args
     expect(vi.mocked(renameAppInZip)).toHaveBeenCalledWith(
-      Buffer.from('fixture-app-zip'),
+      Buffer.from("fixture-app-zip"),
       expect.objectContaining({
-        oldAppName: 'Breeze Installer.app',
-        newAppName: 'Breeze Installer [ABC1234567@api.example.com].app',
+        oldAppName: "Breeze Installer.app",
+        newAppName: "Breeze Installer.app",
+        extraFiles: [
+          {
+            path: "Breeze Installer.bootstrap.json",
+            data: JSON.stringify({
+              token: "ABC1234567",
+              apiHost: "api.example.com",
+            }),
+            mode: 0o600,
+          },
+        ],
       }),
     );
   });
 
-  it('falls back to legacy zip when ?legacy=1 is passed', async () => {
+  it("uses the legacy tokenized app filename only behind the compatibility flag", async () => {
+    process.env.MACOS_INSTALLER_FILENAME_TOKEN_COMPAT = "true";
     const parentRow = makeKeyRow();
-    const childRow = makeChildKeyRow({ installerPlatform: 'macos' });
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
+      Buffer.from("fixture-app-zip"),
+    );
+    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+      Buffer.from("renamed-app-zip"),
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
+      { headers: { authorization: "Bearer jwt" } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Disposition") ?? "").toContain(
+      "Breeze Installer [ABC1234567@api.example.com].app.zip",
+    );
+    expect(vi.mocked(renameAppInZip)).toHaveBeenCalledWith(
+      Buffer.from("fixture-app-zip"),
+      expect.objectContaining({
+        newAppName: "Breeze Installer [ABC1234567@api.example.com].app",
+      }),
+    );
+    expect(vi.mocked(renameAppInZip).mock.calls[0]?.[1]).not.toHaveProperty(
+      "extraFiles",
+    );
+  });
+
+  it("falls back to legacy zip when ?legacy=1 is passed", async () => {
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow({ installerPlatform: "macos" });
 
     // select: parent key lookup + allocateShortCode dedup check
     vi.mocked(db.select)
@@ -1015,19 +1140,21 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
 
     const res = await app.request(
       `/enrollment-keys/${KEY_ID}/installer/macos?count=1&legacy=1`,
-      { headers: { authorization: 'Bearer jwt' } },
+      { headers: { authorization: "Bearer jwt" } },
     );
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
+    expect(res.headers.get("Content-Disposition")).toContain(
+      "breeze-agent-macos.zip",
+    );
     // The app-bundle path must NOT have been called
     expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
   });
 
-  it('falls back to legacy zip when installer app asset is missing (returns null)', async () => {
+  it("falls back to legacy zip when installer app asset is missing (returns null)", async () => {
     const parentRow = makeKeyRow();
-    const childRow = makeChildKeyRow({ installerPlatform: 'macos' });
+    const childRow = makeChildKeyRow({ installerPlatform: "macos" });
 
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -1055,11 +1182,13 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
 
     const res = await app.request(
       `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
-      { headers: { authorization: 'Bearer jwt' } },
+      { headers: { authorization: "Bearer jwt" } },
     );
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
+    expect(res.headers.get("Content-Disposition")).toContain(
+      "breeze-agent-macos.zip",
+    );
     expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
   });
@@ -1069,17 +1198,17 @@ describe('GET /:id/installer/macos — app-bundle path', () => {
 // POST / - siteId ownership validation
 // ============================================================
 
-describe('POST / - siteId ownership validation', () => {
+describe("POST / - siteId ownership validation", () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.PUBLIC_API_URL = 'https://api.example.com';
+    process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
-    app.route('/enrollment-keys', enrollmentKeyRoutes);
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
   });
 
-  it('rejects siteId that does not belong to the target org', async () => {
+  it("rejects siteId that does not belong to the target org", async () => {
     const orgId = randomUUID();
     const siteId = randomUUID();
 
@@ -1092,12 +1221,12 @@ describe('POST / - siteId ownership validation', () => {
       }),
     } as any);
 
-    const res = await app.request('/enrollment-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         orgId,
-        name: 'Test Key',
+        name: "Test Key",
         siteId,
       }),
     });
@@ -1109,7 +1238,7 @@ describe('POST / - siteId ownership validation', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('creates key with valid siteId', async () => {
+  it("creates key with valid siteId", async () => {
     const orgId = randomUUID();
     const siteId = randomUUID();
     const keyRow = makeKeyRow({ orgId, siteId });
@@ -1130,12 +1259,12 @@ describe('POST / - siteId ownership validation', () => {
       }),
     } as any);
 
-    const res = await app.request('/enrollment-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         orgId,
-        name: 'Test Key',
+        name: "Test Key",
         siteId,
       }),
     });
@@ -1145,7 +1274,7 @@ describe('POST / - siteId ownership validation', () => {
     expect(body.siteId).toBe(siteId);
   });
 
-  it('creates key without siteId (null is valid)', async () => {
+  it("creates key without siteId (null is valid)", async () => {
     const orgId = randomUUID();
     const keyRow = makeKeyRow({ orgId, siteId: null });
 
@@ -1156,12 +1285,12 @@ describe('POST / - siteId ownership validation', () => {
       }),
     } as any);
 
-    const res = await app.request('/enrollment-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         orgId,
-        name: 'Test Key',
+        name: "Test Key",
       }),
     });
 

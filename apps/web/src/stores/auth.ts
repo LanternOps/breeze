@@ -611,6 +611,7 @@ export async function apiResetPassword(token: string, password: string): Promise
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
+      referrerPolicy: 'no-referrer',
       body: JSON.stringify({ token, password })
     });
 
@@ -695,14 +696,14 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
   }
 }
 
-export async function apiVerifyPhone(phoneNumber: string): Promise<{
+export async function apiVerifyPhone(phoneNumber: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
 }> {
   try {
     const response = await fetchWithAuth('/auth/phone/verify', {
       method: 'POST',
-      body: JSON.stringify({ phoneNumber })
+      body: JSON.stringify({ phoneNumber, currentPassword })
     });
 
     const data = await response.json();
@@ -717,14 +718,14 @@ export async function apiVerifyPhone(phoneNumber: string): Promise<{
   }
 }
 
-export async function apiConfirmPhone(phoneNumber: string, code: string): Promise<{
+export async function apiConfirmPhone(phoneNumber: string, code: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
 }> {
   try {
     const response = await fetchWithAuth('/auth/phone/confirm', {
       method: 'POST',
-      body: JSON.stringify({ phoneNumber, code })
+      body: JSON.stringify({ phoneNumber, code, currentPassword })
     });
 
     const data = await response.json();
@@ -739,14 +740,15 @@ export async function apiConfirmPhone(phoneNumber: string, code: string): Promis
   }
 }
 
-export async function apiEnableSmsMfa(): Promise<{
+export async function apiEnableSmsMfa(currentPassword: string): Promise<{
   success: boolean;
   recoveryCodes?: string[];
   error?: string;
 }> {
   try {
     const response = await fetchWithAuth('/auth/mfa/sms/enable', {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({ currentPassword })
     });
 
     const data = await response.json();
@@ -770,9 +772,12 @@ export async function apiPreviewInvite(token: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl(`/auth/invite/preview/${encodeURIComponent(token)}`), {
-      method: 'GET',
+    const response = await fetch(buildApiUrl('/auth/invite/preview'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
+      referrerPolicy: 'no-referrer',
+      body: JSON.stringify({ token }),
     });
 
     if (!response.ok) {
@@ -803,6 +808,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
+      referrerPolicy: 'no-referrer',
       body: JSON.stringify({ token, password })
     });
 

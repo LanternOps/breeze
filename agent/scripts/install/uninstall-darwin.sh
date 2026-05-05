@@ -2,7 +2,9 @@
 set -euo pipefail
 
 BINARY="/usr/local/bin/breeze-agent"
+WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
 PLIST="/Library/LaunchDaemons/com.breeze.agent.plist"
+WATCHDOG_PLIST="/Library/LaunchDaemons/com.breeze.watchdog.plist"
 USER_PLIST="/Library/LaunchAgents/com.breeze.agent-user.plist"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -17,9 +19,11 @@ if launchctl list | grep -q com.breeze.agent; then
     launchctl unload "$PLIST" 2>/dev/null || true
     echo "Service stopped."
 fi
+launchctl bootout system/com.breeze.watchdog 2>/dev/null || launchctl unload "$WATCHDOG_PLIST" 2>/dev/null || true
 
 # Remove plist
 rm -f "$PLIST"
+rm -f "$WATCHDOG_PLIST"
 
 # Stop and remove user helper launch agent
 if launchctl list | grep -q com.breeze.agent-user; then
@@ -29,6 +33,7 @@ rm -f "$USER_PLIST"
 
 # Remove binary
 rm -f "$BINARY"
+rm -f "$WATCHDOG_BINARY"
 
 echo "Breeze Agent uninstalled."
 echo "Config at /Library/Application Support/Breeze/ was preserved."

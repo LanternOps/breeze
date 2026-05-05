@@ -99,6 +99,22 @@ func (c *Config) ValidateTiered() ValidationResult {
 			}
 		}
 	}
+	if c.WatchdogAuthToken != "" {
+		for _, r := range c.WatchdogAuthToken {
+			if unicode.IsControl(r) {
+				result.Fatals = append(result.Fatals, fmt.Errorf("watchdog_auth_token contains control characters"))
+				break
+			}
+		}
+	}
+	if c.HelperAuthToken != "" {
+		for _, r := range c.HelperAuthToken {
+			if unicode.IsControl(r) {
+				result.Fatals = append(result.Fatals, fmt.Errorf("helper_auth_token contains control characters"))
+				break
+			}
+		}
+	}
 
 	// Clamp intervals to safe range to prevent panics (e.g. rand.Int64N(0)).
 	// These are warnings (not fatals) because the value is auto-corrected.

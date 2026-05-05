@@ -18,6 +18,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/users', docsPath: '/reference/users-and-roles/', label: 'Users & Roles' },
   { pattern: '/settings/enrollment-keys', docsPath: '/agents/enrollment-keys/', label: 'Enrollment Keys' },
   { pattern: '/settings/api-keys', docsPath: '/reference/api-keys/', label: 'API Keys' },
+  { pattern: '/settings/connected-apps', docsPath: '/features/mcp-server/', label: 'Connected Apps & MCP' },
   { pattern: '/settings/organization', docsPath: '/reference/organizations-and-sites/', label: 'Organizations & Sites' },
   { pattern: '/settings/sso', docsPath: '/reference/sso/', label: 'Single Sign-On' },
   { pattern: '/settings/ai-usage', docsPath: '/features/ai/', label: 'AI Assistant' },

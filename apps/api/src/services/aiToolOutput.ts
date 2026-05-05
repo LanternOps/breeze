@@ -1,3 +1,5 @@
+import { redactLogFields, redactLogMessage } from './logRedaction';
+
 type CompactStats = {
   stringsTruncated: number;
   arraysTruncated: number;
@@ -5,6 +7,7 @@ type CompactStats = {
   objectsTruncated: number;
   objectKeysDropped: number;
   depthLimited: number;
+  sensitiveFieldsOmitted: number;
 };
 
 type CompactConfig = {
@@ -25,6 +28,15 @@ const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
 const MAX_DISK_CANDIDATES = 60;
 const MAX_DISK_LIST_ROWS = 30;
+const REDACTED = '[REDACTED]';
+
+const BARE_SECRET_PATTERNS: RegExp[] = [
+  /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b/g,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
+  /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g,
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -39,6 +51,13 @@ function truncateText(value: string, maxChars: number, stats: CompactStats): str
   stats.stringsTruncated += 1;
   const omitted = value.length - maxChars;
   return `${value.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
+}
+
+export function redactAiToolOutputText(value: string): string {
+  return BARE_SECRET_PATTERNS.reduce(
+    (current, pattern) => current.replace(pattern, REDACTED),
+    redactLogMessage(value),
+  );
 }
 
 function clampInteger(value: unknown, defaultValue: number, min: number, max: number): number {
@@ -202,12 +221,12 @@ function compactCommandStylePayload(payload: Record<string, unknown>, stats: Com
   }
 
   if (typeof payload.stdout === 'string') {
-    output.stdout = truncateText(payload.stdout, 2_000, stats);
+    output.stdout = truncateText(redactAiToolOutputText(payload.stdout), 2_000, stats);
     output.stdoutChars = payload.stdout.length;
   }
 
   if (typeof payload.stderr === 'string') {
-    output.stderr = truncateText(payload.stderr, 1_200, stats);
+    output.stderr = truncateText(redactAiToolOutputText(payload.stderr), 1_200, stats);
     output.stderrChars = payload.stderr.length;
   }
 
@@ -220,6 +239,79 @@ function compactCommandStylePayload(payload: Record<string, unknown>, stats: Com
     });
   }
 
+  return output;
+}
+
+function emptyStats(): CompactStats {
+  return {
+    stringsTruncated: 0,
+    arraysTruncated: 0,
+    arrayItemsDropped: 0,
+    objectsTruncated: 0,
+    objectKeysDropped: 0,
+    depthLimited: 0,
+    sensitiveFieldsOmitted: 0,
+  };
+}
+
+function looksLikeScriptBody(value: string): boolean {
+  if (value.length >= 300) return true;
+  return /(^#!|\bfunction\b|\bparam\s*\(|\bWrite-Host\b|\bInvoke-|\bGet-|\bSet-|\$\w+|\bsudo\b|\bapt-get\b|\bNew-Object\b)/i.test(value);
+}
+
+function shouldOmitScriptText(toolName: string, key: string, value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  const normalizedKey = key.replace(/[_-]/g, '').toLowerCase();
+  const scriptTool = /script/i.test(toolName);
+
+  if (normalizedKey === 'scriptcontent' || normalizedKey === 'scriptbody') return true;
+  if (toolName === 'get_script_details' && normalizedKey === 'content') return true;
+  if (toolName === 'apply_script_code' && normalizedKey === 'code') return true;
+  if (scriptTool && ['content', 'code', 'source'].includes(normalizedKey) && looksLikeScriptBody(value)) return true;
+
+  return false;
+}
+
+function sanitizeToolPayloadValue(
+  toolName: string,
+  value: unknown,
+  stats: CompactStats,
+  depth = 0,
+  keyHint = '',
+): unknown {
+  if (typeof value === 'string') {
+    const redacted = redactAiToolOutputText(value);
+    if (['stdout', 'stderr'].includes(keyHint.toLowerCase())) {
+      return truncateText(redacted, keyHint.toLowerCase() === 'stderr' ? 1_200 : 2_000, stats);
+    }
+    return redacted;
+  }
+
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
+  if (depth >= DEFAULT_CONFIG.maxDepth + 2) {
+    stats.depthLimited += 1;
+    return '[truncated: max depth reached]';
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeToolPayloadValue(toolName, entry, stats, depth + 1));
+  }
+
+  if (!isRecord(value)) return value;
+
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (shouldOmitScriptText(toolName, key, entry)) {
+      output[`${key}Omitted`] = true;
+      output[`${key}Chars`] = entry.length;
+      stats.sensitiveFieldsOmitted += 1;
+      continue;
+    }
+    output[key] = sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key);
+  }
   return output;
 }
 
@@ -294,6 +386,7 @@ function appendChatMeta(result: unknown, stats: CompactStats, originalChars: num
     stats.arraysTruncated > 0 ||
     stats.objectsTruncated > 0 ||
     stats.depthLimited > 0
+    || stats.sensitiveFieldsOmitted > 0
   );
   if (!hasTruncation) return result;
 
@@ -306,6 +399,7 @@ function appendChatMeta(result: unknown, stats: CompactStats, originalChars: num
     objectsTruncated: stats.objectsTruncated,
     objectKeysDropped: stats.objectKeysDropped,
     depthLimited: stats.depthLimited,
+    sensitiveFieldsOmitted: stats.sensitiveFieldsOmitted,
   };
 
   if (isRecord(result)) {
@@ -324,32 +418,28 @@ function safeStringify(value: unknown): string {
 }
 
 export function compactToolResultForChat(toolName: string, rawResult: string): string {
-  if (rawResult.length <= MAX_TOOL_RESULT_CHARS) {
-    return rawResult;
-  }
-
   const parsed = tryParseJson(rawResult);
   if (parsed === null) {
+    const redactedRaw = redactAiToolOutputText(rawResult);
+    if (redactedRaw.length <= MAX_TOOL_RESULT_CHARS) {
+      return redactedRaw;
+    }
     return JSON.stringify({
       _chat: {
         outputCompacted: true,
         nonJsonOutput: true,
         originalChars: rawResult.length,
       },
-      preview: rawResult.slice(0, RAW_PREVIEW_CHARS),
+      preview: redactedRaw.slice(0, RAW_PREVIEW_CHARS),
     });
   }
 
-  const stats: CompactStats = {
-    stringsTruncated: 0,
-    arraysTruncated: 0,
-    arrayItemsDropped: 0,
-    objectsTruncated: 0,
-    objectKeysDropped: 0,
-    depthLimited: 0,
-  };
+  const stats = emptyStats();
 
-  const toolSpecific = applyToolSpecificCompaction(toolName, parsed, stats);
+  const minimized = sanitizeToolPayloadValue(toolName, parsed, stats);
+  const redacted = redactLogFields(minimized);
+  const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
+  const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, stats);
   const compacted = compactValue(toolSpecific, stats, DEFAULT_CONFIG);
   const withMeta = appendChatMeta(compacted, stats, rawResult.length);
   let serialized = safeStringify(withMeta);
@@ -358,14 +448,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
     return serialized;
   }
 
-  const secondaryStats: CompactStats = {
-    stringsTruncated: 0,
-    arraysTruncated: 0,
-    arrayItemsDropped: 0,
-    objectsTruncated: 0,
-    objectKeysDropped: 0,
-    depthLimited: 0,
-  };
+  const secondaryStats = emptyStats();
 
   const aggressivelyCompacted = compactValue(toolSpecific, secondaryStats, {
     maxStringChars: 700,

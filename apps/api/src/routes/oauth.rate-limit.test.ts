@@ -330,6 +330,20 @@ describe('oauthRoutes rate limits', () => {
     expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:register:203.0.113.18', 10, 3600);
   });
 
+  it('rate-limits registration-management lookups', async () => {
+    const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
+    const app = await importApp(rateLimiter);
+
+    const res = await app.request('/oauth/reg/client-1', {
+      method: 'GET',
+      headers: { 'x-forwarded-for': '203.0.113.22' },
+    });
+
+    expect(res.status).toBe(429);
+    await expect(res.json()).resolves.toEqual({ error: 'rate_limited' });
+    expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:register:203.0.113.22', 10, 3600);
+  });
+
   it('keys POST /oauth/token by IP and client_id when client_id is present', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
     const app = await importApp(rateLimiter);

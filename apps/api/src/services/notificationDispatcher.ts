@@ -33,6 +33,7 @@ import {
 } from './notificationSenders';
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
 import { getEventBus } from './eventBus';
+import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -382,10 +383,11 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
   let error: string | undefined;
 
   try {
+    const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
     switch (channel.type) {
       case 'email':
         const emailResult = await sendEmailChannelNotification(
-          channel.config as Record<string, unknown>,
+          channelConfig as Record<string, unknown>,
           alertForSend,
           device,
           org
@@ -396,7 +398,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
       case 'webhook':
         const webhookResult = await sendWebhookChannelNotification(
-          channel.config as WebhookConfig,
+          channelConfig as WebhookConfig,
           alertForSend,
           device,
           org
@@ -407,7 +409,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
       case 'sms':
         const smsResult = await sendSmsChannelNotification(
-          channel.config as SmsChannelConfig,
+          channelConfig as SmsChannelConfig,
           alertForSend,
           device,
           org
@@ -419,7 +421,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'slack':
         const slackResult = await sendChatWebhookChannelNotification(
           'slack',
-          channel.config as Record<string, unknown>,
+          channelConfig as Record<string, unknown>,
           alertForSend,
           device,
           org
@@ -431,7 +433,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'teams':
         const teamsResult = await sendChatWebhookChannelNotification(
           'teams',
-          channel.config as Record<string, unknown>,
+          channelConfig as Record<string, unknown>,
           alertForSend,
           device,
           org
@@ -442,7 +444,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
       case 'pagerduty':
         const pagerDutyResult = await sendPagerDutyChannelNotification(
-          channel.config as PagerDutyConfig,
+          channelConfig as PagerDutyConfig,
           alertForSend,
           device,
           org

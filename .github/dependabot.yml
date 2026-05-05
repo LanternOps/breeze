@@ -151,7 +151,43 @@ updates:
     reviewers:
       - "toddhebebrand"
 
-  # Docker images (for when Dockerfiles are added)
+  # Rust/Tauri dependencies for the desktop helper
+  - package-ecosystem: "cargo"
+    directory: "/apps/helper/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+      - "tauri"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Rust/Tauri dependencies for the remote viewer
+  - package-ecosystem: "cargo"
+    directory: "/apps/viewer/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+      - "tauri"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Docker base images for workspace Dockerfiles
   - package-ecosystem: "docker"
     directory: "/apps/api"
     schedule:
@@ -162,7 +198,6 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(deps):"
-    # Will be enabled once Dockerfile is created
 
   - package-ecosystem: "docker"
     directory: "/apps/web"
@@ -174,4 +209,15 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(deps):"
-    # Will be enabled once Dockerfile is created
+
+  # Docker base images for release/security build Dockerfiles
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps):"

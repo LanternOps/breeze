@@ -256,13 +256,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  const handleGenerateRecoveryCodes = async () => {
+  const handleGenerateRecoveryCodes = async (currentPassword: string) => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
-        method: 'POST'
+        method: 'POST',
+        body: JSON.stringify({ currentPassword })
       });
 
       if (!response.ok) {

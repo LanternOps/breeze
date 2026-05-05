@@ -17,6 +17,9 @@ vi.mock('../db/schema', () => ({
     agentTokenHash: 'agentTokenHash',
     previousTokenHash: 'previousTokenHash',
     previousTokenExpiresAt: 'previousTokenExpiresAt',
+    watchdogTokenHash: 'watchdogTokenHash',
+    previousWatchdogTokenHash: 'previousWatchdogTokenHash',
+    previousWatchdogTokenExpiresAt: 'previousWatchdogTokenExpiresAt',
     status: 'status',
   },
 }));
@@ -35,7 +38,7 @@ import { createHash } from 'crypto';
 
 import { db } from '../db';
 import { getRedis, rateLimiter } from '../services';
-import { agentAuthMiddleware, isAgentTokenRotationDue, matchAgentTokenHash } from './agentAuth';
+import { agentAuthMiddleware, isAgentTokenRotationDue, matchAgentTokenHash, matchRoleScopedAgentTokenHash } from './agentAuth';
 
 function sha(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -75,6 +78,36 @@ describe('matchAgentTokenHash', () => {
     });
 
     expect(result).toBeNull();
+  });
+});
+
+describe('matchRoleScopedAgentTokenHash', () => {
+  it('returns agent role for normal agent tokens', () => {
+    const result = matchRoleScopedAgentTokenHash({
+      agentTokenHash: sha('brz_agent'),
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: sha('brz_watchdog'),
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      tokenHash: sha('brz_agent'),
+    });
+
+    expect(result).toEqual({ role: 'agent', tokenRotationRequired: false });
+  });
+
+  it('returns watchdog role for watchdog-scoped tokens', () => {
+    const result = matchRoleScopedAgentTokenHash({
+      agentTokenHash: sha('brz_agent'),
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: sha('brz_watchdog'),
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      tokenHash: sha('brz_watchdog'),
+    });
+
+    expect(result).toEqual({ role: 'watchdog', tokenRotationRequired: false });
   });
 });
 
@@ -133,6 +166,9 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
     agentTokenHash: VALID_HASH,
     previousTokenHash: null,
     previousTokenExpiresAt: null,
+    watchdogTokenHash: null,
+    previousWatchdogTokenHash: null,
+    previousWatchdogTokenExpiresAt: null,
     status: 'active',
     ...overrides,
   };
@@ -261,6 +297,34 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
       agentId: 'agent-1',
       orgId: 'org-1',
       siteId: 'site-1',
+      role: 'agent',
+    });
+  });
+
+  it('authenticates watchdog-scoped tokens as watchdog role', async () => {
+    buildSelectMock([
+      makeDevice({
+        agentTokenHash: sha('brz_agent_token'),
+        watchdogTokenHash: sha('brz_watchdog_token'),
+      }),
+    ]);
+
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({ token: 'brz_watchdog_token' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(c.get('agent')).toMatchObject({
+      deviceId: 'device-1',
+      agentId: 'agent-1',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      role: 'watchdog',
     });
   });
 });

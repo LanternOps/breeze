@@ -7,6 +7,7 @@
 
 import { isIP } from 'net';
 import { safeFetch, SsrfBlockedError } from '../urlSafety';
+import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
 
 export function redactUrlForLogs(rawUrl: string): string {
   try {
@@ -215,9 +216,9 @@ export async function sendWebhookNotification(
 
   // Build headers
   const headers: Record<string, string> = {
+    ...sanitizeOutboundHeaders(config.headers),
     'Content-Type': 'application/json',
-    'User-Agent': 'Breeze-RMM/1.0',
-    ...(config.headers || {})
+    'User-Agent': 'Breeze-RMM/1.0'
   };
 
   // Add authentication
@@ -227,7 +228,13 @@ export async function sendWebhookNotification(
     const credentials = Buffer.from(`${config.authUsername}:${config.authPassword}`).toString('base64');
     headers['Authorization'] = `Basic ${credentials}`;
   } else if (config.authType === 'api_key' && config.apiKeyHeader && config.apiKeyValue) {
-    headers[config.apiKeyHeader] = config.apiKeyValue;
+    if (validateOutboundHeader(config.apiKeyHeader, config.apiKeyValue)) {
+      return {
+        success: false,
+        error: 'Invalid API key header'
+      };
+    }
+    headers[config.apiKeyHeader.trim()] = config.apiKeyValue;
   }
 
   // Build request body
@@ -423,6 +430,18 @@ export function validateWebhookConfig(config: unknown): { valid: boolean; errors
   }
   if (c.authType === 'api_key' && (!c.apiKeyHeader || !c.apiKeyValue)) {
     errors.push('API key auth requires apiKeyHeader and apiKeyValue');
+  }
+  if (c.authType === 'api_key' && typeof c.apiKeyHeader === 'string' && typeof c.apiKeyValue === 'string') {
+    const apiKeyHeaderError = validateOutboundHeader(c.apiKeyHeader, c.apiKeyValue);
+    if (apiKeyHeaderError) errors.push(apiKeyHeaderError);
+  }
+
+  if (c.headers !== undefined) {
+    if (!c.headers || typeof c.headers !== 'object' || Array.isArray(c.headers)) {
+      errors.push('Headers must be an object');
+    } else {
+      errors.push(...getOutboundHeaderValidationErrors(c.headers as Record<string, string>));
+    }
   }
 
   // Validate timeout if provided

@@ -158,6 +158,44 @@ groupsRoutes.patch(
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    if (data.siteId) {
+      const [site] = await db
+        .select()
+        .from(sites)
+        .where(
+          and(
+            eq(sites.id, data.siteId),
+            eq(sites.orgId, group.orgId)
+          )
+        )
+        .limit(1);
+
+      if (!site) {
+        return c.json({ error: 'Site not found or belongs to different organization' }, 400);
+      }
+    }
+
+    if (data.parentId) {
+      if (data.parentId === groupId) {
+        return c.json({ error: 'Group cannot be its own parent' }, 400);
+      }
+
+      const [parent] = await db
+        .select()
+        .from(deviceGroups)
+        .where(
+          and(
+            eq(deviceGroups.id, data.parentId),
+            eq(deviceGroups.orgId, group.orgId)
+          )
+        )
+        .limit(1);
+
+      if (!parent) {
+        return c.json({ error: 'Parent group not found or belongs to different organization' }, 400);
+      }
+    }
+
     const [updated] = await db
       .update(deviceGroups)
       .set({ ...data, updatedAt: new Date() })

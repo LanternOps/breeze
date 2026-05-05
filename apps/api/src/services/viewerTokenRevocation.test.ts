@@ -6,7 +6,7 @@ vi.mock('./redis', () => ({
 }));
 
 import { getRedis } from './redis';
-import { revokeViewerJti, isViewerJtiRevoked } from './viewerTokenRevocation';
+import { isViewerJtiRevoked, revokeViewerJti, revokeViewerSession } from './viewerTokenRevocation';
 
 const mockGetRedis = vi.mocked(getRedis);
 
@@ -37,6 +37,22 @@ describe('viewerTokenRevocation', () => {
     mockGetRedis.mockReturnValue(null);
     // Should not throw even when Redis is unavailable
     await expect(revokeViewerJti('jti-2')).resolves.toBeUndefined();
+  });
+
+  it('does not log raw viewer identifiers when redis is down', async () => {
+    mockGetRedis.mockReturnValue(null);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await revokeViewerJti('raw-viewer-jti');
+    await revokeViewerSession('raw-session-id');
+
+    const logged = errorSpy.mock.calls.flatMap((call) => call.map((arg) => JSON.stringify(arg))).join('\n');
+    expect(logged).not.toContain('raw-viewer-jti');
+    expect(logged).not.toContain('raw-session-id');
+    expect(logged).toContain('jtiFingerprint');
+    expect(logged).toContain('sessionFingerprint');
+
+    errorSpy.mockRestore();
   });
 
   it('fails closed when redis is down', async () => {

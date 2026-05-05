@@ -6,13 +6,22 @@ import {
   verifyToken,
   isUserTokenRevoked,
   revokeRefreshTokenJti,
-  getTrustedClientIp
+  getTrustedClientIp,
+  getRedis,
+  rateLimiter,
+  verifyPassword
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
-import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
+import {
+  decryptMfaTotpSecret,
+  decryptMfaTotpSecretForMigration,
+  encryptMfaTotpSecret,
+  type MfaSecretDecryptionResult
+} from '../../services/mfaSecretCrypto';
 import { DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from '../../services/corsOrigins';
+import { assertActiveTenantContext } from '../../services/tenantStatus';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
   REFRESH_COOKIE_NAME,
@@ -61,6 +70,43 @@ export function getClientRateLimitKey(c: RequestLike): string {
     .slice(0, 24);
 
   return `fp:${digest}`;
+}
+
+export async function requireCurrentPasswordStepUp(
+  c: Context,
+  userId: string,
+  currentPassword: string,
+  keyPrefix = 'auth:pwd-stepup'
+): Promise<Response | null> {
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+
+  const [user] = await db
+    .select({ passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!user?.passwordHash) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const valid = await verifyPassword(user.passwordHash, currentPassword);
+  if (!valid) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  return null;
 }
 
 export function isSecureCookieEnvironment(): boolean {
@@ -255,32 +301,38 @@ export function toPublicTokens(tokens: { accessToken: string; expiresInSeconds: 
 // ============================================
 
 export function encryptMfaSecret(secret: string | null | undefined): string | null {
-  return encryptSecret(secret);
+  return encryptMfaTotpSecret(secret);
 }
 
 export function decryptMfaSecret(secret: string | null | undefined): string | null {
   if (!secret) return null;
   try {
-    return decryptSecret(secret);
+    return decryptMfaTotpSecret(secret);
   } catch (error) {
     console.error('[auth] Failed to decrypt MFA secret — user may need to re-enroll MFA:', error);
     return null;
   }
 }
 
-export function getRecoveryCodePepper(): string {
-  const pepper =
-    process.env.MFA_RECOVERY_CODE_PEPPER
-    || process.env.APP_ENCRYPTION_KEY
-    || process.env.SECRET_ENCRYPTION_KEY
-    || process.env.JWT_SECRET
-    || (process.env.NODE_ENV === 'test' ? 'test-mfa-recovery-code-pepper' : '');
+export function decryptMfaSecretForMigration(secret: string | null | undefined): MfaSecretDecryptionResult {
+  if (!secret) return { plaintext: null, migratedSecret: null };
+  try {
+    return decryptMfaTotpSecretForMigration(secret);
+  } catch (error) {
+    console.error('[auth] Failed to decrypt MFA secret — user may need to re-enroll MFA:', error);
+    return { plaintext: null, migratedSecret: null };
+  }
+}
 
-  if (!pepper && process.env.NODE_ENV === 'production') {
-    throw new Error('No MFA recovery code pepper configured. Set MFA_RECOVERY_CODE_PEPPER, APP_ENCRYPTION_KEY, SECRET_ENCRYPTION_KEY, or JWT_SECRET.');
+export function getRecoveryCodePepper(): string {
+  const pepper = process.env.MFA_RECOVERY_CODE_PEPPER?.trim();
+  if (pepper) return pepper;
+
+  if (process.env.NODE_ENV === 'test') {
+    return 'test-mfa-recovery-code-pepper';
   }
 
-  return pepper;
+  throw new Error('No MFA recovery code pepper configured. Set MFA_RECOVERY_CODE_PEPPER.');
 }
 
 export function hashRecoveryCode(code: string): string {
@@ -383,6 +435,11 @@ export async function resolveCurrentUserTokenContext(userId: string): Promise<Us
         .limit(1);
 
       if (partnerAssoc?.partnerId && partnerAssoc?.roleId) {
+        await assertActiveTenantContext({
+          scope: 'partner',
+          partnerId: partnerAssoc.partnerId,
+          orgId: null
+        });
         return {
           roleId: partnerAssoc.roleId,
           partnerId: partnerAssoc.partnerId,
@@ -423,6 +480,11 @@ export async function resolveCurrentUserTokenContext(userId: string): Promise<Us
           .limit(1);
 
         partnerId = org?.partnerId ?? null;
+        await assertActiveTenantContext({
+          scope: 'organization',
+          partnerId,
+          orgId
+        });
       }
     }
 
@@ -534,13 +596,27 @@ export function auditLogin(
 
 /**
  * Check if a user requires the first-login setup wizard.
- * Triggers for the seeded admin on first login (before they complete setup).
+ * Triggers for the bootstrap admin on first login (before they complete setup).
  * New partner registrations get their org/site created at registration time
  * and have setupCompletedAt set, so they skip the wizard.
  */
 export function userRequiresSetup(user: {
   setupCompletedAt: Date | string | null;
   email: string;
+  preferences?: unknown;
 }): boolean {
-  return !user.setupCompletedAt && user.email === 'admin@breeze.local';
+  if (user.setupCompletedAt) return false;
+
+  if (user.email === 'admin@breeze.local') return true;
+
+  if (
+    user.preferences &&
+    typeof user.preferences === 'object' &&
+    !Array.isArray(user.preferences) &&
+    (user.preferences as { bootstrapSetupRequired?: unknown }).bootstrapSetupRequired === true
+  ) {
+    return true;
+  }
+
+  return false;
 }

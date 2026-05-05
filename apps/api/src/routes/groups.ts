@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
+import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
 import { evaluateGroupMembership, pinDeviceToGroup } from '../services/groupMembership';
@@ -155,6 +155,16 @@ async function getDeviceCountForGroup(groupId: string): Promise<number> {
     .where(eq(deviceGroupMemberships.groupId, groupId));
 
   return Number(result?.count ?? 0);
+}
+
+async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean> {
+  const [site] = await db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .limit(1);
+
+  return Boolean(site);
 }
 
 function mapGroupRow(
@@ -330,6 +340,13 @@ groupRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
+    if (payload.siteId) {
+      const validSite = await siteBelongsToOrg(payload.siteId, orgId!);
+      if (!validSite) {
+        return c.json({ error: 'Site not found or belongs to different organization' }, 400);
+      }
+    }
+
     // Validate parent group if provided
     if (payload.parentId) {
       const parent = await getGroupWithAccess(payload.parentId, auth);
@@ -424,6 +441,13 @@ groupRoutes.patch(
       }
       if (parent.orgId !== group.orgId) {
         return c.json({ error: 'Parent group must belong to the same organization' }, 400);
+      }
+    }
+
+    if (payload.siteId) {
+      const validSite = await siteBelongsToOrg(payload.siteId, group.orgId);
+      if (!validSite) {
+        return c.json({ error: 'Site not found or belongs to different organization' }, 400);
       }
     }
 

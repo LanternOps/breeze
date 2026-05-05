@@ -3,8 +3,13 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { notificationChannels } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  decryptNotificationChannelConfig,
+  encryptNotificationChannelConfig,
+  redactNotificationChannelConfig,
+} from '../../services/notificationChannelSecrets';
 import {
   getEmailRecipients,
   sendEmailNotification,
@@ -24,13 +29,29 @@ import {
   getNotificationChannelWithOrgCheck,
   validateNotificationChannelConfig,
 } from './helpers';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const channelsRoutes = new Hono();
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
+  return {
+    ...channel,
+    config: redactNotificationChannelConfig(channel.type, channel.config),
+  };
+}
+
+function getRedactedConfigValue(config: unknown, key: string): unknown {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
+  return (config as Record<string, unknown>)[key];
+}
 
 // GET /alerts/channels - List notification channels
 channelsRoutes.get(
   '/channels',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listChannelsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -95,7 +116,7 @@ channelsRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: channelsList,
+      data: channelsList.map(toChannelResponse),
       pagination: { page, limit, total }
     });
   }
@@ -105,6 +126,8 @@ channelsRoutes.get(
 channelsRoutes.post(
   '/channels',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', createChannelSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -133,7 +156,7 @@ channelsRoutes.post(
         orgId,
         name: data.name,
         type: data.type,
-        config: data.config,
+        config: encryptNotificationChannelConfig(data.type, data.config),
         enabled: data.enabled
       })
       .returning();
@@ -153,7 +176,7 @@ channelsRoutes.post(
       },
     });
 
-    return c.json(channel, 201);
+    return c.json(toChannelResponse(channel), 201);
   }
 );
 
@@ -161,6 +184,8 @@ channelsRoutes.post(
 channelsRoutes.put(
   '/channels/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', updateChannelSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -177,7 +202,11 @@ channelsRoutes.put(
     }
 
     if (data.config !== undefined) {
-      const configErrors = validateNotificationChannelConfig(channel.type, data.config);
+      const configForValidation = decryptNotificationChannelConfig(
+        channel.type,
+        encryptNotificationChannelConfig(channel.type, data.config, channel.config)
+      );
+      const configErrors = validateNotificationChannelConfig(channel.type, configForValidation);
       if (configErrors.length > 0) {
         return c.json({
           error: `Invalid ${channel.type} channel configuration`,
@@ -190,7 +219,9 @@ channelsRoutes.put(
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (data.name !== undefined) updates.name = data.name;
-    if (data.config !== undefined) updates.config = data.config;
+    if (data.config !== undefined) {
+      updates.config = encryptNotificationChannelConfig(channel.type, data.config, channel.config);
+    }
     if (data.enabled !== undefined) updates.enabled = data.enabled;
 
     const [updated] = await db
@@ -213,7 +244,7 @@ channelsRoutes.put(
       },
     });
 
-    return c.json(updated);
+    return c.json(toChannelResponse(updated));
   }
 );
 
@@ -221,6 +252,8 @@ channelsRoutes.put(
 channelsRoutes.delete(
   '/channels/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const channelId = c.req.param('id')!;
@@ -250,6 +283,8 @@ channelsRoutes.delete(
 channelsRoutes.post(
   '/channels/:id/test',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const channelId = c.req.param('id')!;
@@ -258,6 +293,8 @@ channelsRoutes.post(
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
     }
+    const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
+    const redactedChannelConfig = redactNotificationChannelConfig(channel.type, channel.config);
 
     // Send a real test notification through the selected channel type.
     const testMessage = {
@@ -303,14 +340,14 @@ channelsRoutes.post(
         }
 
         case 'webhook': {
-          const webhookResult = await testWebhook(channel.config as WebhookConfig);
+          const webhookResult = await testWebhook(channelConfig as WebhookConfig);
           testResult = {
             success: webhookResult.success,
             message: webhookResult.success
               ? 'Test webhook sent successfully'
               : (webhookResult.error || 'Failed to send test webhook'),
             details: {
-              url: (channel.config as { url?: string })?.url,
+              url: getRedactedConfigValue(redactedChannelConfig, 'url'),
               statusCode: webhookResult.statusCode
             }
           };
@@ -319,7 +356,7 @@ channelsRoutes.post(
 
         case 'slack':
         case 'teams': {
-          const config = channel.config as Record<string, unknown>;
+          const config = channelConfig as Record<string, unknown>;
           const webhookUrl = typeof config.webhookUrl === 'string' ? config.webhookUrl.trim() : '';
           if (!webhookUrl) {
             testResult = {
@@ -354,7 +391,7 @@ channelsRoutes.post(
               ? `Test ${channel.type} message sent successfully`
               : (chatResult.error || `Failed to send test ${channel.type} message`),
             details: {
-              webhookUrl,
+              webhookUrl: getRedactedConfigValue(redactedChannelConfig, 'webhookUrl'),
               statusCode: chatResult.statusCode
             }
           };
@@ -363,7 +400,7 @@ channelsRoutes.post(
 
         case 'pagerduty': {
           const pagerDutyResult = await sendPagerDutyNotification(
-            channel.config as PagerDutyConfig,
+            channelConfig as PagerDutyConfig,
             {
               alertId: `test-${channel.id}`,
               alertName: testMessage.title,
@@ -392,7 +429,7 @@ channelsRoutes.post(
         case 'sms':
           {
             const smsResult = await sendSmsNotification(
-              channel.config as SmsChannelConfig,
+              channelConfig as SmsChannelConfig,
               {
                 alertName: testMessage.title,
                 severity: 'info',
@@ -405,7 +442,7 @@ channelsRoutes.post(
               success: smsResult.success,
               message: smsResult.success ? 'Test SMS sent successfully' : (smsResult.error || 'Failed to send test SMS'),
               details: {
-                phoneNumbers: (channel.config as { phoneNumbers?: string[] })?.phoneNumbers,
+                phoneNumbers: (channelConfig as { phoneNumbers?: string[] })?.phoneNumbers,
                 sentCount: smsResult.sentCount,
                 failedCount: smsResult.failedCount
               }

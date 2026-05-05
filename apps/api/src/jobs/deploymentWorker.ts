@@ -1,7 +1,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { db } from '../db';
 import { deployments, deploymentDevices, devices, deviceCommands, scripts, users, organizationUsers, patches } from '../db/schema';
-import { eq, and, asc, inArray } from 'drizzle-orm';
+import { eq, and, asc, inArray, sql } from 'drizzle-orm';
 import {
   getDeploymentProgress,
   shouldPauseDeployment,
@@ -313,6 +313,114 @@ interface ScheduleNextBatchJob {
   currentBatch: number;
 }
 
+interface DeploymentForDeviceJob {
+  id: string;
+  orgId: string;
+  status: string;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertDeploymentDeviceJobData(data: ProcessDeploymentDeviceJob): ProcessDeploymentDeviceJob {
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !UUID_PATTERN.test(data.deploymentId) ||
+    !UUID_PATTERN.test(data.deviceId) ||
+    !Number.isInteger(data.batchNumber) ||
+    data.batchNumber < 1
+  ) {
+    throw new Error('Invalid deployment device job data');
+  }
+
+  return data;
+}
+
+async function getDeploymentDeviceState(
+  deploymentId: string,
+  deviceId: string
+): Promise<{ status: string; batchNumber: number | null; deviceOrgId: string } | null> {
+  const [state] = await db
+    .select({
+      status: deploymentDevices.status,
+      batchNumber: deploymentDevices.batchNumber,
+      deviceOrgId: devices.orgId
+    })
+    .from(deploymentDevices)
+    .innerJoin(devices, eq(deploymentDevices.deviceId, devices.id))
+    .where(
+      and(
+        eq(deploymentDevices.deploymentId, deploymentId),
+        eq(deploymentDevices.deviceId, deviceId)
+      )
+    )
+    .limit(1);
+
+  return state ?? null;
+}
+
+async function claimDeploymentDeviceJob(
+  deployment: DeploymentForDeviceJob,
+  jobData: ProcessDeploymentDeviceJob
+): Promise<{ claimed: true } | { claimed: false; reason: string }> {
+  const [claim] = await db
+    .update(deploymentDevices)
+    .set({
+      status: 'running',
+      startedAt: new Date()
+    })
+    .where(
+      and(
+        eq(deploymentDevices.deploymentId, jobData.deploymentId),
+        eq(deploymentDevices.deviceId, jobData.deviceId),
+        eq(deploymentDevices.batchNumber, jobData.batchNumber),
+        eq(deploymentDevices.status, 'pending'),
+        sql`exists (
+          select 1
+          from ${devices}
+          where ${devices.id} = ${deploymentDevices.deviceId}
+            and ${devices.orgId} = ${deployment.orgId}
+        )`
+      )
+    )
+    .returning({ deviceId: deploymentDevices.deviceId });
+
+  if (claim) {
+    return { claimed: true };
+  }
+
+  const state = await getDeploymentDeviceState(jobData.deploymentId, jobData.deviceId);
+  if (!state) {
+    throw new Error(`Device ${jobData.deviceId} is not part of deployment ${jobData.deploymentId}`);
+  }
+
+  if (state.deviceOrgId !== deployment.orgId) {
+    throw new Error(`Device ${jobData.deviceId} does not belong to deployment organization ${deployment.orgId}`);
+  }
+
+  if (state.batchNumber !== jobData.batchNumber) {
+    throw new Error(`Device ${jobData.deviceId} is not part of deployment batch ${jobData.batchNumber}`);
+  }
+
+  return {
+    claimed: false,
+    reason: `Deployment device status is ${state.status}`
+  };
+}
+
+async function releaseDeploymentDeviceClaim(deploymentId: string, deviceId: string): Promise<void> {
+  await db
+    .update(deploymentDevices)
+    .set({ status: 'pending' })
+    .where(
+      and(
+        eq(deploymentDevices.deploymentId, deploymentId),
+        eq(deploymentDevices.deviceId, deviceId),
+        eq(deploymentDevices.status, 'running')
+      )
+    );
+}
+
 // ============================================
 // Deployment Worker
 // ============================================
@@ -469,7 +577,7 @@ export function createDeploymentDeviceWorker(): Worker {
   return new Worker<ProcessDeploymentDeviceJob>(
     DEPLOYMENT_DEVICE_QUEUE,
     async (job: Job<ProcessDeploymentDeviceJob>) => {
-      const { deploymentId, deviceId, batchNumber } = job.data;
+      const { deploymentId, deviceId, batchNumber } = assertDeploymentDeviceJobData(job.data);
 
       // Get deployment
       const [deployment] = await db
@@ -480,6 +588,15 @@ export function createDeploymentDeviceWorker(): Worker {
 
       if (!deployment) {
         throw new Error(`Deployment ${deploymentId} not found`);
+      }
+
+      if (!['pending', 'running', 'paused', 'cancelled'].includes(deployment.status)) {
+        return { skipped: true, reason: `Deployment status is ${deployment.status}` };
+      }
+
+      const claim = await claimDeploymentDeviceJob(deployment, { deploymentId, deviceId, batchNumber });
+      if (claim.claimed === false) {
+        return { skipped: true, reason: claim.reason };
       }
 
       if (deployment.status === 'paused' || deployment.status === 'cancelled') {
@@ -496,6 +613,8 @@ export function createDeploymentDeviceWorker(): Worker {
       if (rolloutConfig.respectMaintenanceWindows) {
         const inMaintenance = await isDeviceInMaintenanceWindow(deviceId);
         if (!inMaintenance) {
+          await releaseDeploymentDeviceClaim(deploymentId, deviceId);
+
           // Re-queue for later
           const queue = getDeploymentDeviceQueue();
           const deferredJobId = getDeploymentDeferredDeviceJobId(
@@ -518,9 +637,6 @@ export function createDeploymentDeviceWorker(): Worker {
           return { delayed: true, reason: 'waiting for maintenance window' };
         }
       }
-
-      // Mark as running
-      await updateDeploymentDeviceStatus(deploymentId, deviceId, 'running');
 
       try {
         // Execute the deployment payload

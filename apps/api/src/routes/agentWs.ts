@@ -20,11 +20,12 @@ import { applyBackupCommandResultToJob } from '../services/backupResultPersisten
 import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
-import { matchAgentTokenHash } from '../middleware/agentAuth';
+import { matchRoleScopedAgentTokenHash, type AgentCredentialRole } from '../middleware/agentAuth';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -37,10 +38,41 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 const PROVIDER_BACKED_BACKUP_COMMAND_TYPES = new Set(['hyperv_backup', 'mssql_backup']);
 const MAX_DESKTOP_SESSION_ID_BYTES = 128;
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
+type TunnelSessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
 
 function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' | 'degraded' {
   if (raw && VALID_MONITOR_STATUSES.has(raw)) return raw as 'online' | 'offline' | 'degraded';
   return 'offline';
+}
+
+async function updateTunnelSessionForAuthenticatedDevice(
+  tunnelId: string,
+  authenticatedDeviceId: string,
+  values: Partial<typeof tunnelSessions.$inferInsert>,
+  statusGuard?: TunnelSessionStatus
+): Promise<{ id: string; deviceId: string } | null> {
+  if (!authenticatedDeviceId) return null;
+
+  const conditions = [
+    eq(tunnelSessions.id, tunnelId),
+    eq(tunnelSessions.deviceId, authenticatedDeviceId),
+  ];
+  if (statusGuard) {
+    conditions.push(eq(tunnelSessions.status, statusGuard));
+  }
+
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .update(tunnelSessions)
+      .set(values)
+      .where(and(...conditions))
+      .returning({
+        id: tunnelSessions.id,
+        deviceId: tunnelSessions.deviceId,
+      })
+  );
+
+  return row ?? null;
 }
 
 function extractDesktopSessionId(commandId: string, prefix: 'desk-start-' | 'desk-stop-' | 'desk-disconnect-'): string | null {
@@ -669,14 +701,21 @@ export interface AgentCommand {
 type AgentDbContext = {
   deviceId: string;
   orgId: string;
+  role?: AgentCredentialRole;
 };
+
+type AgentTokenValidation =
+  | { ok: true; ctx: AgentDbContext }
+  | { ok: false; reason: 'unauthorized' | 're_enrollment_required' };
 
 /**
  * Validate agent token by hashing it and comparing against the stored hash.
+ * Returns `re_enrollment_required` when the device row exists but predates the
+ * token-hash migration so the agent can prompt the operator instead of looping.
  */
-async function validateAgentToken(agentId: string, token: string): Promise<AgentDbContext | null> {
+async function validateAgentToken(agentId: string, token: string): Promise<AgentTokenValidation> {
   if (!token || !token.startsWith('brz_')) {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
   const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -691,6 +730,9 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
         agentTokenHash: devices.agentTokenHash,
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
+        watchdogTokenHash: devices.watchdogTokenHash,
+        previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
+        previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
         status: devices.status
       })
       .from(devices)
@@ -699,31 +741,45 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
     return row ?? null;
   });
 
-  if (!device || !device.agentTokenHash) {
-    return null;
+  if (!device) {
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  if (!device.agentTokenHash && !device.watchdogTokenHash) {
+    console.warn(
+      `[agentWs] Device ${agentId} has no token hash — predates hash migration; signaling re_enrollment_required`
+    );
+    return { ok: false, reason: 're_enrollment_required' };
   }
 
   if (device.status === 'decommissioned') {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
   if (device.status === 'quarantined') {
-    return null;
+    return { ok: false, reason: 'unauthorized' };
   }
 
-  const match = matchAgentTokenHash({
+  const match = matchRoleScopedAgentTokenHash({
     agentTokenHash: device.agentTokenHash,
     previousTokenHash: device.previousTokenHash,
     previousTokenExpiresAt: device.previousTokenExpiresAt,
+    watchdogTokenHash: device.watchdogTokenHash,
+    previousWatchdogTokenHash: device.previousWatchdogTokenHash,
+    previousWatchdogTokenExpiresAt: device.previousWatchdogTokenExpiresAt,
     tokenHash,
   });
-  if (!match) {
-    return null;
+  if (!match || match.role !== 'agent') {
+    return { ok: false, reason: 'unauthorized' };
   }
 
   return {
-    deviceId: device.id,
-    orgId: device.orgId
+    ok: true,
+    ctx: {
+      deviceId: device.id,
+      orgId: device.orgId,
+      role: match.role,
+    },
   };
 }
 
@@ -880,40 +936,40 @@ async function processOrphanedCommandResult(
     const tunnelId = result.commandId.slice('tun-open-'.length);
     if (result.status !== 'completed') {
       try {
-        await withSystemDbAccessContext(() =>
-          db.update(tunnelSessions)
-            .set({
-              status: 'failed',
-              errorMessage: result.error || result.stderr || 'Agent failed to open tunnel',
-              endedAt: new Date(),
-            })
-            .where(eq(tunnelSessions.id, tunnelId))
-        );
+        const updated = await updateTunnelSessionForAuthenticatedDevice(tunnelId, authenticatedDeviceId, {
+          status: 'failed',
+          errorMessage: result.error || result.stderr || 'Agent failed to open tunnel',
+          endedAt: new Date(),
+        });
+        if (!updated) {
+          console.warn(
+            `[AgentWs] Rejected tunnel ${tunnelId} open failure from agent ${agentId}: ` +
+            `authenticatedDevice=${authenticatedDeviceId}`
+          );
+          return;
+        }
+        await revokeViewerSession(tunnelId);
         console.warn(`[AgentWs] Tunnel ${tunnelId} open failed: ${result.error || result.stderr}`);
       } catch (err) {
         console.error(`[AgentWs] Failed to update tunnel session ${tunnelId}:`, err);
       }
     } else {
       try {
-        // Only transition to 'connecting' if still 'pending' — avoids resurrecting
-        // a tunnel the user already closed while the agent was still opening it.
-        const current = await withSystemDbAccessContext(async () => {
-          const [row] = await db
-            .select({ status: tunnelSessions.status })
-            .from(tunnelSessions)
-            .where(eq(tunnelSessions.id, tunnelId))
-            .limit(1);
-          return row;
-        });
-        if (current && current.status === 'pending') {
-          await withSystemDbAccessContext(() =>
-            db.update(tunnelSessions)
-              .set({ status: 'connecting' })
-              .where(eq(tunnelSessions.id, tunnelId))
-          );
+        const updated = await updateTunnelSessionForAuthenticatedDevice(
+          tunnelId,
+          authenticatedDeviceId,
+          { status: 'connecting' },
+          'pending'
+        );
+        if (updated) {
           // Register ownership so agent binary frames are accepted
           // and early data can be buffered before the browser connects.
           registerTunnelOwnership(tunnelId, agentId);
+        } else {
+          console.warn(
+            `[AgentWs] Rejected tunnel ${tunnelId} open success from agent ${agentId}: ` +
+            `authenticatedDevice=${authenticatedDeviceId}`
+          );
         }
       } catch (err) {
         console.error(`[AgentWs] Failed to update tunnel session ${tunnelId}:`, err);
@@ -931,15 +987,19 @@ async function processOrphanedCommandResult(
   if (result.commandId.startsWith('tun-closed-')) {
     const tunnelId = result.commandId.slice('tun-closed-'.length);
     try {
-      await withSystemDbAccessContext(() =>
-        db.update(tunnelSessions)
-          .set({
-            status: 'disconnected',
-            endedAt: new Date(),
-            errorMessage: result.error || null,
-          })
-          .where(eq(tunnelSessions.id, tunnelId))
-      );
+      const updated = await updateTunnelSessionForAuthenticatedDevice(tunnelId, authenticatedDeviceId, {
+        status: 'disconnected',
+        endedAt: new Date(),
+        errorMessage: result.error || null,
+      });
+      if (!updated) {
+        console.warn(
+          `[AgentWs] Rejected tunnel ${tunnelId} close from agent ${agentId}: ` +
+          `authenticatedDevice=${authenticatedDeviceId}`
+        );
+        return;
+      }
+      await revokeViewerSession(tunnelId);
       console.log(`[AgentWs] Tunnel ${tunnelId} closed by agent${result.error ? ': ' + result.error : ''}`);
     } catch (err) {
       console.error(`[AgentWs] Failed to update tunnel session ${tunnelId} on close:`, err);
@@ -1182,6 +1242,7 @@ async function processCommandResult(
             and(
               eq(deviceCommands.id, result.commandId),
               eq(deviceCommands.deviceId, did),
+              eq(deviceCommands.targetRole, 'agent'),
               inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
             )
           )
@@ -1201,6 +1262,7 @@ async function processCommandResult(
           and(
             eq(deviceCommands.id, result.commandId),
             eq(devices.agentId, agentId),
+            eq(deviceCommands.targetRole, 'agent'),
             inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
           )
         )
@@ -1213,6 +1275,11 @@ async function processCommandResult(
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here.
       await processOrphanedCommandResult(agentId, deviceId ?? '', result);
+      return;
+    }
+
+    if (command.targetRole && command.targetRole !== 'agent') {
+      console.warn(`[AgentWs] Ignoring ${command.targetRole} command result ${result.commandId} on agent websocket for ${agentId}`);
       return;
     }
 
@@ -1235,6 +1302,7 @@ async function processCommandResult(
           and(
             eq(deviceCommands.id, result.commandId),
             eq(deviceCommands.deviceId, resolvedDeviceId!),
+            eq(deviceCommands.targetRole, 'agent'),
             inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
           )
         )
@@ -1693,6 +1761,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     .returning({ id: remoteSessions.id });
 
                   if (result.length > 0) {
+                    await revokeViewerSession(sessionId);
                     console.log(`[AgentWs] Session ${sessionId} marked failed: ${errorMsg}`);
                   } else {
                     console.warn(`[AgentWs] Failed session ${sessionId} not found or not in connecting state`);
@@ -2074,13 +2143,16 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
-      const agentCtx = await validateAgentToken(agentId, token);
-      if (!agentCtx) {
+      const result = await validateAgentToken(agentId, token);
+      if (!result.ok) {
+        if (result.reason === 're_enrollment_required') {
+          return c.json({ error: 'Re-enrollment required', code: 're_enrollment_required' }, 401);
+        }
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
       // Store validated device context for the upgrade handler to access
-      c.set('agentDb', agentCtx);
+      c.set('agentDb', result.ctx);
       return next();
     },
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {

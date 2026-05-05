@@ -1,11 +1,11 @@
-import { Hono } from 'hono';
-import { and, eq, isNull } from 'drizzle-orm';
-import { createHash, randomBytes } from 'node:crypto';
-import { db, withSystemDbAccessContext } from '../db';
-import { installerBootstrapTokens } from '../db/schema/installerBootstrapTokens';
-import { enrollmentKeys, organizations } from '../db/schema/orgs';
-import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
-import { BOOTSTRAP_TOKEN_PATTERN } from '../services/installerBootstrapToken';
+import { Hono, type Context } from "hono";
+import { and, eq, isNull } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
+import { db, withSystemDbAccessContext } from "../db";
+import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
+import { enrollmentKeys, organizations } from "../db/schema/orgs";
+import { hashEnrollmentKey } from "../services/enrollmentKeySecurity";
+import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
 
 const CHILD_TTL_MIN = Number(
   process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES ?? 24 * 60,
@@ -32,7 +32,7 @@ function freshChildExpiresAt(parentExpiresAt: Date): Date | null {
 }
 
 function generateChildEnrollmentKey(): string {
-  return randomBytes(32).toString('hex'); // 64-char hex
+  return randomBytes(32).toString("hex"); // 64-char hex
 }
 
 /**
@@ -40,13 +40,19 @@ function generateChildEnrollmentKey(): string {
  * Never log raw bootstrap tokens — they grant single-use enrollment.
  */
 function hashTokenForLog(token: string): string {
-  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 
 const INVALID_TOKEN_RESPONSE = {
-  body: { error: 'token invalid, expired, or already used' as const },
+  body: { error: "token invalid, expired, or already used" as const },
   status: 404 as const,
 };
+
+function allowLegacyGetBootstrap(): boolean {
+  const value =
+    process.env.MACOS_INSTALLER_ALLOW_LEGACY_GET_BOOTSTRAP?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
 
 export const installerRoutes = new Hono();
 
@@ -66,13 +72,12 @@ export const installerRoutes = new Hono();
  * while ensuring the token is never permanently burned without a usable
  * child key.
  */
-installerRoutes.get('/bootstrap/:token', async (c) => {
-  const token = c.req.param('token');
+async function redeemBootstrapToken(c: Context, token: string) {
   if (!BOOTSTRAP_TOKEN_PATTERN.test(token)) {
-    return c.json({ error: 'invalid token' }, 400);
+    return c.json({ error: "invalid token" }, 400);
   }
 
-  const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
 
   const result = await withSystemDbAccessContext(async () => {
     // ── 1. Look up token ──────────────────────────────────────────────
@@ -83,17 +88,29 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
       .limit(1);
 
     if (!row) {
-      console.error('[installer] bootstrap 404', { reason: 'no_row', tokenHash: hashTokenForLog(token), ip });
+      console.error("[installer] bootstrap 404", {
+        reason: "no_row",
+        tokenHash: hashTokenForLog(token),
+        ip,
+      });
       return null;
     }
 
     if (row.consumedAt) {
-      console.error('[installer] bootstrap 404', { reason: 'already_consumed', tokenId: row.id, ip });
+      console.error("[installer] bootstrap 404", {
+        reason: "already_consumed",
+        tokenId: row.id,
+        ip,
+      });
       return null;
     }
 
     if (new Date(row.expiresAt) < new Date()) {
-      console.error('[installer] bootstrap 404', { reason: 'expired', tokenId: row.id, ip });
+      console.error("[installer] bootstrap 404", {
+        reason: "expired",
+        tokenId: row.id,
+        ip,
+      });
       return null;
     }
 
@@ -106,23 +123,32 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
 
     if (!parent) {
       // Data-integrity anomaly: token references a parent key that no longer exists.
-      console.error('[installer] bootstrap orphaned parent — data integrity incident', {
-        reason: 'orphaned_parent',
-        tokenId: row.id,
-        parentEnrollmentKeyId: row.parentEnrollmentKeyId,
-        ip,
-      });
+      console.error(
+        "[installer] bootstrap orphaned parent — data integrity incident",
+        {
+          reason: "orphaned_parent",
+          tokenId: row.id,
+          parentEnrollmentKeyId: row.parentEnrollmentKeyId,
+          ip,
+        },
+      );
       return null;
     }
 
     // If the parent has no expiry set, fall back to the child TTL only
     // (no upper bound from parent). If it does have an expiry, bound by it.
-    const parentExpiresAt = parent.expiresAt ? new Date(parent.expiresAt) : null;
+    const parentExpiresAt = parent.expiresAt
+      ? new Date(parent.expiresAt)
+      : null;
     const childExpiresAt = parentExpiresAt
       ? freshChildExpiresAt(parentExpiresAt)
       : new Date(Date.now() + CHILD_TTL_MIN * 60 * 1000);
     if (!childExpiresAt) {
-      console.error('[installer] bootstrap 404', { reason: 'parent_already_expired', tokenId: row.id, ip });
+      console.error("[installer] bootstrap 404", {
+        reason: "parent_already_expired",
+        tokenId: row.id,
+        ip,
+      });
       return null;
     }
 
@@ -135,13 +161,13 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
       .values({
         orgId: row.orgId,
         siteId: row.siteId,
-        name: `${parent.name} (mac-installer ${token})`,
+        name: `${parent.name} (mac-installer ${hashTokenForLog(token)})`,
         key: childKeyHash,
         keySecretHash: parent.keySecretHash,
         maxUsage: row.maxUsage,
         expiresAt: childExpiresAt,
         createdBy: row.createdBy,
-        installerPlatform: 'macos',
+        installerPlatform: "macos",
       })
       .returning();
 
@@ -152,7 +178,7 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
       .update(installerBootstrapTokens)
       .set({
         consumedAt: new Date(),
-        consumedFromIp: ip === 'unknown' ? null : ip,
+        consumedFromIp: ip === "unknown" ? null : ip,
       })
       .where(
         and(
@@ -165,9 +191,15 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
     if (!updated) {
       // Lost the race — delete the child key we just created so we don't
       // leave orphaned enrollment keys accumulating on repeated replays.
-      console.error('[installer] bootstrap 404', { reason: 'lost_race', tokenId: row.id, ip });
+      console.error("[installer] bootstrap 404", {
+        reason: "lost_race",
+        tokenId: row.id,
+        ip,
+      });
       if (childKey) {
-        await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, childKey.id));
+        await db
+          .delete(enrollmentKeys)
+          .where(eq(enrollmentKeys.id, childKey.id));
       }
       return null;
     }
@@ -182,7 +214,7 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
     return {
       rawChildKey,
       siteId: row.siteId,
-      orgName: org?.name ?? 'your organization',
+      orgName: org?.name ?? "your organization",
     };
   });
 
@@ -191,10 +223,34 @@ installerRoutes.get('/bootstrap/:token', async (c) => {
   }
 
   return c.json({
-    serverUrl: process.env.PUBLIC_API_URL ?? process.env.API_URL ?? '',
+    serverUrl: process.env.PUBLIC_API_URL ?? process.env.API_URL ?? "",
     enrollmentKey: result.rawChildKey,
     enrollmentSecret: process.env.AGENT_ENROLLMENT_SECRET || null,
     siteId: result.siteId,
     orgName: result.orgName,
   });
+}
+
+installerRoutes.post("/bootstrap", async (c) => {
+  let token = c.req.header("x-breeze-bootstrap-token") ?? "";
+  if (
+    !token &&
+    (c.req.header("content-type") ?? "").includes("application/json")
+  ) {
+    const body = (await c.req.json().catch(() => null)) as {
+      token?: unknown;
+    } | null;
+    token = typeof body?.token === "string" ? body.token : "";
+  }
+  if (!token) {
+    return c.json({ error: "missing token" }, 400);
+  }
+  return redeemBootstrapToken(c, token);
+});
+
+installerRoutes.get("/bootstrap/:token", async (c) => {
+  if (!allowLegacyGetBootstrap()) {
+    return c.json(INVALID_TOKEN_RESPONSE.body, INVALID_TOKEN_RESPONSE.status);
+  }
+  return redeemBootstrapToken(c, c.req.param("token"));
 });

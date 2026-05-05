@@ -188,6 +188,16 @@ describe('backup routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clear any leaked mockReturnValueOnce queues from prior tests so a
+    // failing test cannot bleed mocks into subsequent ones.
+    selectMock.mockReset();
+    insertMock.mockReset();
+    updateMock.mockReset();
+    deleteMock.mockReset();
+    selectMock.mockImplementation(() => chainMock([]));
+    insertMock.mockImplementation(() => chainMock([]));
+    updateMock.mockImplementation(() => chainMock([]));
+    deleteMock.mockImplementation(() => chainMock([]));
     queueCommandForExecutionMock.mockResolvedValue({
       command: { id: RESTORE_COMMAND_ID, status: 'pending' },
     });
@@ -236,6 +246,9 @@ describe('backup routes', () => {
       isActive: false,
       providerConfig: { storageClass: 'GLACIER' },
     };
+    // PATCH now does a pre-update SELECT to merge provider config secrets and
+    // assert encryption support before applying the update.
+    selectMock.mockReturnValueOnce(chainMock([configRecord]));
     updateMock.mockReturnValueOnce(chainMock([updatedRecord]));
 
     const updateRes = await app.request(`/backup/configs/${CONFIG_ID}`, {
@@ -269,6 +282,8 @@ describe('backup routes', () => {
   it('should report device backup status via config policy resolver', async () => {
     // GET /backup/status/:deviceId now uses the config policy system.
     // With no backup config policy assigned (empty db mocks), device is unprotected.
+    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID }]));
+
     const statusUnprotectedRes = await app.request(`/backup/status/${DEVICE_ID}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer token' }
@@ -281,6 +296,20 @@ describe('backup routes', () => {
     expect(unprotected.data.featureLinkId).toBeNull();
     expect(unprotected.data.configId).toBeNull();
     expect(unprotected.data.lastJob).toBeNull();
+  });
+
+  it('returns 404 for backup status when device is outside the requested org', async () => {
+    selectMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request(`/backup/status/${DEVICE_ID}?orgId=${ORG_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Device not found');
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   it('should queue and fetch a restore job', async () => {

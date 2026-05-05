@@ -150,11 +150,12 @@ describe('huntress routes', () => {
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => [{
-            id: 'integration-1',
-            orgId: 'org-1',
-            webhookSecretEncrypted: 'enc:webhook',
-            isActive: true,
-          }]),
+	            id: 'integration-1',
+	            orgId: 'org-1',
+	            accountId: 'acct-123',
+	            webhookSecretEncrypted: 'enc:webhook',
+	            isActive: true,
+	          }]),
         })),
       })),
     } as any);
@@ -175,11 +176,12 @@ describe('huntress routes', () => {
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => [{
-            id: 'integration-1',
-            orgId: 'org-1',
-            webhookSecretEncrypted: 'enc:webhook',
-            isActive: true,
-          }]),
+	            id: 'integration-1',
+	            orgId: 'org-1',
+	            accountId: 'acct-123',
+	            webhookSecretEncrypted: 'enc:webhook',
+	            isActive: true,
+	          }]),
         })),
       })),
     } as any);
@@ -213,5 +215,34 @@ describe('huntress routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(String(body.error)).toContain('integrationId');
+  });
+
+  it('rejects explicit integrationId when the payload accountId belongs to another Huntress account', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => [{
+            id: 'integration-1',
+            orgId: 'org-1',
+            accountId: 'acct-stored',
+            webhookSecretEncrypted: 'enc:webhook',
+            isActive: true,
+          }]),
+        })),
+      })),
+    } as any);
+
+    const res = await app.request('/huntress/webhook?integrationId=integration-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-huntress-account-id': 'acct-other',
+      },
+      body: JSON.stringify({ accountId: 'acct-other' }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(String(body.error)).toContain('account');
   });
 });

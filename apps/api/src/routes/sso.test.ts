@@ -143,7 +143,12 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { discoverOIDCConfig } from '../services/sso';
+import {
+  discoverOIDCConfig,
+  exchangeCodeForTokens,
+  getUserInfo,
+  mapUserAttributes,
+} from '../services/sso';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -176,6 +181,7 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN;
     permissionGate.deny = false;
     mfaGate.deny = false;
     setAuthContext();
@@ -501,5 +507,226 @@ describe('sso routes', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  it('exchanges SSO callback code for access token and HttpOnly refresh cookie only once', async () => {
+    vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+      access_token: 'idp-access-token',
+      refresh_token: 'idp-refresh-token',
+      expires_in: 3600
+    } as any);
+    vi.mocked(getUserInfo).mockResolvedValue({
+      sub: 'external-user-1',
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+    vi.mocked(mapUserAttributes).mockReturnValue({
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'sso-session-1',
+              providerId: PROVIDER_UUID,
+              state: 'state',
+              nonce: 'nonce',
+              codeVerifier: 'verifier',
+              redirectUrl: '/dashboard'
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: ORG_UUID,
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              authorizationUrl: 'https://issuer.example.com/auth',
+              tokenUrl: 'https://issuer.example.com/token',
+              userInfoUrl: 'https://issuer.example.com/userinfo',
+              jwksUrl: 'https://issuer.example.com/jwks',
+              clientId: 'client-id',
+              clientSecret: 'client-secret',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: false,
+              allowedDomains: null,
+              defaultRoleId: null
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: USER_UUID,
+              email: 'test@example.com',
+              name: 'Test User'
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                orgId: ORG_UUID,
+                roleId: 'role-1',
+                roleName: 'Member',
+                roleScope: 'organization'
+              }])
+            })
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'identity-1' }])
+          })
+        })
+      } as any);
+
+    const callbackRes = await app.request('/sso/callback?code=oidc-code&state=state', {
+      method: 'GET',
+      headers: { 'user-agent': 'vitest' }
+    });
+
+    expect(callbackRes.status).toBe(302);
+    const redirectLocation = callbackRes.headers.get('location') ?? '';
+    const exchangeCode = redirectLocation.match(/ssoCode=([^&]+)/)?.[1];
+    expect(exchangeCode).toBeTruthy();
+
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: decodeURIComponent(exchangeCode!) })
+    });
+
+    expect(exchangeRes.status).toBe(200);
+    const body = await exchangeRes.json();
+    // SSO_EXCHANGE_RETURN_REFRESH_TOKEN defaults to true for one release after
+    // the cookie-based default flipped, so existing callers that read
+    // response.refreshToken keep working. The Deprecation header signals the
+    // pending flip back to cookie-only.
+    expect(body).toEqual({
+      accessToken: 'access-token',
+      expiresInSeconds: 900,
+      refreshToken: 'refresh-token'
+    });
+    expect(exchangeRes.headers.get('deprecation')).toBe('true');
+    const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('breeze_refresh_token=');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('breeze_csrf_token=');
+
+    const replayRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: decodeURIComponent(exchangeCode!) })
+    });
+
+    expect(replayRes.status).toBe(400);
+  });
+
+  it('returns SSO refresh token in JSON only behind explicit compatibility flag', async () => {
+    process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN = 'true';
+    vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+      access_token: 'idp-access-token',
+      refresh_token: 'idp-refresh-token',
+      expires_in: 3600
+    } as any);
+    vi.mocked(getUserInfo).mockResolvedValue({
+      sub: 'external-user-1',
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+    vi.mocked(mapUserAttributes).mockReturnValue({
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'sso-session-2',
+              providerId: PROVIDER_UUID,
+              state: 'state',
+              nonce: 'nonce',
+              codeVerifier: 'verifier',
+              redirectUrl: '/'
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: ORG_UUID,
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              authorizationUrl: 'https://issuer.example.com/auth',
+              tokenUrl: 'https://issuer.example.com/token',
+              userInfoUrl: 'https://issuer.example.com/userinfo',
+              clientId: 'client-id',
+              clientSecret: 'client-secret',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: false,
+              defaultRoleId: null
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: USER_UUID, email: 'test@example.com', name: 'Test User' }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ orgId: ORG_UUID, roleId: 'role-1', roleScope: 'organization' }])
+            })
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'identity-2' }])
+          })
+        })
+      } as any);
+
+    const callbackRes = await app.request('/sso/callback?code=oidc-code&state=state');
+    const exchangeCode = (callbackRes.headers.get('location') ?? '').match(/ssoCode=([^&]+)/)?.[1];
+    expect(exchangeCode).toBeTruthy();
+
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: decodeURIComponent(exchangeCode!) })
+    });
+
+    expect(exchangeRes.status).toBe(200);
+    const body = await exchangeRes.json();
+    expect(body.refreshToken).toBe('refresh-token');
   });
 });

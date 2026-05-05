@@ -5,6 +5,7 @@ const shared = vi.hoisted(() => ({
   addMock: vi.fn(),
   closeMock: vi.fn(),
   processorRef: undefined as any,
+  processorRefs: {} as Record<string, any>,
 }));
 
 vi.mock('bullmq', () => ({
@@ -15,7 +16,8 @@ vi.mock('bullmq', () => ({
   },
   Worker: class {
     close = shared.closeMock;
-    constructor(_name: string, processor: unknown) {
+    constructor(name: string, processor: unknown) {
+      shared.processorRefs[name] = processor;
       if (!shared.processorRef) {
         shared.processorRef = processor;
       }
@@ -55,7 +57,10 @@ vi.mock('../db/schema', () => ({
     id: 'patchPolicies.id',
     kind: 'patchPolicies.kind',
   },
-  devices: {},
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+  },
   deviceCommands: {},
 }));
 
@@ -80,9 +85,12 @@ vi.mock('../services/commandQueue', () => ({
 
 import { db } from '../db';
 import {
+  createPatchJobDeviceWorker,
   createPatchJobWorker,
   enqueuePatchJob,
 } from './patchJobExecutor';
+import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
+import { queueCommandForExecution } from '../services/commandQueue';
 
 function createSelectChain(rows: any[] = []) {
   const chain: any = {};
@@ -104,6 +112,7 @@ describe('patch job executor queueing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     shared.processorRef = undefined;
+    shared.processorRefs = {};
     shared.getJobMock.mockResolvedValue(null);
     shared.addMock.mockResolvedValue({ id: 'queue-job-1' });
   });
@@ -125,7 +134,12 @@ describe('patch job executor queueing', () => {
     expect(shared.addMock).toHaveBeenCalledWith(
       'execute-patch-job',
       { type: 'execute-patch-job', patchJobId: 'job-2' },
-      expect.objectContaining({ jobId: 'patch-job:job-2', delay: 1234 }),
+      expect.objectContaining({
+        jobId: 'patch-job:job-2',
+        delay: 1234,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 200 },
+      }),
     );
   });
 
@@ -161,12 +175,20 @@ describe('patch job executor queueing', () => {
         deviceId: 'device-1',
         orgId: 'org-1',
       },
-      { jobId: 'patch-job-device:job-1:device-1' },
+      {
+        jobId: 'patch-job-device:job-1:device-1',
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 200 },
+      },
     );
     expect(shared.addMock).toHaveBeenCalledWith(
       'check-completion',
       { type: 'check-completion', patchJobId: 'job-1' },
-      expect.objectContaining({ jobId: 'patch-job-completion:job-1' }),
+      expect.objectContaining({
+        jobId: 'patch-job-completion:job-1',
+        removeOnComplete: { count: 50 },
+        removeOnFail: { count: 100 },
+      }),
     );
     expect(result).toEqual({ dispatched: 2 });
   });
@@ -189,5 +211,90 @@ describe('patch job executor queueing', () => {
 
     expect(shared.addMock).not.toHaveBeenCalled();
     expect(result).toEqual({ skipped: true, reason: 'Job was already claimed' });
+  });
+
+  it('rejects forged per-device patch jobs with a mismatched queued org', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: {},
+        targets: { deviceIds: ['device-1'] },
+      }]) as any);
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices']({
+      data: {
+        type: 'execute-patch-job-device',
+        patchJobId: 'job-1',
+        deviceId: 'device-1',
+        orgId: 'org-2',
+      },
+    });
+
+    expect(result).toEqual({
+      skipped: true,
+      reason: 'Queued org does not match patch job org',
+    });
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('rejects forged per-device patch jobs for devices outside patch targets', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: {},
+        targets: { deviceIds: ['device-1'] },
+      }]) as any);
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices']({
+      data: {
+        type: 'execute-patch-job-device',
+        patchJobId: 'job-1',
+        deviceId: 'device-2',
+        orgId: 'org-1',
+      },
+    });
+
+    expect(result).toEqual({
+      skipped: true,
+      reason: 'Device is not targeted by patch job',
+    });
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('rejects per-device patch jobs when the target device is not in the patch job org', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: {},
+        targets: { deviceIds: ['device-1'] },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices']({
+      data: {
+        type: 'execute-patch-job-device',
+        patchJobId: 'job-1',
+        deviceId: 'device-1',
+        orgId: 'org-1',
+      },
+    });
+
+    expect(result).toEqual({
+      skipped: true,
+      reason: 'Device not found in patch job org',
+    });
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 });

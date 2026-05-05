@@ -36,6 +36,20 @@ describe('webhook sender safety', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
+  it('rejects reserved outbound headers in channel config', () => {
+    const result = validateWebhookConfig({
+      url: 'https://example.com/webhook',
+      method: 'POST',
+      headers: {
+        Host: '169.254.169.254',
+        'X-Breeze-Event-Type': 'forged'
+      }
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toContain('reserved');
+  });
+
   it('fails closed before any network I/O when webhook URL is a literal private IP', async () => {
     // Swap in a lookup hook that throws if called, so we can prove the static
     // check shortcuts before DNS.

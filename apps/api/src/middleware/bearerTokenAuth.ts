@@ -1,11 +1,12 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { organizations, partnerUsers } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 interface OAuthApiKeyContext {
   id: string;
@@ -160,6 +161,8 @@ async function resolvePartnerAccessibleOrgIds(
           and(
             eq(organizations.partnerId, partnerId),
             inArray(organizations.id, selected),
+            inArray(organizations.status, ['active', 'trial']),
+            isNull(organizations.deletedAt),
           ),
         );
       return rows.map((r) => r.id);
@@ -169,7 +172,13 @@ async function resolvePartnerAccessibleOrgIds(
     const rows = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.partnerId, partnerId));
+      .where(
+        and(
+          eq(organizations.partnerId, partnerId),
+          inArray(organizations.status, ['active', 'trial']),
+          isNull(organizations.deletedAt),
+        ),
+      );
     return rows.map((r) => r.id);
   });
 }
@@ -227,6 +236,18 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   }
   if (!payload.partner_id || !payload.sub) {
     throw new HTTPException(401, { message: 'token missing required claims' });
+  }
+  try {
+    await assertActiveTenantContext({
+      scope: payload.org_id ? 'organization' : 'partner',
+      partnerId: payload.partner_id,
+      orgId: payload.org_id ?? null,
+    });
+  } catch (err) {
+    if (err instanceof TenantInactiveError) {
+      throw new HTTPException(401, { message: 'tenant inactive' });
+    }
+    throw err;
   }
 
   const oauthScopes = (payload.scope ?? '').split(' ').filter(Boolean);

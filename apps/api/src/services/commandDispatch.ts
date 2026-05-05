@@ -67,7 +67,9 @@ export async function claimPendingCommandsForDevice(
         .where(
           and(
             eq(deviceCommands.id, command.id),
+            eq(deviceCommands.deviceId, deviceId),
             eq(deviceCommands.status, 'pending'),
+            eq(deviceCommands.targetRole, targetRole),
           ),
         )
         .returning();

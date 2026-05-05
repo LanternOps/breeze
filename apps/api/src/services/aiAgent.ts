@@ -313,7 +313,7 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
     parts.push('\n## Approval Mode');
     switch (approvalMode) {
       case 'auto_approve':
-        parts.push('Tools execute without individual approval. Confirm destructive operations verbally before executing.');
+        parts.push('Tier 2 tools execute without individual approval and are audit logged. Tier 3 destructive or remote-control tools still require explicit approval.');
         break;
       case 'action_plan':
         parts.push('When executing multiple Tier 2+ operations, call `propose_action_plan` first with all planned steps. Wait for approval. Execute steps in order. Do NOT deviate from the approved plan.');

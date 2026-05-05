@@ -127,6 +127,10 @@ cp .env.example .env
 #   AGENT_ENROLLMENT_SECRET  openssl rand -hex 32
 #   APP_ENCRYPTION_KEY   openssl rand -hex 32
 #   MFA_ENCRYPTION_KEY   openssl rand -hex 32
+#   ENROLLMENT_KEY_PEPPER    openssl rand -base64 32
+#   MFA_RECOVERY_CODE_PEPPER openssl rand -base64 32
+#   BREEZE_BOOTSTRAP_ADMIN_EMAIL     your admin email, first boot only
+#   BREEZE_BOOTSTRAP_ADMIN_PASSWORD  one-time value from `openssl rand -base64 32`
 
 # Optional — for remote desktop (WebRTC TURN relay):
 #   TURN_HOST            public IP of your TURN server
@@ -140,7 +144,7 @@ docker compose up -d
 
 Breeze will be running at `https://your-domain` (or `https://localhost` with a self-signed cert for local testing).
 
-Default admin login: `admin@breeze.local` / `BreezeAdmin123!` — **change this immediately**.
+On first production boot against an empty database, Breeze creates the initial Partner Admin only from operator-provided `BREEZE_BOOTSTRAP_ADMIN_EMAIL` and `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` values. If those values are missing, startup refuses to seed the empty production database. The password is never printed to logs. After you sign in and finish setup, remove those bootstrap values from `.env`.
 
 ### Install the Agent
 

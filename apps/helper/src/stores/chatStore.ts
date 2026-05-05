@@ -8,7 +8,7 @@ declare global {
 
 interface AgentConfig {
   api_url: string;
-  token: string;
+  token?: string;
   agent_id: string;
   has_mtls?: boolean;
   os_username?: string;
@@ -155,6 +155,13 @@ interface StreamChunkEvent {
   error: string | null;
 }
 
+function requireDevBearerToken(config: AgentConfig): string {
+  if (!config.token) {
+    throw new Error('Browser dev mode requires VITE_AGENT_TOKEN');
+  }
+  return config.token;
+}
+
 // ---------------------------------------------------------------------------
 // Unified HTTP helpers that use helper_fetch in Tauri, plain fetch otherwise
 // ---------------------------------------------------------------------------
@@ -192,7 +199,7 @@ async function helperRequest(
   const res = await fetch(url, {
     method: options.method ?? 'GET',
     headers: {
-      Authorization: `Bearer ${config.token}`,
+      Authorization: `Bearer ${requireDevBearerToken(config)}`,
       ...(options.headers ?? {}),
     },
     body: options.body,
@@ -290,7 +297,7 @@ async function helperStreamRequest(
   const res = await fetch(url, {
     method: options.method ?? 'GET',
     headers: {
-      Authorization: `Bearer ${config.token}`,
+      Authorization: `Bearer ${requireDevBearerToken(config)}`,
       ...(options.headers ?? {}),
     },
     body: options.body,

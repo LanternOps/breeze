@@ -1,5 +1,5 @@
 import { and, eq, sql, inArray, lte, or } from 'drizzle-orm';
-import { createHmac } from 'crypto';
+import { createHmac, randomBytes } from 'crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
 import {
@@ -13,23 +13,45 @@ import {
 // TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
 // ============================================
 
-export function generateTurnCredentials(): { username: string; credential: string } | null {
+export type TurnCredentialScope = {
+  sessionId: string;
+  userId: string;
+  deviceId?: string | null;
+};
+
+export function getTurnCredentialTtlSeconds(): number {
+  const raw = Number.parseInt(process.env.TURN_CREDENTIAL_TTL_SECONDS ?? '', 10);
+  if (!Number.isFinite(raw)) return 600;
+  return Math.max(60, Math.min(raw, 900));
+}
+
+function turnScopeSegment(scope: TurnCredentialScope): string {
+  const parts = [
+    scope.userId.slice(0, 12),
+    scope.sessionId.slice(0, 12),
+    (scope.deviceId ?? 'no-device').slice(0, 12),
+    randomBytes(8).toString('base64url'),
+  ];
+  return parts.join('.');
+}
+
+export function generateTurnCredentials(scope: TurnCredentialScope): { username: string; credential: string; ttlSeconds: number; expiresAt: number } | null {
   const secret = process.env.TURN_SECRET;
   if (!secret) return null;
 
-  const ttl = 86400; // 24 hours
+  const ttl = getTurnCredentialTtlSeconds();
   const expiry = Math.floor(Date.now() / 1000) + ttl;
-  const username = `${expiry}:breeze`;
+  const username = `${expiry}:breeze:${turnScopeSegment(scope)}`;
   // TURN credential generation commonly uses HMAC-SHA1 with a shared secret on the TURN server.
   // This is not used for password storage or encryption; if your TURN server supports HMAC-SHA256,
   // prefer switching to it on both ends.
   // lgtm[js/weak-cryptographic-algorithm]
   const credential = createHmac('sha1', secret).update(username).digest('base64');
 
-  return { username, credential };
+  return { username, credential, ttlSeconds: ttl, expiresAt: expiry };
 }
 
-export function getIceServers(): Array<{ urls: string | string[]; username?: string; credential?: string }> {
+export function getIceServers(scope?: TurnCredentialScope): Array<{ urls: string | string[]; username?: string; credential?: string }> {
   const servers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
     { urls: 'stun:stun.l.google.com:19302' }
   ];
@@ -37,8 +59,8 @@ export function getIceServers(): Array<{ urls: string | string[]; username?: str
   const turnHost = process.env.TURN_HOST;
   const turnPort = process.env.TURN_PORT || '3478';
 
-  if (turnHost) {
-    const creds = generateTurnCredentials();
+  if (turnHost && scope) {
+    const creds = generateTurnCredentials(scope);
     if (creds) {
       servers.push({
         urls: [

@@ -14,9 +14,18 @@ import { revokeJti } from './revocationCache';
 import { getPartnerScopePolicy } from './partnerScopePolicy';
 import { isSentryEnabled } from '../services/sentry';
 import { db } from '../db';
-import { oauthClients } from '../db/schema';
-import { isNull, lt, and as drizzleAnd } from 'drizzle-orm';
+import {
+  oauthAuthorizationCodes,
+  oauthClientPartnerGrants,
+  oauthClients,
+  oauthGrants,
+  oauthInteractions,
+  oauthRefreshTokens,
+  oauthSessions,
+} from '../db/schema';
+import { isNull, lt, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
+import { assertActiveTenantContext } from '../services/tenantStatus';
 
 let providerInstance: Provider | null = null;
 
@@ -29,6 +38,7 @@ export const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
 // DCR cleanup TTL: a registered OAuth client that has never been used and
 // is not bound to a partner is considered abandoned after this many ms.
 export const DCR_STALE_CLIENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const OAUTH_LIFECYCLE_ROW_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Garbage-collect DCR-registered OAuth clients that were never used.
@@ -67,10 +77,85 @@ export async function cleanupStaleOauthClients(
         lt(oauthClients.createdAt, cutoff),
         isNull(oauthClients.lastUsedAt),
         isNull(oauthClients.partnerId),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthClientPartnerGrants}
+          WHERE ${oauthClientPartnerGrants.clientId} = ${oauthClients.id}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthGrants}
+          WHERE ${oauthGrants.clientId} = ${oauthClients.id}
+          AND ${oauthGrants.expiresAt} >= ${now}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthAuthorizationCodes}
+          WHERE ${oauthAuthorizationCodes.clientId} = ${oauthClients.id}
+          AND ${oauthAuthorizationCodes.expiresAt} >= ${now}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthRefreshTokens}
+          WHERE ${oauthRefreshTokens.clientId} = ${oauthClients.id}
+          AND ${oauthRefreshTokens.revokedAt} IS NULL
+          AND ${oauthRefreshTokens.expiresAt} >= ${now}
+        )`,
       ),
     )
     .returning({ id: oauthClients.id });
   return deleted.length;
+}
+
+export type OauthLifecycleCleanupCounts = {
+  authCodes: number;
+  interactions: number;
+  sessions: number;
+  grants: number;
+  refreshTokens: number;
+};
+
+export async function cleanupExpiredOauthLifecycleRows(
+  now: Date = new Date(),
+  retentionMs: number = OAUTH_LIFECYCLE_ROW_RETENTION_MS,
+): Promise<OauthLifecycleCleanupCounts> {
+  const cutoff = new Date(now.getTime() - retentionMs);
+
+  const [authCodes, interactions, sessions, grants, refreshTokens] = await Promise.all([
+    db.delete(oauthAuthorizationCodes)
+      .where(lt(oauthAuthorizationCodes.expiresAt, cutoff))
+      .returning({ id: oauthAuthorizationCodes.id }),
+    db.delete(oauthInteractions)
+      .where(lt(oauthInteractions.expiresAt, cutoff))
+      .returning({ id: oauthInteractions.id }),
+    db.delete(oauthSessions)
+      .where(lt(oauthSessions.expiresAt, cutoff))
+      .returning({ id: oauthSessions.id }),
+    db.delete(oauthGrants)
+      .where(drizzleAnd(
+        lt(oauthGrants.expiresAt, cutoff),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthRefreshTokens}
+          WHERE ${oauthRefreshTokens.payload}->>'grantId' = ${oauthGrants.id}
+          AND ${oauthRefreshTokens.revokedAt} IS NULL
+          AND ${oauthRefreshTokens.expiresAt} >= ${now}
+        )`,
+      ))
+      .returning({ id: oauthGrants.id }),
+    db.delete(oauthRefreshTokens)
+      .where(sql`(
+        ${oauthRefreshTokens.expiresAt} < ${cutoff}
+        OR (
+          ${oauthRefreshTokens.revokedAt} IS NOT NULL
+          AND ${oauthRefreshTokens.revokedAt} < ${cutoff}
+        )
+      )`)
+      .returning({ id: oauthRefreshTokens.id }),
+  ]);
+
+  return {
+    authCodes: authCodes.length,
+    interactions: interactions.length,
+    sessions: sessions.length,
+    grants: grants.length,
+    refreshTokens: refreshTokens.length,
+  };
 }
 
 export async function buildExtraTokenClaims(
@@ -107,6 +192,13 @@ export async function buildExtraTokenClaims(
       context: { grantId },
     });
     throw err;
+  }
+  if (meta?.partner_id) {
+    await assertActiveTenantContext({
+      scope: meta.org_id ? 'organization' : 'partner',
+      partnerId: meta.partner_id,
+      orgId: meta.org_id,
+    });
   }
   return {
     partner_id: meta?.partner_id ?? null,

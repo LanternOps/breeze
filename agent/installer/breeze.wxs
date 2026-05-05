@@ -60,6 +60,7 @@
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <Property Id="BREEZE_KILL_CMD" Secure="yes" />
+    <Property Id="BREEZE_ACL_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
 
     <!-- Kill any running Breeze processes before InstallValidate so upgrades
@@ -78,6 +79,14 @@
       ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
       Execute="immediate"
       Return="ignore" />
+
+    <SetProperty Id="BREEZE_ACL_CMD" Value="[System64Folder]cmd.exe" Before="HardenProgramDataAcl" Sequence="execute" />
+    <CustomAction
+      Id="HardenProgramDataAcl"
+      Property="BREEZE_ACL_CMD"
+      ExeCommand="/c icacls &quot;[ProgramDataBreezeDir]&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir]&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir]&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
+      Execute="immediate"
+      Return="check" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Breeze">
@@ -221,6 +230,7 @@
     <InstallExecuteSequence>
       <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR Installed" />
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
+      <Custom Action="HardenProgramDataAcl" After="CreateFolders" Condition="NOT REMOVE" />
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
       <!-- Enrollment runs after file copy but before InstallServices.

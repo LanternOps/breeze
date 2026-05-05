@@ -57,6 +57,8 @@ vi.mock('../db/schema', () => ({
     lastStatus: 'snmpDevices.lastStatus',
     createdAt: 'snmpDevices.createdAt',
     community: 'snmpDevices.community',
+    authPassword: 'snmpDevices.authPassword',
+    privPassword: 'snmpDevices.privPassword',
     username: 'snmpDevices.username',
   },
   snmpMetrics: {
@@ -67,6 +69,11 @@ vi.mock('../db/schema', () => ({
     value: 'snmpMetrics.value',
     valueType: 'snmpMetrics.valueType',
     timestamp: 'snmpMetrics.timestamp',
+  },
+  snmpTemplates: {
+    id: 'snmpTemplates.id',
+    orgId: 'snmpTemplates.orgId',
+    isBuiltIn: 'snmpTemplates.isBuiltIn',
   },
   serviceProcessCheckResults: {
     id: 'serviceProcessCheckResults.id',
@@ -113,6 +120,7 @@ vi.mock('../services/redis', () => ({
 
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
+import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 
 const ORG_ID = 'org-111';
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
@@ -133,7 +141,7 @@ describe('monitoring routes', () => {
   // PUT /assets/:id/snmp
   // ============================================
   describe('PUT /monitoring/assets/:id/snmp', () => {
-    it('creates SNMP config for an asset', async () => {
+    it('stores encrypted SNMP community strings for an asset', async () => {
       // Asset lookup
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -159,21 +167,22 @@ describe('monitoring routes', () => {
           }),
         } as any);
       // Insert new SNMP device
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: SNMP_DEVICE_ID,
+          snmpVersion: 'v2c',
+          port: 161,
+          community: 'enc:v1:mock',
+          username: null,
+          templateId: null,
+          pollingInterval: 300,
+          isActive: true,
+          lastPolled: null,
+          lastStatus: null,
+        }]),
+      });
       vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: SNMP_DEVICE_ID,
-            snmpVersion: 'v2c',
-            port: 161,
-            community: 'public',
-            username: null,
-            templateId: null,
-            pollingInterval: 300,
-            isActive: true,
-            lastPolled: null,
-            lastStatus: null,
-          }]),
-        }),
+        values: insertValues,
       } as any);
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
@@ -183,10 +192,78 @@ describe('monitoring routes', () => {
       });
 
       expect(res.status).toBe(200);
+      const saved = insertValues.mock.calls[0]?.[0] as any;
+      expect(saved).toBeDefined();
+      expect(isEncryptedSecret(saved.community)).toBe(true);
+      expect(decryptSecret(saved.community)).toBe('public');
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.snmpDevice.snmpVersion).toBe('v2c');
-      expect(body.snmpDevice.community).toBe('***');
+      expect(body.snmpDevice.community).toBe('********');
+    });
+
+    it('creates encrypted SNMP v3 credentials for an asset', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG_ID,
+                hostname: 'switch-01',
+                ipAddress: '10.0.0.1',
+              }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        } as any);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: SNMP_DEVICE_ID,
+          snmpVersion: 'v3',
+          port: 161,
+          community: null,
+          username: 'poller',
+          authPassword: 'enc:v1:mock-auth',
+          privPassword: 'enc:v1:mock-priv',
+          templateId: null,
+          pollingInterval: 300,
+          isActive: true,
+          lastPolled: null,
+          lastStatus: null,
+        }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: insertValues,
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          snmpVersion: 'v3',
+          username: 'poller',
+          authPassword: 'auth-secret',
+          privPassword: 'priv-secret',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const saved = insertValues.mock.calls[0]?.[0] as any;
+      expect(saved).toBeDefined();
+      expect(decryptSecret(saved.authPassword)).toBe('auth-secret');
+      expect(decryptSecret(saved.privPassword)).toBe('priv-secret');
+      const body = await res.json();
+      expect(body.snmpDevice.authPassword).toBe('********');
+      expect(body.snmpDevice.privPassword).toBe('********');
     });
 
     it('returns 404 for nonexistent asset', async () => {
@@ -285,6 +362,61 @@ describe('monitoring routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.snmpDevice.pollingInterval).toBe(600);
+    });
+
+    it('preserves encrypted secrets when masked placeholders are submitted', async () => {
+      const encryptedCommunity = 'enc:v1:existing-community';
+      const encryptedAuthPassword = 'enc:v1:existing-auth';
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_ID }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: SNMP_DEVICE_ID,
+                  snmpVersion: 'v2c',
+                  pollingInterval: 300,
+                  community: encryptedCommunity,
+                  authPassword: encryptedAuthPassword,
+                }]),
+              }),
+            }),
+          }),
+        } as any);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: SNMP_DEVICE_ID,
+            snmpVersion: 'v2c',
+            port: 161,
+            community: encryptedCommunity,
+            authPassword: encryptedAuthPassword,
+            username: null,
+            templateId: null,
+            pollingInterval: 600,
+            isActive: true,
+            lastPolled: null,
+            lastStatus: null,
+          }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ community: '********', authPassword: '********', pollingInterval: 600 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSet).toHaveBeenCalledWith({ pollingInterval: 600 });
     });
 
     it('returns 404 when no SNMP config exists', async () => {

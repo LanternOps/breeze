@@ -186,7 +186,7 @@ describe('AddDeviceModal', () => {
       }
       if (url === '/enrollment-keys/key-456/installer-link') {
         return makeJsonResponse({
-          url: 'https://api.example.com/api/v1/enrollment-keys/public-download/windows?token=abc123',
+          url: 'https://api.example.com/api/v1/enrollment-keys/public-download/windows?h=dlh_abc123',
           expiresAt: '2026-04-14T00:00:00Z',
           maxUsage: 1,
           platform: 'windows',
@@ -215,7 +215,7 @@ describe('AddDeviceModal', () => {
       }
       if (url.includes('/installer-link')) {
         return makeJsonResponse({
-          url: 'https://api.example.com/public-download/windows?token=abc',
+          url: 'https://api.example.com/public-download/windows?h=dlh_abc',
           expiresAt: null,
           maxUsage: 1,
           platform: 'windows',

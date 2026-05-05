@@ -2,10 +2,11 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { readFile } from 'node:fs/promises';
 import { and, eq, sql, inArray } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
+import { PERMISSIONS } from '../../services/permissions';
 import {
   patches,
   devicePatches,
@@ -17,6 +18,8 @@ import { complianceSchema, complianceReportSchema } from './schemas';
 import { resolvePatchReportOrgId } from './helpers';
 
 export const complianceRoutes = new Hono();
+const requireReportRead = requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action);
+const requireReportExport = requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action);
 
 // GET /patches/compliance - Get compliance summary
 complianceRoutes.get(
@@ -223,6 +226,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/report',
   requireScope('organization', 'partner', 'system'),
+  requireReportExport,
   zValidator('query', complianceReportSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -283,6 +287,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/report/:id',
   requireScope('organization', 'partner', 'system'),
+  requireReportRead,
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
@@ -340,6 +345,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/report/:id/download',
   requireScope('organization', 'partner', 'system'),
+  requireReportExport,
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;

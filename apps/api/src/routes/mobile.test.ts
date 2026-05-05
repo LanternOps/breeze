@@ -54,7 +54,7 @@ vi.mock('../services/alertCooldown', () => ({
 }));
 
 import { db } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requirePermission } from '../middleware/auth';
 
 const mockSelectLimitChain = (result: unknown) => ({
   from: vi.fn().mockReturnValue({
@@ -522,6 +522,35 @@ describe('mobile routes', () => {
   });
 
   describe('POST /mobile/devices/:id/actions', () => {
+    it('requires scripts.execute for run_script actions before device lookup', async () => {
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
+
+      const res = await app.request('/mobile/devices/device-1/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '11111111-1111-1111-1111-111111111111'
+        })
+      });
+
+      expect(res.status).toBe(404);
+      expect(requirePermission).toHaveBeenCalledWith('scripts', 'execute');
+    });
+
+    it('does not require scripts.execute for non-script device actions', async () => {
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
+
+      const res = await app.request('/mobile/devices/device-1/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reboot' })
+      });
+
+      expect(res.status).toBe(404);
+      expect(requirePermission).not.toHaveBeenCalledWith('scripts', 'execute');
+    });
+
     it('should return 404 when device is missing', async () => {
       vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
 

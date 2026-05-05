@@ -22,6 +22,10 @@ const (
 	linuxDataDir     = "/var/lib/breeze"
 	linuxLogDir      = "/var/log/breeze"
 	linuxServiceName = "breeze-agent"
+
+	linuxWatchdogBinaryPath  = "/usr/local/bin/breeze-watchdog"
+	linuxWatchdogUnitDst     = "/etc/systemd/system/breeze-watchdog.service"
+	linuxWatchdogServiceName = "breeze-watchdog"
 )
 
 // Embedded systemd unit — matches agent/service/systemd/breeze-agent.service
@@ -281,6 +285,8 @@ var serviceUninstallCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to disable service: %v\n", err)
 		}
 
+		uninstallLinuxWatchdog()
+
 		// Remove unit files
 		if err := os.Remove(linuxUnitDst); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxUnitDst, err)
@@ -304,6 +310,21 @@ var serviceUninstallCmd = &cobra.Command{
 		fmt.Printf("To remove config: sudo rm -rf %s\n", linuxConfigDir)
 		return nil
 	},
+}
+
+func uninstallLinuxWatchdog() {
+	if err := exec.Command("systemctl", "stop", linuxWatchdogServiceName).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to stop watchdog service: %v\n", err)
+	}
+	if err := exec.Command("systemctl", "disable", linuxWatchdogServiceName).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to disable watchdog service: %v\n", err)
+	}
+	if err := os.Remove(linuxWatchdogUnitDst); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxWatchdogUnitDst, err)
+	}
+	if err := os.Remove(linuxWatchdogBinaryPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxWatchdogBinaryPath, err)
+	}
 }
 
 var serviceStartCmd = &cobra.Command{

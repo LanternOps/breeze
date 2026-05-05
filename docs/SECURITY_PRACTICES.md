@@ -239,12 +239,15 @@ Breeze includes policy-driven USB/peripheral controls for data-exfiltration resi
 
 ### Secret Encryption Details
 
-Secrets encrypted at rest use the format: `enc:v1:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}`
+Secrets encrypted at rest use versioned formats:
+
+- Legacy: `enc:v1:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}`
+- Keyring: `enc:v2:{keyId}:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}`
 
 - 12-byte random IV generated per encryption (never reused)
 - GCM authentication tag prevents tampering
 - `isEncryptedSecret()` check prevents double-encryption
-- Key hierarchy: dedicated `APP_ENCRYPTION_KEY` in production, with fallback chain for development
+- Key hierarchy: dedicated `APP_ENCRYPTION_KEY` in production, optional `APP_ENCRYPTION_KEY_ID`/`APP_ENCRYPTION_KEYRING` for rotation, with fallback chain for development
 
 ---
 

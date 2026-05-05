@@ -37,6 +37,17 @@ The SSE stream sends keepalive pings every 30 seconds to prevent proxy timeouts.
 
 ---
 
+## Finding your MCP URL
+
+Your tenant's MCP SSE endpoint is surfaced in two places in the dashboard so you can copy it without having to construct it by hand:
+
+- **Login page** — a compact "Connecting an AI agent?" card sits below the sign-in form, so you can grab the URL before you authenticate.
+- **Settings → Connected Apps** — a full card above the apps list with a one-click copy button, ready to paste into Claude.ai, ChatGPT, Cursor, or any other MCP-compatible client.
+
+Both cards resolve the URL from the tenant you're connecting to, so what's shown is what the AI client should use.
+
+---
+
 ## Authentication
 
 All MCP endpoints require an API key with `ai:*` scopes. Authentication is performed via the `X-API-Key` header.

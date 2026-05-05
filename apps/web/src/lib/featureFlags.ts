@@ -17,7 +17,7 @@ export const ENABLE_ENDPOINT_AV_FEATURES = parseBoolean(
 
 export const ENABLE_REGISTRATION = parseBoolean(
   import.meta.env.PUBLIC_ENABLE_REGISTRATION,
-  true
+  false
 );
 
 if (!ENABLE_REGISTRATION) {

@@ -244,9 +244,10 @@ function makeHandler(
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: check.error }), true, 0);
+        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
+        await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }],
+          content: [{ type: 'text' as const, text: safeError }],
           isError: true,
         };
       }
@@ -336,9 +337,10 @@ function makeHandler(
       const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
       console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
-      await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: message }), true, durationMs);
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
+        content: [{ type: 'text' as const, text: safeError }],
         isError: true,
       };
     }

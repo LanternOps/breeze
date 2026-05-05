@@ -13,6 +13,9 @@ export const tokenRoutes = new Hono();
 tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agentId = c.req.param('id');
   const agent = c.get('agent') as AgentAuthContext;
+  if (agent.role !== 'agent') {
+    return c.json({ error: 'Agent credential role mismatch' }, 403);
+  }
 
   const [device] = await db
     .select({
@@ -20,6 +23,8 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
       orgId: devices.orgId,
       hostname: devices.hostname,
       agentTokenHash: devices.agentTokenHash,
+      watchdogTokenHash: devices.watchdogTokenHash,
+      helperTokenHash: devices.helperTokenHash,
     })
     .from(devices)
     .where(
@@ -37,10 +42,16 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   const rotatedAt = new Date();
   const previousTokenExpiresAt = new Date(rotatedAt.getTime() + 5 * 60 * 1000);
   const authToken = generateApiKey();
+  const watchdogAuthToken = generateApiKey();
+  const helperAuthToken = generateApiKey();
   // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
   // the plaintext token.
   // lgtm[js/insufficient-password-hash]
   const agentTokenHash = createHash('sha256').update(authToken).digest('hex');
+  // lgtm[js/insufficient-password-hash]
+  const watchdogTokenHash = createHash('sha256').update(watchdogAuthToken).digest('hex');
+  // lgtm[js/insufficient-password-hash]
+  const helperTokenHash = createHash('sha256').update(helperAuthToken).digest('hex');
 
   try {
     await db
@@ -50,6 +61,14 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
         previousTokenExpiresAt,
         agentTokenHash,
         tokenIssuedAt: rotatedAt,
+        previousWatchdogTokenHash: device.watchdogTokenHash,
+        previousWatchdogTokenExpiresAt: previousTokenExpiresAt,
+        watchdogTokenHash,
+        watchdogTokenIssuedAt: rotatedAt,
+        previousHelperTokenHash: device.helperTokenHash,
+        previousHelperTokenExpiresAt: previousTokenExpiresAt,
+        helperTokenHash,
+        helperTokenIssuedAt: rotatedAt,
         updatedAt: rotatedAt,
       })
       .where(eq(devices.id, device.id));
@@ -83,6 +102,8 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   return c.json(
     {
       authToken,
+      watchdogAuthToken,
+      helperAuthToken,
       rotatedAt: rotatedAt.toISOString(),
     },
     200

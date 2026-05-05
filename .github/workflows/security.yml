@@ -14,7 +14,7 @@ concurrency:
 
 env:
   NODE_VERSION: '22'
-  PNPM_VERSION: '9.15.0'
+  PNPM_VERSION: '9.15.7'
   GO_VERSION: '1.25.9'
 
 permissions:
@@ -45,12 +45,6 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run pnpm audit
-        # pnpm 9.15.0 calls the legacy POST /-/npm/v1/security/audits endpoint
-        # which the npm registry retired in April 2026 (returns 410). The bulk
-        # advisory endpoint is used by pnpm 9.15.7+ and 10.x. Until we bump
-        # PNPM_VERSION, the audit step is advisory-only so registry outages
-        # don't block every PR. Remove continue-on-error after the pnpm bump.
-        continue-on-error: true
         run: pnpm audit --audit-level=critical
 
   go-vuln:
@@ -73,16 +67,100 @@ jobs:
         working-directory: agent
         run: CGO_ENABLED=0 govulncheck ./...
 
-  trivy-scan:
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit helper Cargo dependencies
+        working-directory: apps/helper/src-tauri
+        run: cargo audit --deny warnings
+
+      - name: Audit viewer Cargo dependencies
+        working-directory: apps/viewer/src-tauri
+        run: cargo audit --deny warnings
+
+  trivy-fs-scan:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Run Trivy vulnerability scanner
+      - name: Generate Trivy filesystem SARIF
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
-          severity: 'CRITICAL'
+          severity: 'HIGH,CRITICAL'
+          format: 'sarif'
+          output: 'trivy-fs.sarif'
+          exit-code: '0'
+
+      - name: Upload Trivy filesystem SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: 'trivy-fs.sarif'
+
+      - name: Generate Trivy filesystem SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          format: 'cyclonedx'
+          output: 'trivy-fs.cdx.json'
+          exit-code: '0'
+
+      - name: Upload Trivy filesystem SBOM
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: trivy-fs-sbom
+          path: trivy-fs.cdx.json
+          retention-days: 30
+
+      - name: Run blocking Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+
+  trivy-image-scan:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build API image
+        run: docker build -f docker/Dockerfile.api -t breeze-api:security-scan .
+
+      - name: Build Web image
+        run: docker build -f docker/Dockerfile.web -t breeze-web:security-scan .
+
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'breeze-api:security-scan'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+
+      - name: Scan Web image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'breeze-web:security-scan'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
           exit-code: '1'

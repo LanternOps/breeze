@@ -3,6 +3,7 @@ import { History, X } from 'lucide-react';
 import SessionHistory, { normalizeRemoteSession, type RemoteSession, type RemoteSessionApi } from './SessionHistory';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { getSafeHttpHref } from '@/lib/safeHref';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -101,6 +102,8 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
+
+  const safeRecordingUrl = getSafeHttpHref(selectedSession?.recordingUrl);
 
   return (
     <div className="space-y-6">
@@ -228,13 +231,13 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
               </div>
 
               {/* Recording */}
-              {selectedSession.recordingUrl && (
+              {safeRecordingUrl && (
                 <div>
                   <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                     Recording
                   </h4>
                   <a
-                    href={selectedSession.recordingUrl}
+                    href={safeRecordingUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"

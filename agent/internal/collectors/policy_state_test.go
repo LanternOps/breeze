@@ -1,10 +1,6 @@
 package collectors
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestExtractConfigValue(t *testing.T) {
 	content := `
@@ -41,19 +37,25 @@ ProxyURL http://proxy.example:8080
 }
 
 func TestCollectConfigState(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "example.conf")
-	if err := os.WriteFile(configPath, []byte("Enabled=true\n"), 0600); err != nil {
-		t.Fatalf("write temp config: %v", err)
+	readCount := 0
+	collector := &PolicyStateCollector{
+		readFile: func(filePath string) ([]byte, error) {
+			readCount++
+			if filePath != "/etc/ssh/sshd_config" {
+				t.Fatalf("unexpected file read: %s", filePath)
+			}
+			return []byte("PermitRootLogin no\n"), nil
+		},
 	}
-
-	collector := NewPolicyStateCollector()
 	entries, err := collector.CollectConfigState([]ConfigProbe{
-		{FilePath: configPath, ConfigKey: "Enabled"},
-		{FilePath: configPath, ConfigKey: "Missing"},
+		{FilePath: "/etc/ssh/sshd_config", ConfigKey: "PermitRootLogin"},
+		{FilePath: "/etc/ssh/sshd_config", ConfigKey: "Missing"},
 	})
 	if err != nil {
 		t.Fatalf("collect config state failed: %v", err)
+	}
+	if readCount != 1 {
+		t.Fatalf("expected 1 file read, got %d", readCount)
 	}
 
 	if len(entries) != 1 {
@@ -61,13 +63,35 @@ func TestCollectConfigState(t *testing.T) {
 	}
 
 	entry := entries[0]
-	if entry.FilePath != configPath {
-		t.Fatalf("file path mismatch: got %q want %q", entry.FilePath, configPath)
+	if entry.FilePath != "/etc/ssh/sshd_config" {
+		t.Fatalf("file path mismatch: got %q want %q", entry.FilePath, "/etc/ssh/sshd_config")
 	}
-	if entry.ConfigKey != "Enabled" {
-		t.Fatalf("config key mismatch: got %q want %q", entry.ConfigKey, "Enabled")
+	if entry.ConfigKey != "PermitRootLogin" {
+		t.Fatalf("config key mismatch: got %q want %q", entry.ConfigKey, "PermitRootLogin")
 	}
-	if entry.ConfigValue != "true" {
-		t.Fatalf("config value mismatch: got %v want %q", entry.ConfigValue, "true")
+	if entry.ConfigValue != "no" {
+		t.Fatalf("config value mismatch: got %v want %q", entry.ConfigValue, "no")
+	}
+}
+
+func TestCollectConfigStateRejectsUnsafeProbesBeforeRead(t *testing.T) {
+	collector := &PolicyStateCollector{
+		readFile: func(filePath string) ([]byte, error) {
+			t.Fatalf("unsafe probe should not read file: %s", filePath)
+			return nil, nil
+		},
+	}
+
+	entries, err := collector.CollectConfigState([]ConfigProbe{
+		{FilePath: "/etc/breeze/agent.yaml", ConfigKey: "auth_token"},
+		{FilePath: "/root/.ssh/config", ConfigKey: "IdentityFile"},
+		{FilePath: "/etc/ssh/sshd_config", ConfigKey: "ApiToken"},
+		{FilePath: "/etc/../etc/shadow", ConfigKey: "root"},
+	})
+	if err != nil {
+		t.Fatalf("collect config state failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries for unsafe probes, got %d", len(entries))
 	}
 }

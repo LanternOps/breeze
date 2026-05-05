@@ -24,9 +24,18 @@ vi.mock('../../db/schema', () => ({
     maxUsage: 'maxUsage',
     usageCount: 'usageCount',
   },
-  devices: { id: 'id', hostname: 'hostname', orgId: 'orgId', siteId: 'siteId', status: 'status' },
-  deviceHardware: {},
-  deviceNetwork: {},
+  devices: {
+    id: 'id',
+    hostname: 'hostname',
+    orgId: 'orgId',
+    siteId: 'siteId',
+    status: 'status',
+    agentTokenHash: 'agentTokenHash',
+    previousTokenHash: 'previousTokenHash',
+    previousTokenExpiresAt: 'previousTokenExpiresAt',
+  },
+  deviceHardware: { deviceId: 'deviceId', serialNumber: 'serialNumber' },
+  deviceNetwork: { deviceId: 'deviceId', macAddress: 'macAddress' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   partners: { id: 'id', maxDevices: 'maxDevices' },
 }));
@@ -37,6 +46,7 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
+  hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
 }));
 
 vi.mock('../../services/clientIp', () => ({
@@ -92,6 +102,16 @@ function mockKeyLookup(row: Record<string, unknown> | undefined) {
     from: vi.fn(() => ({
       where: vi.fn(() => ({
         limit: vi.fn().mockResolvedValue(row ? [row] : []),
+      })),
+    })),
+  } as any);
+}
+
+function mockSelectRows(rows: Record<string, unknown>[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue(rows),
       })),
     })),
   } as any);
@@ -221,5 +241,110 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(resp.status).toBe(401);
     const body = await resp.json();
     expect(body.reason).toBe('enrollment_key_race_lost');
+  });
+
+  it('denies hostname collision when the existing device token is absent and hardware identity conflicts', async () => {
+    mockKeyLookup({
+      id: 'key-4',
+      orgId: 'org-4',
+      siteId: 'site-4',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'key-4',
+            orgId: 'org-4',
+            siteId: 'site-4',
+          }]),
+        })),
+      })),
+    } as any);
+
+    mockSelectRows([{ partnerId: 'partner-4' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-existing',
+      status: 'online',
+      agentTokenHash: 'existing-token-hash',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+    }]);
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...baseEnrollBody,
+        hardwareInfo: { serialNumber: 'SERIAL-ATTACKER' },
+        networkInfo: [{ name: 'eth0', mac: '66:77:88:99:aa:bb' }],
+      }),
+    });
+
+    expect(resp.status).toBe(409);
+    const body = await resp.json();
+    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        resourceId: 'device-existing',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'hostname_collision_requires_existing_device_token',
+        }),
+      })
+    );
+  });
+
+  it('denies hostname collision even when self-attested hardware identity matches', async () => {
+    mockKeyLookup({
+      id: 'key-5',
+      orgId: 'org-5',
+      siteId: 'site-5',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'key-5',
+            orgId: 'org-5',
+            siteId: 'site-5',
+          }]),
+        })),
+      })),
+    } as any);
+
+    mockSelectRows([{ partnerId: 'partner-5' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-existing',
+      status: 'online',
+      agentTokenHash: 'existing-token-hash',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+    }]);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...baseEnrollBody,
+        hardwareInfo: { serialNumber: 'SERIAL-EXISTING' },
+        networkInfo: [{ name: 'eth0', mac: '00:11:22:33:44:55' }],
+      }),
+    });
+
+    expect(resp.status).toBe(409);
+    const body = await resp.json();
+    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
   });
 });

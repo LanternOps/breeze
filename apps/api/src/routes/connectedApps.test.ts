@@ -7,6 +7,11 @@ const mocks = vi.hoisted(() => ({
   select: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
+  transaction: vi.fn(async (fn: (tx: any) => Promise<unknown>) =>
+    fn({ update: mocks.update, delete: mocks.delete }),
+  ),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   revokeJti: vi.fn(async () => undefined),
   // revokeGrant is called in addition to revokeJti so that revoking a
   // connected app immediately kills every in-flight access JWT minted from
@@ -29,7 +34,14 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 vi.mock('../db', () => ({
-  db: { select: mocks.select, update: mocks.update, delete: mocks.delete },
+  db: {
+    select: mocks.select,
+    update: mocks.update,
+    delete: mocks.delete,
+    transaction: mocks.transaction,
+  },
+  runOutsideDbContext: mocks.runOutsideDbContext,
+  withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
 
 vi.mock('../oauth/revocationCache', () => ({
@@ -233,7 +245,6 @@ describe('connectedAppsRoutes', () => {
     // Instead, drop this partner's join row and revoke this partner's
     // refresh tokens.
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    const joinDelete = queueDelete();
     queueSelect([
       { id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) },
       { id: 'rt-2', payload: {}, expiresAt: new Date(Date.now() + 60_000) },
@@ -242,6 +253,7 @@ describe('connectedAppsRoutes', () => {
     const revokeUpdate1 = queueUpdate();
     const revokeUpdate2 = queueUpdate();
     const revokeUpdate3 = queueUpdate();
+    const joinDelete = queueDelete();
 
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
@@ -269,8 +281,8 @@ describe('connectedAppsRoutes', () => {
     // be invoked once with no queueUpdate ready (and the test would error
     // on the unmocked chain).
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueDelete();
     queueSelect([]);
+    queueDelete();
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
@@ -280,8 +292,8 @@ describe('connectedAppsRoutes', () => {
 
   it('returns 204 No Content for a successful delete', async () => {
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueDelete();
     queueSelect([]);
+    queueDelete();
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
@@ -297,7 +309,6 @@ describe('connectedAppsRoutes', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     mocks.revokeJti.mockRejectedValueOnce(new Error('redis down'));
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueDelete();
     queueSelect([{ id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) }]);
     queueUpdate();
 
@@ -306,7 +317,25 @@ describe('connectedAppsRoutes', () => {
     });
 
     expect(res.status).toBe(503);
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.delete).not.toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  it('keeps DB revoke and join-row removal in one system transaction', async () => {
+    queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
+    queueSelect([{ id: 'rt-1', payload: { jti: 'jti-1' }, expiresAt: new Date(Date.now() + 60_000) }]);
+    queueUpdate();
+    queueDelete();
+
+    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(204);
+    expect(mocks.runOutsideDbContext).toHaveBeenCalled();
+    expect(mocks.withSystemDbAccessContext).toHaveBeenCalled();
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('cache-revokes the entire Grant (deduped) for every refresh token with grantId', async () => {
@@ -316,7 +345,6 @@ describe('connectedAppsRoutes', () => {
     // refresh-token rows for the same grant and we don't want to thrash
     // Redis with redundant SETs.
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
-    queueDelete();
     queueSelect([
       { id: 'rt-1', payload: { jti: 'jti-1', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
       { id: 'rt-2', payload: { jti: 'jti-2', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
@@ -327,6 +355,7 @@ describe('connectedAppsRoutes', () => {
     queueUpdate();
     queueUpdate();
     queueUpdate();
+    queueDelete();
 
     const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',

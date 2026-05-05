@@ -1,5 +1,5 @@
-FROM node:22-alpine AS base
-RUN npm install -g pnpm
+FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS base
+RUN corepack enable && corepack prepare pnpm@9.15.7 --activate
 
 FROM base AS deps
 WORKDIR /app
@@ -16,8 +16,10 @@ COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_module
 COPY . .
 ARG PUBLIC_API_URL=""
 ARG PUBLIC_APP_VERSION="0.1.0"
+ARG PUBLIC_ENABLE_REGISTRATION="false"
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
+ENV PUBLIC_ENABLE_REGISTRATION=${PUBLIC_ENABLE_REGISTRATION}
 RUN pnpm --filter @breeze/web build
 # Create a self-contained deployment (resolves pnpm symlinks)
 RUN pnpm --filter @breeze/web deploy --prod /deployed

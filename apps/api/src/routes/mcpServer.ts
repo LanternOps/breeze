@@ -29,6 +29,13 @@ import { eq, and, asc, desc, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
+import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
+import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import {
+  beginMcpToolExecutionLedger,
+  completeMcpToolExecutionLedger,
+  type McpToolExecutionLedgerHandle,
+} from '../services/mcpToolExecutionLedger';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -271,6 +278,22 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
+type McpApiKeyContext = {
+  id: string;
+  orgId: string | null;
+  partnerId?: string | null;
+  oauthGrantId?: string | null;
+};
+
+function resolveMcpExecutionOrgId(
+  apiKey: McpApiKeyContext | undefined,
+  auth: AuthContext,
+  toolInput: Record<string, unknown>,
+): string | null {
+  const inputOrgId = typeof toolInput.orgId === 'string' ? toolInput.orgId : null;
+  return apiKey?.orgId ?? auth.orgId ?? inputOrgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
 function buildMcpAuditAction(method: string): string {
   const normalized = method
     .toLowerCase()
@@ -446,7 +469,7 @@ mcpServerRoutes.post(
 
     // All callers are authenticated (mcpAuthMiddleware enforces this).
     // Enforce ai:read scope.
-    const hasAiRead = apiKey.scopes.includes('*') || apiKey.scopes.includes('ai:read');
+    const hasAiRead = apiKey.scopes.includes('ai:read');
     if (!hasAiRead) {
       return c.json(
         {
@@ -461,7 +484,7 @@ mcpServerRoutes.post(
     // Build a minimal AuthContext from the API key
     const auth = await buildAuthFromApiKey(apiKey);
 
-    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c);
+    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, sessionId);
 
     // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
     // by design (partner admins span every org). Without the fallback, every
@@ -510,8 +533,9 @@ async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
   scopes: string[],
-  apiKey?: { id: string; orgId: string | null },
+  apiKey?: McpApiKeyContext,
   c?: Context,
+  sessionId?: string,
 ): Promise<JsonRpcResponse> {
   try {
     switch (req.method) {
@@ -536,7 +560,7 @@ async function handleJsonRpc(
         return handleToolsList(req.id, scopes);
 
       case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c);
+        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
 
       case 'resources/list':
         return handleResourcesList(req.id);
@@ -560,9 +584,9 @@ async function handleJsonRpc(
 
 function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse {
   const allTools = getToolDefinitions();
-  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
+  const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
-  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   // Filter tools based on API key scopes.
@@ -612,8 +636,9 @@ async function handleToolsCall(
   params: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  apiKey?: { id: string; orgId: string | null },
+  apiKey?: McpApiKeyContext,
   c?: Context,
+  sessionId?: string,
 ): Promise<JsonRpcResponse> {
   const toolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -645,9 +670,9 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
 
-  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
+  const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
-  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
@@ -699,8 +724,58 @@ async function handleToolsCall(
   // MCP server auto-executes Tier 3 tools without approval — the API key holder
   // is trusted at the scope level. Approval flow is for interactive UI only.
 
+  const executionOrgId = resolveMcpExecutionOrgId(apiKey, auth, toolInput);
+  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
+  if (tier >= 3) {
+    if (!apiKey || !executionOrgId) {
+      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+    try {
+      ledgerHandle = await beginMcpToolExecutionLedger({
+        orgId: executionOrgId,
+        toolName,
+        tier,
+        toolInput,
+        transportSessionId: sessionId ?? null,
+        principal: {
+          apiKeyId: apiKey.id,
+          oauthGrantId: apiKey.oauthGrantId ?? null,
+          partnerId: auth.partnerId ?? apiKey.partnerId ?? null,
+          actorUserId: auth.user.id,
+        },
+      });
+    } catch (err) {
+      console.error('[MCP] Failed to create tool execution ledger:', toolName, err);
+      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+  }
+
+  const startedAt = Date.now();
   try {
     const result = await executeTool(toolName, toolInput, auth);
+    const safeResult = compactToolResultForChat(toolName, result);
+    if (ledgerHandle) {
+      await completeMcpToolExecutionLedger({
+        handle: ledgerHandle,
+        status: 'success',
+        durationMs: Date.now() - startedAt,
+        result: safeResult,
+      }).catch((err) => {
+        console.error('[MCP] Failed to complete tool execution ledger:', toolName, err);
+      });
+    }
+    writeMcpToolAuditEvent(c, {
+      apiKey,
+      auth,
+      sessionId,
+      orgId: executionOrgId,
+      toolName,
+      tier,
+      toolInput,
+      durationMs: Date.now() - startedAt,
+      status: 'success',
+      result: safeResult,
+    });
 
     // If result contains imageBase64, return it as an MCP image content block
     // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
@@ -724,15 +799,85 @@ async function handleToolsCall(
     }
 
     return jsonRpcResult(id, {
-      content: [{ type: 'text', text: result }]
+      content: [{ type: 'text', text: safeResult }]
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Tool execution failed';
+    const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+    if (ledgerHandle) {
+      await completeMcpToolExecutionLedger({
+        handle: ledgerHandle,
+        status: 'failure',
+        durationMs: Date.now() - startedAt,
+        error: err,
+      }).catch((ledgerErr) => {
+        console.error('[MCP] Failed to fail tool execution ledger:', toolName, ledgerErr);
+      });
+    }
+    writeMcpToolAuditEvent(c, {
+      apiKey,
+      auth,
+      sessionId,
+      orgId: executionOrgId,
+      toolName,
+      tier,
+      toolInput,
+      durationMs: Date.now() - startedAt,
+      status: 'failure',
+      error: err,
+    });
     return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+      content: [{ type: 'text', text: safeError }],
       isError: true
     });
   }
+}
+
+function writeMcpToolAuditEvent(
+  c: Context | undefined,
+  event: {
+    apiKey?: McpApiKeyContext;
+    auth: AuthContext;
+    sessionId?: string;
+    orgId?: string | null;
+    toolName: string;
+    tier: number;
+    toolInput: Record<string, unknown>;
+    durationMs: number;
+    status: 'success' | 'failure';
+    result?: string;
+    error?: unknown;
+  },
+): void {
+  if (!c || !event.apiKey) return;
+
+  const error = event.error instanceof Error ? event.error : undefined;
+  const inputOrgId = typeof event.toolInput.orgId === 'string' ? event.toolInput.orgId : null;
+  const orgId = event.orgId ?? event.apiKey.orgId ?? event.auth.orgId ?? inputOrgId;
+  writeAuditEvent(c, {
+    orgId,
+    actorType: 'api_key',
+    actorId: event.apiKey.id,
+    action: `mcp.tool.${event.toolName}`.slice(0, 100),
+    resourceType: 'mcp_tool_execution',
+    resourceId: event.sessionId,
+    result: event.status === 'success' ? 'success' : 'failure',
+    errorMessage: error ? redactAiToolOutputText(error.message).slice(0, 1000) : undefined,
+    details: {
+      sessionId: event.sessionId ?? null,
+      approvalId: null,
+      oauthGrantId: event.apiKey.oauthGrantId ?? null,
+      partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
+      orgId: orgId ?? null,
+      toolName: event.toolName,
+      tier: event.tier,
+      target: summarizePayload(event.toolInput, { maxStringLength: 512 }),
+      arguments: sanitizeAuditPayload(event.toolInput, { maxStringLength: 2048 }),
+      durationMs: event.durationMs,
+      ...(event.result ? { result: summarizeToolResult(event.result, { maxStringLength: 500 }) } : {}),
+      ...(error ? { errorClass: error.name } : {}),
+    },
+  });
 }
 
 // ============================================
@@ -757,9 +902,9 @@ async function dispatchBootstrapAuthTool(
   apiKey: { id: string; orgId: string | null } | undefined,
   c: Context | undefined,
 ): Promise<JsonRpcResponse> {
-  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
+  const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
-  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
 
   if (!hasExecute) {
     return jsonRpcError(

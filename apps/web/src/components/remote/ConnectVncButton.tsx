@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, X, Globe } from 'lucide-react';
 import type { RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
+import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 
 interface Props {
   deviceId: string;
@@ -31,7 +32,6 @@ export default function ConnectVncButton({
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [tunnelId, setTunnelId] = useState<string | null>(null);
-  const [vncWsUrl, setVncWsUrl] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const autoDismissRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -66,20 +66,6 @@ export default function ConnectVncButton({
       setTunnelId(tunnel.id);
 
       const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
-
-      // Get WS ticket for the browser fallback (noVNC in-tab viewer)
-      const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, { method: 'POST' });
-      if (!ticketRes.ok) {
-        closeTunnel(tunnel.id);
-        throw new Error('Failed to get tunnel ticket');
-      }
-      const { ticket } = await ticketRes.json();
-
-      // Build WebSocket URL for the browser fallback path
-      const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
-      const wsHost = apiUrl.replace(/^https?:\/\//, '');
-      const wsUrl = `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
-      setVncWsUrl(wsUrl);
 
       // Issue a short-lived connect code for the Tauri viewer deep link (keeps JWT out of URL)
       const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
@@ -149,13 +135,12 @@ export default function ConnectVncButton({
   }, [deviceId, closeTunnel]);
 
   const handleOpenInBrowser = useCallback(() => {
-    if (tunnelId && vncWsUrl) {
+    if (tunnelId) {
       // Open noVNC viewer in a new tab
-      const viewerUrl = `/remote/vnc/${tunnelId}?ws=${encodeURIComponent(vncWsUrl)}`;
-      window.open(viewerUrl, '_blank');
+      window.open(buildRemoteVncPageUrl(tunnelId), '_blank');
     }
     setStatus('idle');
-  }, [tunnelId, vncWsUrl]);
+  }, [tunnelId]);
 
   const handleDismiss = useCallback(() => {
     setStatus('idle');

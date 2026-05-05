@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
 import { db } from '../db';
 import { isRedisAvailable } from '../services/redis';
+import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 
 vi.mock('../services', () => ({}));
 
@@ -281,6 +282,51 @@ describe('discovery routes', () => {
       expect(body.subnets).toEqual(['10.0.2.0/24']);
       expect(body.schedule.type).toBe('interval');
       expect(body.schedule.intervalMinutes).toBe(30);
+    });
+
+    it('encrypts and masks SNMP profile secrets', async () => {
+      const insertValues = vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: 'profile-001',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          name: 'SNMP Scan',
+          subnets: ['10.0.2.0/24'],
+          methods: ['snmp'],
+          snmpCommunities: ['enc:v1:mock'],
+          snmpCredentials: { authPassphrase: 'enc:v1:mock-auth' },
+          schedule: { type: 'interval', intervalMinutes: 30 },
+          createdAt: new Date('2026-05-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+        }]))
+      }));
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: insertValues,
+      } as any);
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'SNMP Scan',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          subnets: ['10.0.2.0/24'],
+          methods: ['snmp'],
+          snmpCommunities: ['private'],
+          snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: 'auth-secret' },
+          schedule: { type: 'interval', intervalMinutes: 30 }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const saved = (insertValues.mock.calls as any)[0]?.[0];
+      expect(saved).toBeDefined();
+      expect(isEncryptedSecret(saved.snmpCommunities[0])).toBe(true);
+      expect(decryptSecret(saved.snmpCommunities[0])).toBe('private');
+      expect(decryptSecret(saved.snmpCredentials.authPassphrase)).toBe('auth-secret');
+      const body = await res.json();
+      expect(body.snmpCommunities).toEqual(['********']);
+      expect(body.snmpCredentials.authPassphrase).toBe('********');
     });
 
     it('should validate schedule details', async () => {

@@ -6,9 +6,10 @@ import { createHash } from 'crypto';
 // Mocks
 // -------------------------------------------------------------------
 
-const { dbSelectMock, dbUpdateMock } = vi.hoisted(() => ({
+const { dbSelectMock, dbUpdateMock, mfaGate } = vi.hoisted(() => ({
   dbSelectMock: vi.fn(),
   dbUpdateMock: vi.fn(),
+  mfaGate: { deny: false },
 }));
 
 vi.mock('../../db', () => ({
@@ -29,12 +30,22 @@ vi.mock('../../db/schema', () => ({
     agentTokenHash: 'devices.agentTokenHash',
     previousTokenHash: 'devices.previousTokenHash',
   },
-  organizations: { id: 'organizations.id' },
+  organizations: { id: 'organizations.id', settings: 'organizations.settings', updatedAt: 'organizations.updatedAt' },
 }));
 
 vi.mock('../../middleware/auth', () => ({
-  authMiddleware: vi.fn(async (_c: any, next: any) => next()),
+  authMiddleware: vi.fn(async (c: any, next: any) => {
+    c.set('auth', {
+      user: { id: 'user-123' },
+      canAccessOrg: (orgId: string) => orgId === '22222222-2222-4222-8222-222222222222',
+    });
+    return next();
+  }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (mfaGate.deny) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  }),
 }));
 
 vi.mock('../../middleware/agentAuth', () => ({
@@ -59,9 +70,9 @@ vi.mock('../../services/cloudflareMtls', () => ({
 }));
 
 vi.mock('@breeze/shared', () => ({
-  orgMtlsSettingsSchema: { parse: (v: unknown) => v },
-  orgHelperSettingsSchema: { parse: (v: unknown) => v },
-  orgLogForwardingSettingsSchema: { parse: (v: unknown) => v },
+  orgMtlsSettingsSchema: { parse: (v: unknown) => v, safeParseAsync: async (v: unknown) => ({ success: true, data: v }) },
+  orgHelperSettingsSchema: { parse: (v: unknown) => v, safeParseAsync: async (v: unknown) => ({ success: true, data: v }) },
+  orgLogForwardingSettingsSchema: { parse: (v: unknown) => v, safeParseAsync: async (v: unknown) => ({ success: true, data: v }) },
 }));
 
 vi.mock('./helpers', () => ({
@@ -239,5 +250,94 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
       headers: { Authorization: 'Bearer brz_wrong' },
     });
     expect(resp.status).toBe(401);
+  });
+});
+
+describe('PATCH /org/:orgId/settings/log-forwarding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisState.clear();
+    mfaGate.deny = false;
+  });
+
+  function mockOrgLookup(settings: Record<string, unknown> = {}) {
+    dbSelectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: ORG_ID, settings }])
+        }),
+      }),
+    } as any);
+  }
+
+  it('rejects private forwarding targets before storing settings', async () => {
+    mockOrgLookup();
+
+    const res = await buildApp().request(`/agents/org/${ORG_ID}/settings/log-forwarding`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        enabled: true,
+        elasticsearchUrl: 'https://127.0.0.1:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: 'secret-api-key',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe('Invalid log forwarding target');
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA before changing log forwarding settings', async () => {
+    mfaGate.deny = true;
+
+    const res = await buildApp().request(`/agents/org/${ORG_ID}/settings/log-forwarding`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        enabled: true,
+        elasticsearchUrl: 'https://8.8.8.8:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: 'secret-api-key',
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(dbSelectMock).not.toHaveBeenCalled();
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it('encrypts credentials and preserves masked updates', async () => {
+    mockOrgLookup({
+      logForwarding: {
+        enabled: true,
+        elasticsearchUrl: 'https://8.8.8.8:9200',
+        indexPrefix: 'existing',
+        elasticsearchApiKey: 'existing-plaintext-key',
+      }
+    });
+    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    dbUpdateMock.mockReturnValueOnce({ set: setMock } as any);
+
+    const res = await buildApp().request(`/agents/org/${ORG_ID}/settings/log-forwarding`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        enabled: true,
+        elasticsearchUrl: 'https://8.8.8.8:9200',
+        indexPrefix: 'breeze-logs',
+        elasticsearchApiKey: '****',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updatePayload = setMock.mock.calls[0]?.[0];
+    const stored = updatePayload.settings.logForwarding;
+    expect(stored.elasticsearchApiKey).toMatch(/^enc:v1:/);
+    expect(stored.elasticsearchApiKey).not.toContain('existing-plaintext-key');
+    const body = await res.json();
+    expect(body.settings.logForwarding.elasticsearchApiKey).toBe('****');
   });
 });

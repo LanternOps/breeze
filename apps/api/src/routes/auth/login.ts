@@ -17,6 +17,7 @@ import {
 } from '../../services';
 import { authMiddleware } from '../../middleware/auth';
 import { createAuditLogAsync } from '../../services/auditService';
+import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
 import { ENABLE_2FA, loginSchema } from './schemas';
 import {
@@ -35,6 +36,7 @@ import {
   auditLogin,
   userRequiresSetup
 } from './helpers';
+import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -153,9 +155,27 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     return c.json(genericAuthError(), 401);
   }
 
-  // Check if MFA is required
+  // Look up user's partner/org context
+  let context;
+  try {
+    context = await resolveCurrentUserTokenContext(user.id);
+    await assertPasswordAuthAllowedBySso(context);
+  } catch (err) {
+    if (!(err instanceof TenantInactiveError) && !(err instanceof SsoPasswordAuthRequiredError)) throw err;
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      reason: err instanceof SsoPasswordAuthRequiredError ? 'sso_required' : 'tenant_inactive',
+      result: 'denied',
+      details: { method: 'password' }
+    });
+    return c.json(genericAuthError(), 401);
+  }
+
+  // Check if MFA is required. This happens after the SSO-only check so an
+  // org-enforced SSO user cannot obtain an MFA temp token through password auth.
   if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms')) {
-    // Create a temporary token for MFA verification
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
     await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
@@ -172,9 +192,6 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       tokens: null
     });
   }
-
-  // Look up user's partner/org context
-  const context = await resolveCurrentUserTokenContext(user.id);
   const roleId = context.roleId;
   const partnerId = context.partnerId;
   const orgId = context.orgId;
@@ -310,7 +327,14 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  const context = await resolveCurrentUserTokenContext(user.id);
+  let context;
+  try {
+    context = await resolveCurrentUserTokenContext(user.id);
+  } catch (err) {
+    if (!(err instanceof TenantInactiveError)) throw err;
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
 
   // Create new token pair
   const tokens = await createTokenPair({

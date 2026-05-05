@@ -2,6 +2,7 @@ import { Client } from '@elastic/elasticsearch';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { eq } from 'drizzle-orm';
+import { decryptSecret } from './secretCrypto';
 
 interface LogForwardingConfig {
   enabled: boolean;
@@ -41,7 +42,11 @@ export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardi
   const forwarding = settings.logForwarding as LogForwardingConfig | undefined;
 
   if (!forwarding?.enabled || !forwarding.elasticsearchUrl) return null;
-  return forwarding;
+  return {
+    ...forwarding,
+    elasticsearchApiKey: decryptSecret(forwarding.elasticsearchApiKey) ?? undefined,
+    elasticsearchPassword: decryptSecret(forwarding.elasticsearchPassword) ?? undefined,
+  };
 }
 
 function getOrCreateClient(orgId: string, config: LogForwardingConfig): Client {

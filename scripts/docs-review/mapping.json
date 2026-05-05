@@ -1,6 +1,51 @@
 {
   "mappings": [
     {
+      "pattern": "apps/api/src/services/clientIp.ts",
+      "docs": [
+        "reference/audit-logs.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/index.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/sentry.ts",
+      "docs": [
+        "security/error-tracking.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/sentry.*.ts",
+      "docs": [
+        "security/error-tracking.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/shared/McpUrlCard.tsx",
+      "docs": [
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/httputil/**",
+      "docs": [
+        "features/log-shipping.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/logging/**",
+      "docs": [
+        "features/log-shipping.mdx"
+      ]
+    },
+    {
       "pattern": "agent/cmd/breeze-agent/**",
       "docs": [
         "agents/installation.mdx",

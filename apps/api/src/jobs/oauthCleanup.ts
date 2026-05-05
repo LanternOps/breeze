@@ -1,5 +1,5 @@
 /**
- * OAuth Stale Client Cleanup Worker
+ * OAuth Cleanup Worker
  *
  * Follow-up to the OAuth security hardening series. The
  * `cleanupStaleOauthClients` helper (see `oauth/provider.ts`) deletes
@@ -42,7 +42,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
-import { cleanupStaleOauthClients } from '../oauth/provider';
+import { cleanupExpiredOauthLifecycleRows, cleanupStaleOauthClients } from '../oauth/provider';
 
 const QUEUE_NAME = 'oauth-stale-clients-cleanup';
 const JOB_NAME = 'oauth-stale-clients-cleanup';
@@ -90,12 +90,15 @@ export function createOauthCleanupWorker(): Worker {
       }
       return runWithSystemDbAccess(async () => {
         const startedAt = Date.now();
-        const deletedCount = await cleanupStaleOauthClients();
+        const [deletedCount, lifecycleCounts] = await Promise.all([
+          cleanupStaleOauthClients(),
+          cleanupExpiredOauthLifecycleRows(),
+        ]);
         const durationMs = Date.now() - startedAt;
         console.log(
-          `[OauthCleanup] Deleted ${deletedCount} stale DCR oauth_clients row(s) in ${durationMs}ms`,
+          `[OauthCleanup] Deleted ${deletedCount} stale DCR oauth_clients row(s) and pruned lifecycle rows in ${durationMs}ms`,
         );
-        return { deletedCount, durationMs };
+        return { deletedCount, lifecycleCounts, durationMs };
       });
     },
     {

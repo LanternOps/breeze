@@ -1,6 +1,7 @@
 import { db } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
+import { getRedis } from './redis';
 
 export interface Permission {
   resource: string;
@@ -18,25 +19,80 @@ export interface UserPermissions {
   allowedSiteIds?: string[];
 }
 
-// Cache for permissions (in production, use Redis)
-const permissionCache = new Map<string, { permissions: Permission[]; expiresAt: number }>();
+type PermissionCacheVersions = {
+  globalVersion: string;
+  userVersion: string;
+};
+
+type PermissionCacheEntry = {
+  userPerms: UserPermissions;
+  expiresAt: number;
+  versions: PermissionCacheVersions | null;
+};
+
+// Local hot cache. Redis version keys provide cross-process invalidation when available.
+const permissionCache = new Map<string, PermissionCacheEntry>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const PERMISSION_CACHE_GLOBAL_VERSION_KEY = 'permission-cache:version';
+const PERMISSION_CACHE_USER_VERSION_PREFIX = 'permission-cache:user-version:';
+
+function userPermissionVersionKey(userId: string): string {
+  return `${PERMISSION_CACHE_USER_VERSION_PREFIX}${userId}`;
+}
+
+async function getPermissionCacheVersions(userId: string): Promise<PermissionCacheVersions | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+
+  try {
+    const [globalVersion, userVersion] = await redis.mget(
+      PERMISSION_CACHE_GLOBAL_VERSION_KEY,
+      userPermissionVersionKey(userId),
+    );
+    return {
+      globalVersion: globalVersion ?? '0',
+      userVersion: userVersion ?? '0',
+    };
+  } catch (error) {
+    console.error('[permissions] Redis permission-cache version read failed:', error);
+    return null;
+  }
+}
+
+function cacheVersionsMatch(
+  cached: PermissionCacheVersions | null,
+  current: PermissionCacheVersions | null,
+): boolean {
+  if (!cached || !current) return cached === current;
+  return cached.globalVersion === current.globalVersion
+    && cached.userVersion === current.userVersion;
+}
+
+async function bumpSharedPermissionCacheVersion(userId?: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+
+  const key = userId
+    ? userPermissionVersionKey(userId)
+    : PERMISSION_CACHE_GLOBAL_VERSION_KEY;
+
+  try {
+    await redis.incr(key);
+  } catch (error) {
+    console.error('[permissions] Redis permission-cache invalidation failed:', error);
+  }
+}
 
 export async function getUserPermissions(
   userId: string,
   context: { partnerId?: string; orgId?: string }
 ): Promise<UserPermissions | null> {
   const cacheKey = userId + ':' + (context.partnerId || '') + ':' + (context.orgId || '');
+  const versions = await getPermissionCacheVersions(userId);
   const cached = permissionCache.get(cacheKey);
 
-  if (cached && cached.expiresAt > Date.now()) {
-    return {
-      permissions: cached.permissions,
-      partnerId: context.partnerId || null,
-      orgId: context.orgId || null,
-      roleId: '',
-      scope: context.orgId ? 'organization' : context.partnerId ? 'partner' : 'system'
-    };
+  if (cached && cached.expiresAt > Date.now() && cacheVersionsMatch(cached.versions, versions)) {
+    return cached.userPerms;
   }
 
   let roleId: string | null = null;
@@ -102,13 +158,7 @@ export async function getUserPermissions(
 
   const perms = rolePerms.map(p => ({ resource: p.resource, action: p.action }));
 
-  // Cache the result
-  permissionCache.set(cacheKey, {
-    permissions: perms,
-    expiresAt: Date.now() + CACHE_TTL
-  });
-
-  return {
+  const userPerms = {
     permissions: perms,
     partnerId: context.partnerId || null,
     orgId: context.orgId || null,
@@ -118,6 +168,15 @@ export async function getUserPermissions(
     allowedOrgIds,
     allowedSiteIds
   };
+
+  // Cache the result
+  permissionCache.set(cacheKey, {
+    userPerms,
+    expiresAt: Date.now() + CACHE_TTL,
+    versions,
+  });
+
+  return userPerms;
 }
 
 export function hasPermission(
@@ -163,7 +222,7 @@ export function canAccessSite(
   return userPerms.allowedSiteIds.includes(siteId);
 }
 
-export function clearPermissionCache(userId?: string): void {
+export async function clearPermissionCache(userId?: string): Promise<void> {
   if (userId) {
     // Clear all entries for this user
     for (const key of permissionCache.keys()) {
@@ -174,6 +233,8 @@ export function clearPermissionCache(userId?: string): void {
   } else {
     permissionCache.clear();
   }
+
+  await bumpSharedPermissionCacheVersion(userId);
 }
 
 // Built-in system permissions
@@ -227,6 +288,46 @@ export const PERMISSIONS = {
   AUDIT_READ: { resource: 'audit', action: 'read' },
   AUDIT_EXPORT: { resource: 'audit', action: 'export' },
 
+  // Reports
+  REPORTS_READ: { resource: 'reports', action: 'read' },
+  REPORTS_WRITE: { resource: 'reports', action: 'write' },
+  REPORTS_DELETE: { resource: 'reports', action: 'delete' },
+  REPORTS_EXPORT: { resource: 'reports', action: 'export' },
+
+  // Billing
+  BILLING_MANAGE: { resource: 'billing', action: 'manage' },
+
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' }
 } as const;
+
+export function permissionKey(permission: Permission): string {
+  return `${permission.resource}:${permission.action}`;
+}
+
+export const KNOWN_PERMISSIONS = Object.freeze(
+  Object.values(PERMISSIONS) as Permission[],
+);
+
+export const KNOWN_PERMISSION_KEYS = Object.freeze(
+  KNOWN_PERMISSIONS.map(permissionKey),
+);
+
+export const ASSIGNABLE_PERMISSIONS = Object.freeze(
+  KNOWN_PERMISSIONS.filter((permission) => permission.resource !== '*' && permission.action !== '*'),
+);
+
+export const ASSIGNABLE_PERMISSION_KEYS = Object.freeze(
+  ASSIGNABLE_PERMISSIONS.map(permissionKey),
+);
+
+const KNOWN_PERMISSION_KEY_SET = new Set(KNOWN_PERMISSION_KEYS);
+const ASSIGNABLE_PERMISSION_KEY_SET = new Set(ASSIGNABLE_PERMISSION_KEYS);
+
+export function isKnownPermission(permission: Permission): boolean {
+  return KNOWN_PERMISSION_KEY_SET.has(permissionKey(permission));
+}
+
+export function isAssignablePermission(permission: Permission): boolean {
+  return ASSIGNABLE_PERMISSION_KEY_SET.has(permissionKey(permission));
+}

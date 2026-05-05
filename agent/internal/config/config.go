@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // WatchdogConfig holds settings for the breeze-watchdog service.
@@ -38,6 +39,8 @@ type Config struct {
 	AgentID                  string   `mapstructure:"agent_id"`
 	ServerURL                string   `mapstructure:"server_url"`
 	AuthToken                string   `mapstructure:"auth_token"`
+	WatchdogAuthToken        string   `mapstructure:"watchdog_auth_token"`
+	HelperAuthToken          string   `mapstructure:"helper_auth_token"`
 	OrgID                    string   `mapstructure:"org_id"`
 	SiteID                   string   `mapstructure:"site_id"`
 	HeartbeatIntervalSeconds int      `mapstructure:"heartbeat_interval_seconds"`
@@ -144,7 +147,7 @@ func IsEnrolled(cfg *Config) bool {
 func defaultLogFile() string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("ProgramData"), "Breeze", "logs", "agent.log")
+		return filepath.Join(configDir(), "logs", "agent.log")
 	case "darwin":
 		return "/Library/Application Support/Breeze/logs/agent.log"
 	default:
@@ -185,8 +188,8 @@ func Default() *Config {
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,
 		PatchAutoAcceptEula:        false,
-		PolicyRegistryStateProbes: []PolicyRegistryStateProbe{},
-		PolicyConfigStateProbes:   []PolicyConfigStateProbe{},
+		PolicyRegistryStateProbes:  []PolicyRegistryStateProbe{},
+		PolicyConfigStateProbes:    []PolicyConfigStateProbe{},
 
 		Watchdog: WatchdogConfig{
 			Enabled:                 true,
@@ -241,6 +244,12 @@ func Load(cfgFile string) (*Config, error) {
 		if v := sv.GetString("auth_token"); v != "" {
 			cfg.AuthToken = v
 		}
+		if v := sv.GetString("watchdog_auth_token"); v != "" {
+			cfg.WatchdogAuthToken = v
+		}
+		if v := sv.GetString("helper_auth_token"); v != "" {
+			cfg.HelperAuthToken = v
+		}
 		if v := sv.GetString("mtls_cert_pem"); v != "" {
 			cfg.MtlsCertPEM = v
 		}
@@ -267,13 +276,76 @@ func Load(cfgFile string) (*Config, error) {
 	return cfg, nil
 }
 
-// SetAndPersist updates a single config key in viper and writes it to the
-// existing config file. Uses viper.WriteConfig (not WriteConfigAs) to write
-// back to the file viper originally read, preserving all existing keys
-// including sensitive fields that may have been cleared from the Config struct.
+// SetAndPersist updates a single non-secret config key in viper and writes it
+// to the existing config file. Any legacy inline secrets are migrated to
+// secrets.yaml and scrubbed from agent.yaml after the write.
 func SetAndPersist(key string, value any) error {
-	viper.Set(key, value)
-	return viper.WriteConfig()
+	if isSecretConfigKey(key) {
+		if err := SetSecretAndPersist(key, value); err != nil {
+			return err
+		}
+		viper.Set(key, nil)
+	} else {
+		viper.Set(key, value)
+	}
+	if err := viper.WriteConfig(); err != nil {
+		return err
+	}
+	if path := viper.ConfigFileUsed(); path != "" {
+		if err := migrateInlineSecretsToSecretFile(path); err != nil {
+			return err
+		}
+		return enforceConfigFilePermissions(path)
+	}
+	return nil
+}
+
+func SetSecretAndPersist(key string, value any) error {
+	path := secretsFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	if err := enforceConfigDirPermissions(filepath.Dir(path)); err != nil {
+		return err
+	}
+
+	sv := viper.New()
+	sv.SetConfigFile(path)
+	sv.SetConfigType("yaml")
+	if err := sv.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	sv.Set(key, value)
+
+	ext := filepath.Ext(path)
+	tmpPath := path[:len(path)-len(ext)] + ".tmp" + ext
+	if err := sv.WriteConfigAs(tmpPath); err != nil {
+		return err
+	}
+	sf, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		sf.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if _, err := sf.Write(data); err != nil {
+		sf.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := sf.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	os.Remove(tmpPath)
+	return enforceSecretFilePermissions(path)
 }
 
 // Reload reloads the currently bound config file, or the default config path
@@ -299,10 +371,10 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("auto_update", cfg.AutoUpdate)
-	// Write auth_token to agent.yaml so the Breeze Helper (which may not
-	// have root privileges to read secrets.yaml) can discover the token.
-	if cfg.AuthToken != "" {
-		viper.Set("auth_token", cfg.AuthToken)
+	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
+	// bearer tokens are persisted below in root-only secrets.yaml.
+	if cfg.HelperAuthToken != "" {
+		viper.Set("helper_auth_token", cfg.HelperAuthToken)
 	}
 
 	var cfgPath string
@@ -313,10 +385,16 @@ func SaveTo(cfg *Config, cfgFile string) error {
 			if err := os.MkdirAll(dir, 0750); err != nil {
 				return err
 			}
+			if err := enforceConfigDirPermissions(dir); err != nil {
+				return err
+			}
 		}
 	} else {
 		cfgPath = filepath.Join(configDir(), "agent.yaml")
 		if err := os.MkdirAll(configDir(), 0750); err != nil {
+			return err
+		}
+		if err := enforceConfigDirPermissions(configDir()); err != nil {
 			return err
 		}
 	}
@@ -342,6 +420,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		os.Remove(tmpPath)
 		return err
 	}
+	tmpData = stripSecretsFromAgentConfig(tmpData)
 	if _, err := f.Write(tmpData); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
@@ -351,10 +430,10 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	os.Remove(tmpPath)
 
 	// Defense-in-depth: ensure permissions are correct even if umask interfered.
-	if err := os.Chmod(filepath.Dir(cfgPath), 0750); err != nil {
+	if err := enforceConfigDirPermissions(filepath.Dir(cfgPath)); err != nil {
 		log.Warn("failed to enforce config dir permissions", "error", err.Error())
 	}
-	if err := os.Chmod(cfgPath, 0640); err != nil {
+	if err := enforceConfigFilePermissions(cfgPath); err != nil {
 		log.Warn("failed to enforce config file permissions", "error", err.Error())
 	}
 
@@ -366,6 +445,12 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	// the persisted token and break the agent on next startup.
 	if cfg.AuthToken != "" {
 		sv.Set("auth_token", cfg.AuthToken)
+	}
+	if cfg.WatchdogAuthToken != "" {
+		sv.Set("watchdog_auth_token", cfg.WatchdogAuthToken)
+	}
+	if cfg.HelperAuthToken != "" {
+		sv.Set("helper_auth_token", cfg.HelperAuthToken)
 	}
 	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
@@ -397,18 +482,48 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	os.Remove(secretsTmp)
 
 	// Defense-in-depth: ensure secrets permissions are correct.
-	if err := os.Chmod(secretsPath, 0600); err != nil {
+	if err := enforceSecretFilePermissions(secretsPath); err != nil {
 		log.Warn("failed to enforce secrets file permissions", "error", err.Error())
 	}
 
 	return nil
 }
 
+func stripSecretsFromAgentConfig(data []byte) []byte {
+	var values map[string]any
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		return data
+	}
+	for _, key := range []string{
+		"auth_token",
+		"watchdog_auth_token",
+		"mtls_cert_pem",
+		"mtls_key_pem",
+		"mtls_cert_expires",
+	} {
+		delete(values, key)
+	}
+	out, err := yaml.Marshal(values)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+func isSecretConfigKey(key string) bool {
+	switch key {
+	case "auth_token", "watchdog_auth_token", "mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires":
+		return true
+	default:
+		return false
+	}
+}
+
 // GetDataDir returns the platform-specific data directory for the agent
 func GetDataDir() string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("ProgramData"), "Breeze", "data")
+		return filepath.Join(configDir(), "data")
 	case "darwin":
 		return "/Library/Application Support/Breeze/data"
 	default:
@@ -424,23 +539,126 @@ func GetDataDir() string {
 func FixConfigPermissions() {
 	dir := configDir()
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		if err := os.Chmod(dir, 0750); err != nil {
+		if err := enforceConfigDirPermissions(dir); err != nil {
 			log.Warn("Failed to fix config directory permissions", "dir", dir, "error", err.Error())
 		}
 	}
 	cfgPath := filepath.Join(dir, "agent.yaml")
 	if _, err := os.Stat(cfgPath); err == nil {
-		if err := os.Chmod(cfgPath, 0640); err != nil {
+		if err := migrateInlineSecretsToSecretFile(cfgPath); err != nil {
+			log.Warn("Failed to migrate inline config secrets", "path", cfgPath, "error", err.Error())
+		}
+		if err := enforceConfigFilePermissions(cfgPath); err != nil {
 			log.Warn("Failed to fix config file permissions", "path", cfgPath, "error", err.Error())
 		}
 	}
 	// Secrets file must remain root-only.
 	sPath := secretsFilePath()
 	if _, err := os.Stat(sPath); err == nil {
-		if err := os.Chmod(sPath, 0600); err != nil {
+		if err := enforceSecretFilePermissions(sPath); err != nil {
 			log.Warn("Failed to fix secrets file permissions", "path", sPath, "error", err.Error())
 		}
 	}
+}
+
+func migrateInlineSecretsToSecretFile(cfgPath string) error {
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	var cfgValues map[string]any
+	if err := yaml.Unmarshal(data, &cfgValues); err != nil {
+		return err
+	}
+
+	secretKeys := []string{
+		"auth_token",
+		"watchdog_auth_token",
+		"mtls_cert_pem",
+		"mtls_key_pem",
+		"mtls_cert_expires",
+	}
+
+	hasInlineSecretKeys := false
+	for _, key := range secretKeys {
+		if _, ok := cfgValues[key]; ok {
+			hasInlineSecretKeys = true
+			break
+		}
+	}
+	if !hasInlineSecretKeys {
+		return nil
+	}
+
+	secretPath := secretsFilePathFor(cfgPath)
+	secretValues := map[string]any{}
+	secretFileExists := false
+	if secretData, err := os.ReadFile(secretPath); err == nil {
+		secretFileExists = true
+		if err := yaml.Unmarshal(secretData, &secretValues); err != nil {
+			return fmt.Errorf("reading existing secrets: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	for _, key := range secretKeys {
+		if isEmptyYAMLValue(secretValues[key]) && !isEmptyYAMLValue(cfgValues[key]) {
+			secretValues[key] = cfgValues[key]
+		}
+		delete(cfgValues, key)
+	}
+
+	if secretFileExists || len(secretValues) > 0 {
+		if err := os.MkdirAll(filepath.Dir(secretPath), 0750); err != nil {
+			return err
+		}
+		if err := enforceConfigDirPermissions(filepath.Dir(secretPath)); err != nil {
+			return err
+		}
+		if err := writeYAMLFile(secretPath, secretValues, 0600); err != nil {
+			return err
+		}
+		if err := enforceSecretFilePermissions(secretPath); err != nil {
+			return err
+		}
+	}
+	if err := writeYAMLFile(cfgPath, cfgValues, 0640); err != nil {
+		return err
+	}
+	return enforceConfigFilePermissions(cfgPath)
+}
+
+func isEmptyYAMLValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	default:
+		return false
+	}
+}
+
+func writeYAMLFile(path string, values map[string]any, mode os.FileMode) error {
+	data, err := yaml.Marshal(values)
+	if err != nil {
+		return err
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Chmod(path, mode)
 }
 
 func secretsFilePath() string {
@@ -452,15 +670,4 @@ func secretsFilePathFor(cfgFile string) string {
 		return filepath.Join(filepath.Dir(cfgFile), "secrets.yaml")
 	}
 	return filepath.Join(configDir(), "secrets.yaml")
-}
-
-func configDir() string {
-	switch runtime.GOOS {
-	case "windows":
-		return filepath.Join(os.Getenv("ProgramData"), "Breeze")
-	case "darwin":
-		return "/Library/Application Support/Breeze"
-	default:
-		return "/etc/breeze"
-	}
 }

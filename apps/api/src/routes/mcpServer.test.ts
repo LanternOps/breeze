@@ -5,7 +5,7 @@ import { z as zod } from 'zod';
 // a real postgres client / redis connection.
 vi.mock('../db', () => ({
   db: {},
-  withDbAccessContext: vi.fn(),
+  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(),
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
 }));
@@ -16,6 +16,8 @@ vi.mock('../db/schema', () => ({
   scripts: {},
   automations: {},
   organizations: {},
+  aiSessions: { id: 'aiSessions.id' },
+  aiToolExecutions: { id: 'aiToolExecutions.id' },
   apiKeys: {},
   partners: { id: 'partners.id', billingEmail: 'partners.billingEmail' },
 }));
@@ -248,7 +250,7 @@ describe('MCP bootstrap carve-out', () => {
           }),
         }),
       },
-      withDbAccessContext: vi.fn(),
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
       withSystemDbAccessContext: vi.fn(),
       runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
@@ -435,6 +437,8 @@ describe('MCP bootstrap carve-out', () => {
       getRedis: () => ({}),
     }));
 
+    const ledgerInsertValues: any[] = [];
+    const ledgerUpdateSet = vi.fn();
     vi.doMock('../db', () => ({
       db: {
         select: () => ({
@@ -442,8 +446,20 @@ describe('MCP bootstrap carve-out', () => {
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
           }),
         }),
+        insert: () => ({
+          values: (value: any) => {
+            ledgerInsertValues.push(value);
+            return { returning: async () => [{ id: 'mcp-exec-1' }] };
+          },
+        }),
+        update: () => ({
+          set: (value: any) => {
+            ledgerUpdateSet(value);
+            return { where: async () => undefined };
+          },
+        }),
       },
-      withDbAccessContext: vi.fn(),
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
       withSystemDbAccessContext: vi.fn(),
       runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
@@ -500,6 +516,8 @@ describe('MCP bootstrap carve-out', () => {
       getRedis: () => ({}),
     }));
 
+    const ledgerInsertValues: any[] = [];
+    const ledgerUpdateSet = vi.fn();
     vi.doMock('../db', () => ({
       db: {
         select: () => ({
@@ -507,8 +525,20 @@ describe('MCP bootstrap carve-out', () => {
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
           }),
         }),
+        insert: () => ({
+          values: (value: any) => {
+            ledgerInsertValues.push(value);
+            return { returning: async () => [{ id: 'mcp-exec-1' }] };
+          },
+        }),
+        update: () => ({
+          set: (value: any) => {
+            ledgerUpdateSet(value);
+            return { where: async () => undefined };
+          },
+        }),
       },
-      withDbAccessContext: vi.fn(),
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
       withSystemDbAccessContext: vi.fn(),
       runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
@@ -533,6 +563,266 @@ describe('MCP bootstrap carve-out', () => {
       {},
       expect.objectContaining({ partnerId: 'partner-1', orgId: 'org-1' }),
     );
+  });
+
+  it('writes a sanitized tool-level audit event for successful tier-3 MCP calls', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-1',
+          orgId: 'org-1',
+          partnerId: 'partner-1',
+          oauthGrantId: 'grant-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read', 'ai:execute'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
+      executeTool: vi.fn(async () => JSON.stringify({ status: 'completed', stdout: 'token=raw-secret' })),
+      getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
+    }));
+    vi.doMock('../services/redis', () => ({
+      getRedis: () => ({}),
+    }));
+    const ledgerInsertValues: any[] = [];
+    const ledgerUpdateSet = vi.fn();
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
+          }),
+        }),
+        insert: () => ({
+          values: (value: any) => {
+            ledgerInsertValues.push(value);
+            return { returning: async () => [{ id: 'mcp-exec-1' }] };
+          },
+        }),
+        update: () => ({
+          set: (value: any) => {
+            ledgerUpdateSet(value);
+            return { where: async () => undefined };
+          },
+        }),
+      },
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+      withSystemDbAccessContext: vi.fn(),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+    const writeAuditEvent = vi.fn();
+    vi.doMock('../services/auditEvents', () => ({
+      writeAuditEvent,
+      requestLikeFromSnapshot: vi.fn(),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message?sessionId=sse-1', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'execute_command',
+          arguments: {
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            command: 'do-work',
+            token: 'raw-token',
+          },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('raw-secret');
+    expect(JSON.stringify(body)).toContain('[REDACTED]');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-1',
+        actorType: 'api_key',
+        actorId: 'key-1',
+        action: 'mcp.tool.execute_command',
+        resourceType: 'mcp_tool_execution',
+        result: 'success',
+        details: expect.objectContaining({
+          toolName: 'execute_command',
+          tier: 3,
+          sessionId: 'sse-1',
+          oauthGrantId: 'grant-1',
+          target: expect.objectContaining({ deviceId: 'device-1' }),
+          arguments: expect.objectContaining({ token: '[REDACTED]' }),
+          result: expect.objectContaining({
+            resultKeys: expect.arrayContaining(['status', 'stdout']),
+            resultBytes: expect.any(Number),
+            resultSha256: expect.any(String),
+          }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-token');
+    expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-secret');
+    expect(ledgerInsertValues[1]).toMatchObject({
+      toolName: 'execute_command',
+      status: 'executing',
+      toolInput: expect.objectContaining({
+        source: 'mcp',
+        orgId: 'org-1',
+        toolName: 'execute_command',
+        tier: 3,
+        principal: expect.objectContaining({
+          type: 'api_key',
+          apiKeyId: 'key-1',
+          oauthGrantId: 'grant-1',
+          partnerId: 'partner-1',
+        }),
+        target: expect.objectContaining({ deviceId: 'device-1' }),
+      }),
+    });
+    expect(ledgerUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'completed',
+      toolOutput: expect.objectContaining({
+        source: 'mcp',
+        status: 'success',
+        result: expect.objectContaining({
+          resultKeys: expect.arrayContaining(['status', 'stdout']),
+        }),
+      }),
+    }));
+    expect(JSON.stringify(ledgerInsertValues)).not.toContain('raw-token');
+    expect(JSON.stringify(ledgerUpdateSet.mock.calls)).not.toContain('raw-secret');
+  });
+
+  it('writes a failed tool-level audit event when tier-3 MCP execution throws', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-1',
+          orgId: 'org-1',
+          partnerId: 'partner-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read', 'ai:execute'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+    vi.doMock('../services/aiTools', () => ({
+      getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
+      executeTool: vi.fn(async () => {
+        throw new TypeError('boom with token=raw-secret');
+      }),
+      getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
+    }));
+    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
+    const ledgerInsertValues: any[] = [];
+    const ledgerUpdateSet = vi.fn();
+    vi.doMock('../db', () => ({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
+          }),
+        }),
+        insert: () => ({
+          values: (value: any) => {
+            ledgerInsertValues.push(value);
+            return { returning: async () => [{ id: 'mcp-exec-1' }] };
+          },
+        }),
+        update: () => ({
+          set: (value: any) => {
+            ledgerUpdateSet(value);
+            return { where: async () => undefined };
+          },
+        }),
+      },
+      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+      withSystemDbAccessContext: vi.fn(),
+      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    }));
+    const writeAuditEvent = vi.fn();
+    vi.doMock('../services/auditEvents', () => ({
+      writeAuditEvent,
+      requestLikeFromSnapshot: vi.fn(),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'execute_command', arguments: { deviceId: 'device-1', password: 'hunter2' } },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.stringify(body)).not.toContain('raw-secret');
+    expect(JSON.stringify(body)).toContain('[REDACTED]');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'mcp.tool.execute_command',
+        result: 'failure',
+        errorMessage: 'boom with token=[REDACTED]',
+        details: expect.objectContaining({
+          errorClass: 'TypeError',
+          arguments: expect.objectContaining({ password: '[REDACTED]' }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('hunter2');
+    expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-secret');
+    expect(ledgerInsertValues[1]).toMatchObject({
+      toolName: 'execute_command',
+      status: 'executing',
+      toolInput: expect.objectContaining({
+        source: 'mcp',
+        orgId: 'org-1',
+        toolName: 'execute_command',
+        tier: 3,
+        target: expect.objectContaining({ deviceId: 'device-1' }),
+      }),
+    });
+    expect(ledgerUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      errorMessage: 'boom with token=[REDACTED]',
+      toolOutput: expect.objectContaining({
+        source: 'mcp',
+        status: 'failure',
+        errorClass: 'TypeError',
+      }),
+    }));
+    expect(JSON.stringify(ledgerInsertValues)).not.toContain('hunter2');
+    expect(JSON.stringify(ledgerUpdateSet.mock.calls)).not.toContain('raw-secret');
   });
 
   it('enforces stream-byte limit even when content-length is missing/lying', async () => {

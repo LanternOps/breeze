@@ -244,7 +244,7 @@ export default function AiUsagePage() {
             <p className="mt-1 text-xs text-muted-foreground">
               {budget.approvalMode === 'per_step' && 'Each tool requiring approval blocks until the user approves or rejects.'}
               {budget.approvalMode === 'action_plan' && 'AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.'}
-              {budget.approvalMode === 'auto_approve' && 'All tools auto-execute with audit logging. A Pause button reverts to per-step.'}
+              {budget.approvalMode === 'auto_approve' && 'Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.'}
               {budget.approvalMode === 'hybrid_plan' && 'Like Action Plan, plus live screenshots between steps and a persistent Stop button.'}
             </p>
             {isLocked('approvalMode') && (

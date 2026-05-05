@@ -41,7 +41,15 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   partners: {},
   organizations: {},
-  sites: {}
+  sites: {},
+  partnerUsers: { partnerId: 'partner_id', userId: 'user_id' },
+  organizationUsers: { orgId: 'org_id', userId: 'user_id' },
+  apiKeys: { id: 'id', orgId: 'org_id', status: 'status', updatedAt: 'updated_at' },
+  oauthGrants: { id: 'id', orgId: 'org_id', partnerId: 'partner_id', revokedAt: 'revoked_at' },
+  oauthRefreshTokens: { id: 'id', orgId: 'org_id', partnerId: 'partner_id', revokedAt: 'revoked_at' },
+  roles: {},
+  permissions: {},
+  rolePermissions: {}
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -228,6 +236,14 @@ describe('organization routes', () => {
         return next();
       });
 
+      // tenantLifecycle queries organizations / partnerUsers / organizationUsers
+      // via db.select(...).from(...).where(...) and expects an array result.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([])
+        })
+      } as any);
+
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -349,6 +365,14 @@ describe('organization routes', () => {
     });
 
     it('should delete an organization', async () => {
+      // tenantLifecycle queries organizationUsers via db.select(...).from(...).where(...)
+      // and expects an array result.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([])
+        })
+      } as any);
+
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({

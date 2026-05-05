@@ -10,6 +10,10 @@ import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  assertBackupStorageEncryptionSupported,
+  buildBackupStorageEncryptionResponse,
+} from '../../services/backupEncryption';
 import { checkBackupProviderCapabilities, type ProviderCapabilityStatus } from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
@@ -18,6 +22,98 @@ import { configSchema, configUpdateSchema } from './schemas';
 export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().uuid() });
+const MASKED_SECRET = '********';
+const SECRET_FIELD_NAMES = new Set([
+  'accesskey',
+  'accesskeyid',
+  'apikey',
+  'apisecret',
+  'authtoken',
+  'clientsecret',
+  'credential',
+  'credentials',
+  'password',
+  'secret',
+  'secretaccesskey',
+  'secretkey',
+  'sessiontoken',
+  'token',
+]);
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSecretField(key: string): boolean {
+  const normalized = key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  return SECRET_FIELD_NAMES.has(normalized) || normalized.endsWith('token') || normalized.endsWith('secret');
+}
+
+function isRedactedSecretMarker(value: unknown): boolean {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed === MASKED_SECRET || /^\*+$/.test(trimmed);
+  }
+  if (isRecord(value)) {
+    return value.redacted === true || value.hasSecret === true || value.masked === MASKED_SECRET;
+  }
+  return false;
+}
+
+function redactProviderConfig(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactProviderConfig);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const redacted: JsonRecord = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (isSecretField(key)) {
+      redacted[key] = {
+        redacted: true,
+        hasSecret: nestedValue !== null && nestedValue !== undefined && nestedValue !== '',
+        masked: MASKED_SECRET,
+      };
+    } else {
+      redacted[key] = redactProviderConfig(nestedValue);
+    }
+  }
+  return redacted;
+}
+
+function preserveSecretFields(incoming: unknown, existing: unknown): unknown {
+  if (!isRecord(incoming)) {
+    return incoming;
+  }
+
+  const existingRecord = isRecord(existing) ? existing : {};
+  const merged: JsonRecord = {};
+
+  for (const [key, value] of Object.entries(incoming)) {
+    const previous = existingRecord[key];
+    if (isSecretField(key) && isRedactedSecretMarker(value)) {
+      merged[key] = previous;
+    } else if (isRecord(value) && isRecord(previous)) {
+      merged[key] = preserveSecretFields(value, previous);
+    } else {
+      merged[key] = value;
+    }
+  }
+
+  for (const [key, value] of Object.entries(existingRecord)) {
+    if (isSecretField(key) && !(key in merged)) {
+      merged[key] = value;
+    } else if (isRecord(value) && isRecord(merged[key])) {
+      merged[key] = preserveSecretFields(merged[key], value);
+    }
+  }
+
+  return merged;
+}
 
 function buildCapabilityState(
   checkedAt: string | null,
@@ -82,7 +178,7 @@ async function probeS3Config(details: Record<string, unknown>): Promise<void> {
   }));
 }
 
-configsRoutes.get('/configs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
+configsRoutes.get('/configs', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
@@ -101,7 +197,7 @@ configsRoutes.get('/configs', requirePermission(PERMISSIONS.ORGS_READ.resource, 
 configsRoutes.post(
   '/configs',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('json', configSchema),
   async (c) => {
@@ -112,6 +208,17 @@ configsRoutes.post(
     }
 
     const payload = c.req.valid('json');
+    const encryption = payload.encryption ?? false;
+    try {
+      assertBackupStorageEncryptionSupported({
+        encryption,
+        provider: payload.provider,
+        providerConfig: payload.details ?? {},
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Backup encryption is not supported for this config' }, 400);
+    }
+
     const now = new Date();
     const [row] = await db
       .insert(backupConfigs)
@@ -123,6 +230,7 @@ configsRoutes.post(
         providerConfig: payload.details ?? {},
         providerCapabilities: null,
         providerCapabilitiesCheckedAt: null,
+        encryption,
         isActive: payload.enabled ?? true,
         createdAt: now,
         updatedAt: now,
@@ -146,7 +254,7 @@ configsRoutes.post(
   }
 );
 
-configsRoutes.get('/configs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('param', configIdParamSchema), async (c) => {
+configsRoutes.get('/configs/:id', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), zValidator('param', configIdParamSchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
@@ -169,7 +277,7 @@ configsRoutes.get('/configs/:id', requirePermission(PERMISSIONS.ORGS_READ.resour
 configsRoutes.patch(
   '/configs/:id',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', configIdParamSchema),
   zValidator('json', configUpdateSchema),
@@ -186,10 +294,38 @@ configsRoutes.patch(
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.enabled !== undefined) updateData.isActive = payload.enabled;
-    if (payload.details !== undefined) {
-      updateData.providerConfig = payload.details;
-      updateData.providerCapabilities = null;
-      updateData.providerCapabilitiesCheckedAt = null;
+    if (payload.encryption !== undefined) updateData.encryption = payload.encryption;
+    if (payload.details !== undefined || payload.encryption !== undefined) {
+      const [current] = await db
+        .select()
+        .from(backupConfigs)
+        .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+        .limit(1);
+
+      if (!current) {
+        return c.json({ error: 'Config not found' }, 404);
+      }
+
+      const nextProviderConfig = payload.details !== undefined
+        ? preserveSecretFields(payload.details, current.providerConfig)
+        : current.providerConfig;
+      const nextEncryption = payload.encryption ?? current.encryption;
+
+      try {
+        assertBackupStorageEncryptionSupported({
+          encryption: nextEncryption,
+          provider: current.provider,
+          providerConfig: nextProviderConfig,
+        });
+      } catch (error) {
+        return c.json({ error: error instanceof Error ? error.message : 'Backup encryption is not supported for this config' }, 400);
+      }
+
+      if (payload.details !== undefined) {
+        updateData.providerConfig = nextProviderConfig;
+        updateData.providerCapabilities = null;
+        updateData.providerCapabilitiesCheckedAt = null;
+      }
     }
 
     const [row] = await db
@@ -220,7 +356,7 @@ configsRoutes.patch(
 configsRoutes.delete(
   '/configs/:id',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', configIdParamSchema),
   async (c) => {
@@ -254,7 +390,7 @@ configsRoutes.delete(
 configsRoutes.post(
   '/configs/:id/test',
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
   requireMfa(),
   zValidator('param', configIdParamSchema),
   async (c) => {
@@ -356,7 +492,12 @@ function toConfigResponse(row: typeof backupConfigs.$inferSelect) {
     name: row.name,
     provider: row.provider,
     enabled: row.isActive,
-    details: row.providerConfig as Record<string, unknown>,
+    encryption: buildBackupStorageEncryptionResponse({
+      encryption: row.encryption,
+      provider: row.provider,
+      providerConfig: row.providerConfig ?? {},
+    }),
+    details: redactProviderConfig(row.providerConfig ?? {}) as Record<string, unknown>,
     providerCapabilities: buildCapabilityState(
       checkedAt,
       (row.providerCapabilities as ProviderCapabilityStatus | null | undefined) ?? null,

@@ -1,5 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { ACCESS_TOKEN_TTL_SECONDS } from './provider';
@@ -11,28 +11,22 @@ export interface UserOauthRevocationResult {
   jtisRevoked: number;
 }
 
-/**
- * Revoke ALL OAuth artifacts belonging to a user. Used when a user is
- * suspended/disabled so every active access JWT, refresh token, and Grant is
- * killed immediately rather than surviving until natural expiry.
- *
- * Mechanics (mirrors the per-client path in `connectedApps.ts`):
- *   1. Stamp `revokedAt` on every non-revoked refresh token row for the user.
- *   2. For each refresh token, write the jti + grantId into the revocation
- *      cache so bearer middleware rejects any in-flight access JWT.
- *   3. Write a grant-level marker for every Grant row so sibling JWTs minted
- *      without a refresh token (direct authorize flows) are also rejected.
- *
- * We intentionally do NOT delete the oauth_grants / oauth_refresh_tokens rows:
- * keeping them simplifies audit trail and matches what `connectedApps.ts`
- * does (stamp `revokedAt`, not DELETE). The oidc-provider adapter will treat
- * revoked rows as expired.
- *
- * Any cache write failure bubbles up — callers must treat this as a hard
- * failure (suspension is only half-done otherwise).
- */
-export async function revokeAllUserOauthArtifacts(userId: string): Promise<UserOauthRevocationResult> {
-  // 1. Revoke refresh tokens + their jtis + grant markers from token payloads.
+async function revokeOauthArtifactsByColumn(
+  target: 'user' | 'partner' | 'org',
+  value: string,
+  logContextKey: 'userId' | 'partnerId' | 'orgId',
+): Promise<UserOauthRevocationResult> {
+  const refreshColumn = target === 'user'
+    ? oauthRefreshTokens.userId
+    : target === 'partner'
+      ? oauthRefreshTokens.partnerId
+      : oauthRefreshTokens.orgId;
+  const grantColumn = target === 'user'
+    ? oauthGrants.accountId
+    : target === 'partner'
+      ? oauthGrants.partnerId
+      : oauthGrants.orgId;
+
   const tokens = await db
     .select({
       id: oauthRefreshTokens.id,
@@ -40,7 +34,7 @@ export async function revokeAllUserOauthArtifacts(userId: string): Promise<UserO
       expiresAt: oauthRefreshTokens.expiresAt,
     })
     .from(oauthRefreshTokens)
-    .where(and(eq(oauthRefreshTokens.userId, userId), isNull(oauthRefreshTokens.revokedAt)));
+    .where(and(eq(refreshColumn, value), isNull(oauthRefreshTokens.revokedAt)));
 
   const now = new Date();
   const seenGrants = new Set<string>();
@@ -66,9 +60,9 @@ export async function revokeAllUserOauthArtifacts(userId: string): Promise<UserO
       } catch (err) {
         logOauthError({
           errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'user-suspension jti revocation cache write failed',
+          message: 'tenant-lifecycle jti revocation cache write failed',
           err,
-          context: { jti, userId },
+          context: { jti, [logContextKey]: value },
         });
         throw err;
       }
@@ -81,38 +75,31 @@ export async function revokeAllUserOauthArtifacts(userId: string): Promise<UserO
       } catch (err) {
         logOauthError({
           errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'user-suspension grant revocation cache write failed',
+          message: 'tenant-lifecycle grant revocation cache write failed',
           err,
-          context: { grantId, userId },
+          context: { grantId, [logContextKey]: value },
         });
         throw err;
       }
     }
   }
 
-  // 2. Also cover Grants that have no active refresh token yet (e.g. just
-  //    after /authorize before the first /token exchange, or after a grant
-  //    whose only refresh token was already rotated-and-revoked). The cache
-  //    marker is keyed by grant id, so double-writing the same marker is a
-  //    cheap no-op.
   const grants = await db
     .select({ id: oauthGrants.id })
     .from(oauthGrants)
-    .where(eq(oauthGrants.accountId, userId));
+    .where(eq(grantColumn, value));
 
-  let grantsRevoked = 0;
   for (const grant of grants) {
     if (seenGrants.has(grant.id)) continue;
     seenGrants.add(grant.id);
     try {
       await revokeGrant(grant.id, ACCESS_TOKEN_TTL_SECONDS);
-      grantsRevoked += 1;
     } catch (err) {
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-        message: 'user-suspension grant-only revocation cache write failed',
+        message: 'tenant-lifecycle grant-only revocation cache write failed',
         err,
-        context: { grantId: grant.id, userId },
+        context: { grantId: grant.id, [logContextKey]: value },
       });
       throw err;
     }
@@ -123,4 +110,40 @@ export async function revokeAllUserOauthArtifacts(userId: string): Promise<UserO
     refreshTokensRevoked,
     jtisRevoked,
   };
+}
+
+function inExplicitSystemContext<T>(fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+/**
+ * Revoke ALL OAuth artifacts belonging to a user. Used when a user is
+ * suspended/disabled so every active access JWT, refresh token, and Grant is
+ * killed immediately rather than surviving until natural expiry.
+ *
+ * Mechanics (mirrors the per-client path in `connectedApps.ts`):
+ *   1. Stamp `revokedAt` on every non-revoked refresh token row for the user.
+ *   2. For each refresh token, write the jti + grantId into the revocation
+ *      cache so bearer middleware rejects any in-flight access JWT.
+ *   3. Write a grant-level marker for every Grant row so sibling JWTs minted
+ *      without a refresh token (direct authorize flows) are also rejected.
+ *
+ * We intentionally do NOT delete the oauth_grants / oauth_refresh_tokens rows:
+ * keeping them simplifies audit trail and matches what `connectedApps.ts`
+ * does (stamp `revokedAt`, not DELETE). The oidc-provider adapter will treat
+ * revoked rows as expired.
+ *
+ * Any cache write failure bubbles up — callers must treat this as a hard
+ * failure (suspension is only half-done otherwise).
+ */
+export async function revokeAllUserOauthArtifacts(userId: string): Promise<UserOauthRevocationResult> {
+  return inExplicitSystemContext(() => revokeOauthArtifactsByColumn('user', userId, 'userId'));
+}
+
+export async function revokeAllPartnerOauthArtifacts(partnerId: string): Promise<UserOauthRevocationResult> {
+  return inExplicitSystemContext(() => revokeOauthArtifactsByColumn('partner', partnerId, 'partnerId'));
+}
+
+export async function revokeAllOrgOauthArtifacts(orgId: string): Promise<UserOauthRevocationResult> {
+  return inExplicitSystemContext(() => revokeOauthArtifactsByColumn('org', orgId, 'orgId'));
 }

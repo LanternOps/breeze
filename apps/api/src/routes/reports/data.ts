@@ -10,7 +10,8 @@ import {
   alerts,
   alertRules
 } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { ensureOrgAccess, getOrgIdsForAuth } from './helpers';
 import { dataQuerySchema } from './schemas';
 
@@ -22,6 +23,7 @@ dataRoutes.use('*', authMiddleware);
 dataRoutes.get(
   '/data/device-inventory',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -101,6 +103,7 @@ dataRoutes.get(
 dataRoutes.get(
   '/data/software-inventory',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -185,6 +188,7 @@ dataRoutes.get(
 dataRoutes.get(
   '/data/alerts-summary',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -292,6 +296,7 @@ dataRoutes.get(
 dataRoutes.get(
   '/data/compliance',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -430,6 +435,7 @@ dataRoutes.get(
 dataRoutes.get(
   '/data/metrics',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');

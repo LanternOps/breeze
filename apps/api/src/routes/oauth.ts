@@ -64,7 +64,7 @@ if (MCP_OAUTH_ENABLED) {
     let windowSeconds = 0;
     let key = '';
 
-    if (isRegistrationPath && (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH' || c.req.method === 'DELETE')) {
+    if (isRegistrationPath && (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH' || c.req.method === 'DELETE' || c.req.method === 'GET')) {
       limit = 10;
       windowSeconds = 3600;
       key = `oauth:register:${ip}`;

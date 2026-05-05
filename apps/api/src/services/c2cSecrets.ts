@@ -72,14 +72,17 @@ export async function backfillC2cConnectionSecrets(batchSize = 500): Promise<{ s
         (
           ${c2cConnections.clientSecret} IS NOT NULL
           AND ${c2cConnections.clientSecret} NOT LIKE 'enc:v1:%'
+          AND ${c2cConnections.clientSecret} NOT LIKE 'enc:v2:%'
         )
         OR (
           ${c2cConnections.refreshToken} IS NOT NULL
           AND ${c2cConnections.refreshToken} NOT LIKE 'enc:v1:%'
+          AND ${c2cConnections.refreshToken} NOT LIKE 'enc:v2:%'
         )
         OR (
           ${c2cConnections.accessToken} IS NOT NULL
           AND ${c2cConnections.accessToken} NOT LIKE 'enc:v1:%'
+          AND ${c2cConnections.accessToken} NOT LIKE 'enc:v2:%'
         )
       `)
       .limit(batchSize);

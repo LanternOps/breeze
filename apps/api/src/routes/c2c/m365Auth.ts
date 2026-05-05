@@ -3,6 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { eq, and, gt } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { c2cConnections, c2cConsentSessions } from '../../db/schema';
+import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { encryptSecret } from '../../services/secretCrypto';
@@ -16,6 +17,7 @@ import {
 } from '../../services/c2cM365';
 import { resolveScopedOrgId } from './helpers';
 import { getCookieValue } from '../auth/helpers';
+import { PERMISSIONS } from '../../services/permissions';
 
 const M365_CONSENT_COOKIE_NAME = 'breeze_c2c_m365_consent';
 const M365_CONSENT_COOKIE_PATH = '/api/v1/c2c/m365/callback';
@@ -71,18 +73,29 @@ function isValidConsentCookie(state: string, cookieHeader: string | undefined): 
   return timingSafeEqual(left, right);
 }
 
+function buildStoredScopeMetadata(requestedScopes: string | null | undefined): string {
+  const requested = requestedScopes?.trim();
+  return [
+    'token_scope=https://graph.microsoft.com/.default',
+    `requested_display_scopes=${requested && requested.length > 0 ? requested : 'none'}`,
+    'actual_grants=Entra admin-consented application permissions'
+  ].join('; ');
+}
+
 // ── Authenticated routes (behind authMiddleware) ───────────────────────────
 
 export const m365AuthRoutes = new Hono();
+const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireC2cWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 /** Check whether the platform multi-tenant app is configured. */
-m365AuthRoutes.get('/m365/config', async (c) => {
+m365AuthRoutes.get('/m365/config', requireC2cRead, async (c) => {
   const config = getPlatformConfig();
   return c.json({ platformAppAvailable: !!config });
 });
 
 /** Generate a Microsoft admin consent URL with CSRF state. */
-m365AuthRoutes.get('/m365/consent-url', async (c) => {
+m365AuthRoutes.get('/m365/consent-url', requireC2cWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -234,6 +247,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
 
     const now = new Date();
     const tokenExpiresAt = new Date(Date.now() + tokenResult.expiresIn * 1000);
+    const storedScopeMetadata = buildStoredScopeMetadata(session.scopes);
 
     const [existing] = await db
       .select()
@@ -253,7 +267,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
           displayName,
           accessToken: encryptSecret(tokenResult.accessToken),
           tokenExpiresAt,
-          scopes: session.scopes || existing.scopes || null,
+          scopes: storedScopeMetadata,
           status: 'active',
           updatedAt: now,
         })
@@ -278,7 +292,7 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
         clientSecret: null,
         accessToken: encryptSecret(tokenResult.accessToken),
         tokenExpiresAt,
-        scopes: session.scopes || null,
+        scopes: storedScopeMetadata,
         status: 'active',
         createdAt: now,
         updatedAt: now,

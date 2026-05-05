@@ -33,6 +33,8 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
+import { envFlag } from '../utils/envFlag';
+import { setRefreshTokenCookie } from './auth/helpers';
 
 export const ssoRoutes = new Hono();
 
@@ -994,10 +996,25 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
     return c.json({ error: 'Invalid or expired token exchange code' }, 400);
   }
 
+  setRefreshTokenCookie(c, grant.refreshToken);
+
+  // Default to including refreshToken in the JSON response for one release after
+  // the cookie-based default flipped, so existing callers reading `response.refreshToken`
+  // continue to work. Operators can set SSO_EXCHANGE_RETURN_REFRESH_TOKEN=false to opt
+  // into the cookie-only behavior immediately. Next release flips the default to false.
+  const returnRefreshToken = envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', true);
+  if (returnRefreshToken) {
+    c.header('Deprecation', 'true');
+    c.header('Sunset', 'Fri, 01 Aug 2026 00:00:00 GMT');
+    c.header(
+      'Link',
+      '<https://breezermm.com/docs/api-changes/sso-refresh-cookie>; rel="deprecation"',
+    );
+  }
   return c.json({
     accessToken: grant.accessToken,
-    refreshToken: grant.refreshToken,
-    expiresInSeconds: grant.expiresInSeconds
+    expiresInSeconds: grant.expiresInSeconds,
+    ...(returnRefreshToken ? { refreshToken: grant.refreshToken } : {}),
   });
 });
 

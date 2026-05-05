@@ -21,10 +21,21 @@ import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
+import { compactToolResultForChat } from './aiToolOutput';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
-const MCP_PREFIX = 'mcp__breeze__';
+
+function stripMcpPrefix(toolName: string): string {
+  if (!toolName.startsWith('mcp__')) return toolName;
+  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
+  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
+}
+
+function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
+  const bareToolName = stripMcpPrefix(toolName);
+  return allowedTools.some((allowedTool) => stripMcpPrefix(allowedTool) === bareToolName);
+}
 
 // ============================================
 // Pre-flight checks
@@ -181,6 +192,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
+    if (session.allowedTools && !isAllowedForSession(toolName, session.allowedTools)) {
+      return { allowed: false, error: `Tool '${toolName}' is not allowed for this session` };
+    }
+
     // Guardrails (tier check + action-based escalation)
     const guardrailCheck = checkGuardrails(toolName, input);
 
@@ -220,8 +235,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // Determine effective approval mode (pause overrides to per_step)
       const effectiveMode: AiApprovalMode = session.isPaused ? 'per_step' : session.approvalMode;
 
-      // Auto-approve mode: skip approval dialog, just create audit record
-      if (effectiveMode === 'auto_approve') {
+      // Auto-approve mode only skips approval for Tier 2 tools. Tier 3+
+      // tools still require an explicit per-step approval.
+      if (effectiveMode === 'auto_approve' && guardrailCheck.tier === 2) {
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -407,7 +423,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     if (!toolUseId) {
       console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
     }
-    const parsedOutput = safeParseJson(output);
+    const safeOutput = compactToolResultForChat(toolName, output);
+    const parsedOutput = safeParseJson(safeOutput);
     const sessionId = session.breezeSessionId;
     const orgId = session.auth.orgId ?? undefined;
     const guardrailCheck = checkGuardrails(toolName, input);
@@ -481,7 +498,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               toolInput: input,
               toolOutput: parsedOutput,
               status: isError ? 'failed' : 'completed',
-              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
               durationMs,
               completedAt: new Date(),
             })
@@ -499,7 +516,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               .set({
                 status: isError ? 'failed' : 'completed',
                 toolOutput: parsedOutput,
-                errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+                errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
                 durationMs,
                 completedAt: new Date(),
               })
@@ -520,7 +537,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       try {
         const errorMsg = (typeof parsedOutput.error === 'string'
           ? parsedOutput.error
-          : output).slice(0, 500);
+          : safeOutput).slice(0, 500);
         await withDbAccessContext(
           { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
           () =>
@@ -576,7 +593,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         actorId: session.auth.user.id,
         actorEmail: session.auth.user.email,
         initiatedBy: 'ai',
-        ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 500) } : {}),
+        ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 500) } : {}),
         details: {
           sessionId,
           toolInput: input,

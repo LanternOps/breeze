@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, serviceProcessCheckResults } from '../db/schema';
+import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isRedisAvailable } from '../services/redis';
 import { PERMISSIONS } from '../services/permissions';
+import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
 
 type AuthContext = {
   scope: string;
@@ -72,6 +73,36 @@ export const monitoringRoutes = new Hono();
 monitoringRoutes.use('*', authMiddleware);
 const requireMonitoringRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireMonitoringWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+
+function serializeSnmpDevice(device: typeof snmpDevices.$inferSelect) {
+  return {
+    id: device.id,
+    snmpVersion: device.snmpVersion,
+    port: device.port,
+    community: maskSnmpSecret(device.community),
+    username: device.username ?? null,
+    authPassword: maskSnmpSecret(device.authPassword),
+    privPassword: maskSnmpSecret(device.privPassword),
+    templateId: device.templateId,
+    pollingInterval: device.pollingInterval,
+    isActive: device.isActive,
+    lastPolled: device.lastPolled?.toISOString?.() ?? (device.lastPolled ? new Date(device.lastPolled as any).toISOString() : null),
+    lastStatus: device.lastStatus
+  };
+}
+
+async function validateSnmpTemplateAccess(templateId: string, orgId: string): Promise<boolean> {
+  const [template] = await db
+    .select({ id: snmpTemplates.id })
+    .from(snmpTemplates)
+    .where(and(
+      eq(snmpTemplates.id, templateId),
+      or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, orgId))!
+    ))
+    .limit(1);
+
+  return Boolean(template);
+}
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -304,17 +335,7 @@ monitoringRoutes.get(
 
     return c.json({
       enabled: snmpDevice.isActive || Number(networkMonitorActive?.count ?? 0) > 0,
-      snmpDevice: {
-        id: snmpDevice.id,
-        snmpVersion: snmpDevice.snmpVersion,
-        templateId: snmpDevice.templateId,
-        pollingInterval: snmpDevice.pollingInterval,
-        port: snmpDevice.port,
-        isActive: snmpDevice.isActive,
-        lastPolled: snmpDevice.lastPolled?.toISOString?.() ?? (snmpDevice.lastPolled ? new Date(snmpDevice.lastPolled as any).toISOString() : null),
-        lastStatus: snmpDevice.lastStatus,
-        username: snmpDevice.username ?? null
-      },
+      snmpDevice: serializeSnmpDevice(snmpDevice),
       networkMonitors: {
         totalCount: Number(networkMonitorTotal?.count ?? 0),
         activeCount: Number(networkMonitorActive?.count ?? 0)
@@ -370,7 +391,11 @@ monitoringRoutes.put(
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
-    const existingRows = await db.select({ id: snmpDevices.id, isActive: snmpDevices.isActive, createdAt: snmpDevices.createdAt })
+    if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
+      return c.json({ error: 'SNMP template not found' }, 404);
+    }
+
+    const existingRows = await db.select()
       .from(snmpDevices)
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
       .orderBy(desc(snmpDevices.createdAt))
@@ -393,17 +418,26 @@ monitoringRoutes.put(
     };
     // Only overwrite credential fields when explicitly provided to avoid
     // wiping stored secrets on partial updates.
-    if (body.community !== undefined) setValues.community = body.community ?? null;
+    if (body.community !== undefined) {
+      if (isMaskedSnmpSecret(body.community) && !existing?.community) return c.json({ error: 'Masked community cannot be used without an existing secret' }, 400);
+      setValues.community = isMaskedSnmpSecret(body.community) ? existing?.community ?? null : encryptSnmpSecret(body.community);
+    }
     else if (!existing) setValues.community = null;
     if (body.username !== undefined) setValues.username = body.username ?? null;
     else if (!existing) setValues.username = null;
     if (body.authProtocol !== undefined) setValues.authProtocol = body.authProtocol ?? null;
     else if (!existing) setValues.authProtocol = null;
-    if (body.authPassword !== undefined) setValues.authPassword = body.authPassword ?? null;
+    if (body.authPassword !== undefined) {
+      if (isMaskedSnmpSecret(body.authPassword) && !existing?.authPassword) return c.json({ error: 'Masked auth password cannot be used without an existing secret' }, 400);
+      setValues.authPassword = isMaskedSnmpSecret(body.authPassword) ? existing?.authPassword ?? null : encryptSnmpSecret(body.authPassword);
+    }
     else if (!existing) setValues.authPassword = null;
     if (body.privProtocol !== undefined) setValues.privProtocol = body.privProtocol ?? null;
     else if (!existing) setValues.privProtocol = null;
-    if (body.privPassword !== undefined) setValues.privPassword = body.privPassword ?? null;
+    if (body.privPassword !== undefined) {
+      if (isMaskedSnmpSecret(body.privPassword) && !existing?.privPassword) return c.json({ error: 'Masked privacy password cannot be used without an existing secret' }, 400);
+      setValues.privPassword = isMaskedSnmpSecret(body.privPassword) ? existing?.privPassword ?? null : encryptSnmpSecret(body.privPassword);
+    }
     else if (!existing) setValues.privPassword = null;
 
     const upserted = await (async () => {
@@ -449,18 +483,7 @@ monitoringRoutes.put(
 
     return c.json({
       success: true,
-      snmpDevice: {
-        id: upserted.id,
-        snmpVersion: upserted.snmpVersion,
-        port: upserted.port,
-        community: upserted.community ? '***' : null,
-        username: upserted.username ?? null,
-        templateId: upserted.templateId,
-        pollingInterval: upserted.pollingInterval,
-        isActive: upserted.isActive,
-        lastPolled: upserted.lastPolled?.toISOString?.() ?? (upserted.lastPolled ? new Date(upserted.lastPolled as any).toISOString() : null),
-        lastStatus: upserted.lastStatus
-      }
+      snmpDevice: serializeSnmpDevice(upserted)
     });
   }
 );
@@ -501,6 +524,10 @@ monitoringRoutes.patch(
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
+    if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
+      return c.json({ error: 'SNMP template not found' }, 404);
+    }
+
     const [existing] = await db.select()
       .from(snmpDevices)
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
@@ -511,6 +538,18 @@ monitoringRoutes.patch(
     const setValues: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(body)) {
       if (v !== undefined) setValues[k] = v;
+    }
+    if (typeof body.community === 'string') {
+      if (isMaskedSnmpSecret(body.community)) delete setValues.community;
+      else setValues.community = encryptSnmpSecret(body.community);
+    }
+    if (typeof body.authPassword === 'string') {
+      if (isMaskedSnmpSecret(body.authPassword)) delete setValues.authPassword;
+      else setValues.authPassword = encryptSnmpSecret(body.authPassword);
+    }
+    if (typeof body.privPassword === 'string') {
+      if (isMaskedSnmpSecret(body.privPassword)) delete setValues.privPassword;
+      else setValues.privPassword = encryptSnmpSecret(body.privPassword);
     }
     if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
@@ -530,18 +569,7 @@ monitoringRoutes.patch(
 
     return c.json({
       success: true,
-      snmpDevice: {
-        id: updated.id,
-        snmpVersion: updated.snmpVersion,
-        port: updated.port,
-        community: updated.community ? '***' : null,
-        username: updated.username ?? null,
-        templateId: updated.templateId,
-        pollingInterval: updated.pollingInterval,
-        isActive: updated.isActive,
-        lastPolled: updated.lastPolled?.toISOString?.() ?? (updated.lastPolled ? new Date(updated.lastPolled as any).toISOString() : null),
-        lastStatus: updated.lastStatus
-      }
+      snmpDevice: serializeSnmpDevice(updated)
     });
   }
 );

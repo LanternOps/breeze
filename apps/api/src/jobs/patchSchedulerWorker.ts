@@ -162,14 +162,15 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
 
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
-  assignmentTargetId: string
+  assignmentTargetId: string,
+  policyOrgId: string
 ): Promise<string[]> {
   switch (assignmentLevel) {
     case 'device': {
       const [device] = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.id, assignmentTargetId))
+        .where(and(eq(devices.id, assignmentTargetId), eq(devices.orgId, policyOrgId)))
         .limit(1);
       return device ? [device.id] : [];
     }
@@ -178,7 +179,12 @@ async function resolveDeviceIdsForAssignment(
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
-        .where(eq(deviceGroupMemberships.groupId, assignmentTargetId));
+        .where(
+          and(
+            eq(deviceGroupMemberships.groupId, assignmentTargetId),
+            eq(deviceGroupMemberships.orgId, policyOrgId)
+          )
+        );
       return members.map((m) => m.deviceId);
     }
 
@@ -186,7 +192,7 @@ async function resolveDeviceIdsForAssignment(
       const siteDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.siteId, assignmentTargetId));
+        .where(and(eq(devices.siteId, assignmentTargetId), eq(devices.orgId, policyOrgId)));
       return siteDevices.map((d) => d.id);
     }
 
@@ -194,21 +200,21 @@ async function resolveDeviceIdsForAssignment(
       const orgDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.orgId, assignmentTargetId));
+        .where(and(eq(devices.orgId, assignmentTargetId), eq(devices.orgId, policyOrgId)));
       return orgDevices.map((d) => d.id);
     }
 
     case 'partner': {
-      const partnerOrgs = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, assignmentTargetId));
-      const orgIds = partnerOrgs.map((o) => o.id);
-      if (orgIds.length === 0) return [];
       const partnerDevices = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(inArray(devices.orgId, orgIds));
+        .innerJoin(organizations, eq(devices.orgId, organizations.id))
+        .where(
+          and(
+            eq(organizations.partnerId, assignmentTargetId),
+            eq(devices.orgId, policyOrgId)
+          )
+        );
       return partnerDevices.map((d) => d.id);
     }
 
@@ -277,6 +283,7 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
     .select({
       configPolicyId: configurationPolicies.id,
       policyName: configurationPolicies.name,
+      policyOrgId: configurationPolicies.orgId,
       featureLinkId: configPolicyFeatureLinks.id,
     })
     .from(configPolicyFeatureLinks)
@@ -313,7 +320,7 @@ async function scanAndCreateJobs(): Promise<{ created: number; scanned: number }
 
       const allDeviceIds = new Set<string>();
       for (const assignment of assignments) {
-        const ids = await resolveDeviceIdsForAssignment(assignment.level, assignment.targetId);
+        const ids = await resolveDeviceIdsForAssignment(assignment.level, assignment.targetId, row.policyOrgId);
         for (const id of ids) allDeviceIds.add(id);
       }
 

@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const authGates = vi.hoisted(() => ({
+  permissionDenied: false,
+  mfaDenied: false,
+}));
+
 const authState: { value: any } = {
   value: {
     user: { id: 'user-1', email: 'u@example.com', name: 'U' },
@@ -13,6 +18,28 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', authState.value);
     await next();
   },
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (authGates.permissionDenied) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    await next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (authGates.mfaDenied) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    await next();
+  }),
+}));
+
+vi.mock('../services/permissions', () => ({
+  PERMISSIONS: {
+    BILLING_MANAGE: { resource: 'billing', action: 'manage' },
+  },
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -41,6 +68,7 @@ vi.mock('../services/redis', () => ({
 }));
 
 import { externalServicesRoutes } from './externalServices';
+import { writeRouteAudit } from '../services/auditEvents';
 
 const fetchMock = vi.fn();
 const originalFetch = global.fetch;
@@ -52,13 +80,23 @@ const defaultAllowed = () => ({
 });
 
 describe('externalServicesRoutes', () => {
-  const originalEnv = process.env.BREEZE_BILLING_URL;
+  const originalEnv = {
+    BREEZE_BILLING_URL: process.env.BREEZE_BILLING_URL,
+    DASHBOARD_URL: process.env.DASHBOARD_URL,
+    PUBLIC_APP_URL: process.env.PUBLIC_APP_URL,
+    CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
+  };
 
   beforeEach(() => {
     fetchMock.mockReset();
     rateLimiterMock.mockReset();
     rateLimiterMock.mockImplementation(async () => defaultAllowed());
     global.fetch = fetchMock as any;
+    process.env.DASHBOARD_URL = 'https://app.example.com';
+    delete process.env.PUBLIC_APP_URL;
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    authGates.permissionDenied = false;
+    authGates.mfaDenied = false;
     authState.value = {
       user: { id: 'user-1', email: 'u@example.com', name: 'U' },
       partnerId: 'partner-1',
@@ -67,10 +105,12 @@ describe('externalServicesRoutes', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    if (originalEnv === undefined) {
-      delete process.env.BREEZE_BILLING_URL;
-    } else {
-      process.env.BREEZE_BILLING_URL = originalEnv;
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   });
 
@@ -88,7 +128,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'not_configured' });
@@ -102,7 +142,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ url: 'https://stripe/x' });
@@ -111,7 +151,20 @@ describe('externalServicesRoutes', () => {
         expect.objectContaining({ method: 'POST' })
       );
       const body = parseFetchJsonBody();
-      expect(body).toEqual({ partner_id: 'partner-1', return_url: 'https://example.com/back' });
+      expect(body).toEqual({ partner_id: 'partner-1', return_url: 'https://app.example.com/back' });
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'billing.portal_session.create',
+          resourceType: 'partner',
+          resourceId: 'partner-1',
+          result: 'success',
+          details: {
+            upstreamStatus: 200,
+            returnUrlOrigin: 'https://app.example.com',
+          },
+        }),
+      );
       // Rate limit key is scoped to user id
       expect(rateLimiterMock).toHaveBeenCalledWith(
         expect.anything(),
@@ -119,6 +172,30 @@ describe('externalServicesRoutes', () => {
         10,
         3600
       );
+    });
+
+    it('403 when caller lacks billing admin permission', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      authGates.permissionDenied = true;
+      const res = await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
+      });
+      expect(res.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('403 when caller has not satisfied MFA', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      authGates.mfaDenied = true;
+      const res = await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
+      });
+      expect(res.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('400 on invalid body', async () => {
@@ -131,6 +208,36 @@ describe('externalServicesRoutes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('400 when return URL origin is not allowed', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      const res = await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://evil.example/back' }),
+      });
+      expect(res.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('allows return URL origins configured via CORS_ALLOWED_ORIGINS', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      process.env.CORS_ALLOWED_ORIGINS = 'https://tenant.example, https://other.example';
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://stripe/x' }), { status: 200 })
+      );
+      const res = await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://tenant.example/billing/return' }),
+      });
+      expect(res.status).toBe(200);
+      const body = parseFetchJsonBody();
+      expect(body).toEqual({
+        partner_id: 'partner-1',
+        return_url: 'https://tenant.example/billing/return',
+      });
+    });
+
     it('passes through 404 from upstream', async () => {
       process.env.BREEZE_BILLING_URL = 'http://billing';
       fetchMock.mockResolvedValueOnce(
@@ -139,7 +246,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: 'no_billing_record' });
@@ -151,7 +258,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(502);
       expect(await res.json()).toEqual({ error: 'upstream_unavailable' });
@@ -165,7 +272,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(502);
       expect(await res.json()).toEqual({ error: 'upstream_invalid_response' });
@@ -180,7 +287,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(403);
     });
@@ -195,7 +302,7 @@ describe('externalServicesRoutes', () => {
       const res = await app().request('/billing/portal', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://example.com/back' }),
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
       });
       expect(res.status).toBe(429);
       const body = (await res.json()) as { error: string; retryAfter: number };

@@ -261,3 +261,39 @@ describe('checkToolPermission — reliability and posture read tools', () => {
     expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
   });
 });
+
+describe('checkToolPermission — backup restore tools', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'operator', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  it('requires backup.read in addition to devices.execute for snapshot restores', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => {
+      return resource === 'devices' && action === 'execute';
+    });
+
+    const result = await checkToolPermission('restore_snapshot', {}, auth);
+
+    expect(result).toContain('requires backup.read');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'backup', 'read');
+  });
+
+  it('allows restore tools when devices.execute and backup.read are present', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => {
+      return (
+        (resource === 'devices' && action === 'execute') ||
+        (resource === 'backup' && action === 'read')
+      );
+    });
+
+    const result = await checkToolPermission('restore_mssql_database', {}, auth);
+
+    expect(result).toBeNull();
+  });
+});
