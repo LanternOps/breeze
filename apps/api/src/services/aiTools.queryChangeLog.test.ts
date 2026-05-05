@@ -15,7 +15,7 @@ import type { AuthContext } from '../middleware/auth';
 
 function makeAuth(): AuthContext {
   return {
-    user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+    user: { id: 'user-1', email: 'test@example.com', name: 'Test User', isPlatformAdmin: false },
     token: {} as any,
     partnerId: null,
     orgId: 'org-123',

@@ -90,7 +90,7 @@ export function invalidateRemoteAccessCache(deviceId?: string): void {
 // ---------------------------------------------------------------------------
 
 const systemAuth: AuthContext = {
-  user: { id: 'system', email: 'system', name: 'System' },
+  user: { id: 'system', email: 'system', name: 'System', isPlatformAdmin: false },
   token: {} as any,
   partnerId: null,
   orgId: null,

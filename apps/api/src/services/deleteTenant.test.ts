@@ -45,7 +45,7 @@ const ORG_ID = '44444444-4444-4444-4444-444444444444';
 
 function makeAuth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
-    user: { id: USER_ID, email: 'apikey@breeze.local', name: 'API Key: test' },
+    user: { id: USER_ID, email: 'apikey@breeze.local', name: 'API Key: test', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: PARTNER_ID,
     orgId: ORG_ID,

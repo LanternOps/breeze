@@ -18,6 +18,8 @@ import { createPartner } from '../../services/partnerCreate';
 import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
+import { generateVerificationToken } from '../../services/emailVerification';
+import { getEmailService } from '../../services/email';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   runWithSystemDbAccess,
@@ -243,6 +245,50 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       setRefreshTokenCookie(c, tokens.refreshToken);
 
+      // Email verification — best-effort send. Failures must not fail the
+      // signup, but the result needs to be surfaced to the client so the
+      // UI can show a "we couldn't send the verification email — click to
+      // resend" banner instead of leaving the user waiting silently.
+      let verificationEmailSent = false;
+      try {
+        const rawToken = await generateVerificationToken({
+          partnerId: newPartner.id,
+          userId: newUser.id,
+          email: newUser.email,
+        });
+        const appBaseUrl = (
+          process.env.DASHBOARD_URL ||
+          process.env.PUBLIC_APP_URL ||
+          'http://localhost:4321'
+        ).replace(/\/$/, '');
+        const verificationUrl = `${appBaseUrl}/auth/verify-email?token=${encodeURIComponent(rawToken)}`;
+        const emailService = getEmailService();
+        if (emailService) {
+          await emailService.sendVerificationEmail({
+            to: newUser.email,
+            name: newUser.name,
+            verificationUrl,
+          });
+          verificationEmailSent = true;
+        } else {
+          // No email provider in production is a misconfiguration, not
+          // graceful degradation — capture so it's observable.
+          const err = new Error(
+            '[register-partner] Email service not configured; verification email skipped',
+          );
+          console.warn(err.message);
+          captureException(err, c);
+        }
+      } catch (verifyErr) {
+        console.error('[register-partner] verification email send failed', {
+          partnerId: newPartner.id,
+          userId: newUser.id,
+          error: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+        });
+        captureException(verifyErr, c);
+      }
+
+
       phase = 'hook-dispatch';
 
       // Dispatch post-registration hook (external services can override status/redirect)
@@ -329,6 +375,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
+        verificationEmailSent,
         ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {

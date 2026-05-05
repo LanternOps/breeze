@@ -1270,7 +1270,8 @@ async function buildAuthFromApiKey(apiKey: {
   const user = {
     id: apiKey.createdBy,
     email: `apikey-${apiKey.name}@breeze.local`,
-    name: `API Key: ${apiKey.name}`
+    name: `API Key: ${apiKey.name}`,
+    isPlatformAdmin: false
   };
 
   if (apiKey.orgId) {

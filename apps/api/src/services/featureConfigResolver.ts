@@ -59,6 +59,7 @@ export function createSystemAuthContext(): AuthContext {
       id: '00000000-0000-0000-0000-000000000000',
       email: 'system@breeze.internal',
       name: 'System',
+      isPlatformAdmin: false,
     },
     token,
     partnerId: null,

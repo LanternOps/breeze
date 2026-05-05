@@ -106,6 +106,8 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { drRoutes } from './routes/dr';
+import { adminRoutes } from './routes/admin';
+import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -768,6 +770,7 @@ api.route('/browser-security', browserSecurityRoutes);
 api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
 api.route('/c2c', c2cRoutes);
 api.route('/dr', drRoutes);
+api.route('/admin', adminRoutes);
 
 app.route('/api/v1', api);
 
@@ -1205,6 +1208,12 @@ async function bootstrap(): Promise<void> {
   // `db`) would fail first.
   if (process.env.AUTO_MIGRATE !== 'false') {
     await autoMigrate();
+  }
+
+  try {
+    await bootstrapPlatformAdmins();
+  } catch (err) {
+    console.error('[startup] Platform admin bootstrap failed (non-fatal):', err);
   }
 
   await runStartupChecks();
