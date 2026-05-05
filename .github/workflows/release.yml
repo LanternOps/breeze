@@ -335,7 +335,7 @@ jobs:
 
       - name: Sign Windows EXE (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -347,7 +347,7 @@ jobs:
 
       - name: Sign Windows EXE (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -359,7 +359,7 @@ jobs:
 
       - name: Sign backup EXE (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -371,7 +371,7 @@ jobs:
 
       - name: Sign backup EXE (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -383,7 +383,7 @@ jobs:
 
       - name: Sign watchdog executable (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -395,7 +395,7 @@ jobs:
 
       - name: Sign watchdog executable (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -430,7 +430,7 @@ jobs:
       # Only sign the regular MSI — template MSI is re-signed server-side by jsign after patching
       - name: Sign MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -442,7 +442,7 @@ jobs:
 
       - name: Sign MSI (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
