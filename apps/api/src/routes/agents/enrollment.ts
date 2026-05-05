@@ -349,7 +349,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // the plaintext token.
     // lgtm[js/insufficient-password-hash]
     const tokenHash = createHash('sha256').update(apiKey).digest('hex');
+    // lgtm[js/insufficient-password-hash]
     const watchdogTokenHash = createHash('sha256').update(watchdogApiKey).digest('hex');
+    // lgtm[js/insufficient-password-hash]
     const helperTokenHash = createHash('sha256').update(helperApiKey).digest('hex');
 
     const [existingDevice] = await db

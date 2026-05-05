@@ -48,7 +48,9 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   // the plaintext token.
   // lgtm[js/insufficient-password-hash]
   const agentTokenHash = createHash('sha256').update(authToken).digest('hex');
+  // lgtm[js/insufficient-password-hash]
   const watchdogTokenHash = createHash('sha256').update(watchdogAuthToken).digest('hex');
+  // lgtm[js/insufficient-password-hash]
   const helperTokenHash = createHash('sha256').update(helperAuthToken).digest('hex');
 
   try {
