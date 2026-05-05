@@ -1,5 +1,5 @@
 # Development Dockerfile for API with hot-reloading
-FROM node:22-alpine
+FROM node:25-alpine
 
 # Install pnpm
 RUN npm install -g pnpm
