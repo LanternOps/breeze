@@ -77,12 +77,41 @@ export const DISPOSABLE: ReadonlySet<string> = new Set(
   (disposableDomainsList as string[]).map((d) => d.toLowerCase())
 );
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Character validity check without regex backtracking. `[^\s@]+@[^\s@]+\.[^\s@]+`
+// can degrade to polynomial time on adversarial inputs (e.g. long strings with
+// no dot), so we validate structurally with string ops instead.
+function isEmailChar(code: number): boolean {
+  // Reject whitespace (space, tab, LF, CR, FF, VT) and '@'.
+  return (
+    code !== 0x20 && // space
+    code !== 0x09 && // tab
+    code !== 0x0a && // LF
+    code !== 0x0d && // CR
+    code !== 0x0c && // FF
+    code !== 0x0b && // VT
+    code !== 0x40 // '@'
+  );
+}
 
 function extractDomain(email: string): string | null {
-  if (!EMAIL_RE.test(email)) return null;
-  const at = email.lastIndexOf('@');
-  if (at < 1 || at === email.length - 1) return null;
+  const at = email.indexOf('@');
+  // Must contain exactly one '@' with non-empty local and domain parts.
+  if (at < 1 || at !== email.lastIndexOf('@') || at === email.length - 1) {
+    return null;
+  }
+  // Local part: every char must satisfy [^\s@].
+  for (let i = 0; i < at; i++) {
+    if (!isEmailChar(email.charCodeAt(i))) return null;
+  }
+  // Domain part: every char must satisfy [^\s@] and must contain a '.'
+  // with non-empty labels on either side.
+  let dot = -1;
+  for (let i = at + 1; i < email.length; i++) {
+    const code = email.charCodeAt(i);
+    if (!isEmailChar(code)) return null;
+    if (code === 0x2e /* '.' */ && dot === -1) dot = i;
+  }
+  if (dot === -1 || dot === at + 1 || dot === email.length - 1) return null;
   const domain = email.slice(at + 1).toLowerCase().trim();
   if (!domain) return null;
   return domain;
