@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-notifications';
+import Constants from 'expo-constants';
 
 import { registerPushToken as apiRegisterPushToken } from './api';
 
@@ -44,9 +45,9 @@ export async function registerForPushNotifications(): Promise<string | null> {
 
   try {
     // Get the Expo push token
-    const tokenData = await Notifications.getExpoPushTokenAsync({
-      projectId: 'your-project-id', // Replace with your Expo project ID
-    });
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+    if (!projectId) throw new Error('EAS projectId missing — run `eas init`');
+    const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
     token = tokenData.data;
 
     // Register the token with our backend
@@ -65,6 +66,14 @@ export async function registerForPushNotifications(): Promise<string | null> {
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#FF231F7C',
+      sound: 'default',
+    });
+
+    await Notifications.setNotificationChannelAsync('approvals', {
+      name: 'Approvals',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 200, 100, 200],
+      lightColor: '#1c8a9e',
       sound: 'default',
     });
 
@@ -187,5 +196,18 @@ export function parseAlertNotification(
     };
   }
 
+  return null;
+}
+
+/**
+ * Parse notification data for approval takeover
+ */
+export function parseApprovalNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): { approvalId: string } | null {
+  const data = notification.request.content.data;
+  if (data && data.type === 'approval' && typeof data.approvalId === 'string') {
+    return { approvalId: data.approvalId };
+  }
   return null;
 }

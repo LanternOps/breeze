@@ -8,6 +8,7 @@ import { setCredentials, logout } from '../store/authSlice';
 import { getStoredToken, getStoredUser } from '../services/auth';
 import { AuthNavigator } from './AuthNavigator';
 import { MainNavigator } from './MainNavigator';
+import { ApprovalGate } from './ApprovalGate';
 
 export function RootNavigator() {
   const theme = useTheme();
@@ -61,7 +62,13 @@ export function RootNavigator() {
 
   return (
     <NavigationContainer theme={navigationTheme}>
-      {token ? <MainNavigator /> : <AuthNavigator />}
+      {token ? (
+        <ApprovalGate>
+          <MainNavigator />
+        </ApprovalGate>
+      ) : (
+        <AuthNavigator />
+      )}
     </NavigationContainer>
   );
 }
