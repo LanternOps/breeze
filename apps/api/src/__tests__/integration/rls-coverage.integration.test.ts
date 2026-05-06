@@ -104,6 +104,9 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // access by (payload->session->accountId)::uuid = breeze_current_user_id().
   // System-scope bypass covers the adapter writes (runOutsideDbContext).
   'oauth_interactions',
+  // approval_requests: MCP step-up approval records, scoped to the requesting
+  // user via breeze_current_user_id(). Shape 6 policy.
+  'approval_requests',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
