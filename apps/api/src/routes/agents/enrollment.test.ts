@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------- mocks ----------
@@ -346,5 +346,183 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(resp.status).toBe(409);
     const body = await resp.json();
     expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
+  });
+});
+
+describe('POST /agents/enroll — ENROLLMENT_SECRET_ENFORCEMENT_MODE', () => {
+  const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.ENROLLMENT_SECRET_ENFORCEMENT_MODE;
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+    delete process.env.ENROLLMENT_SECRET_ENFORCEMENT_MODE;
+  });
+
+  it('blocks production enrollment with no secret when mode is unset (default enforce)', async () => {
+    mockKeyLookup({
+      id: 'key-mode-1',
+      orgId: 'org-mode-1',
+      siteId: 'site-mode-1',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = await resp.json();
+    expect(body.error).toMatch(/secret/i);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: { reason: 'no_enrollment_secret_configured' },
+        result: 'denied',
+      })
+    );
+  });
+
+  it('blocks production enrollment with no secret when mode is explicitly enforce', async () => {
+    process.env.ENROLLMENT_SECRET_ENFORCEMENT_MODE = 'enforce';
+    mockKeyLookup({
+      id: 'key-mode-2',
+      orgId: 'org-mode-2',
+      siteId: 'site-mode-2',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+  });
+
+  it('lets production enrollment past the secret check when mode=warn, recording an audit event with enforcementMode=warn', async () => {
+    process.env.ENROLLMENT_SECRET_ENFORCEMENT_MODE = 'warn';
+    mockKeyLookup({
+      id: 'key-mode-3',
+      orgId: 'org-mode-3',
+      siteId: 'site-mode-3',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    // Force the downstream UPDATE to claim 0 rows so we exit at the race-lost
+    // branch. We don't care about the final response here — only that the
+    // warn-mode audit event was recorded BEFORE we got there.
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    } as any);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    // Did not get a 403 from the secret check — proves warn mode let us through.
+    expect(resp.status).not.toBe(403);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: { reason: 'no_enrollment_secret_configured', enforcementMode: 'warn' },
+        result: 'success',
+      })
+    );
+  });
+
+  it('mode is case-insensitive — WARN behaves the same as warn', async () => {
+    process.env.ENROLLMENT_SECRET_ENFORCEMENT_MODE = 'WARN';
+    mockKeyLookup({
+      id: 'key-mode-4',
+      orgId: 'org-mode-4',
+      siteId: 'site-mode-4',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    } as any);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).not.toBe(403);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: { reason: 'no_enrollment_secret_configured', enforcementMode: 'warn' },
+        result: 'success',
+      })
+    );
+  });
+
+  it('skips the production secret gate entirely outside production', async () => {
+    process.env.NODE_ENV = 'test';
+    mockKeyLookup({
+      id: 'key-mode-5',
+      orgId: 'org-mode-5',
+      siteId: 'site-mode-5',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    } as any);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).not.toBe(403);
+    // Critically: no warn-mode audit event because the production gate did not run.
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ reason: 'no_enrollment_secret_configured' }),
+      })
+    );
   });
 });
