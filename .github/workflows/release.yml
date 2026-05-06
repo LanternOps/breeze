@@ -766,10 +766,26 @@ jobs:
             exit 1
           fi
 
+          # Raw Mach-O binaries: verify signature + hardened runtime + Developer ID.
+          # Do NOT run `spctl -a -t exec` against raw command-line binaries — Gatekeeper's
+          # exec assessment is bundle-aware and rejects raw Mach-O with "the code is valid
+          # but does not seem to be an app", even when signing/notarization are correct.
+          # The user-facing assessment happens at the .pkg layer below (binaries are
+          # delivered to end users only inside notarized .pkgs).
           for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
             codesign --verify --strict --verbose=2 "$bin"
-            spctl -a -vv -t exec "$bin"
+            DETAILS=$(codesign -dvvv "$bin" 2>&1)
+            if ! grep -q 'flags=.*runtime' <<<"$DETAILS"; then
+              echo "::error::$bin missing hardened runtime flag"
+              echo "$DETAILS"
+              exit 1
+            fi
+            if ! grep -q 'Authority=Developer ID Application' <<<"$DETAILS"; then
+              echo "::error::$bin not signed by Developer ID Application"
+              echo "$DETAILS"
+              exit 1
+            fi
           done
 
           for pkg in staging/*.pkg; do
