@@ -618,6 +618,25 @@ jobs:
           NODE_ENV: test
         run: pnpm --filter=@breeze/api test:integration
 
+      # The rls-coverage contract test inspects pg_catalog to verify every
+      # tenant-scoped table has policies covering SELECT/INSERT/UPDATE/DELETE
+      # via the right access helper. Runs against the same test DB AFTER
+      # the integration suite (which has already triggered autoMigrate).
+      # Has its own runner because vitest.integration.config.ts excludes it:
+      # the read-only catalog inspection must not be hooked to setup.ts,
+      # which TRUNCATEs core tables on beforeEach.
+      - name: Run RLS coverage contract test
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          NODE_ENV: test
+        run: pnpm --filter=@breeze/api test:rls-coverage
+
       - name: Show container logs on failure
         if: failure()
         run: |
