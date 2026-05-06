@@ -198,3 +198,25 @@ docker compose up --build -d
 - Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
 - Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
 - This is the normal workflow — do not wait for branch protection rules to be satisfied
+
+### Production Deploy (EU + US droplets)
+
+Droplets pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VERSION` in `/opt/breeze/.env`. The flow is:
+
+```bash
+ssh root@<droplet> "cd /opt/breeze && \
+  cp .env .env.bak-pre-<new-version> && \
+  sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
+  docker compose pull api web && \
+  docker compose up -d binaries-init api web"
+```
+
+Then `curl -sf https://<region>.2breeze.app/health` to verify (200 = healthy).
+
+**Required env vars added by v0.65+ — droplets without these refuse to start:**
+
+- `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` — base64 SPKI of the Ed25519 release manifest signing key. Source: `internal/release-keys/release-manifest.ed25519.pub` (the base64 between `-----BEGIN PUBLIC KEY-----` and `-----END PUBLIC KEY-----`, single line). The API config validator refuses to boot in production without it when `BINARY_SOURCE=github`.
+
+When introducing a new required env var: add it to `/opt/breeze/.env` AND map it explicitly in the `api`/`web` service `environment:` block of `/opt/breeze/docker-compose.yml`. Compose interpolation only happens for vars listed there — having a value in `.env` is necessary but not sufficient.
+
+**Known drift:** the deployed `/opt/breeze/docker-compose.yml` uses Watchtower + mutable tags, while `deploy/docker-compose.prod.yml` in the repo uses digest-pinning + no Watchtower. The `check-supply-chain-hardening.sh` rule scans repo files only, so the droplet drift isn't enforced. Reconciling this is tracked separately.
