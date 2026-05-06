@@ -216,6 +216,9 @@ jobs:
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
 
+      - name: Run relay/edge hardening guard
+        run: bash scripts/security/check-relay-edge-hardening.sh
+
   build-api:
     name: Build API
     runs-on: ubuntu-latest

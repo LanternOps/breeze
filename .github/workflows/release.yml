@@ -615,18 +615,13 @@ jobs:
         run: |
           for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
             ZIP_PATH="${bin}.zip"
             ditto -c -k --keepParent "$bin" "$ZIP_PATH"
 
-            echo "Submitting $(basename "$bin") for notarization..."
-            xcrun notarytool submit "$ZIP_PATH" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m
+            scripts/release/notarize-submit.sh "$ZIP_PATH"
 
             rm -f "$ZIP_PATH"
-            echo "Notarized: $(basename "$bin")"
           done
 
       - name: Upload signed darwin/amd64
@@ -747,14 +742,9 @@ jobs:
             exit 0
           fi
           for pkg in staging/*.pkg; do
-            echo "Submitting $(basename "$pkg") for notarization..."
-            xcrun notarytool submit "$pkg" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m
-
+            scripts/release/notarize-submit.sh "$pkg"
             xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
             echo "Notarized and stapled: $(basename "$pkg")"
           done
 
@@ -886,25 +876,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
-          submit_output=$(xcrun notarytool submit build/installer-notarize.zip \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m)
-          echo "$submit_output"
-          submission_id=$(echo "$submit_output" | awk '/^[[:space:]]*id:/ {print $2; exit}')
-          status=$(echo "$submit_output" | awk '/^[[:space:]]*status:/ {print $2; exit}')
-          if [ "$status" != "Accepted" ]; then
-            echo "::error::Notarization failed with status '$status' (submission $submission_id)"
-            if [ -n "$submission_id" ]; then
-              echo "--- xcrun notarytool log $submission_id ---"
-              xcrun notarytool log "$submission_id" \
-                --apple-id "$APPLE_ID" \
-                --password "$APPLE_PASSWORD" \
-                --team-id "$APPLE_TEAM_ID" || true
-            fi
-            exit 1
-          fi
+          scripts/release/notarize-submit.sh build/installer-notarize.zip
           xcrun stapler staple "build/Breeze Installer.app"
           xcrun stapler validate "build/Breeze Installer.app"
           spctl -a -t exec -vv "build/Breeze Installer.app"
@@ -1269,11 +1241,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit breeze-viewer-macos.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+          "$GITHUB_WORKSPACE/scripts/release/notarize-submit.sh" breeze-viewer-macos.dmg
           xcrun stapler staple breeze-viewer-macos.dmg
           xcrun stapler validate breeze-viewer-macos.dmg
 
@@ -1394,11 +1362,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit breeze-helper-macos.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+          "$GITHUB_WORKSPACE/scripts/release/notarize-submit.sh" breeze-helper-macos.dmg
           xcrun stapler staple breeze-helper-macos.dmg
           xcrun stapler validate breeze-helper-macos.dmg
 
@@ -1857,6 +1821,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           from pathlib import Path
 
           release_dir = Path("release-assets")
@@ -1867,10 +1832,29 @@ jobs:
               "release-artifact-manifest.json.minisig",
           }
 
+          # Raw Mach-O agent binaries get Developer ID + notarization but
+          # ship to users only inside the .pkg. spctl --assess --type execute
+          # is invalid against raw Mach-O, so the trust label is correct
+          # even though the end-user verifier differs (.pkg gatekeeper check).
+          DARWIN_BINARY_RE = re.compile(
+              r"^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$"
+          )
+
           def platform_trust(name):
+              # *-template.msi is intentionally unsigned here; per-tenant
+              # property injection happens server-side and the resulting
+              # MSI is signed there.
+              if name.endswith("-template.msi"):
+                  return "release-workflow-produced"
               if name.endswith(".msi") or name.endswith(".exe"):
                   return "windows-authenticode-required"
-              if name.endswith(".pkg") or name.endswith(".app.zip"):
+              if (
+                  name.endswith(".pkg")
+                  or name.endswith(".app.zip")
+                  or name.endswith(".dmg")
+              ):
+                  return "macos-developer-id-notarization-required"
+              if DARWIN_BINARY_RE.match(name):
                   return "macos-developer-id-notarization-required"
               return "release-workflow-produced"
 
@@ -1989,33 +1973,33 @@ jobs:
       - name: Verify release asset integrity requirements
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          required_assets=(
-            "breeze-agent-windows-amd64.exe"
-            "breeze-backup-windows-amd64.exe"
-            "breeze-watchdog-windows-amd64.exe"
-            "breeze-agent.msi"
-            "breeze-agent-darwin-amd64"
-            "breeze-agent-darwin-arm64"
-            "breeze-agent-darwin-amd64.pkg"
-            "breeze-agent-darwin-arm64.pkg"
-            "breeze-backup-darwin-amd64"
-            "breeze-backup-darwin-arm64"
-            "breeze-desktop-helper-darwin-amd64"
-            "breeze-desktop-helper-darwin-arm64"
-            "breeze-watchdog-darwin-amd64"
-            "breeze-watchdog-darwin-arm64"
-            "Breeze Installer.app.zip"
-            "breeze-viewer-windows.msi"
-            "breeze-helper-windows.msi"
-            "latest.json"
-            "release-artifact-manifest.json"
-            "release-artifact-manifest.json.ed25519"
-            "release-artifact-manifest.json.minisig"
-            "checksums.txt"
-          )
+          set -euo pipefail
+          # checksums.txt is verified for existence/non-emptiness but cannot
+          # contain a SHA entry for itself: `sha256sum * > checksums.txt`
+          # expands the glob before creating the redirection target.
+          if [ ! -s "release-assets/checksums.txt" ]; then
+            echo "::error::Required asset missing or empty: checksums.txt"
+            exit 1
+          fi
 
-          for asset in "${required_assets[@]}"; do
-            if [ ! -s "release-assets/$asset" ]; then
+          # Build the asset list dynamically from release-assets/ to catch
+          # partial-upload failures (missing AppImage, DMG, signature, etc.)
+          # that a hand-curated list silently allows.
+          # ! -name '.*' mirrors `sha256sum *`'s glob (which excludes dotfiles)
+          # so the two steps see the same file set. Materialize via a tempfile
+          # so a `find` failure propagates under set -e (process substitution
+          # exit codes don't reach the parent shell).
+          assets_list=$(mktemp)
+          trap 'rm -f "$assets_list"' EXIT
+          find release-assets -mindepth 1 -maxdepth 1 -type f ! -name '.*' -print0 \
+            > "$assets_list"
+
+          asset_count=0
+          while IFS= read -r -d '' path; do
+            asset=$(basename "$path")
+            [ "$asset" = "checksums.txt" ] && continue
+            asset_count=$((asset_count + 1))
+            if [ ! -s "$path" ]; then
               echo "::error::Required signed/notarized release asset missing or empty: $asset"
               exit 1
             fi
@@ -2030,7 +2014,13 @@ jobs:
               echo "::error::checksums.txt missing SHA-256 entry for $asset"
               exit 1
             fi
-          done
+          done < "$assets_list"
+
+          if [ "$asset_count" -eq 0 ]; then
+            echo "::error::No signable artifacts found in release-assets/ (only checksums.txt or empty)"
+            exit 1
+          fi
+          echo "Verified $asset_count release assets against checksums.txt"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
