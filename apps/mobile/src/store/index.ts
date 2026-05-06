@@ -3,11 +3,13 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import authReducer from './authSlice';
 import alertsReducer from './alertsSlice';
+import approvalsReducer from './approvalsSlice';
 
 export const store = configureStore({
   reducer: {
     auth: authReducer,
     alerts: alertsReducer,
+    approvals: approvalsReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
