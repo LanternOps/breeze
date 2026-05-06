@@ -31,32 +31,8 @@ approvalRoutes.get('/pending', async (c) => {
   return c.json({ approvals: rows.map(serialize) });
 });
 
-// GET /:id — fetch one approval (full detail)
-approvalRoutes.get('/:id', async (c) => {
-  const userId = c.get('auth').user.id;
-  const id = c.req.param('id');
-  const [row] = await db
-    .select()
-    .from(approvalRequests)
-    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
-
-  if (!row) return c.json({ error: 'Not found' }, 404);
-  return c.json({ approval: serialize(row) });
-});
-
-// POST /:id/approve — approve the request (checks pending + not expired)
-approvalRoutes.post('/:id/approve', async (c) => {
-  return decideHandler(c, 'approved');
-});
-
 const denySchema = z.object({
   reason: z.string().max(500).optional(),
-});
-
-// POST /:id/deny — deny the request with optional reason
-approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
-  const reason = c.req.valid('json').reason;
-  return decideHandler(c, 'denied', reason);
 });
 
 const seedSchema = z.object({
@@ -119,6 +95,30 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
   return c.json({ approval: serialize(row) }, 201);
 });
 
+// GET /:id — fetch one approval (full detail)
+approvalRoutes.get('/:id', async (c) => {
+  const userId = c.get('auth').user.id;
+  const id = c.req.param('id');
+  const [row] = await db
+    .select()
+    .from(approvalRequests)
+    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
+  if (!row) return c.json({ error: 'Not found' }, 404);
+  return c.json({ approval: serialize(row) });
+});
+
+// POST /:id/approve — approve the request (checks pending + not expired)
+approvalRoutes.post('/:id/approve', async (c) => {
+  return decideHandler(c, 'approved');
+});
+
+// POST /:id/deny — deny the request with optional reason
+approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
+  const reason = c.req.valid('json').reason;
+  return decideHandler(c, 'denied', reason);
+});
+
 async function decideHandler(
   c: import('hono').Context,
   status: 'approved' | 'denied',
@@ -139,7 +139,7 @@ async function decideHandler(
   const [updated] = await db
     .update(approvalRequests)
     .set({ status, decidedAt: new Date(), decisionReason: reason ?? null })
-    .where(eq(approvalRequests.id, id))
+    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)))
     .returning();
 
   return c.json({ approval: serialize(updated) });
