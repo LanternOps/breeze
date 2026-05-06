@@ -18,7 +18,7 @@
     "expo": "~55.0.8",
     "expo-device": "~55.0.10",
     "expo-linking": "~55.0.15",
-    "expo-local-authentication": "~55.0.9",
+    "expo-local-authentication": "~55.0.13",
     "expo-notifications": "~55.0.13",
     "expo-secure-store": "~55.0.13",
     "expo-status-bar": "~55.0.4",
