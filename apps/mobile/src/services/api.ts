@@ -1,6 +1,8 @@
 import * as SecureStore from 'expo-secure-store';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
+import { getServerUrl } from './serverConfig';
+
+const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
 const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
@@ -62,6 +64,18 @@ export interface LoginResponse {
   user: User;
 }
 
+export type MfaMethod = 'totp' | 'sms';
+
+export interface MfaChallenge {
+  tempToken: string;
+  mfaMethod: MfaMethod;
+  phoneLast4: string | null;
+}
+
+export type LoginResult =
+  | { kind: 'success'; token: string; user: User }
+  | { kind: 'mfaRequired'; challenge: MfaChallenge };
+
 export interface ApiError {
   message: string;
   code?: string;
@@ -87,6 +101,9 @@ interface LoginPayload {
   tokens?: AuthTokensPayload;
   accessToken?: string;
   mfaRequired?: boolean;
+  tempToken?: string;
+  mfaMethod?: MfaMethod;
+  phoneLast4?: string | null;
   error?: string;
 }
 
@@ -163,7 +180,9 @@ async function requestWithPrefix<T>(
     (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
   }
 
-  const response = await fetch(`${API_BASE_URL}${prefix}${endpoint}`, {
+  const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
+  const url = `${baseUrl}${prefix}${endpoint}`;
+  const response = await fetch(url, {
     ...options,
     headers,
     credentials: 'include',
@@ -246,14 +265,24 @@ function mapDevice(device: MobileDeviceRecord): Device {
 }
 
 // Auth API
-export async function login(email: string, password: string): Promise<LoginResponse> {
+export async function login(email: string, password: string): Promise<LoginResult> {
   const response = await requestWithPrefix<LoginPayload>('/auth/login', API_CORE_PREFIX, {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
 
   if (response.mfaRequired) {
-    throw { message: 'MFA is required for this account' } as ApiError;
+    if (!response.tempToken || !response.mfaMethod) {
+      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+    }
+    return {
+      kind: 'mfaRequired',
+      challenge: {
+        tempToken: response.tempToken,
+        mfaMethod: response.mfaMethod,
+        phoneLast4: response.phoneLast4 ?? null,
+      },
+    };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
@@ -261,10 +290,28 @@ export async function login(email: string, password: string): Promise<LoginRespo
     throw { message: response.error || 'Invalid login response' } as ApiError;
   }
 
-  return {
-    token,
-    user: response.user
-  };
+  return { kind: 'success', token, user: response.user };
+}
+
+export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
+  const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
+    method: 'POST',
+    body: JSON.stringify({ code, tempToken }),
+  });
+
+  const token = response.tokens?.accessToken || response.accessToken;
+  if (!response.user || !token) {
+    throw { message: response.error || 'Invalid MFA response' } as ApiError;
+  }
+
+  return { token, user: response.user };
+}
+
+export async function sendMfaSms(tempToken: string): Promise<void> {
+  await requestWithPrefix('/auth/mfa/sms/send', API_CORE_PREFIX, {
+    method: 'POST',
+    body: JSON.stringify({ tempToken }),
+  });
 }
 
 export async function logout(): Promise<void> {

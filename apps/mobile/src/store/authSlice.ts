@@ -1,6 +1,12 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 
-import { login as apiLogin, logout as apiLogout, User } from '../services/api';
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  verifyMfa as apiVerifyMfa,
+  type MfaChallenge,
+  type User,
+} from '../services/api';
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
 
 interface AuthState {
@@ -8,6 +14,7 @@ interface AuthState {
   token: string | null;
   isLoading: boolean;
   error: string | null;
+  mfaChallenge: MfaChallenge | null;
 }
 
 const initialState: AuthState = {
@@ -15,22 +22,41 @@ const initialState: AuthState = {
   token: null,
   isLoading: false,
   error: null,
+  mfaChallenge: null,
 };
 
 export const loginAsync = createAsyncThunk(
   'auth/login',
   async ({ email, password }: { email: string; password: string }, { rejectWithValue }) => {
     try {
-      const response = await apiLogin(email, password);
+      const result = await apiLogin(email, password);
 
-      // Store credentials securely
-      await storeToken(response.token);
-      await storeUser(response.user);
+      if (result.kind === 'mfaRequired') {
+        return { mfa: result.challenge };
+      }
 
-      return response;
+      await storeToken(result.token);
+      await storeUser(result.user);
+
+      return { token: result.token, user: result.user };
     } catch (error: unknown) {
       const apiError = error as { message?: string };
       return rejectWithValue(apiError.message || 'Login failed');
+    }
+  }
+);
+
+export const verifyMfaAsync = createAsyncThunk(
+  'auth/verifyMfa',
+  async ({ code, tempToken }: { code: string; tempToken: string }, { rejectWithValue }) => {
+    try {
+      const response = await apiVerifyMfa(code, tempToken);
+      await storeToken(response.token);
+      await storeUser(response.user);
+      return response;
+    } catch (error: unknown) {
+      const apiError = error as { message?: string };
+      return rejectWithValue(apiError.message || 'MFA verification failed');
     }
   }
 );
@@ -62,14 +88,20 @@ const authSlice = createSlice({
       state.user = action.payload.user;
       state.isLoading = false;
       state.error = null;
+      state.mfaChallenge = null;
     },
     logout: (state) => {
       state.user = null;
       state.token = null;
       state.isLoading = false;
       state.error = null;
+      state.mfaChallenge = null;
     },
     clearError: (state) => {
+      state.error = null;
+    },
+    clearMfaChallenge: (state) => {
+      state.mfaChallenge = null;
       state.error = null;
     },
     setLoading: (state, action: PayloadAction<boolean>) => {
@@ -78,22 +110,42 @@ const authSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      // Login
       .addCase(loginAsync.pending, (state) => {
         state.isLoading = true;
         state.error = null;
       })
       .addCase(loginAsync.fulfilled, (state, action) => {
         state.isLoading = false;
-        state.token = action.payload.token;
-        state.user = action.payload.user;
         state.error = null;
+        if ('mfa' in action.payload && action.payload.mfa) {
+          state.mfaChallenge = action.payload.mfa;
+          return;
+        }
+        if ('token' in action.payload && 'user' in action.payload) {
+          state.token = action.payload.token;
+          state.user = action.payload.user;
+          state.mfaChallenge = null;
+        }
       })
       .addCase(loginAsync.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as string;
       })
-      // Logout
+      .addCase(verifyMfaAsync.pending, (state) => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(verifyMfaAsync.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.token = action.payload.token;
+        state.user = action.payload.user;
+        state.error = null;
+        state.mfaChallenge = null;
+      })
+      .addCase(verifyMfaAsync.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+      })
       .addCase(logoutAsync.pending, (state) => {
         state.isLoading = true;
       })
@@ -102,16 +154,17 @@ const authSlice = createSlice({
         state.token = null;
         state.isLoading = false;
         state.error = null;
+        state.mfaChallenge = null;
       })
       .addCase(logoutAsync.rejected, (state) => {
-        // Still clear state even if logout API fails
         state.user = null;
         state.token = null;
         state.isLoading = false;
         state.error = null;
+        state.mfaChallenge = null;
       });
   },
 });
 
-export const { setCredentials, logout, clearError, setLoading } = authSlice.actions;
+export const { setCredentials, logout, clearError, clearMfaChallenge, setLoading } = authSlice.actions;
 export default authSlice.reducer;

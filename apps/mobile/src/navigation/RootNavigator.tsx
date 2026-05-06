@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme as NavDefaultTheme } from '@react-navigation/native';
 import { ActivityIndicator, View } from 'react-native';
 import { useTheme } from 'react-native-paper';
 
@@ -38,8 +38,10 @@ export function RootNavigator() {
   }, [dispatch]);
 
   const navigationTheme = {
+    ...NavDefaultTheme,
     dark: theme.dark,
     colors: {
+      ...NavDefaultTheme.colors,
       primary: theme.colors.primary,
       background: theme.colors.background,
       card: theme.colors.surface,

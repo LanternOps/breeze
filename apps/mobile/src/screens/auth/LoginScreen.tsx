@@ -15,13 +15,18 @@ import {
   Surface,
 } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import { loginAsync, clearError } from '../../store/authSlice';
 import { checkBiometricAvailability, authenticateWithBiometrics } from '../../services/biometrics';
 import { getStoredToken, getStoredUser } from '../../services/auth';
+import { getServerUrl } from '../../services/serverConfig';
+import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
-export function LoginScreen() {
+type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
+
+export function LoginScreen({ navigation }: Props) {
   const theme = useTheme();
   const dispatch = useAppDispatch();
   const { isLoading, error } = useAppSelector((state) => state.auth);
@@ -30,10 +35,19 @@ export function LoginScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [serverUrl, setServerUrl] = useState<string | null>(null);
 
   useEffect(() => {
     checkBiometrics();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      getServerUrl().then(setServerUrl);
+    });
+    return unsubscribe;
+  }, [navigation]);
+
 
   async function checkBiometrics() {
     const available = await checkBiometricAvailability();
@@ -86,6 +100,30 @@ export function LoginScreen() {
             <Text variant="titleLarge" style={styles.formTitle}>
               Sign In
             </Text>
+
+            <View style={styles.serverRow}>
+              <View style={styles.serverInfo}>
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                  Server
+                </Text>
+                <Text
+                  variant="bodyMedium"
+                  numberOfLines={1}
+                  style={{ color: theme.colors.onSurface }}
+                >
+                  {serverUrl ?? '—'}
+                </Text>
+              </View>
+              <Button
+                mode="text"
+                compact
+                onPress={() =>
+                  navigation.navigate('ServerSelect', { initialUrl: serverUrl })
+                }
+              >
+                Change
+              </Button>
+            </View>
 
             <TextInput
               label="Email"
@@ -186,8 +224,19 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   formTitle: {
-    marginBottom: 24,
+    marginBottom: 16,
     textAlign: 'center',
+  },
+  serverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingVertical: 4,
+  },
+  serverInfo: {
+    flex: 1,
+    marginRight: 8,
   },
   input: {
     marginBottom: 4,
