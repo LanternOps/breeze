@@ -58,12 +58,6 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['partner_users', 'partner_id'],
   ['oauth_clients', 'partner_id'],
   ['oauth_client_partner_grants', 'partner_id'],
-  ['oauth_refresh_tokens', 'partner_id'],
-  // oauth_grants partner_id is nullable (NULL between adapter.upsert and the
-  // setGrantBreezeMeta UPDATE during consent). The coverage check only needs
-  // the column name; the policy's `partner_id IS NULL OR ...` clause is
-  // checked by the policy's own qual, not this allowlist.
-  ['oauth_grants', 'partner_id'],
   ['email_verification_tokens', 'partner_id'],
 ]);
 
