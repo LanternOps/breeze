@@ -419,111 +419,188 @@ mcpServerRoutes.get(
 // HTTP POST Transport — JSON-RPC messages
 // ============================================
 
+type McpDispatchEarlyReturn = { kind: 'response'; status: number; body: unknown };
+type McpDispatchOk = {
+  kind: 'ok';
+  body: JsonRpcRequest;
+  sessionId: string | undefined;
+};
+type McpDispatchPreflight = McpDispatchEarlyReturn | McpDispatchOk;
+
+/**
+ * Shared preflight (rate limit, body parse, JSON-RPC validation, scope check)
+ * for the legacy `/message` endpoint and the Streamable HTTP `/sse` POST
+ * endpoint. Returns either an early `{ kind: 'response' }` (caller should
+ * emit it as-is) or an `{ kind: 'ok' }` with the parsed body and sessionId.
+ *
+ * sessionId source differs between transports:
+ *   - legacy: `?sessionId=` query param (set by SSE `endpoint` event)
+ *   - streamable: `Mcp-Session-Id` header (set by server on initialize)
+ */
+async function preflightMcpRequest(
+  c: Context,
+  sessionId: string | undefined,
+): Promise<McpDispatchPreflight> {
+  const apiKey = c.get('apiKey') as
+    | (McpApiKeyContext & { scopes: string[]; name?: string; createdBy?: string })
+    | undefined;
+  const principalKey = apiKey ? mcpPrincipalKey(apiKey) : null;
+
+  if (apiKey && process.env.NODE_ENV === 'production') {
+    const redis = getRedis();
+    if (!redis) {
+      return { kind: 'response', status: 503, body: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } } };
+    }
+    const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
+    const rate = await rateLimiter(redis, `mcp:msg:${principalKey}`, limit, 60);
+    if (!rate.allowed) {
+      const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
+      c.header('Retry-After', String(retryAfter));
+      return { kind: 'response', status: 429, body: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Rate limit exceeded' } } };
+    }
+  }
+
+  const parsedBody = await readJsonRpcBodyWithLimit(c.req.raw, { clone: false });
+  if (parsedBody.tooLarge) {
+    return { kind: 'response', status: 413, body: { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Request body too large' } } };
+  }
+  if (parsedBody.parseError) {
+    return { kind: 'response', status: 400, body: { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: invalid JSON' } } };
+  }
+  const body = parsedBody.body as JsonRpcRequest;
+
+  if (!body.jsonrpc || body.jsonrpc !== '2.0' || !body.method) {
+    return { kind: 'response', status: 400, body: { jsonrpc: '2.0', id: body?.id ?? null, error: { code: -32600, message: 'Invalid JSON-RPC request' } } satisfies JsonRpcResponse };
+  }
+
+  if (!apiKey || !apiKey.scopes.includes('ai:read')) {
+    return { kind: 'response', status: 403, body: { jsonrpc: '2.0', id: body.id ?? null, error: { code: -32001, message: 'API key missing required scope: ai:read' } } satisfies JsonRpcResponse };
+  }
+
+  return { kind: 'ok', body, sessionId };
+}
+
+async function dispatchAndAudit(
+  c: Context,
+  body: JsonRpcRequest,
+  sessionId: string | undefined,
+): Promise<JsonRpcResponse> {
+  const apiKey = c.get('apiKey') as McpApiKeyContext & {
+    scopes: string[];
+    name: string;
+    createdBy: string;
+  };
+  const auth = await buildAuthFromApiKey({
+    id: apiKey.id,
+    orgId: apiKey.orgId,
+    partnerId: apiKey.partnerId ?? null,
+    name: apiKey.name,
+    createdBy: apiKey.createdBy,
+  });
+
+  const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, sessionId);
+
+  // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
+  // by design (partner admins span every org). Without the fallback, every
+  // authed MCP audit event would lose org attribution.
+  const auditOrgId =
+    apiKey.orgId ??
+    (auth.partnerId ? await resolveDefaultOrgId(auth.partnerId) : null);
+  writeAuditEvent(c, {
+    orgId: auditOrgId,
+    actorType: 'api_key',
+    actorId: apiKey.id,
+    action: buildMcpAuditAction(body.method),
+    resourceType: 'mcp_request',
+    resourceId: sessionId,
+    details: {
+      method: body.method,
+      hasSession: Boolean(sessionId),
+      hasParams: Boolean(body.params),
+    },
+    result: response.error ? 'failure' : 'success',
+    errorMessage: response.error?.message,
+  });
+
+  return response;
+}
+
 mcpServerRoutes.post(
   '/message',
   async (c) => {
-    const apiKey = c.get('apiKey');
-    const principalKey = apiKey ? mcpPrincipalKey(apiKey) : null;
+    const sessionIdFromQuery = c.req.query('sessionId');
+    const pre = await preflightMcpRequest(c, sessionIdFromQuery);
+    if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
 
-    // Rate limit messages in production.
-    if (apiKey && process.env.NODE_ENV === 'production') {
-      const redis = getRedis();
-      if (!redis) {
-        return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } }, 503);
-      }
-      const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
-      const rate = await rateLimiter(redis, `mcp:msg:${principalKey}`, limit, 60);
-      if (!rate.allowed) {
-        const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
-        c.header('Retry-After', String(retryAfter));
-        return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Rate limit exceeded' } }, 429);
-      }
-    }
+    const response = await dispatchAndAudit(c, pre.body, pre.sessionId);
 
-    const sessionId = c.req.query('sessionId');
-
-    const parsedBody = await readJsonRpcBodyWithLimit(c.req.raw, { clone: false });
-    if (parsedBody.tooLarge) {
-      return c.json({
-        jsonrpc: '2.0' as const,
-        id: null,
-        error: { code: -32600, message: 'Request body too large' }
-      }, 413);
-    }
-    if (parsedBody.parseError) {
-      return c.json({
-        jsonrpc: '2.0' as const,
-        id: null,
-        error: { code: -32700, message: 'Parse error: invalid JSON' }
-      }, 400);
-    }
-    const body = parsedBody.body as JsonRpcRequest;
-
-    if (!body.jsonrpc || body.jsonrpc !== '2.0' || !body.method) {
-      return c.json({
-        jsonrpc: '2.0',
-        id: body?.id ?? null,
-        error: { code: -32600, message: 'Invalid JSON-RPC request' }
-      } satisfies JsonRpcResponse, 400);
-    }
-
-    // All callers are authenticated (mcpAuthMiddleware enforces this).
-    // Enforce ai:read scope.
-    const hasAiRead = apiKey.scopes.includes('ai:read');
-    if (!hasAiRead) {
-      return c.json(
-        {
-          jsonrpc: '2.0',
-          id: body.id ?? null,
-          error: { code: -32001, message: 'API key missing required scope: ai:read' },
-        } satisfies JsonRpcResponse,
-        403,
-      );
-    }
-
-    // Build a minimal AuthContext from the API key
-    const auth = await buildAuthFromApiKey(apiKey);
-
-    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, sessionId);
-
-    // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
-    // by design (partner admins span every org). Without the fallback, every
-    // authed MCP audit event would lose org attribution and be invisible to
-    // org-scoped audit searches. resolveDefaultOrgId mirrors what the
-    // bootstrap-authTool dispatch does for the same reason.
-    const auditOrgId =
-      apiKey.orgId ??
-      (auth.partnerId ? await resolveDefaultOrgId(auth.partnerId) : null);
-    writeAuditEvent(c, {
-      orgId: auditOrgId,
-      actorType: 'api_key',
-      actorId: apiKey.id,
-      action: buildMcpAuditAction(body.method),
-      resourceType: 'mcp_request',
-      resourceId: sessionId,
-      details: {
-        method: body.method,
-        hasSession: Boolean(sessionId),
-        hasParams: Boolean(body.params)
-      },
-      result: response.error ? 'failure' : 'success',
-      errorMessage: response.error?.message
-    });
-
-    // If there's an active SSE session, queue the response there (with ownership check)
-    if (sessionId) {
-      const session = sseSessionQueues.get(sessionId);
+    // Legacy SSE transport: if the request carries a sessionId pointing at an
+    // active SSE stream, push the response into that stream and return 202.
+    // Streamable HTTP clients don't reach this branch (they POST to /sse).
+    if (pre.sessionId) {
+      const apiKey = c.get('apiKey') as McpApiKeyContext & {
+    scopes: string[];
+    name: string;
+    createdBy: string;
+  };
+      const principalKey = mcpPrincipalKey(apiKey);
+      const session = sseSessionQueues.get(pre.sessionId);
       if (session && session.principalKey === principalKey) {
         session.queue.push(response);
-        // Return 202 Accepted — response will come via SSE
         return c.json({ status: 'accepted' }, 202);
       }
     }
 
-    // Return inline (stateless HTTP mode)
     return c.json(response);
   }
 );
+
+// ============================================
+// Streamable HTTP transport (MCP 2025-03-26)
+// ============================================
+// Single-URL transport: POST /sse delivers the JSON-RPC request and the
+// response comes back inline as application/json. GET /sse is left as the
+// legacy SSE handler above for backward compatibility with older clients;
+// new clients (Claude.ai, ChatGPT) only use POST. DELETE /sse terminates a
+// session (no-op here — sessions are stateless).
+//
+// Session ID, when present, comes from the `Mcp-Session-Id` request header.
+// On `initialize` we mint a new session ID and return it in the same header
+// on the response so the client can include it on subsequent requests.
+
+mcpServerRoutes.post(
+  '/sse',
+  async (c) => {
+    const sessionIdFromHeader = c.req.header('Mcp-Session-Id') || undefined;
+    const pre = await preflightMcpRequest(c, sessionIdFromHeader);
+    if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
+
+    // JSON-RPC notifications (no `id`) — process for side effects, return 202
+    // with empty body per Streamable HTTP spec; do not emit a response body.
+    if (pre.body.id === undefined) {
+      void dispatchAndAudit(c, pre.body, pre.sessionId).catch((err) => {
+        console.error('[MCP] notification handler error:', err);
+      });
+      return c.body(null, 202);
+    }
+
+    const response = await dispatchAndAudit(c, pre.body, pre.sessionId);
+
+    // Mint a session ID on initialize so clients can correlate subsequent
+    // requests. Server state is not currently kept per session — the header
+    // exists purely so spec-compliant clients can use it.
+    if (pre.body.method === 'initialize' && !pre.sessionId) {
+      c.header('Mcp-Session-Id', crypto.randomUUID());
+    }
+
+    return c.json(response);
+  }
+);
+
+mcpServerRoutes.delete('/sse', (c) => {
+  // Streamable HTTP DELETE — terminate session. Stateless server, so 204.
+  return c.body(null, 204);
+});
 
 // ============================================
 // JSON-RPC Method Dispatcher
