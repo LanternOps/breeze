@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { useApprovalTheme, type, spacing, radii } from '../../../theme';
+import { useApprovalTheme, type, spacing, radii, palette } from '../../../theme';
 import { haptic } from '../../../lib/motion';
 import { HoldToConfirm } from './HoldToConfirm';
 import { DenyReasonSheet } from './DenyReasonSheet';
@@ -84,12 +84,12 @@ export function ApprovalButtons({ isRecursive, inFlight, onApprove, onDeny }: Pr
               flex: 1.4,
               paddingVertical: spacing[5],
               borderRadius: radii.lg,
-              backgroundColor: pressed ? '#208c50' : theme.approve,
+              backgroundColor: pressed ? palette.approve.pressed : theme.approve,
               alignItems: 'center',
               opacity: inFlight === 'approve' ? 0.6 : 1,
             })}
           >
-            <Text style={[type.bodyMd, { color: '#04230f' }]}>Approve</Text>
+            <Text style={[type.bodyMd, { color: palette.approve.onBase }]}>Approve</Text>
           </Pressable>
         )}
       </View>

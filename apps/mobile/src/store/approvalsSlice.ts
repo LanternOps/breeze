@@ -73,6 +73,9 @@ const slice = createSlice({
   },
   extraReducers: (b) => {
     b.addCase(hydrateFromCache.fulfilled, (s, a) => {
+      // If a server refresh is already in flight or has populated pending,
+      // don't let stale cache overwrite fresh data. Only seed an empty list.
+      if (s.loading || s.pending.length > 0) return;
       s.pending = a.payload;
       if (a.payload.length > 0 && !s.focusId) s.focusId = a.payload[0].id;
     });

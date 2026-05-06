@@ -35,8 +35,12 @@ export function HoldToConfirm({ label, onComplete, durationMs = 5000 }: Props) {
     progress.value = withTiming(0, { duration: duration.fast, easing: ease });
   };
 
+  // Reanimated 3+ supports animated string widths via useAnimatedStyle.
+  // Anchor the fill to the left by leaving `left: 0` static and letting
+  // width grow rightward — avoids transformOrigin which is unreliable on
+  // RN's old architecture.
   const fillStyle = useAnimatedStyle(() => ({
-    transform: [{ scaleX: progress.value }],
+    width: `${progress.value * 100}%` as `${number}%`,
   }));
 
   return (
@@ -60,10 +64,8 @@ export function HoldToConfirm({ label, onComplete, durationMs = 5000 }: Props) {
               left: 0,
               top: 0,
               bottom: 0,
-              right: 0,
               backgroundColor: theme.brand,
               opacity: 0.35,
-              transformOrigin: 'left',
             },
             fillStyle,
           ]}

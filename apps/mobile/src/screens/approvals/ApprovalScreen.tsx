@@ -11,7 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScrollView } from 'react-native-gesture-handler';
 
 import { useAppDispatch, useAppSelector } from '../../store';
-import { approve, deny, hydrateFromCache, markExpired, refreshPending } from '../../store/approvalsSlice';
+import { approve, deny, markExpired } from '../../store/approvalsSlice';
 import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 
@@ -28,7 +28,9 @@ export function ApprovalScreen() {
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
 
-  const focused = useAppSelector((s) => s.approvals.pending.find((a) => a.id === s.approvals.focusId));
+  const focused = useAppSelector((s) =>
+    s.approvals.pending.find((a) => a.id === s.approvals.focusId && a.status === 'pending')
+  );
   const inFlight = useAppSelector((s) =>
     focused ? (s.approvals.decisionInFlight[focused.id] ?? null) : null
   );
@@ -39,10 +41,9 @@ export function ApprovalScreen() {
 
   const [toast, setToast] = useState<{ kind: 'approve' | 'deny'; text: string } | null>(null);
 
-  // Mount: hydrate cache, then refresh from server, then play entrance.
+  // Data lifecycle (hydrate + refresh) lives in ApprovalGate; this mount
+  // only owns the entrance animation + arrival haptic.
   useEffect(() => {
-    dispatch(hydrateFromCache());
-    dispatch(refreshPending());
     enter.value = withTiming(1, { duration: duration.enter, easing: ease });
     haptic.arrive();
   }, []);
@@ -73,8 +74,8 @@ export function ApprovalScreen() {
       .then(() => {
         setToast({ kind: 'approve', text: `Approved · ${focused.actionLabel}` });
       })
-      .catch(() => {
-        setToast({ kind: 'deny', text: 'Approve failed. Try again.' });
+      .catch((err: Error) => {
+        setToast({ kind: 'deny', text: messageForDecisionError(err.message, 'Approve') });
       });
   }
 
@@ -91,9 +92,15 @@ export function ApprovalScreen() {
       .then(() => {
         setToast({ kind: 'deny', text: 'Denied · logged' });
       })
-      .catch(() => {
-        setToast({ kind: 'deny', text: 'Deny failed. Try again.' });
+      .catch((err: Error) => {
+        setToast({ kind: 'deny', text: messageForDecisionError(err.message, 'Deny') });
       });
+  }
+
+  function messageForDecisionError(code: string, verb: 'Approve' | 'Deny'): string {
+    if (code === 'ALREADY_DECIDED') return 'Already decided elsewhere.';
+    if (code === 'EXPIRED') return 'This request expired.';
+    return `${verb} failed. Try again.`;
   }
 
   function handleExpire() {

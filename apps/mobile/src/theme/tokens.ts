@@ -16,6 +16,7 @@ export const palette = {
   },
   approve: {
     base:    '#2cb567',
+    pressed: '#208c50',  // hand-tuned darker shade of base for active-press states
     wash:    'rgba(44,181,103,0.18)',
     onBase:  '#04230f',
   },

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Text } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 'react-native-reanimated';
-import { useApprovalTheme, type, spacing, radii } from '../../../theme';
+import { useApprovalTheme, type, spacing, radii, palette } from '../../../theme';
 import { duration, ease } from '../../../lib/motion';
 
 interface Props {
@@ -52,7 +52,7 @@ export function ApprovalToast({ visible, text, kind, onHidden }: Props) {
         style,
       ]}
     >
-      <Text style={[type.bodyMd, { color: kind === 'approve' ? '#04230f' : '#fff5f3' }]}>{text}</Text>
+      <Text style={[type.bodyMd, { color: kind === 'approve' ? palette.approve.onBase : palette.deny.onBase }]}>{text}</Text>
     </Animated.View>
   );
 }

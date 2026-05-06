@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Modal, Pressable, Text, TextInput, View } from 'react-native';
-import { useApprovalTheme, type, spacing, radii } from '../../../theme';
+import { useApprovalTheme, type, spacing, radii, palette } from '../../../theme';
 
 interface Props {
   visible: boolean;
@@ -12,11 +12,22 @@ export function DenyReasonSheet({ visible, onCancel, onSubmit }: Props) {
   const theme = useApprovalTheme('dark');
   const [reason, setReason] = useState('');
 
+  function handleCancel() {
+    setReason('');
+    onCancel();
+  }
+
+  function handleSubmit() {
+    const trimmed = reason.trim() || undefined;
+    setReason('');
+    onSubmit(trimmed);
+  }
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleCancel}>
       <Pressable
         style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}
-        onPress={onCancel}
+        onPress={handleCancel}
       >
         <Pressable
           onPress={(e) => e.stopPropagation()}
@@ -53,7 +64,7 @@ export function DenyReasonSheet({ visible, onCancel, onSubmit }: Props) {
           />
           <View style={{ flexDirection: 'row', marginTop: spacing[5], gap: spacing[3] }}>
             <Pressable
-              onPress={onCancel}
+              onPress={handleCancel}
               style={{
                 flex: 1,
                 paddingVertical: spacing[4],
@@ -65,7 +76,7 @@ export function DenyReasonSheet({ visible, onCancel, onSubmit }: Props) {
               <Text style={[type.bodyMd, { color: theme.textHi }]}>Cancel</Text>
             </Pressable>
             <Pressable
-              onPress={() => onSubmit(reason.trim() || undefined)}
+              onPress={handleSubmit}
               style={{
                 flex: 1,
                 paddingVertical: spacing[4],
@@ -74,7 +85,7 @@ export function DenyReasonSheet({ visible, onCancel, onSubmit }: Props) {
                 backgroundColor: theme.deny,
               }}
             >
-              <Text style={[type.bodyMd, { color: '#fff5f3' }]}>Deny</Text>
+              <Text style={[type.bodyMd, { color: palette.deny.onBase }]}>Deny</Text>
             </Pressable>
           </View>
         </Pressable>
