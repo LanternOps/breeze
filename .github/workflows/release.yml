@@ -774,6 +774,10 @@ jobs:
           # delivered to end users only inside notarized .pkgs).
           for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
+            # The prefix glob also matches .pkg / .zip files in staging at this
+            # point in the workflow — skip them (.pkg uses productsign, .zip is
+            # the notarytool upload artifact). The .pkg loop below verifies them.
+            case "$bin" in *.pkg|*.zip) continue ;; esac
             codesign --verify --strict --verbose=2 "$bin"
             DETAILS=$(codesign -dvvv "$bin" 2>&1)
             if ! grep -q 'flags=.*runtime' <<<"$DETAILS"; then
