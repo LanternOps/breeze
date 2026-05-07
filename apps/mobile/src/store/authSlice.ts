@@ -9,12 +9,16 @@ import {
 } from '../services/api';
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
 
+export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
+
 interface AuthState {
   user: User | null;
   token: string | null;
   isLoading: boolean;
   error: string | null;
   mfaChallenge: MfaChallenge | null;
+  pushRegistration: PushRegistrationStatus;
+  pushRegistrationReason: string | null;
 }
 
 const initialState: AuthState = {
@@ -23,6 +27,8 @@ const initialState: AuthState = {
   isLoading: false,
   error: null,
   mfaChallenge: null,
+  pushRegistration: 'idle',
+  pushRegistrationReason: null,
 };
 
 export const loginAsync = createAsyncThunk(
@@ -107,6 +113,13 @@ const authSlice = createSlice({
     setLoading: (state, action: PayloadAction<boolean>) => {
       state.isLoading = action.payload;
     },
+    setPushRegistration: (
+      state,
+      action: PayloadAction<{ status: PushRegistrationStatus; reason?: string | null }>
+    ) => {
+      state.pushRegistration = action.payload.status;
+      state.pushRegistrationReason = action.payload.reason ?? null;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -166,5 +179,12 @@ const authSlice = createSlice({
   },
 });
 
-export const { setCredentials, logout, clearError, clearMfaChallenge, setLoading } = authSlice.actions;
+export const {
+  setCredentials,
+  logout,
+  clearError,
+  clearMfaChallenge,
+  setLoading,
+  setPushRegistration,
+} = authSlice.actions;
 export default authSlice.reducer;

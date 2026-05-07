@@ -13,25 +13,41 @@ interface Props {
   onDeny: (reason?: string) => void;
 }
 
+const SILENT_CANCEL_CODES = new Set(['user_cancel', 'system_cancel', 'app_cancel']);
+const LOCKOUT_CODES = new Set(['lockout', 'lockout_permanent']);
+const PASSCODE_FALLBACK_CODES = new Set(['not_enrolled', 'passcode_not_set']);
+
 export function ApprovalButtons({ isRecursive, inFlight, onApprove, onDeny }: Props) {
   const theme = useApprovalTheme('dark');
   const [denyOpen, setDenyOpen] = useState(false);
-  const [biometricFailed, setBiometricFailed] = useState(false);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+
+  async function authenticateWithPasscode(): Promise<LocalAuthentication.LocalAuthenticationResult> {
+    return await LocalAuthentication.authenticateAsync({
+      promptMessage: 'Confirm to approve',
+      disableDeviceFallback: false,
+    });
+  }
 
   async function handleApprovePress() {
     haptic.tap();
-    setBiometricFailed(false);
-    const hasHw = await LocalAuthentication.hasHardwareAsync();
-    const enrolled = await LocalAuthentication.isEnrolledAsync();
+    setAuthMessage(null);
+
+    let hasHw = false;
+    let enrolled = false;
+    try {
+      hasHw = await LocalAuthentication.hasHardwareAsync();
+      enrolled = await LocalAuthentication.isEnrolledAsync();
+    } catch (err) {
+      console.warn('[ApprovalButtons] biometric hardware probe failed', err);
+      hasHw = false;
+      enrolled = false;
+    }
 
     if (!hasHw || !enrolled) {
-      // No biometric available — fall back to passcode prompt.
-      const r = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Confirm to approve',
-        disableDeviceFallback: false,
-      });
-      if (!r.success) { setBiometricFailed(true); return; }
-      onApprove();
+      const r = await authenticateWithPasscode();
+      if (r.success) { onApprove(); return; }
+      handleAuthFailure(r);
       return;
     }
 
@@ -40,20 +56,41 @@ export function ApprovalButtons({ isRecursive, inFlight, onApprove, onDeny }: Pr
       cancelLabel: 'Cancel',
       disableDeviceFallback: false,
     });
-    if (!r.success) { setBiometricFailed(true); return; }
-    onApprove();
+    if (r.success) { onApprove(); return; }
+
+    const code = (r as { error?: string }).error;
+    if (code && PASSCODE_FALLBACK_CODES.has(code)) {
+      const fallback = await authenticateWithPasscode();
+      if (fallback.success) { onApprove(); return; }
+      handleAuthFailure(fallback);
+      return;
+    }
+    handleAuthFailure(r);
+  }
+
+  function handleAuthFailure(result: LocalAuthentication.LocalAuthenticationResult) {
+    const code = (result as { error?: string }).error;
+    if (code && SILENT_CANCEL_CODES.has(code)) {
+      setAuthMessage(null);
+      return;
+    }
+    if (code && LOCKOUT_CODES.has(code)) {
+      setAuthMessage('Biometrics locked. Use device passcode in Settings to unlock.');
+      return;
+    }
+    setAuthMessage('Authentication failed. Try again.');
   }
 
   return (
     <View>
-      {biometricFailed ? (
+      {authMessage ? (
         <Text
           style={[
             type.meta,
             { color: theme.deny, paddingHorizontal: spacing[6], marginBottom: spacing[2] },
           ]}
         >
-          Biometric failed. Try again.
+          {authMessage}
         </Text>
       ) : null}
       <View style={{ flexDirection: 'row', paddingHorizontal: spacing[6], gap: spacing[3] }}>

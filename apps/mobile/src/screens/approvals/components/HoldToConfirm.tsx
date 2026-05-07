@@ -35,10 +35,7 @@ export function HoldToConfirm({ label, onComplete, durationMs = 5000 }: Props) {
     progress.value = withTiming(0, { duration: duration.fast, easing: ease });
   };
 
-  // Reanimated 3+ supports animated string widths via useAnimatedStyle.
-  // Anchor the fill to the left by leaving `left: 0` static and letting
-  // width grow rightward — avoids transformOrigin which is unreliable on
-  // RN's old architecture.
+  // Animate width (anchored left:0) instead of transform-scaleX to avoid transformOrigin quirks.
   const fillStyle = useAnimatedStyle(() => ({
     width: `${progress.value * 100}%` as `${number}%`,
   }));

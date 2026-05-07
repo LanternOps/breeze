@@ -22,23 +22,15 @@ export const approvalRequests = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-
-    // Who's asking
     requestingClientId: text('requesting_client_id').references(() => oauthClients.id),
     requestingSessionId: text('requesting_session_id').references(() => oauthSessions.id),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }).notNull(),
     requestingMachineLabel: varchar('requesting_machine_label', { length: 255 }),
-
-    // What
     actionLabel: text('action_label').notNull(),
     actionToolName: varchar('action_tool_name', { length: 255 }).notNull(),
     actionArguments: jsonb('action_arguments').notNull().default({}),
-
-    // Risk
     riskTier: approvalRiskTierEnum('risk_tier').notNull(),
     riskSummary: text('risk_summary').notNull(),
-
-    // Lifecycle
     status: approvalStatusEnum('status').notNull().default('pending'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     decidedAt: timestamp('decided_at', { withTimezone: true }),

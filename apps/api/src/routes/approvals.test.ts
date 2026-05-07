@@ -58,6 +58,24 @@ function buildApp() {
   return app;
 }
 
+function mockUpdateReturning(rows: unknown[]) {
+  const returning = vi.fn().mockResolvedValue(rows);
+  vi.mocked(db.update).mockReturnValue({
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning }),
+    }),
+  } as any);
+  return returning;
+}
+
+function mockSelectResolves(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(rows),
+    }),
+  } as any);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -113,11 +131,7 @@ describe('GET /approvals/pending', () => {
 
 describe('GET /approvals/:id', () => {
   it('returns 404 when approval not found', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]),
-      }),
-    } as any);
+    mockSelectResolves([]);
 
     const res = await buildApp().request('/approvals/nonexistent');
     expect(res.status).toBe(404);
@@ -142,11 +156,7 @@ describe('GET /approvals/:id', () => {
       decisionReason: null,
       createdAt: new Date(),
     };
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([approval]),
-      }),
-    } as any);
+    mockSelectResolves([approval]);
 
     const res = await buildApp().request('/approvals/a1');
     expect(res.status).toBe(200);
@@ -156,94 +166,123 @@ describe('GET /approvals/:id', () => {
 });
 
 describe('POST /approvals/:id/approve', () => {
-  it('rejects when the approval is already decided', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{
-          id: 'a1',
-          userId: TEST_USER.id,
-          status: 'denied',
-          expiresAt: new Date(Date.now() + 60_000),
-        }]),
-      }),
-    } as any);
+  const updatedRow = {
+    id: 'a1',
+    userId: TEST_USER.id,
+    requestingClientLabel: 'Claude Desktop',
+    requestingMachineLabel: null,
+    requestingClientId: null,
+    requestingSessionId: null,
+    actionLabel: 'x',
+    actionToolName: 'y',
+    actionArguments: {},
+    riskTier: 'low',
+    riskSummary: 'z',
+    status: 'approved',
+    expiresAt: new Date(Date.now() + 60_000),
+    decidedAt: new Date(),
+    decisionReason: null,
+    createdAt: new Date(),
+  };
 
-    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
-    expect(res.status).toBe(409);
-  });
-
-  it('rejects when the approval has expired', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{
-          id: 'a1',
-          userId: TEST_USER.id,
-          status: 'pending',
-          expiresAt: new Date(Date.now() - 1000),
-        }]),
-      }),
-    } as any);
-
-    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
-    expect(res.status).toBe(410);
-  });
-
-  it('updates status to approved when valid', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{
-          id: 'a1',
-          userId: TEST_USER.id,
-          status: 'pending',
-          expiresAt: new Date(Date.now() + 60_000),
-        }]),
-      }),
-    } as any);
-
-    const updateReturning = vi.fn().mockResolvedValue([{
-      id: 'a1',
-      userId: TEST_USER.id,
-      requestingClientLabel: 'Claude Desktop',
-      requestingMachineLabel: null,
-      requestingClientId: null,
-      requestingSessionId: null,
-      actionLabel: 'x',
-      actionToolName: 'y',
-      actionArguments: {},
-      riskTier: 'low',
-      riskSummary: 'z',
-      status: 'approved',
-      expiresAt: new Date(Date.now() + 60_000),
-      decidedAt: new Date(),
-      decisionReason: null,
-      createdAt: new Date(),
-    }]);
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: updateReturning,
-        }),
-      }),
-    } as any);
+  it('approves a pending non-expired request', async () => {
+    const returning = mockUpdateReturning([updatedRow]);
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(updateReturning).toHaveBeenCalled();
+    expect(returning).toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.approval.id).toBe('a1');
+    expect(body.approval.status).toBe('approved');
+  });
+
+  it('returns 409 with finalStatus when already decided', async () => {
+    mockUpdateReturning([]);
+    mockSelectResolves([
+      {
+        id: 'a1',
+        userId: TEST_USER.id,
+        status: 'denied',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ]);
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.finalStatus).toBe('denied');
+  });
+
+  it('returns 410 with finalStatus expired when row exists but UPDATE missed', async () => {
+    mockUpdateReturning([]);
+    mockSelectResolves([
+      {
+        id: 'a1',
+        userId: TEST_USER.id,
+        status: 'pending',
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    ]);
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.finalStatus).toBe('expired');
+  });
+
+  it('returns 404 when the approval does not exist for this user', async () => {
+    mockUpdateReturning([]);
+    mockSelectResolves([]);
+
+    const res = await buildApp().request('/approvals/missing/approve', { method: 'POST' });
+    expect(res.status).toBe(404);
   });
 });
 
 describe('POST /approvals/:id/deny', () => {
-  it('returns 409 when already decided', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{
-          id: 'a1',
-          userId: TEST_USER.id,
-          status: 'approved',
-          expiresAt: new Date(Date.now() + 60_000),
-        }]),
-      }),
-    } as any);
+  it('denies a pending non-expired request', async () => {
+    mockUpdateReturning([
+      {
+        id: 'a1',
+        userId: TEST_USER.id,
+        requestingClientLabel: 'Claude Desktop',
+        requestingMachineLabel: null,
+        requestingClientId: null,
+        requestingSessionId: null,
+        actionLabel: 'x',
+        actionToolName: 'y',
+        actionArguments: {},
+        riskTier: 'low',
+        riskSummary: 'z',
+        status: 'denied',
+        expiresAt: new Date(Date.now() + 60_000),
+        decidedAt: new Date(),
+        decisionReason: 'no thanks',
+        createdAt: new Date(),
+      },
+    ]);
+
+    const res = await buildApp().request('/approvals/a1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'no thanks' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.status).toBe('denied');
+    expect(body.approval.decisionReason).toBe('no thanks');
+  });
+
+  it('returns 409 with finalStatus when already decided', async () => {
+    mockUpdateReturning([]);
+    mockSelectResolves([
+      {
+        id: 'a1',
+        userId: TEST_USER.id,
+        status: 'approved',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ]);
 
     const res = await buildApp().request('/approvals/a1/deny', {
       method: 'POST',
@@ -251,6 +290,8 @@ describe('POST /approvals/:id/deny', () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.finalStatus).toBe('approved');
   });
 });
 
@@ -275,7 +316,28 @@ describe('POST /approvals/dev/seed', () => {
     }
   });
 
-  it('creates a seed approval and returns 201', async () => {
+  it('returns 404 when NODE_ENV is unset (e.g. staging)', async () => {
+    const orig = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      const res = await buildApp().request('/approvals/dev/seed', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actionLabel: 'x',
+          actionToolName: 'y',
+          riskTier: 'low',
+          riskSummary: 'z',
+        }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      if (orig === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = orig;
+    }
+  });
+
+  it('creates a seed approval and returns 201 with push diagnostics', async () => {
     const now = new Date();
     const seededRow = {
       id: 'seed-1',
@@ -318,6 +380,7 @@ describe('POST /approvals/dev/seed', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.approval.id).toBe('seed-1');
+      expect(body.push).toEqual({ tokensFound: 1, dispatched: 1, errors: [] });
     } finally {
       process.env.NODE_ENV = orig;
     }

@@ -10,10 +10,8 @@ import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/
 
 export const approvalRoutes = new Hono();
 
-// Apply auth middleware to all approval routes
 approvalRoutes.use('*', authMiddleware);
 
-// GET /pending — list pending, non-expired approvals for the authed user
 approvalRoutes.get('/pending', async (c) => {
   const userId = c.get('auth').user.id;
   const rows = await db
@@ -46,9 +44,10 @@ const seedSchema = z.object({
   expiresInSeconds: z.number().int().min(10).max(3600).optional(),
 });
 
-// POST /dev/seed — DEV ONLY: create a fake approval for testing. 404 in prod.
+// DEV ONLY: 404 outside development/test environments.
 approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
-  if (process.env.NODE_ENV === 'production') {
+  const env = process.env.NODE_ENV;
+  if (env !== 'development' && env !== 'test') {
     return c.json({ error: 'Not found' }, 404);
   }
 
@@ -72,12 +71,19 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
     })
     .returning();
 
-  // Dispatch push notification — failures are non-blocking so seed still succeeds
-  // when no token is registered yet.
+  if (!row) {
+    return c.json({ error: 'Failed to create approval' }, 500);
+  }
+
+  // Push is best-effort — seed must succeed even with no registered token.
+  let tokensFound = 0;
+  let dispatched = 0;
+  const errors: string[] = [];
   try {
     const tokens = await getUserPushTokens(userId);
+    tokensFound = tokens.length;
     if (tokens.length > 0) {
-      await sendExpoPush(
+      const tickets = await sendExpoPush(
         tokens.map((to) => ({
           to,
           ...buildApprovalPush({
@@ -87,18 +93,31 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
           }),
         }))
       );
+      dispatched = tickets.filter((t) => t.status === 'ok').length;
+      for (const t of tickets) {
+        if (t.status === 'error') {
+          errors.push(t.message ?? 'unknown');
+        }
+      }
     }
   } catch (err) {
-    console.warn('[approvals] dev/seed push dispatch failed:', err);
+    console.error('[approvals] dev/seed push dispatch failed:', err);
+    errors.push(err instanceof Error ? err.message : String(err));
   }
 
-  return c.json({ approval: serialize(row) }, 201);
+  return c.json(
+    {
+      approval: serialize(row),
+      push: { tokensFound, dispatched, errors },
+    },
+    201
+  );
 });
 
-// GET /:id — fetch one approval (full detail)
 approvalRoutes.get('/:id', async (c) => {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
+  if (!id) return c.json({ error: 'Bad request' }, 400);
   const [row] = await db
     .select()
     .from(approvalRequests)
@@ -108,12 +127,10 @@ approvalRoutes.get('/:id', async (c) => {
   return c.json({ approval: serialize(row) });
 });
 
-// POST /:id/approve — approve the request (checks pending + not expired)
 approvalRoutes.post('/:id/approve', async (c) => {
   return decideHandler(c, 'approved');
 });
 
-// POST /:id/deny — deny the request with optional reason
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
   const reason = c.req.valid('json').reason;
   return decideHandler(c, 'denied', reason);
@@ -126,23 +143,38 @@ async function decideHandler(
 ) {
   const userId = c.get('auth').user.id;
   const id = c.req.param('id');
+  if (!id) return c.json({ error: 'Bad request' }, 400);
 
-  const [row] = await db
-    .select()
-    .from(approvalRequests)
-    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
-
-  if (!row) return c.json({ error: 'Not found' }, 404);
-  if (row.status !== 'pending') return c.json({ error: `Already ${row.status}` }, 409);
-  if (row.expiresAt.getTime() <= Date.now()) return c.json({ error: 'Expired' }, 410);
-
-  const [updated] = await db
+  const result = await db
     .update(approvalRequests)
     .set({ status, decidedAt: new Date(), decisionReason: reason ?? null })
-    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)))
+    .where(
+      and(
+        eq(approvalRequests.id, id),
+        eq(approvalRequests.userId, userId),
+        eq(approvalRequests.status, 'pending'),
+        gt(approvalRequests.expiresAt, new Date()),
+      )
+    )
     .returning();
 
-  return c.json({ approval: serialize(updated) });
+  if (result.length === 0) {
+    const [existing] = await db
+      .select()
+      .from(approvalRequests)
+      .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+    if (!existing) return c.json({ error: 'Not found' }, 404);
+    if (existing.status !== 'pending') {
+      return c.json(
+        { error: `Already ${existing.status}`, finalStatus: existing.status },
+        409
+      );
+    }
+    return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
+  }
+
+  const [updated] = result;
+  return c.json({ approval: serialize(updated!) });
 }
 
 function serialize(r: typeof approvalRequests.$inferSelect) {

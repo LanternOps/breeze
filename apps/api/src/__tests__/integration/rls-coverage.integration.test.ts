@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { afterAll, describe, it, expect } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { partners, users } from '../../db/schema';
+import { approvalRequests } from '../../db/schema/approvals';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -577,5 +579,207 @@ describe('RLS coverage contract', () => {
         `user_id = breeze_current_user_id(). ` +
         `See the Phase 6 migration for the canonical shape.`
     ).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// approval_requests — Shape 6 forge test
+//
+// The pg_catalog inspection above only checks that a policy referencing
+// breeze_current_user_id() exists for each DML command. It does NOT prove
+// Postgres actually rejects a cross-user write — a refactor that replaces
+// the canonical user_id = breeze_current_user_id() predicate with a
+// permissive `true` would still pass the catalog check but silently let
+// any user act on any approval row.
+//
+// This block forges cross-user reads/writes against a real DB connection
+// (as `breeze_app`, the unprivileged role) and asserts Postgres enforces
+// the Shape 6 policy in practice. It is purposefully self-contained so it
+// can run under vitest.config.rls-coverage.ts (which deliberately does NOT
+// load setup.ts and thus has no per-test TRUNCATE) — fixtures are seeded
+// via withSystemDbAccessContext and torn down by id in an afterAll.
+// ===========================================================================
+describe('approval_requests RLS — cross-user forge enforcement (Shape 6)', () => {
+  // Stable suffix so re-runs against a long-lived DB don't collide on
+  // users.email (UNIQUE) but tests within a single run share the fixture.
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const partnerSlug = `rls-approvals-partner-${runSuffix}`;
+  const userAEmail = `rls-approvals-a-${runSuffix}@example.test`;
+  const userBEmail = `rls-approvals-b-${runSuffix}@example.test`;
+
+  let partnerId: string;
+  let userAId: string;
+  let userBId: string;
+  let approvalAId: string | null = null;
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS Approvals Partner ${runSuffix}`,
+          slug: partnerSlug,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for approvals RLS forge test');
+      partnerId = partner.id;
+
+      const [a, b] = await db
+        .insert(users)
+        .values([
+          {
+            partnerId: partner.id,
+            email: userAEmail,
+            name: 'RLS Approvals User A',
+            status: 'active',
+          },
+          {
+            partnerId: partner.id,
+            email: userBEmail,
+            name: 'RLS Approvals User B',
+            status: 'active',
+          },
+        ])
+        .returning({ id: users.id });
+      if (!a || !b) throw new Error('failed to seed users for approvals RLS forge test');
+      userAId = a.id;
+      userBId = b.id;
+    });
+  }
+
+  afterAll(async () => {
+    // approval_requests policy has no system-scope OR branch, so system
+    // context cannot delete the row directly. Delete it as user A (the
+    // row's owner). Users/partners are dual-axis / partner-axis and DO
+    // accept system scope, so we tear those down via system context.
+    if (approvalAId && userAId) {
+      await withDbAccessContext(userContext(userAId), async () =>
+        db.delete(approvalRequests).where(eq(approvalRequests.id, approvalAId!))
+      );
+    }
+    await withSystemDbAccessContext(async () => {
+      if (userAId) await db.delete(users).where(eq(users.id, userAId));
+      if (userBId) await db.delete(users).where(eq(users.id, userBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  // Build a per-user DbAccessContext. Shape 6 only needs `userId`;
+  // scope='organization' with empty accessibleOrgIds keeps the caller's
+  // org/partner reach to none so no other policy accidentally green-lights
+  // the row.
+  function userContext(userId: string) {
+    return {
+      scope: 'organization' as const,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [],
+      userId,
+    };
+  }
+
+  it('user A can INSERT and SELECT their own approval_request row', async () => {
+    await ensureFixtures();
+
+    const inserted = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .insert(approvalRequests)
+        .values({
+          userId: userAId,
+          requestingClientLabel: 'rls-forge-client',
+          actionLabel: 'forge.test',
+          actionToolName: 'forge.test',
+          riskTier: 'low',
+          riskSummary: 'rls forge test seed',
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        })
+        .returning({ id: approvalRequests.id })
+    );
+
+    expect(inserted).toHaveLength(1);
+    approvalAId = inserted[0]!.id;
+
+    const visibleToA = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .select({ id: approvalRequests.id })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalAId!))
+    );
+    expect(visibleToA.map((r) => r.id)).toEqual([approvalAId]);
+  });
+
+  it('user B SELECT cannot see user A\'s row (RLS hides it via USING)', async () => {
+    await ensureFixtures();
+    if (!approvalAId) throw new Error('seed test must run first');
+
+    const visibleToB = await withDbAccessContext(userContext(userBId), async () =>
+      db
+        .select({ id: approvalRequests.id })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalAId!))
+    );
+    expect(visibleToB).toEqual([]);
+  });
+
+  it('user B UPDATE on user A\'s row affects 0 rows (USING filters the WHERE)', async () => {
+    await ensureFixtures();
+    if (!approvalAId) throw new Error('seed test must run first');
+
+    // The policy USING clause filters the row out before WITH CHECK runs,
+    // so this is a no-op rather than an RLS violation. The status remains
+    // 'pending' regardless.
+    const updated = await withDbAccessContext(userContext(userBId), async () =>
+      db
+        .update(approvalRequests)
+        .set({ status: 'approved', decidedAt: new Date() })
+        .where(eq(approvalRequests.id, approvalAId!))
+        .returning({ id: approvalRequests.id })
+    );
+    expect(updated).toEqual([]);
+
+    // Read back as user A (the row's owner) to confirm it is genuinely
+    // untouched. We can't use system scope here: the approval_requests
+    // policy is `user_id = breeze_current_user_id()` with no system-scope
+    // OR branch, so system context has no read access either.
+    const actual = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .select({ id: approvalRequests.id, status: approvalRequests.status })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalAId!))
+    );
+    expect(actual).toHaveLength(1);
+    expect(actual[0]!.status).toBe('pending');
+  });
+
+  it('user B INSERT with user_id=A is rejected by WITH CHECK', async () => {
+    await ensureFixtures();
+
+    let caught: unknown;
+    try {
+      await withDbAccessContext(userContext(userBId), async () =>
+        db.insert(approvalRequests).values({
+          userId: userAId, // forging user A's id while in user B's context
+          requestingClientLabel: 'rls-forge-client',
+          actionLabel: 'forge.test.crossuser',
+          actionToolName: 'forge.test',
+          riskTier: 'low',
+          riskSummary: 'rls forge test cross-user insert',
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        })
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    const cause = (caught as { cause?: { message?: string }; message?: string } | undefined);
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(
+      /new row violates row-level security policy for table "approval_requests"/
+    );
   });
 });

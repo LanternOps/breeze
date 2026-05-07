@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
   withSequence,
-  runOnJS,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScrollView } from 'react-native-gesture-handler';
@@ -40,13 +39,29 @@ export function ApprovalScreen() {
   const denyShake = useSharedValue(0);
 
   const [toast, setToast] = useState<{ kind: 'approve' | 'deny'; text: string } | null>(null);
+  const expiredHandledRef = useRef<string | null>(null);
 
-  // Data lifecycle (hydrate + refresh) lives in ApprovalGate; this mount
-  // only owns the entrance animation + arrival haptic.
+  // Data lifecycle lives in ApprovalGate; this mount owns entrance animation + arrival haptic.
   useEffect(() => {
     enter.value = withTiming(1, { duration: duration.enter, easing: ease });
     haptic.arrive();
   }, []);
+
+  // Wall-clock expiry backup — Reanimated timing may not fire after background→resume.
+  useEffect(() => {
+    if (!focused) return;
+    expiredHandledRef.current = null;
+    const expiresMs = new Date(focused.expiresAt).getTime();
+    const id = setInterval(() => {
+      if (Date.now() < expiresMs) return;
+      if (expiredHandledRef.current === focused.id) return;
+      if (focused.status !== 'pending') return;
+      expiredHandledRef.current = focused.id;
+      dispatch(markExpired(focused.id));
+      setToast({ kind: 'deny', text: 'This request expired before you could respond.' });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [focused?.id, focused?.expiresAt, focused?.status]);
 
   const enterStyle = useAnimatedStyle(() => ({
     opacity: enter.value,
@@ -105,11 +120,11 @@ export function ApprovalScreen() {
 
   function handleExpire() {
     if (!focused) return;
+    if (expiredHandledRef.current === focused.id) return;
+    expiredHandledRef.current = focused.id;
     dispatch(markExpired(focused.id));
   }
 
-  // Empty state — only shown if user opened the app expecting a pending
-  // approval and there isn't one (race with expiry, or already actioned).
   if (!focused) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top + spacing[10], paddingHorizontal: spacing[6] }}>
@@ -121,9 +136,7 @@ export function ApprovalScreen() {
     );
   }
 
-  // Recursive case: requesting client is THIS phone. v1 heuristic — match on
-  // a known label prefix. Replace with a server-issued `isRecursive` flag in
-  // a follow-up.
+  // Heuristic: client label prefix identifies our own mobile app to avoid self-approval loops.
   const isRecursive = focused.requestingClientLabel.startsWith('Breeze Mobile');
 
   return (
@@ -143,7 +156,9 @@ export function ApprovalScreen() {
             onExpire={handleExpire}
           />
           <Pressable
-            onPress={() => { /* report-as-suspicious sheet stub for v1 */ }}
+            onPress={() => {
+              // TODO: report-as-suspicious sheet (phase 2)
+            }}
             hitSlop={12}
           >
             <Text style={[type.meta, { color: theme.textMd }]}>Report</Text>
@@ -171,7 +186,6 @@ export function ApprovalScreen() {
         </View>
       </Animated.View>
 
-      {/* Success wash — sweeps up from the bottom on approve */}
       <Animated.View
         pointerEvents="none"
         style={[

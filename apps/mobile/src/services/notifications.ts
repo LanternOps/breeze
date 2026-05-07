@@ -17,19 +17,17 @@ Notifications.setNotificationHandler({
   }),
 });
 
-/**
- * Register for push notifications and get the push token
- */
-export async function registerForPushNotifications(): Promise<string | null> {
-  let token: string | null = null;
+export type PushRegistrationOutcome =
+  | { status: 'ok'; token: string }
+  | { status: 'unsupported'; reason: string }
+  | { status: 'failed'; reason: string };
 
-  // Check if this is a physical device
+export async function registerForPushNotifications(): Promise<PushRegistrationOutcome> {
   if (!Device.isDevice) {
     console.log('Push notifications require a physical device');
-    return null;
+    return { status: 'unsupported', reason: 'not_physical_device' };
   }
 
-  // Check and request permissions
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
 
@@ -40,26 +38,26 @@ export async function registerForPushNotifications(): Promise<string | null> {
 
   if (finalStatus !== 'granted') {
     console.log('Push notification permission not granted');
-    return null;
+    return { status: 'failed', reason: 'permission_denied' };
   }
 
+  let token: string | null = null;
   try {
-    // Get the Expo push token
     const projectId = Constants.expoConfig?.extra?.eas?.projectId;
     if (!projectId) throw new Error('EAS projectId missing — run `eas init`');
     const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
     token = tokenData.data;
 
-    // Register the token with our backend
     const platform = Platform.OS as 'ios' | 'android';
     await apiRegisterPushToken(token, platform);
 
     console.log('Push token registered:', token);
   } catch (error) {
     console.error('Error getting push token:', error);
+    const reason = error instanceof Error ? error.message : 'unknown';
+    return { status: 'failed', reason };
   }
 
-  // Configure Android notification channel
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('alerts', {
       name: 'Alerts',
@@ -85,7 +83,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
     });
   }
 
-  return token;
+  return { status: 'ok', token };
 }
 
 /**
@@ -199,9 +197,6 @@ export function parseAlertNotification(
   return null;
 }
 
-/**
- * Parse notification data for approval takeover
- */
 export function parseApprovalNotification(
   notification: Notifications.Notification | Notifications.NotificationResponse['notification']
 ): { approvalId: string } | null {

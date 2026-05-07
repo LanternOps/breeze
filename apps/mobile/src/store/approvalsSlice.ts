@@ -70,6 +70,9 @@ const slice = createSlice({
       else state.pending.unshift(action.payload);
       if (!state.focusId) state.focusId = action.payload.id;
     },
+    clearApprovalsError(state) {
+      state.error = null;
+    },
   },
   extraReducers: (b) => {
     b.addCase(hydrateFromCache.fulfilled, (s, a) => {
@@ -100,12 +103,22 @@ const slice = createSlice({
       if (i >= 0) s.pending[i] = a.payload;
       else s.pending.unshift(a.payload);
     });
+    b.addCase(fetchOne.rejected, (s, a) => {
+      const requestedId = a.meta.arg;
+      if (s.focusId === requestedId) s.focusId = null;
+      const msg = a.error.message;
+      if (msg === 'NOT_FOUND') {
+        s.error = 'That approval is no longer available.';
+      } else {
+        s.error = msg ?? "Couldn't load approval. Try again.";
+      }
+    });
 
     b.addCase(approve.pending, (s, a) => {
       s.decisionInFlight[a.meta.arg] = 'approve';
     });
     b.addCase(approve.fulfilled, (s, a) => {
-      delete s.decisionInFlight[a.payload.id];
+      delete s.decisionInFlight[a.meta.arg];
       s.pending = s.pending.filter((x) => x.id !== a.payload.id);
       if (s.focusId === a.payload.id) s.focusId = s.pending[0]?.id ?? null;
     });
@@ -118,7 +131,7 @@ const slice = createSlice({
       s.decisionInFlight[a.meta.arg.id] = 'deny';
     });
     b.addCase(deny.fulfilled, (s, a) => {
-      delete s.decisionInFlight[a.payload.id];
+      delete s.decisionInFlight[a.meta.arg.id];
       s.pending = s.pending.filter((x) => x.id !== a.payload.id);
       if (s.focusId === a.payload.id) s.focusId = s.pending[0]?.id ?? null;
     });
@@ -129,5 +142,5 @@ const slice = createSlice({
   },
 });
 
-export const { setFocus, markExpired, upsert } = slice.actions;
+export const { setFocus, markExpired, upsert, clearApprovalsError } = slice.actions;
 export default slice.reducer;

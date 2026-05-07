@@ -51,6 +51,7 @@ export async function fetchPendingApprovals(): Promise<ApprovalRequest[]> {
 
 export async function fetchApproval(id: string): Promise<ApprovalRequest> {
   const res = await authedFetch(`${PREFIX}/${id}`);
+  if (res.status === 404) throw new Error('NOT_FOUND');
   if (!res.ok) throw new Error(`Failed to fetch approval: ${res.status}`);
   const json = await res.json();
   return json.approval;

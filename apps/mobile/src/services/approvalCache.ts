@@ -3,17 +3,32 @@ import type { ApprovalRequest } from './approvals';
 
 const KEY = 'breeze.approvals.cache.v1';
 
-// Brief promise: "approvals work offline if already delivered."
-// Cache the most recent /pending response so a cold open with no network
-// can still render the queue.
+// Cache last /pending response so cold open with no network still renders the queue.
+
+async function clearCache(): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(KEY);
+  } catch (err) {
+    console.warn('[approvalCache] clear failed', err);
+  }
+}
 
 export async function readCachedApprovals(): Promise<ApprovalRequest[]> {
+  let raw: string | null;
   try {
-    const raw = await SecureStore.getItemAsync(KEY);
-    if (!raw) return [];
+    raw = await SecureStore.getItemAsync(KEY);
+  } catch (err) {
+    // SecureStore unavailable / decrypt failure — degrade gracefully to an empty queue.
+    console.warn('[approvalCache] read failed', err);
+    return [];
+  }
+  if (!raw) return [];
+  try {
     const parsed = JSON.parse(raw) as ApprovalRequest[];
     return parsed.filter((a) => new Date(a.expiresAt).getTime() > Date.now());
-  } catch {
+  } catch (err) {
+    console.warn('[approvalCache] corrupt cache, resetting', err);
+    await clearCache();
     return [];
   }
 }
