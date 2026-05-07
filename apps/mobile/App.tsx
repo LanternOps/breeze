@@ -1,14 +1,17 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { Provider as ReduxProvider } from 'react-redux';
+import * as Font from 'expo-font';
+import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux';
 import { Provider as PaperProvider, MD3DarkTheme, MD3LightTheme } from 'react-native-paper';
-import { useColorScheme } from 'react-native';
+import { ActivityIndicator, useColorScheme, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { store } from './src/store';
+import { store, type AppDispatch, type RootState } from './src/store';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { registerForPushNotifications } from './src/services/notifications';
+import { setPushRegistration } from './src/store/authSlice';
+import { palette } from './src/theme';
 
 const customLightTheme = {
   ...MD3LightTheme,
@@ -42,14 +45,48 @@ const customDarkTheme = {
   },
 };
 
+function PushRegistrationGate() {
+  const dispatch = useDispatch<AppDispatch>();
+  const token = useSelector((s: RootState) => s.auth.token);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      const outcome = await registerForPushNotifications();
+      if (cancelled) return;
+      dispatch(setPushRegistration({ status: outcome.status, reason: outcome.status === 'ok' ? null : outcome.reason }));
+    })();
+    return () => { cancelled = true; };
+  }, [token, dispatch]);
+
+  return null;
+}
+
 export default function App() {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? customDarkTheme : customLightTheme;
+  const [fontsReady, setFontsReady] = useState(false);
 
   useEffect(() => {
-    // Register for push notifications on app start
-    registerForPushNotifications();
+    Font.loadAsync({
+      'Geist-Regular':     require('./assets/fonts/Geist-Regular.otf'),
+      'Geist-Medium':      require('./assets/fonts/Geist-Medium.otf'),
+      'Geist-SemiBold':    require('./assets/fonts/Geist-SemiBold.otf'),
+      'GeistMono-Regular': require('./assets/fonts/GeistMono-Regular.otf'),
+      'GeistMono-Medium':  require('./assets/fonts/GeistMono-Medium.otf'),
+    })
+      .catch((err) => console.warn('Font load failed:', err))
+      .finally(() => setFontsReady(true));
   }, []);
+
+  if (!fontsReady) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: palette.dark.bg0 }}>
+        <ActivityIndicator color={palette.brand.base} />
+      </View>
+    );
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -57,6 +94,7 @@ export default function App() {
         <PaperProvider theme={theme}>
           <SafeAreaProvider>
             <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+            <PushRegistrationGate />
             <RootNavigator />
           </SafeAreaProvider>
         </PaperProvider>

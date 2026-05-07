@@ -1,150 +1,97 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { useTheme, Icon } from 'react-native-paper';
 
-import { AlertListScreen } from '../screens/alerts/AlertListScreen';
 import { AlertDetailScreen } from '../screens/alerts/AlertDetailScreen';
-import { DeviceListScreen } from '../screens/devices/DeviceListScreen';
 import { DeviceDetailScreen } from '../screens/devices/DeviceDetailScreen';
-import { SettingsScreen } from '../screens/settings/SettingsScreen';
+import { HomeScreen } from '../screens/chat/HomeScreen';
+import { SystemsScreen } from '../screens/systems/SystemsScreen';
+import { HomeIcon, SystemsIcon } from '../components/TabIcons';
+import { palette, fontFamily } from '../theme';
 import type { Alert, Device } from '../services/api';
 
-// Stack param lists
-export type AlertsStackParamList = {
-  AlertList: undefined;
-  AlertDetail: { alert: Alert };
+export type SystemsStackParamList = {
+  Systems: undefined;
+  SystemsAlertDetail: { alert: Alert };
+  SystemsDeviceDetail: { device: Device };
 };
 
-export type DevicesStackParamList = {
-  DeviceList: undefined;
-  DeviceDetail: { device: Device };
-};
-
-export type SettingsStackParamList = {
-  Settings: undefined;
-};
-
-// Tab param list
 export type MainTabParamList = {
-  AlertsTab: undefined;
-  DevicesTab: undefined;
-  SettingsTab: undefined;
+  HomeTab: undefined;
+  SystemsTab: undefined;
 };
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
-const AlertsStack = createNativeStackNavigator<AlertsStackParamList>();
-const DevicesStack = createNativeStackNavigator<DevicesStackParamList>();
-const SettingsStack = createNativeStackNavigator<SettingsStackParamList>();
+const SystemsStack = createNativeStackNavigator<SystemsStackParamList>();
 
-function AlertsStackNavigator() {
-  const theme = useTheme();
-
+function SystemsStackNavigator() {
   return (
-    <AlertsStack.Navigator
+    <SystemsStack.Navigator
       screenOptions={{
-        headerStyle: { backgroundColor: theme.colors.surface },
-        headerTintColor: theme.colors.onSurface,
+        headerStyle: { backgroundColor: palette.dark.bg0 },
+        headerShadowVisible: false,
+        headerTintColor: palette.dark.textHi,
+        headerTitleStyle: {
+          fontFamily: fontFamily.sansSemiBold,
+          fontSize: 17,
+          color: palette.dark.textHi,
+        },
+        contentStyle: { backgroundColor: palette.dark.bg0 },
       }}
     >
-      <AlertsStack.Screen
-        name="AlertList"
-        component={AlertListScreen}
-        options={{ title: 'Alerts' }}
+      <SystemsStack.Screen
+        name="Systems"
+        component={SystemsScreen}
+        options={{ headerShown: false }}
       />
-      <AlertsStack.Screen
-        name="AlertDetail"
+      <SystemsStack.Screen
+        name="SystemsAlertDetail"
         component={AlertDetailScreen}
         options={{ title: 'Alert Details' }}
       />
-    </AlertsStack.Navigator>
-  );
-}
-
-function DevicesStackNavigator() {
-  const theme = useTheme();
-
-  return (
-    <DevicesStack.Navigator
-      screenOptions={{
-        headerStyle: { backgroundColor: theme.colors.surface },
-        headerTintColor: theme.colors.onSurface,
-      }}
-    >
-      <DevicesStack.Screen
-        name="DeviceList"
-        component={DeviceListScreen}
-        options={{ title: 'Devices' }}
-      />
-      <DevicesStack.Screen
-        name="DeviceDetail"
+      <SystemsStack.Screen
+        name="SystemsDeviceDetail"
         component={DeviceDetailScreen}
         options={{ title: 'Device Details' }}
       />
-    </DevicesStack.Navigator>
-  );
-}
-
-function SettingsStackNavigator() {
-  const theme = useTheme();
-
-  return (
-    <SettingsStack.Navigator
-      screenOptions={{
-        headerStyle: { backgroundColor: theme.colors.surface },
-        headerTintColor: theme.colors.onSurface,
-      }}
-    >
-      <SettingsStack.Screen
-        name="Settings"
-        component={SettingsScreen}
-        options={{ title: 'Settings' }}
-      />
-    </SettingsStack.Navigator>
+    </SystemsStack.Navigator>
   );
 }
 
 export function MainNavigator() {
-  const theme = useTheme();
-
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: theme.colors.primary,
-        tabBarInactiveTintColor: theme.colors.onSurfaceVariant,
+        tabBarActiveTintColor: palette.brand.base,
+        tabBarInactiveTintColor: palette.dark.textLo,
         tabBarStyle: {
-          backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.outline,
+          backgroundColor: palette.dark.bg0,
+          borderTopColor: palette.dark.border,
+        },
+        tabBarLabelStyle: {
+          fontFamily: fontFamily.sansMedium,
+          fontSize: 11,
+          letterSpacing: 0.4,
         },
       }}
     >
       <Tab.Screen
-        name="AlertsTab"
-        component={AlertsStackNavigator}
+        name="HomeTab"
+        component={HomeScreen}
         options={{
-          tabBarLabel: 'Alerts',
+          tabBarLabel: 'Home',
           tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <Icon source="bell-alert" color={color} size={size} />
+            <HomeIcon color={color} size={size} />
           ),
         }}
       />
       <Tab.Screen
-        name="DevicesTab"
-        component={DevicesStackNavigator}
+        name="SystemsTab"
+        component={SystemsStackNavigator}
         options={{
-          tabBarLabel: 'Devices',
+          tabBarLabel: 'Systems',
           tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <Icon source="laptop" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="SettingsTab"
-        component={SettingsStackNavigator}
-        options={{
-          tabBarLabel: 'Settings',
-          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <Icon source="cog" color={color} size={size} />
+            <SystemsIcon color={color} size={size} />
           ),
         }}
       />

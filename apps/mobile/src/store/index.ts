@@ -3,11 +3,15 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import authReducer from './authSlice';
 import alertsReducer from './alertsSlice';
+import approvalsReducer from './approvalsSlice';
+import aiChatReducer from './aiChatSlice';
 
 export const store = configureStore({
   reducer: {
     auth: authReducer,
     alerts: alertsReducer,
+    approvals: approvalsReducer,
+    aiChat: aiChatReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

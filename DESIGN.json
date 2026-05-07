@@ -1,0 +1,275 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-06T00:00:00Z",
+  "title": "Design System: Breeze Mobile",
+  "extensions": {
+    "colorMeta": {
+      "brand": {
+        "role": "primary",
+        "displayName": "Brand Teal",
+        "canonical": "oklch(58% 0.13 200)",
+        "tonalRamp": [
+          "oklch(15% 0.05 200)",
+          "oklch(25% 0.08 200)",
+          "oklch(35% 0.10 200)",
+          "oklch(45% 0.12 200)",
+          "oklch(58% 0.13 200)",
+          "oklch(70% 0.11 200)",
+          "oklch(82% 0.07 200)",
+          "oklch(94% 0.03 200)"
+        ]
+      },
+      "brand-soft": {
+        "role": "primary",
+        "displayName": "Brand Soft",
+        "canonical": "oklch(70% 0.11 200)"
+      },
+      "brand-deep": {
+        "role": "primary",
+        "displayName": "Brand Deep",
+        "canonical": "oklch(40% 0.08 200)"
+      },
+      "approve": {
+        "role": "status",
+        "displayName": "Approve Green",
+        "canonical": "oklch(70% 0.18 145)",
+        "tonalRamp": [
+          "oklch(20% 0.05 145)",
+          "oklch(30% 0.09 145)",
+          "oklch(45% 0.14 145)",
+          "oklch(58% 0.17 145)",
+          "oklch(70% 0.18 145)",
+          "oklch(80% 0.14 145)",
+          "oklch(90% 0.07 145)",
+          "oklch(96% 0.03 145)"
+        ]
+      },
+      "approve-pressed": {
+        "role": "status",
+        "displayName": "Approve Pressed",
+        "canonical": "oklch(58% 0.17 145)"
+      },
+      "deny": {
+        "role": "status",
+        "displayName": "Deny Red",
+        "canonical": "oklch(62% 0.22 25)",
+        "tonalRamp": [
+          "oklch(20% 0.07 25)",
+          "oklch(30% 0.12 25)",
+          "oklch(42% 0.18 25)",
+          "oklch(52% 0.21 25)",
+          "oklch(62% 0.22 25)",
+          "oklch(75% 0.16 25)",
+          "oklch(88% 0.08 25)",
+          "oklch(96% 0.03 25)"
+        ]
+      },
+      "warning": {
+        "role": "status",
+        "displayName": "Warning Amber",
+        "canonical": "oklch(78% 0.15 75)"
+      },
+      "critical": {
+        "role": "status",
+        "displayName": "Critical Maroon",
+        "canonical": "oklch(35% 0.13 25)"
+      },
+      "dark-bg-0": {
+        "role": "neutral",
+        "displayName": "Surface 0 (App)",
+        "canonical": "oklch(15% 0.012 200)"
+      },
+      "dark-bg-1": {
+        "role": "neutral",
+        "displayName": "Surface 1 (Sheet)",
+        "canonical": "oklch(18% 0.012 200)"
+      },
+      "dark-bg-2": {
+        "role": "neutral",
+        "displayName": "Surface 2 (Card)",
+        "canonical": "oklch(22% 0.012 200)"
+      },
+      "dark-bg-3": {
+        "role": "neutral",
+        "displayName": "Surface 3 (Pressed)",
+        "canonical": "oklch(28% 0.012 200)"
+      },
+      "dark-border": {
+        "role": "neutral",
+        "displayName": "Hairline Border",
+        "canonical": "oklch(34% 0.012 200)"
+      },
+      "dark-text-hi": {
+        "role": "neutral",
+        "displayName": "Text High",
+        "canonical": "oklch(96% 0.005 200)"
+      },
+      "dark-text-md": {
+        "role": "neutral",
+        "displayName": "Text Medium",
+        "canonical": "oklch(75% 0.012 200)"
+      },
+      "dark-text-lo": {
+        "role": "neutral",
+        "displayName": "Text Low",
+        "canonical": "oklch(55% 0.012 200)"
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Approval *what* headline only — imperative, present tense." },
+      "title": { "displayName": "Title", "purpose": "Empty-state titles, sheet headings." },
+      "bodyLg": { "displayName": "Body Large", "purpose": "Roomy reads — chat AI replies." },
+      "body": { "displayName": "Body", "purpose": "Default body, list rows." },
+      "bodyMd": { "displayName": "Body Medium", "purpose": "Button labels, emphasized body." },
+      "meta": { "displayName": "Meta", "purpose": "Timestamps, secondary captions." },
+      "metaCaps": { "displayName": "Meta Caps", "purpose": "Section eyebrows: REQUESTING, TOOL, risk-tier label." },
+      "mono": { "displayName": "Mono", "purpose": "Verbatim API values: JSON args." },
+      "monoMd": { "displayName": "Mono Medium", "purpose": "Tool name in collapsed details." }
+    },
+    "shadows": [
+      {
+        "name": "success-wash",
+        "value": "rgba(44,181,103,0.18) full-screen overlay",
+        "purpose": "Atmospheric green sweep on approve. Translates from translateY(200) to translateY(0) over 200ms, fades over 600ms. Not a box-shadow."
+      },
+      {
+        "name": "toast-lift",
+        "value": "translateY(20→0) + opacity(0→1) 240ms",
+        "purpose": "Toasts rise from the thumb zone. No box-shadow."
+      }
+    ],
+    "motion": [
+      { "name": "ease", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Single ease-out-quint curve for every transition. No bounce, no elastic." },
+      { "name": "duration-fast", "value": "180ms", "purpose": "Tab fade, small state changes, hold-to-confirm rewind, toast exit." },
+      { "name": "duration-base", "value": "240ms", "purpose": "Most transitions, toast enter." },
+      { "name": "duration-swell", "value": "320ms", "purpose": "Success wash settle, card lift." },
+      { "name": "duration-enter", "value": "400ms", "purpose": "Approval entrance — opacity + translateY(24→0)." },
+      { "name": "duration-exit", "value": "280ms", "purpose": "Approval dismiss." },
+      { "name": "approve-wash-in", "value": "200ms", "purpose": "Success wash slide-up." },
+      { "name": "approve-wash-out", "value": "600ms", "purpose": "Success wash fade-out tail." },
+      { "name": "deny-shake", "value": "3 × 40ms (-4 / +4 / 0 px)", "purpose": "Deny micro-shake on the entire screen." },
+      { "name": "hold-to-confirm", "value": "5000ms linear", "purpose": "Recursive self-approval — fill animates left-to-right." },
+      { "name": "countdown-ring", "value": "linear over request lifetime (typ. 60s)", "purpose": "Strokes the brand-teal arc from full to zero." },
+      { "name": "toast-hold", "value": "1800ms", "purpose": "Toast on-screen duration before slide-out." }
+    ],
+    "haptics": [
+      { "name": "arrive", "value": "ImpactFeedbackStyle.Soft", "purpose": "Approval entrance — soft buzz, not a startle." },
+      { "name": "approve", "value": "NotificationFeedbackType.Success", "purpose": "Approve confirmed." },
+      { "name": "deny", "value": "ImpactFeedbackStyle.Medium", "purpose": "Deny — sharper but not warning-tier." },
+      { "name": "tap", "value": "selectionAsync", "purpose": "Biometric prompt cancel / generic feedback." },
+      { "name": "hold", "value": "NotificationFeedbackType.Warning", "purpose": "Recursive hold completes." },
+      { "name": "expiry", "value": "none", "purpose": "Intentional silence on countdown expiry." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Approve Button",
+      "kind": "button",
+      "refersTo": "button-approve",
+      "description": "Primary action on the approval surface. Always preceded by biometric.",
+      "html": "<button class=\"ds-btn-approve\">Approve</button>",
+      "css": ".ds-btn-approve { background: #2cb567; color: #04230f; padding: 20px 24px; border-radius: 16px; border: none; font-family: 'Geist-Medium', system-ui, sans-serif; font-size: 16px; font-weight: 500; line-height: 24px; flex: 1.4; transition: background 180ms cubic-bezier(0.22, 1, 0.36, 1); cursor: pointer; } .ds-btn-approve:hover { background: #208c50; } .ds-btn-approve:active { background: #208c50; }"
+    },
+    {
+      "name": "Deny Button",
+      "kind": "button",
+      "refersTo": "button-deny",
+      "description": "Single-tap deny. Opens optional reason sheet.",
+      "html": "<button class=\"ds-btn-deny\">Deny</button>",
+      "css": ".ds-btn-deny { background: #162026; color: #eef4f6; padding: 20px 24px; border-radius: 16px; border: none; font-family: 'Geist-Medium', system-ui, sans-serif; font-size: 16px; font-weight: 500; line-height: 24px; flex: 1; transition: background 180ms cubic-bezier(0.22, 1, 0.36, 1); cursor: pointer; } .ds-btn-deny:hover { background: #1f2c33; } .ds-btn-deny:active { background: #1f2c33; }"
+    },
+    {
+      "name": "Risk Band (High)",
+      "kind": "card",
+      "refersTo": "band-risk-high",
+      "description": "Status band on the approval card. Background carries severity; text color is paired.",
+      "html": "<div class=\"ds-band-risk-high\"><div class=\"ds-band-eyebrow\">HIGH IMPACT</div><div class=\"ds-band-summary\">Deletes data. Reversible within 30 days.</div></div>",
+      "css": ".ds-band-risk-high { background: #d94a3d; color: #fff5f3; padding: 16px; border-radius: 10px; font-family: 'Geist-Regular', system-ui, sans-serif; } .ds-band-eyebrow { font-family: 'Geist-SemiBold', system-ui, sans-serif; font-size: 11px; line-height: 14px; letter-spacing: 1px; text-transform: uppercase; } .ds-band-summary { font-size: 16px; line-height: 24px; margin-top: 4px; }"
+    },
+    {
+      "name": "Details Card (Tool + JSON)",
+      "kind": "card",
+      "refersTo": "card-details",
+      "description": "Collapsible card pairing a Meta-Caps eyebrow with a Mono primary value.",
+      "html": "<div class=\"ds-card-details\"><div class=\"ds-card-row\"><div><div class=\"ds-eyebrow\">TOOL</div><div class=\"ds-mono\">breeze.devices.delete</div></div><div class=\"ds-toggle\">Show details</div></div></div>",
+      "css": ".ds-card-details { background: #162026; border: 1px solid #2b3940; border-radius: 10px; padding: 16px; color: #eef4f6; } .ds-card-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; } .ds-eyebrow { font-family: 'Geist-SemiBold', system-ui, sans-serif; font-size: 11px; line-height: 14px; letter-spacing: 1px; text-transform: uppercase; color: #6b7d83; } .ds-mono { font-family: 'GeistMono-Medium', ui-monospace, monospace; font-size: 14px; line-height: 22px; margin-top: 4px; color: #eef4f6; } .ds-toggle { font-family: 'Geist-Medium', system-ui, sans-serif; font-size: 13px; line-height: 18px; letter-spacing: 0.1px; color: #a8b8be; }"
+    },
+    {
+      "name": "Countdown Ring",
+      "kind": "custom",
+      "description": "56px brand-teal arc on a Surface-3 track, linear from full to zero over the request lifetime.",
+      "html": "<svg class=\"ds-ring\" width=\"56\" height=\"56\" viewBox=\"0 0 56 56\"><circle cx=\"28\" cy=\"28\" r=\"26.5\" fill=\"none\" stroke=\"#1f2c33\" stroke-width=\"3\"/><circle cx=\"28\" cy=\"28\" r=\"26.5\" fill=\"none\" stroke=\"#1c8a9e\" stroke-width=\"3\" stroke-dasharray=\"166.5\" stroke-dashoffset=\"55\" stroke-linecap=\"round\" transform=\"rotate(-90 28 28)\"/></svg>",
+      "css": ".ds-ring { display: inline-block; }"
+    },
+    {
+      "name": "Hold to Confirm",
+      "kind": "button",
+      "description": "Press-and-hold control for recursive self-approval. Brand-teal fill animates left-to-right over 5s.",
+      "html": "<button class=\"ds-hold\"><span class=\"ds-hold-fill\" style=\"width: 40%\"></span><span class=\"ds-hold-label\">Hold to approve</span></button>",
+      "css": ".ds-hold { position: relative; height: 56px; border-radius: 16px; background: #162026; border: 1px solid #1c8a9e; overflow: hidden; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; } .ds-hold-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #1c8a9e; opacity: 0.35; transition: width 5000ms linear; } .ds-hold-label { position: relative; font-family: 'Geist-Medium', system-ui, sans-serif; font-size: 16px; line-height: 24px; color: #eef4f6; }"
+    },
+    {
+      "name": "Toast (Approve)",
+      "kind": "card",
+      "refersTo": "toast-approve",
+      "description": "Bottom-anchored toast. Slides up + fades in 240ms, holds 1800ms, exits 180ms.",
+      "html": "<div class=\"ds-toast-approve\">Approved · Delete 4 devices in Acme Corp.</div>",
+      "css": ".ds-toast-approve { background: #2cb567; color: #04230f; padding: 16px; border-radius: 10px; font-family: 'Geist-Medium', system-ui, sans-serif; font-size: 16px; line-height: 24px; }"
+    },
+    {
+      "name": "Reason Input",
+      "kind": "input",
+      "refersTo": "input-reason",
+      "description": "Multiline reason input inside the deny-reason bottom sheet.",
+      "html": "<textarea class=\"ds-input-reason\" placeholder=\"Reason\"></textarea>",
+      "css": ".ds-input-reason { background: #162026; color: #eef4f6; padding: 16px; border: none; border-radius: 10px; min-height: 88px; font-family: 'Geist-Regular', system-ui, sans-serif; font-size: 16px; line-height: 24px; resize: none; } .ds-input-reason::placeholder { color: #6b7d83; } .ds-input-reason:focus-visible { outline: 1px solid #1c8a9e; outline-offset: 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Calm Sentinel",
+    "overview": "Breeze Mobile is the security identity that makes high-tier AI agent actions safe. Its load-bearing moment is the 11:47pm buzz — owner of a 30-tech MSP glances at their phone, reads a request, trusts it's real, taps once. Every other surface (AI chat, fleet status, alerts) is ambient. The system rejects the visual register of generic mobile SaaS: no gradient text, no glassmorphism, no neon-on-dark, no candy palettes. It also rejects the cold, default look of stock React Native: Geist replaces system sans, brand-tinted neutrals replace pure greys, and color is committed to a single cool teal anchor with strict status semantics.",
+    "keyCharacteristics": [
+      "Dark-canonical, light supported. The 11:47pm scene drives the default.",
+      "One color carries the surface (Committed strategy). Brand teal anchors. Status colors are reserved for status.",
+      "Geist sans + GeistMono. The mono carries arguments and tool names; the sans carries everything else.",
+      "Spacious rows over dense cards. Cards appear when something demands focus.",
+      "Motion is one curve, five durations. Variance lives in the curve, not the speed."
+    ],
+    "rules": [
+      { "name": "The One Voice Rule", "body": "Brand teal carries identity, never status. If a chip is teal, it's a brand affordance (link, focus, pulse). If something needs to mean good or bad, use approve green or deny red. Never substitute brand for status to tone things down.", "section": "colors" },
+      { "name": "The Tinted Neutral Rule", "body": "No #000, no #fff. Every neutral is brand-hue tinted (chroma 0.005–0.012). The dark surface ramp is canonical at 200° hue.", "section": "colors" },
+      { "name": "The 200° Hue Rule", "body": "The brand and all neutrals share hue 200. Status colors hold their own hue (145, 25, 75) by design, so semantic intent reads instantly across the surface.", "section": "colors" },
+      { "name": "The Imperative Headline Rule", "body": "Approval display copy is imperative, present tense, plain English. Display type earns its size through directness, not length.", "section": "typography" },
+      { "name": "The Mono-For-Verbatim Rule", "body": "Anything quoted from the underlying API (tool names, arguments, request IDs) is rendered in GeistMono so it visually marks itself as machine-truth, not editorial copy.", "section": "typography" },
+      { "name": "The Flat-By-Default Rule", "body": "Surfaces are flat at rest. No box-shadow on cards, buttons, or sheets. Hierarchy comes from the surface ramp.", "section": "elevation" },
+      { "name": "The No-Glassmorphism Rule", "body": "No backdrop-filter, no decorative blurs. The sheet scrim is a flat rgba(0,0,0,0.55), intentional and dim, never blurred.", "section": "elevation" },
+      { "name": "The Asymmetric Pair Rule", "body": "Approve is always larger and right-anchored (flex 1.4). Deny is smaller and left-anchored (flex 1). The asymmetry is the design — approving requires more deliberate thumb travel.", "section": "components" }
+    ],
+    "dos": [
+      "Do anchor every screen on Surface 0 (#0a1014) in dark mode. Step up the ramp for cards, never sideways into a different hue.",
+      "Do use Geist for every label, headline, and body string. GeistMono for every value rendered verbatim from the API.",
+      "Do reserve approve green for healthy / approve, deny red for deny / critical, amber for warning. One semantic, one color.",
+      "Do use the brand teal (#1c8a9e) for identity affordances — countdown ring, focus, pulses, links — never for status.",
+      "Do animate with Easing.bezier(0.22, 1, 0.36, 1) (ease-out-quint) at one of five durations: 180 / 240 / 320 / 400 / 280ms.",
+      "Do keep the asymmetric button pair: approve flex 1.4, deny flex 1. Approve right, deny left.",
+      "Do use rounded.lg (16px) on actionable surfaces, rounded.md (10px) on info cards and bands, rounded.xl (24px) on sheets.",
+      "Do label section eyebrows in Meta Caps (11px, +1.0 letter-spacing). REQUESTING. TOOL. LOW IMPACT."
+    ],
+    "donts": [
+      "Don't use #000 or #fff. Pure black and pure white never appear in this system. Use #0a1014 or #eef4f6.",
+      "Don't use generic Tailwind / Material status hex (#dc2626, #3b82f6, #22c55e). They violate the 200°-hue tinted-neutral rule and read as AI-generated.",
+      "Don't use border-left greater than 1px as a colored accent stripe on cards or list items.",
+      "Don't use gradient text (background-clip: text).",
+      "Don't use glassmorphism / backdrop-filter / decorative blurs.",
+      "Don't use box-shadow for elevation. Step the surface ramp instead.",
+      "Don't apologize in copy. Plain noun + verb, present tense.",
+      "Don't use em dashes in copy or --. Use commas, colons, semicolons, periods, parentheses.",
+      "Don't write gerund chains (Loading your devices...). Use Loading. or skeletons.",
+      "Don't put status meaning on the brand teal. Healthy in teal reads as a system tell.",
+      "Don't add bounce, elastic, or spring physics to motion. Ease-out-quint, every time.",
+      "Don't ship modals as a first thought. Inline progressive disclosure preferred.",
+      "Don't introduce new typography sizes outside the nine-step scale. Variance is in weight and family pairing.",
+      "Don't use system fonts as a fallback in production. Geist must be loaded; system-ui is a degraded path."
+    ]
+  }
+}

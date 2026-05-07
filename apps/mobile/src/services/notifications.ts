@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-notifications';
+import Constants from 'expo-constants';
 
 import { registerPushToken as apiRegisterPushToken } from './api';
 
@@ -16,19 +17,17 @@ Notifications.setNotificationHandler({
   }),
 });
 
-/**
- * Register for push notifications and get the push token
- */
-export async function registerForPushNotifications(): Promise<string | null> {
-  let token: string | null = null;
+export type PushRegistrationOutcome =
+  | { status: 'ok'; token: string }
+  | { status: 'unsupported'; reason: string }
+  | { status: 'failed'; reason: string };
 
-  // Check if this is a physical device
+export async function registerForPushNotifications(): Promise<PushRegistrationOutcome> {
   if (!Device.isDevice) {
     console.log('Push notifications require a physical device');
-    return null;
+    return { status: 'unsupported', reason: 'not_physical_device' };
   }
 
-  // Check and request permissions
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
 
@@ -39,32 +38,40 @@ export async function registerForPushNotifications(): Promise<string | null> {
 
   if (finalStatus !== 'granted') {
     console.log('Push notification permission not granted');
-    return null;
+    return { status: 'failed', reason: 'permission_denied' };
   }
 
+  let token: string | null = null;
   try {
-    // Get the Expo push token
-    const tokenData = await Notifications.getExpoPushTokenAsync({
-      projectId: 'your-project-id', // Replace with your Expo project ID
-    });
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+    if (!projectId) throw new Error('EAS projectId missing — run `eas init`');
+    const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
     token = tokenData.data;
 
-    // Register the token with our backend
     const platform = Platform.OS as 'ios' | 'android';
     await apiRegisterPushToken(token, platform);
 
     console.log('Push token registered:', token);
   } catch (error) {
     console.error('Error getting push token:', error);
+    const reason = error instanceof Error ? error.message : 'unknown';
+    return { status: 'failed', reason };
   }
 
-  // Configure Android notification channel
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('alerts', {
       name: 'Alerts',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#FF231F7C',
+      sound: 'default',
+    });
+
+    await Notifications.setNotificationChannelAsync('approvals', {
+      name: 'Approvals',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 200, 100, 200],
+      lightColor: '#1c8a9e',
       sound: 'default',
     });
 
@@ -76,7 +83,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
     });
   }
 
-  return token;
+  return { status: 'ok', token };
 }
 
 /**
@@ -173,19 +180,41 @@ export async function getLastNotificationResponse(): Promise<Notifications.Notif
 }
 
 /**
- * Parse notification data for alert navigation
+ * Parse notification data for alert navigation.
+ *
+ * Server side (apps/api/src/services/notifications.ts) emits FCM data
+ * payloads for `alert.*` events with `alertId`, `severity`, and
+ * `eventType` (e.g. `alert.triggered`). It does *not* set a `type` field
+ * today, so we recognize alert pushes by `eventType` prefix or the
+ * presence of `alertId` alongside any explicit `type: 'alert'` marker
+ * (kept for forward compatibility).
  */
 export function parseAlertNotification(
-  notification: Notifications.Notification
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
 ): { alertId: string; severity: string } | null {
   const data = notification.request.content.data;
+  if (!data) return null;
 
-  if (data && data.type === 'alert' && data.alertId) {
-    return {
-      alertId: data.alertId as string,
-      severity: (data.severity as string) || 'low',
-    };
+  const alertId = typeof data.alertId === 'string' ? data.alertId : null;
+  if (!alertId) return null;
+
+  const eventType = typeof data.eventType === 'string' ? data.eventType : '';
+  const explicitType = data.type === 'alert';
+  const isAlertEvent = eventType.startsWith('alert.') || explicitType;
+  if (!isAlertEvent) return null;
+
+  return {
+    alertId,
+    severity: typeof data.severity === 'string' ? data.severity : 'low',
+  };
+}
+
+export function parseApprovalNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): { approvalId: string } | null {
+  const data = notification.request.content.data;
+  if (data && data.type === 'approval' && typeof data.approvalId === 'string') {
+    return { approvalId: data.approvalId };
   }
-
   return null;
 }
