@@ -7,6 +7,7 @@ import { AlertDetailScreen } from '../screens/alerts/AlertDetailScreen';
 import { DeviceListScreen } from '../screens/devices/DeviceListScreen';
 import { DeviceDetailScreen } from '../screens/devices/DeviceDetailScreen';
 import { SettingsScreen } from '../screens/settings/SettingsScreen';
+import { HomeScreen } from '../screens/chat/HomeScreen';
 import type { Alert, Device } from '../services/api';
 
 // Stack param lists
@@ -26,6 +27,7 @@ export type SettingsStackParamList = {
 
 // Tab param list
 export type MainTabParamList = {
+  HomeTab: undefined;
   AlertsTab: undefined;
   DevicesTab: undefined;
   SettingsTab: undefined;
@@ -118,6 +120,16 @@ export function MainNavigator() {
         },
       }}
     >
+      <Tab.Screen
+        name="HomeTab"
+        component={HomeScreen}
+        options={{
+          tabBarLabel: 'Home',
+          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
+            <Icon source="message-text" color={color} size={size} />
+          ),
+        }}
+      />
       <Tab.Screen
         name="AlertsTab"
         component={AlertsStackNavigator}
