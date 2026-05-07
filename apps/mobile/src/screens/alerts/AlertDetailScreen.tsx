@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import { View, ScrollView, StyleSheet, Alert } from 'react-native';
 import { Text, useTheme, Button, Surface, Chip } from 'react-native-paper';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
-import type { AlertsStackParamList } from '../../navigation/MainNavigator';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
+import type { Alert as AlertModel } from '../../services/api';
 
-type Props = NativeStackScreenProps<AlertsStackParamList, 'AlertDetail'>;
+// Stack-agnostic props: this screen is reachable from both AlertsStack
+// (legacy) and SystemsStack (phase 3). Both pass `alert` in route params.
+interface Props {
+  route: { params: { alert: AlertModel } };
+}
 
 const severityColors: Record<string, string> = {
   critical: '#dc2626',

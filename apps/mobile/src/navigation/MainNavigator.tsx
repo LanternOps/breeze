@@ -2,87 +2,58 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useTheme, Icon } from 'react-native-paper';
 
-import { AlertListScreen } from '../screens/alerts/AlertListScreen';
 import { AlertDetailScreen } from '../screens/alerts/AlertDetailScreen';
-import { DeviceListScreen } from '../screens/devices/DeviceListScreen';
 import { DeviceDetailScreen } from '../screens/devices/DeviceDetailScreen';
 import { SettingsScreen } from '../screens/settings/SettingsScreen';
 import { HomeScreen } from '../screens/chat/HomeScreen';
+import { SystemsScreen } from '../screens/systems/SystemsScreen';
 import type { Alert, Device } from '../services/api';
-
-// Stack param lists
-export type AlertsStackParamList = {
-  AlertList: undefined;
-  AlertDetail: { alert: Alert };
-};
-
-export type DevicesStackParamList = {
-  DeviceList: undefined;
-  DeviceDetail: { device: Device };
-};
 
 export type SettingsStackParamList = {
   Settings: undefined;
 };
 
-// Tab param list
+export type SystemsStackParamList = {
+  Systems: undefined;
+  SystemsAlertDetail: { alert: Alert };
+  SystemsDeviceDetail: { device: Device };
+};
+
 export type MainTabParamList = {
   HomeTab: undefined;
-  AlertsTab: undefined;
-  DevicesTab: undefined;
+  SystemsTab: undefined;
   SettingsTab: undefined;
 };
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
-const AlertsStack = createNativeStackNavigator<AlertsStackParamList>();
-const DevicesStack = createNativeStackNavigator<DevicesStackParamList>();
 const SettingsStack = createNativeStackNavigator<SettingsStackParamList>();
+const SystemsStack = createNativeStackNavigator<SystemsStackParamList>();
 
-function AlertsStackNavigator() {
+function SystemsStackNavigator() {
   const theme = useTheme();
-
   return (
-    <AlertsStack.Navigator
+    <SystemsStack.Navigator
       screenOptions={{
         headerStyle: { backgroundColor: theme.colors.surface },
         headerTintColor: theme.colors.onSurface,
       }}
     >
-      <AlertsStack.Screen
-        name="AlertList"
-        component={AlertListScreen}
-        options={{ title: 'Alerts' }}
+      <SystemsStack.Screen
+        name="Systems"
+        component={SystemsScreen}
+        options={{ headerShown: false }}
       />
-      <AlertsStack.Screen
-        name="AlertDetail"
+      <SystemsStack.Screen
+        name="SystemsAlertDetail"
         component={AlertDetailScreen}
         options={{ title: 'Alert Details' }}
       />
-    </AlertsStack.Navigator>
-  );
-}
-
-function DevicesStackNavigator() {
-  const theme = useTheme();
-
-  return (
-    <DevicesStack.Navigator
-      screenOptions={{
-        headerStyle: { backgroundColor: theme.colors.surface },
-        headerTintColor: theme.colors.onSurface,
-      }}
-    >
-      <DevicesStack.Screen
-        name="DeviceList"
-        component={DeviceListScreen}
-        options={{ title: 'Devices' }}
-      />
-      <DevicesStack.Screen
-        name="DeviceDetail"
+      <SystemsStack.Screen
+        name="SystemsDeviceDetail"
         component={DeviceDetailScreen}
         options={{ title: 'Device Details' }}
       />
-    </DevicesStack.Navigator>
+    </SystemsStack.Navigator>
   );
 }
 
@@ -131,22 +102,12 @@ export function MainNavigator() {
         }}
       />
       <Tab.Screen
-        name="AlertsTab"
-        component={AlertsStackNavigator}
+        name="SystemsTab"
+        component={SystemsStackNavigator}
         options={{
-          tabBarLabel: 'Alerts',
+          tabBarLabel: 'Systems',
           tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <Icon source="bell-alert" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="DevicesTab"
-        component={DevicesStackNavigator}
-        options={{
-          tabBarLabel: 'Devices',
-          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <Icon source="laptop" color={color} size={size} />
+            <Icon source="view-dashboard" color={color} size={size} />
           ),
         }}
       />

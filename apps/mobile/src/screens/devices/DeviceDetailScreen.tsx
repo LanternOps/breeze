@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { View, ScrollView, StyleSheet, Alert } from 'react-native';
 import { Text, useTheme, Surface, Button, ActivityIndicator, Chip } from 'react-native-paper';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
-import type { DevicesStackParamList } from '../../navigation/MainNavigator';
 import { StatusBadge } from '../../components/StatusBadge';
 import { getDeviceMetrics, sendDeviceAction, type Device, type DeviceAction } from '../../services/api';
 
-type Props = NativeStackScreenProps<DevicesStackParamList, 'DeviceDetail'>;
+// Stack-agnostic props: reachable from both DevicesStack (legacy) and
+// SystemsStack (phase 3). Both pass `device` in route params.
+interface Props {
+  route: { params: { device: Device } };
+}
 
 export function DeviceDetailScreen({ route }: Props) {
   const theme = useTheme();

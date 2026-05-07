@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
-import { useApprovalTheme, palette, spacing, type } from '../../../theme';
+import { useApprovalTheme, spacing, type } from '../../../theme';
 import { haptic } from '../../../lib/motion';
+import { FleetBar } from '../../../components/FleetBar';
 import type { DeviceLike } from './DeviceCard';
 import { DeviceCard } from './DeviceCard';
 
@@ -44,11 +45,6 @@ export function FleetStatusRow({ devices, total }: Props) {
   const [expanded, setExpanded] = useState(false);
   const agg = aggregate(devices, total);
 
-  const knownInSlice = agg.healthy + agg.issues + agg.offline;
-  const pHealthy = knownInSlice ? agg.healthy / knownInSlice : 1;
-  const pIssues = knownInSlice ? agg.issues / knownInSlice : 0;
-  const pOffline = knownInSlice ? agg.offline / knownInSlice : 0;
-
   const summary =
     agg.issues === 0 && agg.offline === 0
       ? `${agg.total} devices, all healthy.`
@@ -63,27 +59,13 @@ export function FleetStatusRow({ devices, total }: Props) {
         }}
         style={{ paddingHorizontal: spacing[6] }}
       >
-        <View
-          style={{
-            flexDirection: 'row',
-            height: 6,
-            borderRadius: 0,
-            overflow: 'hidden',
+        <FleetBar
+          segments={{
+            healthy: agg.healthy,
+            warning: agg.issues,
+            critical: agg.offline,
           }}
-        >
-          {pHealthy > 0 ? (
-            <View style={{ flex: pHealthy, backgroundColor: palette.approve.base }} />
-          ) : null}
-          {pIssues > 0 ? (
-            <View style={{ flex: pIssues, backgroundColor: palette.warning.base }} />
-          ) : null}
-          {pOffline > 0 ? (
-            <View style={{ flex: pOffline, backgroundColor: palette.deny.base }} />
-          ) : null}
-          {knownInSlice === 0 ? (
-            <View style={{ flex: 1, backgroundColor: theme.bg3 }} />
-          ) : null}
-        </View>
+        />
         <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: spacing[2] }}>
           <Text style={[type.body, { color: theme.textHi, flex: 1 }]}>{summary}</Text>
           <Text style={[type.meta, { color: theme.textLo }]}>{expanded ? 'Hide' : 'Show'}</Text>

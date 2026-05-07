@@ -76,7 +76,7 @@ export function StatusPill() {
     <Pressable
       onPress={() => {
         haptic.tap();
-        navigation.navigate('AlertsTab');
+        navigation.navigate('SystemsTab');
       }}
       hitSlop={6}
     >
