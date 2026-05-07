@@ -145,6 +145,47 @@ These were resolved in the shape conversation; recording them so future-craft do
 - **Live signal on approvals**: just the requested action and where it was initiated (client name + machine). No screenshots, no session previews — privacy/perf cost not worth it.
 - **Voice on AI tab**: text only for v1.
 
+## Phase 2+ Scope (added post-implementation)
+
+Captured during the phase 1 build / verification but not designed yet. Each becomes its own brief when picked up.
+
+### Device & client lifecycle management
+
+A trusted-device security model is incomplete without lifecycle controls. Lost phones, retired laptops, decommissioned MCP integrations — all need a clean revocation path. Two parallel surfaces share the same UX patterns and audit primitives:
+
+**1. User's own mobile devices** (the phones running Breeze Mobile):
+- *Schema*: extend `mobile_devices` with `status` (`active`/`blocked`), `blocked_at`, `blocked_by_user_id`, `blocked_reason`. Tracking columns (`last_active_at`, `model`, `os_version`, `app_version`) already exist.
+- *User self-service* — Mobile Settings → "This device + others": list of paired devices, per-row last-active timestamp, "Revoke" action that flips status to `blocked` and clears push tokens. Cannot revoke the current device (must do that from another device or via web).
+- *Web Settings → Security → Devices*: same list as a richer table view. Owner of own systems case.
+- *Admin oversight* — Web admin UI under user detail: org/partner admin sees a user's devices and can block one (incident response: "Sarah just lost her phone — block it now"). Block on a user's primary device should require a confirmation modal explaining the user will be locked out of approvals until they re-pair.
+- *Approval enforcement*: blocked devices return 401/403 from `/api/v1/mobile/approvals/*`. Their push tokens are excluded from `getUserPushTokens()`.
+- *Audit trail*: every block/unblock writes to `audit_log` with actor, target device, reason.
+
+**2. OAuth clients per user** (Claude Desktop, Cursor, Breeze AI agent sessions, future MCP integrations):
+- Schema basis already exists via `oauth_clients` + `oauth_grants` + `oauth_sessions`.
+- *Mobile Settings → "Connected apps"*: list of clients the user has authorized, each row shows last-seen + last-approval-decided. Revoke action invalidates all grants for that client.
+- *Web Settings → Connected apps*: same. The brief's "Paired sessions list with revoke" line in Settings hints at this — formalize here.
+- *Admin oversight*: org/partner admin can revoke a specific client app for a specific user, or block a client app *globally* across the org (e.g., "no one in Acme Corp may use Cursor over MCP for the next 30 days").
+- *Distinct from device blocking*: revoking Claude Desktop ≠ blocking the user's iPhone. Both surfaces in Settings, never collapsed into one list.
+
+**Cross-cutting concerns:**
+- **Self-lockout protection**: when revoking the *only* trusted device or the *only* paired OAuth client, surface a clear warning. Don't silently brick the account.
+- **Re-pairing flow**: after a device is blocked, the user must re-enroll from a fresh sign-in. Existing biometric enrollment + push permission flow covers it; just need to make sure the blocked status forces a fresh `mobile_devices` row insert rather than reactivating the blocked one.
+- **Notification when blocked**: if a device is blocked admin-side while the user is logged in, the next API call returns a structured error the app uses to render a "This device has been deactivated by your administrator" full-screen state. No silent failures.
+- **Activity feed per device/client** (deferred even further): per-row drilldown to "what did this device approve in the last 30 days." Useful for forensics. Storage cost grows with approval volume — defer until justified.
+
+### Other phase 2+ items already captured elsewhere
+
+These live in the verification doc but worth listing here for one-stop reference:
+
+- MCP step-up enforcement (the missing wire between "Claude calls a tool" and "an approval row exists in `approval_requests`")
+- Server-issued `isRecursive` flag (replacing the label-prefix heuristic)
+- Background expiry job to flip `status='expired'` server-side
+- Report-as-suspicious sheet (currently a stub Pressable)
+- Multi-pending swipe between queued approvals
+- AI tab + Systems tab + full Settings polish
+- In-app agent step-up labeling decision (always-mobile vs. tiered inline-WebAuthn fallback)
+
 ## Suggested Build Order
 
 `$impeccable craft` is the next step. Break into three crafts in this order:
