@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScrollView } from 'react-native-gesture-handler';
 
 import { useAppDispatch, useAppSelector } from '../../store';
-import { approve, deny, markExpired } from '../../store/approvalsSlice';
+import { approve, deny, markExpired, reportSuspicious } from '../../store/approvalsSlice';
 import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 
@@ -20,6 +20,7 @@ import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { RiskBand } from './components/RiskBand';
 import { ApprovalButtons } from './components/ApprovalButtons';
+import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
 import { Toast } from '../../components/Toast';
 
 export function ApprovalScreen() {
@@ -39,6 +40,8 @@ export function ApprovalScreen() {
   const denyShake = useSharedValue(0);
 
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [reportSheetOpen, setReportSheetOpen] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
   const expiredHandledRef = useRef<string | null>(null);
 
   // Data lifecycle lives in ApprovalGate; this mount owns entrance animation + arrival haptic.
@@ -118,6 +121,23 @@ export function ApprovalScreen() {
     return `${verb} failed. Try again.`;
   }
 
+  function handleReportConfirm() {
+    if (!focused || reportBusy) return;
+    setReportBusy(true);
+    haptic.deny();
+    dispatch(reportSuspicious(focused.id))
+      .unwrap()
+      .then(() => {
+        setReportSheetOpen(false);
+        setReportBusy(false);
+        setToast({ kind: 'success', text: 'Reported. Session revoked.' });
+      })
+      .catch(() => {
+        setReportBusy(false);
+        setToast({ kind: 'error', text: "Couldn't revoke. Try again." });
+      });
+  }
+
   function handleExpire() {
     if (!focused) return;
     if (expiredHandledRef.current === focused.id) return;
@@ -136,8 +156,10 @@ export function ApprovalScreen() {
     );
   }
 
-  // Heuristic: client label prefix identifies our own mobile app to avoid self-approval loops.
-  const isRecursive = focused.requestingClientLabel.startsWith('Breeze Mobile');
+  // Server-issued: the API derives this from the requesting OAuth client +
+  // target user (see apps/api/src/services/approvalRecursion.ts). Gates the
+  // 5s hold-to-confirm self-approval UX.
+  const isRecursive = focused.isRecursive;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
@@ -156,10 +178,10 @@ export function ApprovalScreen() {
             onExpire={handleExpire}
           />
           <Pressable
-            onPress={() => {
-              // TODO: report-as-suspicious sheet (phase 2)
-            }}
+            onPress={() => setReportSheetOpen(true)}
             hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Report this approval as suspicious"
           >
             <Text style={[type.meta, { color: theme.textMd }]}>Report</Text>
           </Pressable>
@@ -199,6 +221,16 @@ export function ApprovalScreen() {
           },
           washStyle,
         ]}
+      />
+
+      <SuspiciousReportSheet
+        visible={reportSheetOpen}
+        busy={reportBusy}
+        onCancel={() => {
+          if (reportBusy) return;
+          setReportSheetOpen(false);
+        }}
+        onConfirm={handleReportConfirm}
       />
 
       <Toast

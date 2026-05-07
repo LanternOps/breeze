@@ -221,7 +221,19 @@ mobileRoutes.post(
     const auth = c.get('auth');
     const { token, platform } = c.req.valid('json');
     const now = new Date();
-    const deviceId = derivePushDeviceId(auth.user.id, platform, token);
+    let deviceId = derivePushDeviceId(auth.user.id, platform, token);
+
+    // If a row already exists for this deviceId AND it's blocked, insert
+    // a fresh row instead of reactivating the blocked one. We salt with
+    // the current timestamp so the new deviceId is unique.
+    const [existing] = await db
+      .select({ status: mobileDevices.status })
+      .from(mobileDevices)
+      .where(eq(mobileDevices.deviceId, deviceId))
+      .limit(1);
+    if (existing?.status === 'blocked') {
+      deviceId = `${deviceId}-${now.getTime()}`;
+    }
 
     const [device] = await db
       .insert(mobileDevices)
@@ -243,7 +255,12 @@ mobileRoutes.post(
           notificationsEnabled: true,
           lastActiveAt: now,
           updatedAt: now
-        }
+        },
+        // Belt-and-suspenders: never overwrite a blocked row via conflict
+        // path; the salted-id branch above keeps us out of this case
+        // entirely, but if a race lands a fresh row in between we still
+        // want the conflict update to skip blocked rows.
+        setWhere: sql`${mobileDevices.status} = 'active'`
       })
       .returning();
 
@@ -314,11 +331,23 @@ mobileRoutes.post(
     if (data.osVersion !== undefined) updateSet.osVersion = data.osVersion;
     if (data.appVersion !== undefined) updateSet.appVersion = data.appVersion;
 
+    // Same blocked-row protection as /notifications/register: if a row
+    // exists for this deviceId in `blocked` state, salt the id so the
+    // re-pair lands in a fresh row.
+    const [existing] = await db
+      .select({ status: mobileDevices.status })
+      .from(mobileDevices)
+      .where(eq(mobileDevices.deviceId, data.deviceId))
+      .limit(1);
+    const insertDeviceId = existing?.status === 'blocked'
+      ? `${data.deviceId}-${now.getTime()}`
+      : data.deviceId;
+
     const [device] = await db
       .insert(mobileDevices)
       .values({
         userId: auth.user.id,
-        deviceId: data.deviceId,
+        deviceId: insertDeviceId,
         platform: data.platform,
         model: data.model,
         osVersion: data.osVersion,
@@ -330,7 +359,8 @@ mobileRoutes.post(
       })
       .onConflictDoUpdate({
         target: mobileDevices.deviceId,
-        set: updateSet
+        set: updateSet,
+        setWhere: sql`${mobileDevices.status} = 'active'`
       })
       .returning();
 

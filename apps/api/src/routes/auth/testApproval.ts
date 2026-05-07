@@ -81,6 +81,11 @@ testApprovalRoutes.post('/me/test-approval', authMiddleware, async (c) => {
       status: 'pending',
       expiresAt,
       executionId: null,
+      // Sandbox test push — never the recursive self-approval loop, even
+      // though it's also self-addressed. The 5s hold UX is reserved for
+      // genuine OAuth-driven mobile-MCP self-loops, not the App Store
+      // reviewer test trigger.
+      isRecursive: false,
     })
     .returning();
 

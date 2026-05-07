@@ -84,7 +84,10 @@ async function handleTicketErrors(
   }
 }
 
-// Single SELECT merging fcm + apns columns; filters non-Expo and inactive rows.
+// Single SELECT merging fcm + apns columns; filters non-Expo, inactive,
+// and lifecycle-blocked rows. A blocked device must never receive a push
+// even if its tokens hadn't been cleared by the block handler — defense
+// in depth in case a token was cached and reattached afterwards.
 export async function getUserPushTokens(userId: string): Promise<string[]> {
   const rows = await db
     .select({
@@ -92,7 +95,13 @@ export async function getUserPushTokens(userId: string): Promise<string[]> {
       apns: mobileDevices.apnsToken,
     })
     .from(mobileDevices)
-    .where(and(eq(mobileDevices.userId, userId), eq(mobileDevices.notificationsEnabled, true)));
+    .where(
+      and(
+        eq(mobileDevices.userId, userId),
+        eq(mobileDevices.notificationsEnabled, true),
+        eq(mobileDevices.status, 'active')
+      )
+    );
   return rows
     .flatMap((r) => [r.fcm, r.apns])
     .filter((t): t is string => !!t && t.startsWith('ExponentPushToken'));

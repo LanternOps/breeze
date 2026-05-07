@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey, boolean } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { oauthClients, oauthSessions } from './oauth';
 import { aiToolExecutions } from './ai';
@@ -45,6 +45,15 @@ export const approvalRequests = pgTable(
      * orphaned approval rows remain readable for audit.
      */
     executionId: uuid('execution_id'),
+
+    /**
+     * Server-issued: TRUE when the requesting OAuth client is the user's
+     * own mobile app AND the request targets that same user (i.e. the phone
+     * is approving its own action). Replaces the mobile client's
+     * label-prefix heuristic; gates the 5s hold-to-confirm self-approval UX.
+     * Defaults to FALSE; populated via deriveIsRecursive() at insert time.
+     */
+    isRecursive: boolean('is_recursive').notNull().default(false),
 
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },

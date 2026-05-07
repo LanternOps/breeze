@@ -51,6 +51,8 @@ import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
 import { approvalRoutes } from './routes/approvals';
+import { lifecycleRoutes, lifecycleAdminRoutes } from './routes/lifecycle';
+import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
@@ -168,6 +170,7 @@ import {
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
+import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -719,8 +722,16 @@ api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
+// Device-blocked check sits in front of mobile + approvals routes so a
+// blocked phone gets a structured 403 from EVERY mobile-app API call,
+// not just approval endpoints. The middleware only acts when the
+// X-Breeze-Mobile-Device-Id header is present, so non-mobile clients
+// (web dashboard, MCP) sail through unchanged.
+api.use('/mobile/*', mobileDeviceBlockedMiddleware);
 api.route('/mobile', mobileRoutes);
 api.route('/mobile/approvals', approvalRoutes);
+api.route('/', lifecycleRoutes);
+api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
@@ -1001,6 +1012,7 @@ async function initializeWorkers(): Promise<void> {
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
+    ['approvalExpiryReaper', initializeApprovalExpiryReaper],
   ];
 
   await Promise.allSettled(
@@ -1136,6 +1148,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownOfflineDetector,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
+    shutdownApprovalExpiryReaper,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

@@ -106,6 +106,11 @@ export const oauthInteractions = pgTable('oauth_interactions', {
 // oauth_grants: persisted oidc-provider Grants. partner_id/org_id are
 // populated by the consent route; payload carries the rest of the Grant
 // state (resources, openid, rejected, rar) plus our breeze meta inline.
+//
+// Revocation: `revoked_at` is the per-user, per-client lifecycle marker.
+// Set when the user (or an admin) revokes an OAuth client via
+// /me/oauth-clients/:clientId/revoke. Token validation must reject any
+// access token whose grantId resolves to a row with revoked_at IS NOT NULL.
 export const oauthGrants = pgTable('oauth_grants', {
   id: text('id').primaryKey(),
   accountId: uuid('account_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -115,6 +120,9 @@ export const oauthGrants = pgTable('oauth_grants', {
   payload: jsonb('payload').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedByUserId: uuid('revoked_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  revokedReason: text('revoked_reason'),
 }, (table) => ({
   accountIdx: index('oauth_grants_account_idx').on(table.accountId),
   clientIdx: index('oauth_grants_client_idx').on(table.clientId),
@@ -122,4 +130,25 @@ export const oauthGrants = pgTable('oauth_grants', {
     .on(table.partnerId)
     .where(sql`${table.partnerId} IS NOT NULL`),
   expiresIdx: index('oauth_grants_expires_idx').on(table.expiresAt),
+  accountClientActiveIdx: index('oauth_grants_account_client_active_idx')
+    .on(table.accountId, table.clientId)
+    .where(sql`${table.revokedAt} IS NULL`),
+}));
+
+// oauth_client_blocks: org-wide block of an OAuth client (e.g. "no Cursor
+// over MCP for the next 30 days for everyone in Acme Corp"). Token
+// validation consults this table after the user-level oauthGrants check.
+// Shape 1 (org-tenant) RLS — see migration 2026-05-07-mobile-device-and-
+// oauth-lifecycle.sql for policies.
+export const oauthClientBlocks = pgTable('oauth_client_blocks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  clientId: text('client_id').notNull().references(() => oauthClients.id, { onDelete: 'cascade' }),
+  blockedAt: timestamp('blocked_at', { withTimezone: true }).defaultNow().notNull(),
+  blockedByUserId: uuid('blocked_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  blockedReason: text('blocked_reason'),
+  blockedUntil: timestamp('blocked_until', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  orgClientIdx: index('oauth_client_blocks_client_idx').on(table.clientId),
 }));

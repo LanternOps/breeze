@@ -24,6 +24,13 @@ export interface ApprovalRequest {
   expiresAt: string;
   decidedAt: string | null;
   decisionReason: string | null;
+  /**
+   * Server-issued flag. TRUE when the approval was triggered by this
+   * user's own mobile app (the same phone is the requester) — gates
+   * the 5-second hold-to-confirm UX for self-approval. Replaces the
+   * legacy client-side label-prefix heuristic.
+   */
+  isRecursive: boolean;
   createdAt: string;
 }
 
@@ -76,4 +83,13 @@ export async function denyRequest(id: string, reason?: string): Promise<Approval
   if (!res.ok) throw new Error(`Deny failed: ${res.status}`);
   const json = await res.json();
   return json.approval;
+}
+
+// Reports the in-flight approval as malicious. Server denies the row, revokes
+// the requesting OAuth client + its refresh tokens, and writes a security
+// audit log. Returns nothing (204).
+export async function reportSuspicious(id: string): Promise<void> {
+  const res = await authedFetch(`${PREFIX}/${id}/report-suspicious`, { method: 'POST' });
+  if (res.status === 404) throw new Error('NOT_FOUND');
+  if (!res.ok) throw new Error(`Report failed: ${res.status}`);
 }

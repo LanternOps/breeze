@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavigationContainer, DefaultTheme as NavDefaultTheme } from '@react-navigation/native';
-import { View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 import * as Sentry from '@sentry/react-native';
 
 import { useAppSelector, useAppDispatch } from '../store';
-import { setCredentials, logout } from '../store/authSlice';
+import { setCredentials, logout, logoutAsync } from '../store/authSlice';
 import { getStoredToken, getStoredUser, clearAuthData } from '../services/auth';
-import { getCurrentUser } from '../services/api';
+import { getCurrentUser, onDeviceBlocked } from '../services/api';
+import { spacing, type } from '../theme';
 import {
   getOnboardingCompleted,
   setOnboardingCompleted,
@@ -22,6 +23,21 @@ export function RootNavigator() {
   const dispatch = useAppDispatch();
   const { token, isLoading, user } = useAppSelector((state) => state.auth);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [blockedReason, setBlockedReason] = useState<string | null>(null);
+  const blockedHandledRef = useRef(false);
+
+  useEffect(() => {
+    // Single global listener: any API call that comes back with the
+    // device_blocked code flips us into the lockout screen. We also clear
+    // local credentials so a remount doesn't keep re-attempting requests.
+    const off = onDeviceBlocked((reason) => {
+      if (blockedHandledRef.current) return;
+      blockedHandledRef.current = true;
+      setBlockedReason(reason);
+      void dispatch(logoutAsync());
+    });
+    return off;
+  }, [dispatch]);
   // null while we're still reading the persisted flag. Defaults to "completed"
   // (true) on read errors so a corrupted AsyncStorage never traps users.
   const [hasOnboarded, setHasOnboarded] = useState<boolean | null>(null);
@@ -106,6 +122,57 @@ export function RootNavigator() {
     });
     setHasOnboarded(true);
   }, []);
+
+  if (blockedReason !== null) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: spacing[6],
+          backgroundColor: palette.dark.bg0,
+        }}
+      >
+        <Text style={[type.title, { color: palette.dark.textHi, textAlign: 'center' }]}>
+          This device has been deactivated
+        </Text>
+        <Text
+          style={[
+            type.bodyMd,
+            {
+              color: palette.dark.textMd,
+              textAlign: 'center',
+              marginTop: spacing[3],
+            },
+          ]}
+        >
+          {blockedReason ??
+            'An administrator or one of your other devices revoked access. Sign in again on a fresh install to re-pair.'}
+        </Text>
+        <Pressable
+          onPress={() => {
+            Alert.alert(
+              'Sign back in',
+              'You will need to re-pair this device after signing in.',
+              [{ text: 'OK' }],
+            );
+            blockedHandledRef.current = false;
+            setBlockedReason(null);
+          }}
+          style={({ pressed }) => ({
+            marginTop: spacing[6],
+            paddingHorizontal: spacing[5],
+            paddingVertical: spacing[3],
+            borderRadius: 12,
+            backgroundColor: pressed ? palette.brand.deep : palette.brand.base,
+          })}
+        >
+          <Text style={[type.bodyMd, { color: '#fff' }]}>Sign in</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   if (isCheckingAuth || isLoading || hasOnboarded === null) {
     return (

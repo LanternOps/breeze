@@ -7,6 +7,8 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { aiToolExecutions } from '../db/schema/ai';
+import { oauthGrants, oauthRefreshTokens } from '../db/schema/oauth';
+import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 
 export const approvalRoutes = new Hono();
@@ -68,6 +70,9 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
       riskTier: body.riskTier,
       riskSummary: body.riskSummary,
       status: 'pending',
+      // Dev/seed never simulates the self-approval loop — that path is
+      // exercised by deliberately picking a real Breeze Mobile OAuth grant.
+      isRecursive: false,
       expiresAt,
     })
     .returning();
@@ -135,6 +140,118 @@ approvalRoutes.post('/:id/approve', async (c) => {
 approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
   const reason = c.req.valid('json').reason;
   return decideHandler(c, 'denied', reason);
+});
+
+// "This wasn't me." Reports the in-flight approval as malicious, denies it,
+// revokes the requesting OAuth client's grant + refresh tokens, and writes
+// a security audit row. Behaves identically to /deny from the SDK's
+// perspective — the linked ai_tool_executions row flips to 'rejected' so
+// waitForApproval resolves with denial.
+approvalRoutes.post('/:id/report-suspicious', async (c) => {
+  const userId = c.get('auth').user.id;
+  const orgId = c.get('auth').orgId ?? null;
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'Bad request' }, 400);
+
+  // Look up the row first so we can capture client_id even if it's already decided.
+  const [existing] = await db
+    .select()
+    .from(approvalRequests)
+    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  // Flip status to 'reported' if still pending, else leave as-is. Either way
+  // we treat the report as authoritative for revocation + audit.
+  if (existing.status === 'pending') {
+    await db
+      .update(approvalRequests)
+      .set({
+        status: 'reported',
+        decidedAt: new Date(),
+        decisionReason: 'Reported as suspicious by user',
+      })
+      .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
+    // Mirror to ai_tool_executions so the SDK waiter unblocks with denial.
+    if (existing.executionId) {
+      try {
+        await db
+          .update(aiToolExecutions)
+          .set({ status: 'rejected', approvedBy: userId, approvedAt: new Date() })
+          .where(eq(aiToolExecutions.id, existing.executionId));
+      } catch (err) {
+        console.error('[approvals] report-suspicious: failed to mirror to ai_tool_executions:', err);
+      }
+    }
+  }
+
+  // Revoke the requesting OAuth client (grant + refresh tokens) for this user.
+  // TODO(lifecycle): a parallel agent is adding a `revoked_at` column on
+  // `oauth_grants` for soft-revoke + audit history. Until that lands we delete
+  // the grant row outright (oidc-provider treats a missing grant as revoked)
+  // and mark refresh tokens as revoked via the existing column.
+  const requestingClientId = existing.requestingClientId;
+  let grantsRevoked = 0;
+  let refreshTokensRevoked = 0;
+  if (requestingClientId) {
+    try {
+      const deleted = await db
+        .delete(oauthGrants)
+        .where(
+          and(
+            eq(oauthGrants.accountId, userId),
+            eq(oauthGrants.clientId, requestingClientId),
+          )
+        )
+        .returning({ id: oauthGrants.id });
+      grantsRevoked = deleted.length;
+
+      const tokenRes = await db
+        .update(oauthRefreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(oauthRefreshTokens.userId, userId),
+            eq(oauthRefreshTokens.clientId, requestingClientId),
+          )
+        )
+        .returning({ id: oauthRefreshTokens.id });
+      refreshTokensRevoked = tokenRes.length;
+    } catch (err) {
+      console.error('[approvals] report-suspicious: revocation failed:', err);
+      // Non-fatal: the approval row + audit log are still authoritative; the
+      // user can revoke from the connected-apps UI as a fallback.
+    }
+  }
+
+  // Audit row — security.suspicious_report, scoped to the user.
+  try {
+    await db.insert(auditLogs).values({
+      orgId,
+      actorType: 'user',
+      actorId: userId,
+      actorEmail: c.get('auth').user.email,
+      action: 'security.suspicious_report',
+      resourceType: 'approval_request',
+      resourceId: existing.id,
+      resourceName: existing.actionLabel.slice(0, 255),
+      details: {
+        approvalId: existing.id,
+        requestingClientId,
+        requestingClientLabel: existing.requestingClientLabel,
+        actionToolName: existing.actionToolName,
+        priorStatus: existing.status,
+        grantsRevoked,
+        refreshTokensRevoked,
+      },
+      result: 'success',
+    });
+  } catch (err) {
+    console.error('[approvals] report-suspicious: audit insert failed:', err);
+  }
+
+  return c.body(null, 204);
 });
 
 async function decideHandler(
@@ -215,6 +332,7 @@ function serialize(r: typeof approvalRequests.$inferSelect) {
     decidedAt: r.decidedAt?.toISOString() ?? null,
     decisionReason: r.decisionReason ?? null,
     executionId: r.executionId ?? null,
+    isRecursive: r.isRecursive,
     createdAt: r.createdAt.toISOString(),
   };
 }

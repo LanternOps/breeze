@@ -23,14 +23,27 @@ import { useApprovalTheme, palette, radii, spacing, type } from '../../../theme'
 import { useAppDispatch, useAppSelector } from '../../../store';
 import { logoutAsync } from '../../../store/authSlice';
 import {
+  blockPairedDevice,
+  fetchConnectedApps,
+  fetchPairedDevices,
+  revokeConnectedAppAsync,
+  selectActiveConnectedAppsCount,
+  selectActivePairedDevicesCount,
+  selectConnectedApps,
+  selectPairedDevices,
+} from '../../../store/lifecycleSlice';
+import {
   checkBiometricAvailability,
   isBiometricEnabled,
   setBiometricEnabled,
 } from '../../../services/biometrics';
 import { ease, duration } from '../../../lib/motion';
+import { relativeTime } from '../../../lib/relativeTime';
 import { Toast } from '../../../components/Toast';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
+import type { PairedMobileDevice } from '../../../services/mobileDevices';
+import type { ConnectedApp } from '../../../services/connectedApps';
 
 interface Props {
   visible: boolean;
@@ -60,6 +73,12 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
   const user = useAppSelector((s) => s.auth.user);
+  const pairedDevices = useAppSelector(selectPairedDevices);
+  const connectedApps = useAppSelector(selectConnectedApps);
+  const activeDeviceCount = useAppSelector(selectActivePairedDevicesCount);
+  const activeAppCount = useAppSelector(selectActiveConnectedAppsCount);
+  const pendingDeviceId = useAppSelector((s) => s.lifecycle.pendingDeviceId);
+  const pendingAppId = useAppSelector((s) => s.lifecycle.pendingAppId);
 
   const screenWidth = Dimensions.get('window').width;
   const sheetWidth = Math.min(screenWidth * 0.84, 420);
@@ -92,7 +111,72 @@ export function SettingsSheet({ visible, onCancel }: Props) {
       const critical = await AsyncStorage.getItem(NOTIF_CRITICAL_ONLY_KEY);
       if (critical !== null) setCriticalOnly(critical === 'true');
     })();
-  }, [visible, sheetWidth]);
+
+    // Refresh both lifecycle lists every time the sheet opens (tab focus
+    // semantics — the sheet is the entry point).
+    void dispatch(fetchPairedDevices());
+    void dispatch(fetchConnectedApps());
+  }, [visible, sheetWidth, dispatch]);
+
+  function onRevokeDevice(device: PairedMobileDevice) {
+    if (device.isCurrent) {
+      Alert.alert(
+        'Cannot revoke this device',
+        'Sign in on another phone or use the web dashboard to revoke this device.',
+      );
+      return;
+    }
+    if (device.status === 'blocked') return;
+
+    const isLastTrustedDevice = activeDeviceCount <= 1;
+    const warning = isLastTrustedDevice
+      ? 'This is your only trusted device. Revoking it means you will need to re-pair before approving anything from your phone.'
+      : 'The device will be signed out and stop receiving approval pushes immediately.';
+
+    Alert.alert(
+      `Revoke ${device.model ?? device.platform}?`,
+      warning,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revoke',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await dispatch(blockPairedDevice({ id: device.id }));
+            if (blockPairedDevice.fulfilled.match(result)) {
+              setToast({ kind: 'success', text: 'Device revoked.' });
+            } else {
+              setToast({ kind: 'error', text: 'Could not revoke device.' });
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  function onRevokeApp(app: ConnectedApp) {
+    if (app.revokedAt) return;
+    const isLast = activeAppCount <= 1;
+    const message = isLast
+      ? `This is your only connected app. Revoking ${app.displayName} will require re-authorization before it can request approvals again.`
+      : `Revoke ${app.displayName}? This will sign it out and require re-authorization.`;
+
+    Alert.alert('Revoke app', message, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Revoke',
+        style: 'destructive',
+        onPress: async () => {
+          const result = await dispatch(revokeConnectedAppAsync({ clientId: app.clientId }));
+          if (revokeConnectedAppAsync.fulfilled.match(result)) {
+            setToast({ kind: 'success', text: 'App revoked.' });
+          } else {
+            setToast({ kind: 'error', text: 'Could not revoke app.' });
+          }
+        },
+      },
+    ]);
+  }
 
   const sheetStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }],
@@ -192,6 +276,10 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             notificationsOn={notificationsOn}
             criticalOnly={criticalOnly}
             buildVersion={buildVersion}
+            pairedDevices={pairedDevices}
+            connectedApps={connectedApps}
+            pendingDeviceId={pendingDeviceId}
+            pendingAppId={pendingAppId}
             onToggleBiometric={onToggleBiometric}
             onToggleNotifications={onToggleNotifications}
             onToggleCriticalOnly={onToggleCriticalOnly}
@@ -200,6 +288,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             onPressPrivacy={() => safeOpen(PRIVACY_URL)}
             onPressDeleteAccount={onPressDeleteAccount}
             onSignOut={onSignOut}
+            onRevokeDevice={onRevokeDevice}
+            onRevokeApp={onRevokeApp}
           />
           {/* Toast inside the sliding container so its left/right gutters
               are relative to the sheet (84% width), not the modal root. */}
@@ -232,6 +322,10 @@ function SheetBody({
   notificationsOn,
   criticalOnly,
   buildVersion,
+  pairedDevices,
+  connectedApps,
+  pendingDeviceId,
+  pendingAppId,
   onToggleBiometric,
   onToggleNotifications,
   onToggleCriticalOnly,
@@ -240,6 +334,8 @@ function SheetBody({
   onPressPrivacy,
   onPressDeleteAccount,
   onSignOut,
+  onRevokeDevice,
+  onRevokeApp,
 }: {
   user: { name: string; email: string } | null;
   theme: ReturnType<typeof useApprovalTheme>;
@@ -250,6 +346,10 @@ function SheetBody({
   notificationsOn: boolean;
   criticalOnly: boolean;
   buildVersion: string;
+  pairedDevices: PairedMobileDevice[];
+  connectedApps: ConnectedApp[];
+  pendingDeviceId: string | null;
+  pendingAppId: string | null;
   onToggleBiometric: (v: boolean) => void;
   onToggleNotifications: (v: boolean) => void;
   onToggleCriticalOnly: (v: boolean) => void;
@@ -258,6 +358,8 @@ function SheetBody({
   onPressPrivacy: () => void;
   onPressDeleteAccount: () => void;
   onSignOut: () => void;
+  onRevokeDevice: (device: PairedMobileDevice) => void;
+  onRevokeApp: (app: ConnectedApp) => void;
 }) {
   return (
     <View style={{ flex: 1 }}>
@@ -334,6 +436,46 @@ function SheetBody({
 
         <SectionDivider color={theme.border} />
 
+        <SectionHeader label="This phone + others" theme={theme} />
+        {pairedDevices.length === 0 ? (
+          <EmptyHint
+            text="No paired devices yet. Sign in on another phone to see it here."
+            theme={theme}
+          />
+        ) : (
+          pairedDevices.map((d) => (
+            <DeviceRow
+              key={d.id}
+              device={d}
+              theme={theme}
+              pending={pendingDeviceId === d.id}
+              onRevoke={() => onRevokeDevice(d)}
+            />
+          ))
+        )}
+
+        <SectionDivider color={theme.border} />
+
+        <SectionHeader label="Connected apps" theme={theme} />
+        {connectedApps.length === 0 ? (
+          <EmptyHint
+            text="No apps connected. Tools like Claude Desktop appear here once you authorize them."
+            theme={theme}
+          />
+        ) : (
+          connectedApps.map((a) => (
+            <AppRow
+              key={a.clientId}
+              app={a}
+              theme={theme}
+              pending={pendingAppId === a.clientId}
+              onRevoke={() => onRevokeApp(a)}
+            />
+          ))
+        )}
+
+        <SectionDivider color={theme.border} />
+
         <Pressable
           onPress={onPressDeleteAccount}
           style={({ pressed }) => ({
@@ -401,6 +543,154 @@ function LinkRow({
     >
       <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
     </Pressable>
+  );
+}
+
+function SectionHeader({
+  label,
+  theme,
+}: {
+  label: string;
+  theme: ReturnType<typeof useApprovalTheme>;
+}) {
+  return (
+    <View style={{ paddingHorizontal: spacing[6], paddingTop: spacing[4], paddingBottom: spacing[2] }}>
+      <Text style={[type.metaCaps, { color: theme.textLo }]}>{label.toUpperCase()}</Text>
+    </View>
+  );
+}
+
+function EmptyHint({ text, theme }: { text: string; theme: ReturnType<typeof useApprovalTheme> }) {
+  return (
+    <View style={{ paddingHorizontal: spacing[6], paddingVertical: spacing[3] }}>
+      <Text style={[type.meta, { color: theme.textLo }]}>{text}</Text>
+    </View>
+  );
+}
+
+function DeviceRow({
+  device,
+  theme,
+  pending,
+  onRevoke,
+}: {
+  device: PairedMobileDevice;
+  theme: ReturnType<typeof useApprovalTheme>;
+  pending: boolean;
+  onRevoke: () => void;
+}) {
+  const blocked = device.status === 'blocked';
+  const disabled = blocked || pending;
+  const subtitleParts: string[] = [];
+  if (device.osVersion) subtitleParts.push(`${device.platform === 'ios' ? 'iOS' : 'Android'} ${device.osVersion}`);
+  else subtitleParts.push(device.platform === 'ios' ? 'iOS' : 'Android');
+  if (device.lastActiveAt) subtitleParts.push(`active ${relativeTime(device.lastActiveAt)}`);
+  const subtitle = subtitleParts.join(' · ');
+
+  const title = device.model ?? (device.platform === 'ios' ? 'iPhone' : 'Android device');
+  const labelColor = blocked ? theme.textLo : theme.textHi;
+  const ctaLabel = blocked
+    ? 'Revoked'
+    : device.isCurrent
+      ? 'This device'
+      : pending
+        ? 'Revoking…'
+        : 'Revoke';
+  const ctaColor = blocked || device.isCurrent ? theme.textLo : palette.deny.base;
+
+  return (
+    <View
+      style={{
+        paddingHorizontal: spacing[6],
+        paddingVertical: spacing[3],
+        flexDirection: 'row',
+        alignItems: 'center',
+        opacity: blocked ? 0.55 : 1,
+      }}
+    >
+      <View style={{ flex: 1, marginRight: spacing[3] }}>
+        <Text style={[type.bodyMd, { color: labelColor }]} numberOfLines={1}>
+          {title}
+          {device.isCurrent ? '  ·  this device' : ''}
+        </Text>
+        <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]} numberOfLines={1}>
+          {subtitle}
+        </Text>
+        {blocked && device.blockedReason ? (
+          <Text style={[type.meta, { color: theme.textLo, marginTop: spacing[1] }]} numberOfLines={2}>
+            {device.blockedReason}
+          </Text>
+        ) : null}
+      </View>
+      <Pressable
+        onPress={disabled || device.isCurrent ? undefined : onRevoke}
+        disabled={disabled || device.isCurrent}
+        style={({ pressed }) => ({
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[2],
+          borderRadius: radii.md,
+          backgroundColor: pressed && !disabled && !device.isCurrent ? theme.bg2 : 'transparent',
+        })}
+      >
+        <Text style={[type.bodyMd, { color: ctaColor }]}>{ctaLabel}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function AppRow({
+  app,
+  theme,
+  pending,
+  onRevoke,
+}: {
+  app: ConnectedApp;
+  theme: ReturnType<typeof useApprovalTheme>;
+  pending: boolean;
+  onRevoke: () => void;
+}) {
+  const revoked = app.revokedAt !== null;
+  const subtitleParts: string[] = [];
+  if (app.lastApprovalDecidedAt) subtitleParts.push(`last approval ${relativeTime(app.lastApprovalDecidedAt)}`);
+  else if (app.lastUsedAt) subtitleParts.push(`last seen ${relativeTime(app.lastUsedAt)}`);
+  if (revoked) subtitleParts.push(`revoked ${relativeTime(app.revokedAt)}`);
+  const subtitle = subtitleParts.length > 0 ? subtitleParts.join(' · ') : 'Connected';
+
+  const labelColor = revoked ? theme.textLo : theme.textHi;
+  const ctaLabel = revoked ? 'Revoked' : pending ? 'Revoking…' : 'Revoke';
+  const ctaColor = revoked ? theme.textLo : palette.deny.base;
+
+  return (
+    <View
+      style={{
+        paddingHorizontal: spacing[6],
+        paddingVertical: spacing[3],
+        flexDirection: 'row',
+        alignItems: 'center',
+        opacity: revoked ? 0.55 : 1,
+      }}
+    >
+      <View style={{ flex: 1, marginRight: spacing[3] }}>
+        <Text style={[type.bodyMd, { color: labelColor }]} numberOfLines={1}>
+          {app.displayName}
+        </Text>
+        <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]} numberOfLines={1}>
+          {subtitle}
+        </Text>
+      </View>
+      <Pressable
+        onPress={revoked || pending ? undefined : onRevoke}
+        disabled={revoked || pending}
+        style={({ pressed }) => ({
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[2],
+          borderRadius: radii.md,
+          backgroundColor: pressed && !revoked && !pending ? theme.bg2 : 'transparent',
+        })}
+      >
+        <Text style={[type.bodyMd, { color: ctaColor }]}>{ctaLabel}</Text>
+      </Pressable>
+    </View>
   );
 }
 

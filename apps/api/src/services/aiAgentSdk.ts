@@ -412,6 +412,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 riskTier,
                 riskSummary,
                 status: 'pending',
+                // The chat session's originating OAuth client is not yet
+                // tracked on aiSessions; until that lands, the AI-agent
+                // path can't be a self-loop with the mobile push target.
+                // (deriveIsRecursive() with a null requestingClientId
+                // returns false — explicit here for documentation.)
+                isRecursive: false,
                 expiresAt,
               })
               .returning({ id: approvalRequests.id })

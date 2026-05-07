@@ -17,6 +17,7 @@ import reducer, {
   hydrateFromCache,
   markExpired,
   refreshPending,
+  reportSuspicious,
   setFocus,
   upsert,
 } from './approvalsSlice';
@@ -35,6 +36,7 @@ function makeApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     decidedAt: null,
     decisionReason: null,
+    isRecursive: false,
     createdAt: new Date().toISOString(),
     ...overrides,
   };
@@ -85,6 +87,19 @@ describe('approvalsSlice — synchronous reducers', () => {
     const dirty = { ...initial, error: 'boom' };
     const s = reducer(dirty, clearApprovalsError());
     expect(s.error).toBeNull();
+  });
+
+  it('upsert preserves the server-issued isRecursive flag round-trip', () => {
+    const recursive = makeApproval({ id: 'r1', isRecursive: true });
+    const normal = makeApproval({ id: 'r2', isRecursive: false });
+
+    let s = reducer(initial, upsert(recursive));
+    s = reducer(s, upsert(normal));
+
+    const r1 = s.pending.find((a) => a.id === 'r1');
+    const r2 = s.pending.find((a) => a.id === 'r2');
+    expect(r1?.isRecursive).toBe(true);
+    expect(r2?.isRecursive).toBe(false);
   });
 });
 
@@ -287,5 +302,53 @@ describe('approvalsSlice — async thunk extraReducers', () => {
     });
     expect(next.decisionInFlight['a']).toBeUndefined();
     expect(next.error).toBe('cannot deny');
+  });
+
+  it('reportSuspicious.pending tracks decisionInFlight by id', () => {
+    const next = reducer(initial, {
+      type: reportSuspicious.pending.type,
+      meta: { arg: 'a' },
+    });
+    expect(next.decisionInFlight['a']).toBe('deny');
+  });
+
+  it('reportSuspicious.fulfilled removes the approval + rolls focus forward', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, upsert(makeApproval({ id: 'b' })));
+    s = reducer(s, { type: reportSuspicious.pending.type, meta: { arg: 'a' } });
+    const next = reducer(s, {
+      type: reportSuspicious.fulfilled.type,
+      payload: { id: 'a' },
+      meta: { arg: 'a' },
+    });
+    expect(next.pending.map((x) => x.id)).toEqual(['b']);
+    expect(next.decisionInFlight['a']).toBeUndefined();
+    expect(next.focusId).toBe('b');
+  });
+
+  it('reportSuspicious.fulfilled nulls focusId when nothing is left', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, { type: reportSuspicious.pending.type, meta: { arg: 'a' } });
+    const next = reducer(s, {
+      type: reportSuspicious.fulfilled.type,
+      payload: { id: 'a' },
+      meta: { arg: 'a' },
+    });
+    expect(next.pending).toHaveLength(0);
+    expect(next.focusId).toBeNull();
+  });
+
+  it('reportSuspicious.rejected clears in-flight + surfaces error', () => {
+    const seeded = {
+      ...initial,
+      decisionInFlight: { a: 'deny' as const },
+    };
+    const next = reducer(seeded, {
+      type: reportSuspicious.rejected.type,
+      error: { message: 'cannot revoke' },
+      meta: { arg: 'a' },
+    });
+    expect(next.decisionInFlight['a']).toBeUndefined();
+    expect(next.error).toBe('cannot revoke');
   });
 });

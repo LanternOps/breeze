@@ -135,6 +135,9 @@ describe('mobile routes', () => {
 
   describe('POST /mobile/notifications/register', () => {
     it('should register push token through compatibility endpoint', async () => {
+      // Pre-insert lookup checks if a blocked row already exists with this
+      // deviceId. Returns empty so the route inserts under the unsalted id.
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
       vi.mocked(db.insert).mockReturnValue(
         mockInsertOnConflictReturning([
           {
@@ -182,6 +185,9 @@ describe('mobile routes', () => {
 
   describe('POST /mobile/devices', () => {
     it('should register a device with platform token', async () => {
+      // Pre-insert lookup for a blocked row collision; empty result means
+      // we use the unsalted deviceId.
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
       vi.mocked(db.insert).mockReturnValue(
         mockInsertOnConflictReturning([
           {

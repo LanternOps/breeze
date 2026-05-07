@@ -6,6 +6,7 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -25,6 +26,15 @@ vi.mock('../db/schema/approvals', () => ({
 
 vi.mock('../db/schema/ai', () => ({
   aiToolExecutions: { id: 'id' },
+}));
+
+vi.mock('../db/schema/oauth', () => ({
+  oauthGrants: { id: 'id', accountId: 'accountId', clientId: 'clientId' },
+  oauthRefreshTokens: { id: 'id', userId: 'userId', clientId: 'clientId' },
+}));
+
+vi.mock('../db/schema/audit', () => ({
+  auditLogs: {},
 }));
 
 const TEST_USER = {
@@ -357,6 +367,100 @@ describe('POST /approvals/:id/deny', () => {
     expect(aiSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'rejected', approvedBy: TEST_USER.id }),
     );
+  });
+});
+
+describe('POST /approvals/:id/report-suspicious', () => {
+  const baseRow = {
+    id: 'a1',
+    userId: TEST_USER.id,
+    requestingClientLabel: 'Claude Desktop',
+    requestingMachineLabel: null,
+    requestingClientId: 'client-xyz',
+    requestingSessionId: null,
+    actionLabel: 'Delete prod devices',
+    actionToolName: 'breeze.devices.delete',
+    actionArguments: {},
+    riskTier: 'high' as const,
+    riskSummary: 'Reported as suspicious test',
+    status: 'pending' as const,
+    expiresAt: new Date(Date.now() + 60_000),
+    decidedAt: null,
+    decisionReason: null,
+    executionId: null,
+    createdAt: new Date(),
+  };
+
+  function wireRevocationStubs(opts: { existing: typeof baseRow | null }) {
+    // 1) initial select to find approval
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(opts.existing ? [opts.existing] : []),
+      }),
+    } as any);
+
+    // 2) update approval_requests (status=reported)
+    const approvalUpdateSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    // 3) update oauth_refresh_tokens
+    const tokenUpdateSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'rt-1' }]),
+      }),
+    });
+    vi.mocked(db.update)
+      .mockReturnValueOnce({ set: approvalUpdateSet } as any)
+      .mockReturnValueOnce({ set: tokenUpdateSet } as any);
+
+    // delete oauth_grants
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'grant-1' }]),
+      }),
+    } as any);
+
+    // insert audit log
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    return { approvalUpdateSet, tokenUpdateSet };
+  }
+
+  it('happy path: 204, denies row, revokes grant + tokens, writes audit', async () => {
+    const { approvalUpdateSet, tokenUpdateSet } = wireRevocationStubs({ existing: baseRow });
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(204);
+    expect(approvalUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'reported' }),
+    );
+    expect(tokenUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ revokedAt: expect.any(Date) }),
+    );
+    expect(db.delete).toHaveBeenCalled();
+    expect(db.insert).toHaveBeenCalled();
+  });
+
+  it('returns 404 when the approval does not exist for this user', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as any);
+
+    const res = await buildApp().request('/approvals/missing/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 when auth middleware rejects (permission denied)', async () => {
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any) => {
+      return c.json({ error: 'unauthorized' }, 401);
+    });
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(401);
   });
 });
 

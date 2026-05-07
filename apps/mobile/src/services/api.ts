@@ -1,12 +1,40 @@
 import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
+import { getOrCreateInstallationId } from './installationId';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
 const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
+export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
+export const DEVICE_BLOCKED_CODE = 'device_blocked';
+
+type DeviceBlockedListener = (reason: string | null) => void;
+const deviceBlockedListeners = new Set<DeviceBlockedListener>();
+
+/**
+ * Subscribe to the global "this device just got blocked" signal. The first
+ * API response carrying `code: device_blocked` triggers it; the app should
+ * sign out and render the blocked-state screen.
+ */
+export function onDeviceBlocked(listener: DeviceBlockedListener): () => void {
+  deviceBlockedListeners.add(listener);
+  return () => {
+    deviceBlockedListeners.delete(listener);
+  };
+}
+
+function notifyDeviceBlocked(reason: string | null): void {
+  for (const listener of deviceBlockedListeners) {
+    try {
+      listener(reason);
+    } catch (err) {
+      console.error('[api] device-blocked listener threw', err);
+    }
+  }
+}
 
 // Types
 export interface Alert {
@@ -180,6 +208,18 @@ async function requestWithPrefix<T>(
     (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
   }
 
+  // Always send the per-install id so the API can recognise this phone for
+  // the lifecycle/lockout flow. Failures (SecureStore disabled in tests)
+  // fall through silently — a missing header simply means "no row to match".
+  try {
+    const installationId = await getOrCreateInstallationId();
+    if (installationId) {
+      (headers as Record<string, string>)[MOBILE_DEVICE_ID_HEADER] = installationId;
+    }
+  } catch {
+    // ignore
+  }
+
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   const url = `${baseUrl}${prefix}${endpoint}`;
   const response = await fetch(url, {
@@ -190,11 +230,17 @@ async function requestWithPrefix<T>(
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
+    const code = typeof body.code === 'string' ? body.code : undefined;
+    if (code === DEVICE_BLOCKED_CODE) {
+      const reason = typeof body.reason === 'string' ? body.reason : null;
+      notifyDeviceBlocked(reason);
+    }
     const error: ApiError = {
       message:
         (typeof body.error === 'string' && body.error)
         || (typeof body.message === 'string' && body.message)
         || 'An error occurred',
+      code,
       statusCode: response.status
     };
     throw error;

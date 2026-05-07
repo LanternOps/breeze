@@ -234,6 +234,20 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (typeof payload.grant_id === 'string' && await isGrantRevoked(payload.grant_id)) {
     throw new HTTPException(401, { message: 'token revoked' });
   }
+  // Org-wide OAuth client block: covers the "no Cursor in Acme Corp for the
+  // next 30 days" admin lever. Cheap one-row check, only runs when an org
+  // is in scope (org_id claim present). System-context lookup; the table is
+  // org-tenant RLS but this middleware is the authorization point.
+  if (typeof payload.org_id === 'string' && typeof (payload as { client_id?: unknown }).client_id === 'string') {
+    const { isOauthClientBlockedForOrg } = await import('../routes/lifecycle');
+    const blocked = await isOauthClientBlockedForOrg(
+      payload.org_id,
+      (payload as { client_id: string }).client_id
+    );
+    if (blocked) {
+      throw new HTTPException(403, { message: 'oauth client blocked for this organization' });
+    }
+  }
   if (!payload.partner_id || !payload.sub) {
     throw new HTTPException(401, { message: 'token missing required claims' });
   }

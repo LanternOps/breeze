@@ -5,6 +5,7 @@ import {
   denyRequest as apiDeny,
   fetchApproval as apiFetchOne,
   fetchPendingApprovals as apiFetchPending,
+  reportSuspicious as apiReportSuspicious,
 } from '../services/approvals';
 import { readCachedApprovals, writeCachedApprovals, clearCachedApproval } from '../services/approvalCache';
 
@@ -50,6 +51,19 @@ export const deny = createAsyncThunk(
     const updated = await apiDeny(args.id, args.reason);
     await clearCachedApproval(args.id);
     return updated;
+  }
+);
+
+// Server-side: denies the row, revokes the requesting OAuth client, writes
+// audit. Locally: removes the approval from `pending`, clears in-flight,
+// rolls focus forward. Mirrors the deny.fulfilled reducer shape so the
+// takeover screen unmounts cleanly.
+export const reportSuspicious = createAsyncThunk(
+  'approvals/reportSuspicious',
+  async (id: string) => {
+    await apiReportSuspicious(id);
+    await clearCachedApproval(id);
+    return { id };
   }
 );
 
@@ -138,6 +152,19 @@ const slice = createSlice({
     b.addCase(deny.rejected, (s, a) => {
       delete s.decisionInFlight[a.meta.arg.id];
       s.error = a.error.message ?? 'Deny failed';
+    });
+
+    b.addCase(reportSuspicious.pending, (s, a) => {
+      s.decisionInFlight[a.meta.arg] = 'deny';
+    });
+    b.addCase(reportSuspicious.fulfilled, (s, a) => {
+      delete s.decisionInFlight[a.meta.arg];
+      s.pending = s.pending.filter((x) => x.id !== a.payload.id);
+      if (s.focusId === a.payload.id) s.focusId = s.pending[0]?.id ?? null;
+    });
+    b.addCase(reportSuspicious.rejected, (s, a) => {
+      delete s.decisionInFlight[a.meta.arg];
+      s.error = a.error.message ?? 'Report failed';
     });
   },
 });
