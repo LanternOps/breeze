@@ -5,6 +5,7 @@ import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { useApprovalTheme, palette, radii, spacing, type } from '../../../theme';
 import { useAppSelector } from '../../../store';
 import { haptic } from '../../../lib/motion';
+import { useNetworkConnected } from '../../../lib/useNetworkConnected';
 import type { MainTabParamList } from '../../../navigation/MainNavigator';
 
 // Copy ladder, in priority order:
@@ -18,6 +19,7 @@ import type { MainTabParamList } from '../../../navigation/MainNavigator';
 export function StatusPill() {
   const theme = useApprovalTheme('dark');
   const navigation = useNavigation<BottomTabNavigationProp<MainTabParamList>>();
+  const connected = useNetworkConnected();
 
   const counts = useAppSelector((state) => {
     const alerts = state.alerts.alerts;
@@ -31,10 +33,18 @@ export function StatusPill() {
     return { critical, warning };
   });
 
+  // Copy ladder, top wins:
+  //   1. Offline → deny-red, "Offline · Approvals still work"
+  //   2. Critical unacked count > 0 → deny-red, "{n} critical"
+  //   3. Warning unacked count > 0 → warning-amber, "{n} warning"
+  //   4. Default → bare brand-teal dot, no chrome
   let dotColor: string = theme.brand;
   let label: string | null = null;
 
-  if (counts.critical > 0) {
+  if (!connected) {
+    dotColor = palette.deny.base;
+    label = 'Offline · Approvals still work';
+  } else if (counts.critical > 0) {
     dotColor = palette.deny.base;
     label = `${counts.critical} critical`;
   } else if (counts.warning > 0) {
@@ -68,9 +78,9 @@ export function StatusPill() {
     </View>
   );
 
-  // Without a label the pill is purely ambient — no tap. With a label it
-  // jumps to the Alerts tab so the count is actionable.
-  if (!label) return visible;
+  // Without a label, or when offline, the pill is ambient — no tap.
+  // With an alert count it jumps to Systems so the count is actionable.
+  if (!label || !connected) return visible;
 
   return (
     <Pressable

@@ -20,7 +20,7 @@ import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { RiskBand } from './components/RiskBand';
 import { ApprovalButtons } from './components/ApprovalButtons';
-import { ApprovalToast } from './components/ApprovalToast';
+import { Toast } from '../../components/Toast';
 
 export function ApprovalScreen() {
   const insets = useSafeAreaInsets();
@@ -38,7 +38,7 @@ export function ApprovalScreen() {
   const successWash = useSharedValue(0);
   const denyShake = useSharedValue(0);
 
-  const [toast, setToast] = useState<{ kind: 'approve' | 'deny'; text: string } | null>(null);
+  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const expiredHandledRef = useRef<string | null>(null);
 
   // Data lifecycle lives in ApprovalGate; this mount owns entrance animation + arrival haptic.
@@ -58,7 +58,7 @@ export function ApprovalScreen() {
       if (focused.status !== 'pending') return;
       expiredHandledRef.current = focused.id;
       dispatch(markExpired(focused.id));
-      setToast({ kind: 'deny', text: 'This request expired before you could respond.' });
+      setToast({ kind: 'error', text: 'This request expired before you could respond.' });
     }, 1000);
     return () => clearInterval(id);
   }, [focused?.id, focused?.expiresAt, focused?.status]);
@@ -87,10 +87,10 @@ export function ApprovalScreen() {
     dispatch(approve(focused.id))
       .unwrap()
       .then(() => {
-        setToast({ kind: 'approve', text: `Approved · ${focused.actionLabel}` });
+        setToast({ kind: 'success', text: `Approved · ${focused.actionLabel}` });
       })
       .catch((err: Error) => {
-        setToast({ kind: 'deny', text: messageForDecisionError(err.message, 'Approve') });
+        setToast({ kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
       });
   }
 
@@ -105,10 +105,10 @@ export function ApprovalScreen() {
     dispatch(deny({ id: focused.id, reason }))
       .unwrap()
       .then(() => {
-        setToast({ kind: 'deny', text: 'Denied · logged' });
+        setToast({ kind: 'error', text: 'Denied · logged' });
       })
       .catch((err: Error) => {
-        setToast({ kind: 'deny', text: messageForDecisionError(err.message, 'Deny') });
+        setToast({ kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
       });
   }
 
@@ -201,10 +201,10 @@ export function ApprovalScreen() {
         ]}
       />
 
-      <ApprovalToast
+      <Toast
         visible={!!toast}
         text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'approve'}
+        kind={toast?.kind ?? 'success'}
         onHidden={() => setToast(null)}
       />
     </View>

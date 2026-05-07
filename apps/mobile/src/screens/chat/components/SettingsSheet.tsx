@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Alert,
   Dimensions,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -27,7 +28,9 @@ import {
   setBiometricEnabled,
 } from '../../../services/biometrics';
 import { ease, duration } from '../../../lib/motion';
+import { Toast } from '../../../components/Toast';
 import { Avatar } from './Avatar';
+import { ChangePasswordSheet } from './ChangePasswordSheet';
 
 interface Props {
   visible: boolean;
@@ -35,6 +38,21 @@ interface Props {
 }
 
 const NOTIF_KEY = 'notificationsEnabled';
+const NOTIF_CRITICAL_ONLY_KEY = 'notificationsCriticalOnly';
+const TERMS_URL = 'https://breeze.io/terms';
+const PRIVACY_URL = 'https://breeze.io/privacy';
+
+async function safeOpen(url: string) {
+  try {
+    if (await Linking.canOpenURL(url)) {
+      await Linking.openURL(url);
+    } else {
+      Alert.alert('Cannot open link', url);
+    }
+  } catch {
+    Alert.alert('Cannot open link', url);
+  }
+}
 
 export function SettingsSheet({ visible, onCancel }: Props) {
   const theme = useApprovalTheme('dark');
@@ -51,6 +69,9 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricOn, setBiometricOn] = useState(false);
   const [notificationsOn, setNotificationsOn] = useState(true);
+  const [criticalOnly, setCriticalOnly] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
     if (!visible) {
@@ -67,6 +88,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
       if (avail) setBiometricOn(await isBiometricEnabled());
       const stored = await AsyncStorage.getItem(NOTIF_KEY);
       if (stored !== null) setNotificationsOn(stored === 'true');
+      const critical = await AsyncStorage.getItem(NOTIF_CRITICAL_ONLY_KEY);
+      if (critical !== null) setCriticalOnly(critical === 'true');
     })();
   }, [visible, sheetWidth]);
 
@@ -90,6 +113,20 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   async function onToggleNotifications(next: boolean) {
     setNotificationsOn(next);
     await AsyncStorage.setItem(NOTIF_KEY, String(next));
+  }
+
+  async function onToggleCriticalOnly(next: boolean) {
+    setCriticalOnly(next);
+    await AsyncStorage.setItem(NOTIF_CRITICAL_ONLY_KEY, String(next));
+  }
+
+  function onPressChangePassword() {
+    setPasswordOpen(true);
+  }
+
+  function onPasswordSuccess() {
+    setPasswordOpen(false);
+    setToast({ kind: 'success', text: 'Password updated.' });
   }
 
   function onSignOut() {
@@ -137,13 +174,32 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             biometricAvailable={biometricAvailable}
             biometricOn={biometricOn}
             notificationsOn={notificationsOn}
+            criticalOnly={criticalOnly}
             buildVersion={buildVersion}
             onToggleBiometric={onToggleBiometric}
             onToggleNotifications={onToggleNotifications}
+            onToggleCriticalOnly={onToggleCriticalOnly}
+            onPressChangePassword={onPressChangePassword}
+            onPressTerms={() => safeOpen(TERMS_URL)}
+            onPressPrivacy={() => safeOpen(PRIVACY_URL)}
             onSignOut={onSignOut}
           />
         </Animated.View>
       </View>
+
+      <Toast
+        visible={!!toast}
+        text={toast?.text ?? ''}
+        kind={toast?.kind ?? 'success'}
+        onHidden={() => setToast(null)}
+        bottomOffset={spacing[10]}
+      />
+
+      <ChangePasswordSheet
+        visible={passwordOpen}
+        onCancel={() => setPasswordOpen(false)}
+        onSuccess={onPasswordSuccess}
+      />
     </Modal>
   );
 }
@@ -156,9 +212,14 @@ function SheetBody({
   biometricAvailable,
   biometricOn,
   notificationsOn,
+  criticalOnly,
   buildVersion,
   onToggleBiometric,
   onToggleNotifications,
+  onToggleCriticalOnly,
+  onPressChangePassword,
+  onPressTerms,
+  onPressPrivacy,
   onSignOut,
 }: {
   user: { name: string; email: string } | null;
@@ -168,9 +229,14 @@ function SheetBody({
   biometricAvailable: boolean;
   biometricOn: boolean;
   notificationsOn: boolean;
+  criticalOnly: boolean;
   buildVersion: string;
   onToggleBiometric: (v: boolean) => void;
   onToggleNotifications: (v: boolean) => void;
+  onToggleCriticalOnly: (v: boolean) => void;
+  onPressChangePassword: () => void;
+  onPressTerms: () => void;
+  onPressPrivacy: () => void;
   onSignOut: () => void;
 }) {
   return (
@@ -226,6 +292,26 @@ function SheetBody({
           theme={theme}
         />
 
+        {notificationsOn ? (
+          <ToggleRow
+            label="Critical only"
+            description="Quiet pushes for medium and warning alerts"
+            value={criticalOnly}
+            onChange={onToggleCriticalOnly}
+            theme={theme}
+          />
+        ) : null}
+
+        <SectionDivider color={theme.border} />
+
+        <LinkRow
+          label="Change password"
+          onPress={onPressChangePassword}
+          theme={theme}
+        />
+        <LinkRow label="Terms of Service" onPress={onPressTerms} theme={theme} />
+        <LinkRow label="Privacy Policy" onPress={onPressPrivacy} theme={theme} />
+
         <SectionDivider color={theme.border} />
 
         <Pressable
@@ -260,6 +346,29 @@ function SheetBody({
 
 function SectionDivider({ color }: { color: string }) {
   return <View style={{ height: 1, backgroundColor: color, marginVertical: spacing[2] }} />;
+}
+
+function LinkRow({
+  label,
+  onPress,
+  theme,
+}: {
+  label: string;
+  onPress: () => void;
+  theme: ReturnType<typeof useApprovalTheme>;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => ({
+        paddingHorizontal: spacing[6],
+        paddingVertical: spacing[4],
+        backgroundColor: pressed ? theme.bg2 : 'transparent',
+      })}
+    >
+      <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
+    </Pressable>
+  );
 }
 
 function ToggleRow({

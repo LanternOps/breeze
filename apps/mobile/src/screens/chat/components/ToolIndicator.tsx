@@ -1,7 +1,7 @@
 import { Text, View } from 'react-native';
 
 import { useApprovalTheme, spacing, type } from '../../../theme';
-import { ToolSpinner } from './ToolSpinner';
+import { Spinner } from '../../../components/Spinner';
 
 interface Props {
   // The verb form for in-flight ("CHECKING FLEET") OR the completed form
@@ -76,7 +76,7 @@ export function ToolIndicator({ toolName, state, isError, output }: Props & { ou
           gap: spacing[2],
         }}
       >
-        <ToolSpinner color={theme.brand} />
+        <Spinner color={theme.brand} />
         <Text
           style={[type.metaCaps, { color: theme.textLo, flex: 1 }]}
           numberOfLines={1}

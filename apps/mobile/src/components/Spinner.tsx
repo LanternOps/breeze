@@ -1,5 +1,4 @@
 import { useEffect } from 'react';
-import { View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import Animated, {
   cancelAnimation,
@@ -16,10 +15,11 @@ interface Props {
   color: string;
 }
 
-// 12px brand-teal arc that rotates linearly. Used in ToolIndicator's
-// "started" state to mark in-flight tool calls. Reduced-motion: shows the
-// arc at rest (no rotation).
-export function ToolSpinner({ size = 12, color }: Props) {
+// Small rotating arc spinner. Used by:
+//   - ToolIndicator "started" state in the chat shell
+//   - DeviceDetailScreen action buttons while a command is in flight
+// Reduced-motion: shows the arc at rest (no rotation).
+export function Spinner({ size = 12, color }: Props) {
   const reducedMotion = useReducedMotion();
   const rotation = useSharedValue(0);
 
@@ -42,7 +42,6 @@ export function ToolSpinner({ size = 12, color }: Props) {
 
   const r = size / 2 - 1;
   const c = 2 * Math.PI * r;
-  // Visible arc spans ~70% of the circle.
   const dash = c * 0.7;
   const gap = c - dash;
 
