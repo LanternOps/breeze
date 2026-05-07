@@ -7,6 +7,7 @@ import { passwordRoutes } from './password';
 import { inviteRoutes } from './invite';
 import { verifyEmailRoutes } from './verifyEmail';
 import { accountDeletionRoutes } from './accountDeletion';
+import { testApprovalRoutes } from './testApproval';
 
 export const authRoutes = new Hono();
 
@@ -21,4 +22,5 @@ authRoutes.route('/', passwordRoutes);
 authRoutes.route('/', inviteRoutes);
 authRoutes.route('/', verifyEmailRoutes);
 authRoutes.route('/', accountDeletionRoutes);
+authRoutes.route('/', testApprovalRoutes);
 
