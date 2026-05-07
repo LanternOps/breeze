@@ -1,29 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
-} from 'react-native';
-import {
-  Button,
-  HelperText,
-  Surface,
+  StyleSheet,
   Text,
   TextInput,
-  useTheme,
-} from 'react-native-paper';
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import { clearMfaChallenge, verifyMfaAsync } from '../../store/authSlice';
 import { sendMfaSms } from '../../services/api';
+import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
+import { Spinner } from '../../components/Spinner';
+import { haptic } from '../../lib/motion';
 
 const RESEND_COOLDOWN_SECONDS = 30;
 
 export function MfaChallengeScreen() {
-  const theme = useTheme();
+  const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
   const { isLoading, error, mfaChallenge } = useAppSelector((state) => state.auth);
 
@@ -31,7 +29,7 @@ export function MfaChallengeScreen() {
   const [smsSent, setSmsSent] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
-  const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+  const inputRef = useRef<TextInput>(null);
 
   const isSms = mfaChallenge?.mfaMethod === 'sms';
 
@@ -40,7 +38,7 @@ export function MfaChallengeScreen() {
     setSmsSent(true);
     setCooldown(RESEND_COOLDOWN_SECONDS);
     sendMfaSms(mfaChallenge.tempToken).catch((err: { message?: string }) => {
-      setSmsError(err?.message || 'Failed to send SMS code');
+      setSmsError(err?.message || 'Could not send SMS code.');
       setSmsSent(false);
       setCooldown(0);
     });
@@ -68,18 +66,20 @@ export function MfaChallengeScreen() {
 
   async function handleVerify() {
     if (!mfaChallenge || code.length !== 6) return;
+    haptic.tap();
     dispatch(verifyMfaAsync({ code, tempToken: mfaChallenge.tempToken }));
   }
 
   async function handleResend() {
     if (!mfaChallenge || cooldown > 0) return;
+    haptic.tap();
     setSmsError(null);
     setCooldown(RESEND_COOLDOWN_SECONDS);
     try {
       await sendMfaSms(mfaChallenge.tempToken);
     } catch (err) {
       const apiError = err as { message?: string };
-      setSmsError(apiError.message || 'Failed to resend SMS code');
+      setSmsError(apiError.message || 'Could not resend SMS code.');
       setCooldown(0);
     }
   }
@@ -97,7 +97,7 @@ export function MfaChallengeScreen() {
     : 'Enter the 6-digit code from your authenticator app.';
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.bg0 }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
@@ -107,76 +107,151 @@ export function MfaChallengeScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
-            <Text variant="headlineLarge" style={[styles.title, { color: theme.colors.primary }]}>
+            <Text
+              style={[type.title, { color: theme.textHi, textAlign: 'center' }]}
+            >
               Two-factor verification
             </Text>
             <Text
-              variant="bodyLarge"
-              style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}
+              style={[
+                type.body,
+                {
+                  color: theme.textMd,
+                  textAlign: 'center',
+                  marginTop: spacing[2],
+                  paddingHorizontal: spacing[4],
+                },
+              ]}
             >
               {subtitle}
             </Text>
           </View>
 
-          <Surface style={[styles.formContainer, { backgroundColor: theme.colors.surface }]} elevation={2}>
-            <TextInput
-              ref={inputRef}
-              label="Verification code"
-              value={code}
-              onChangeText={handleChangeCode}
-              mode="outlined"
-              keyboardType="number-pad"
-              autoComplete="one-time-code"
-              textContentType="oneTimeCode"
-              maxLength={6}
-              style={styles.input}
-              left={<TextInput.Icon icon="shield-key" />}
-              onSubmitEditing={handleVerify}
-              returnKeyType="go"
-            />
-
-            {error && (
-              <HelperText type="error" visible={true}>
-                {error}
-              </HelperText>
-            )}
-            {smsError && (
-              <HelperText type="error" visible={true}>
-                {smsError}
-              </HelperText>
-            )}
-
-            <Button
-              mode="contained"
-              onPress={handleVerify}
-              loading={isLoading}
-              disabled={!canSubmit}
-              style={styles.verifyButton}
-              contentStyle={styles.buttonContent}
+          <View
+            style={[
+              styles.card,
+              { backgroundColor: theme.bg1, borderColor: theme.border },
+            ]}
+          >
+            <Text style={[type.metaCaps, { color: theme.textLo }]}>
+              VERIFICATION CODE
+            </Text>
+            <View
+              style={[
+                styles.inputWrap,
+                { backgroundColor: theme.bg2 },
+              ]}
             >
-              Verify
-            </Button>
+              <TextInput
+                ref={inputRef}
+                value={code}
+                onChangeText={handleChangeCode}
+                keyboardType="number-pad"
+                autoComplete="one-time-code"
+                textContentType="oneTimeCode"
+                maxLength={6}
+                placeholder="123456"
+                placeholderTextColor={theme.textLo}
+                onSubmitEditing={handleVerify}
+                returnKeyType="go"
+                style={[
+                  type.mono,
+                  {
+                    color: theme.textHi,
+                    padding: spacing[4],
+                    minHeight: 48,
+                    flex: 1,
+                    fontSize: 22,
+                    letterSpacing: 6,
+                    textAlign: 'center',
+                  },
+                ]}
+              />
+            </View>
+
+            {error ? (
+              <View
+                style={[
+                  styles.errorBlock,
+                  {
+                    backgroundColor: palette.deny.wash,
+                    borderColor: palette.deny.base,
+                  },
+                ]}
+              >
+                <Text style={[type.meta, { color: theme.textHi }]}>{error}</Text>
+              </View>
+            ) : null}
+            {smsError ? (
+              <View
+                style={[
+                  styles.errorBlock,
+                  {
+                    backgroundColor: palette.deny.wash,
+                    borderColor: palette.deny.base,
+                  },
+                ]}
+              >
+                <Text style={[type.meta, { color: theme.textHi }]}>
+                  {smsError}
+                </Text>
+              </View>
+            ) : null}
+
+            <Pressable
+              onPress={handleVerify}
+              disabled={!canSubmit}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                {
+                  backgroundColor: theme.brand,
+                  opacity: !canSubmit ? 0.5 : pressed ? 0.85 : 1,
+                },
+              ]}
+            >
+              {isLoading ? (
+                <Spinner size={18} color={palette.dark.textHi} />
+              ) : (
+                <Text style={[type.bodyMd, { color: palette.dark.textHi }]}>
+                  Verify
+                </Text>
+              )}
+            </Pressable>
 
             {isSms && (
-              <Button
-                mode="text"
+              <Pressable
                 onPress={handleResend}
                 disabled={cooldown > 0 || isLoading}
-                style={styles.resendButton}
+                style={({ pressed }) => [
+                  styles.secondaryButton,
+                  {
+                    backgroundColor: theme.bg2,
+                    opacity:
+                      cooldown > 0 || isLoading ? 0.5 : pressed ? 0.85 : 1,
+                  },
+                ]}
               >
-                {cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}
-              </Button>
+                <Text style={[type.bodyMd, { color: theme.textHi }]}>
+                  {cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}
+                </Text>
+              </Pressable>
             )}
 
-            <Button
-              mode="text"
+            <Pressable
               onPress={handleCancel}
               disabled={isLoading}
-              style={styles.cancelButton}
+              style={({ pressed }) => ({
+                marginTop: spacing[3],
+                paddingVertical: spacing[3],
+                alignItems: 'center',
+                opacity: isLoading ? 0.5 : pressed ? 0.7 : 1,
+              })}
             >
-              Sign in with a different account
-            </Button>
-          </Surface>
+              <Text style={[type.meta, { color: theme.textMd }]}>
+                Sign in with a different account
+              </Text>
+            </Pressable>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -189,15 +264,41 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: spacing[6],
   },
-  header: { alignItems: 'center', marginBottom: 32 },
-  title: { fontWeight: 'bold', marginBottom: 8, textAlign: 'center' },
-  subtitle: { textAlign: 'center', paddingHorizontal: 16 },
-  formContainer: { padding: 24, borderRadius: 16 },
-  input: { marginBottom: 4 },
-  verifyButton: { marginTop: 16 },
-  resendButton: { marginTop: 8 },
-  cancelButton: { marginTop: 4 },
-  buttonContent: { paddingVertical: 8 },
+  header: {
+    alignItems: 'center',
+    marginBottom: spacing[8],
+  },
+  card: {
+    padding: spacing[6],
+    borderRadius: radii.lg,
+    borderWidth: 1,
+  },
+  inputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radii.md,
+    marginTop: spacing[2],
+  },
+  errorBlock: {
+    marginTop: spacing[4],
+    padding: spacing[3],
+    borderRadius: radii.md,
+    borderWidth: 1,
+  },
+  primaryButton: {
+    marginTop: spacing[6],
+    paddingVertical: spacing[5],
+    borderRadius: radii.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryButton: {
+    marginTop: spacing[3],
+    paddingVertical: spacing[5],
+    borderRadius: radii.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

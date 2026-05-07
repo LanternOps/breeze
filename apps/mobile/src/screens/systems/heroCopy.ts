@@ -32,17 +32,25 @@ export function deriveHeroState(
   const online = summary.devices.online;
   const offline = summary.devices.offline;
   const maintenance = summary.devices.maintenance;
-  const critical = summary.alerts.critical;
   const issueCount = activeIssues.length;
   const orgCount = uniqueOrgCount(activeIssues);
 
-  // Segments: critical alerts drive the deny-red slice (proportional to
-  // total devices, capped by total). Offline rolls into the warning slice
-  // alongside any device the API marks as warning. Healthy = total minus
-  // the rest.
-  const warningDevices = Math.max(0, offline + maintenance);
-  const criticalSlice = Math.min(critical, total);
-  const warningSlice = Math.min(warningDevices, total - criticalSlice);
+  // Bar segments must match the headline. We derive critical / warning
+  // from the *unacked* activeIssues (same source the headline counts), not
+  // from summary.alerts.critical (which includes acknowledged criticals
+  // and would paint a red slice while the headline says "all healthy").
+  // Offline + maintenance devices also contribute to warning even without
+  // alerts, since they're degraded fleet state.
+  const criticalAlerts = activeIssues.filter(
+    (a) => a.severity === 'critical' || a.severity === 'high',
+  ).length;
+  const warningAlerts = activeIssues.filter(
+    (a) => a.severity === 'medium' || a.severity === 'low',
+  ).length;
+  const degradedDevices = Math.max(0, offline + maintenance);
+
+  const criticalSlice = Math.min(criticalAlerts, total);
+  const warningSlice = Math.min(warningAlerts + degradedDevices, total - criticalSlice);
   const healthySlice = Math.max(0, total - criticalSlice - warningSlice);
   const segments: FleetSegments = {
     healthy: healthySlice,
@@ -50,12 +58,27 @@ export function deriveHeroState(
     critical: criticalSlice,
   };
 
-  if (issueCount === 0) {
+  if (issueCount === 0 && degradedDevices === 0) {
     const legendParts: string[] = [];
     if (online > 0) legendParts.push(`${online} online`);
     if (maintenance > 0) legendParts.push(`${maintenance} maintenance`);
     return {
       copy: `${total} devices, all healthy.`,
+      segments,
+      legend: legendParts.length ? legendParts.join(' · ') : null,
+    };
+  }
+
+  // No active alerts but devices are offline / in maintenance.
+  if (issueCount === 0) {
+    const legendParts: string[] = [];
+    if (online > 0) legendParts.push(`${online} online`);
+    if (offline > 0) legendParts.push(`${offline} offline`);
+    if (maintenance > 0) legendParts.push(`${maintenance} maintenance`);
+    return {
+      copy: offline > 0
+        ? `${total} devices · ${offline} offline.`
+        : `${total} devices · ${maintenance} in maintenance.`,
       segments,
       legend: legendParts.length ? legendParts.join(' · ') : null,
     };
@@ -72,11 +95,12 @@ export function deriveHeroState(
 
   const legendParts: string[] = [];
   if (online > 0) legendParts.push(`${online} online`);
-  if (warningDevices > 0) legendParts.push(`${warningDevices} warning`);
-  if (offline > 0 && warningDevices === offline) {
-    // When warning equals offline (no maintenance), prefer "{n} offline"
-    // as the more specific label.
-    legendParts[legendParts.length - 1] = `${offline} offline`;
+  if (degradedDevices > 0) {
+    legendParts.push(
+      offline > 0 && degradedDevices === offline
+        ? `${offline} offline`
+        : `${degradedDevices} warning`,
+    );
   }
 
   return {

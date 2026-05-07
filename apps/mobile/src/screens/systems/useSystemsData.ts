@@ -3,6 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Alert, Device } from '../../services/api';
 import { getAlerts, getDevices } from '../../services/api';
 import {
+  addNotificationReceivedListener,
+  parseAlertNotification,
+  removeNotificationSubscription,
+} from '../../services/notifications';
+import {
   getMobileSummary,
   listOrganizations,
   type MobileSummary,
@@ -110,6 +115,21 @@ export function useSystemsData() {
 
   useEffect(() => {
     fetchAll('initial');
+  }, [fetchAll]);
+
+  // Subscribe to foregrounded alert pushes so the Systems data refreshes
+  // automatically when a new alert fires. Bypasses the focus debounce —
+  // a push is a real signal that state changed. `fetchAll` short-circuits
+  // when a request is already in flight, so back-to-back pushes won't
+  // stampede the API.
+  useEffect(() => {
+    const sub = addNotificationReceivedListener((n) => {
+      if (!parseAlertNotification(n)) return;
+      void fetchAll('refresh');
+    });
+    return () => {
+      removeNotificationSubscription(sub);
+    };
   }, [fetchAll]);
 
   const refresh = useCallback(() => fetchAll('refresh'), [fetchAll]);

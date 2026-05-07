@@ -1,5 +1,5 @@
-import { useCallback } from 'react';
-import { RefreshControl, ScrollView, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Clipboard, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -7,7 +7,11 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApprovalTheme, palette, spacing, type } from '../../theme';
 import type { Alert } from '../../services/api';
 import type { SystemsStackParamList } from '../../navigation/MainNavigator';
+import { useAppDispatch } from '../../store';
+import { acknowledgeAlertAsync } from '../../store/alertsSlice';
+import { Toast } from '../../components/Toast';
 
+import { AlertActionSheet } from './components/AlertActionSheet';
 import { FilterChip } from './components/FilterChip';
 import { Hero } from './components/Hero';
 import { IssueRow } from './components/IssueRow';
@@ -36,6 +40,12 @@ export function SystemsScreen() {
   const insets = useSafeAreaInsets();
   const theme = useApprovalTheme('dark');
   const navigation = useNavigation<Nav>();
+  const dispatch = useAppDispatch();
+
+  const [sheetAlert, setSheetAlert] = useState<Alert | null>(null);
+  const [toast, setToast] = useState<
+    { kind: 'success' | 'error'; text: string } | null
+  >(null);
 
   const {
     summary,
@@ -69,6 +79,39 @@ export function SystemsScreen() {
     },
     [navigation],
   );
+
+  const onLongPressAlert = useCallback((alert: Alert) => {
+    setSheetAlert(alert);
+  }, []);
+
+  const onCloseSheet = useCallback(() => {
+    setSheetAlert(null);
+  }, []);
+
+  const onAcknowledgeFromSheet = useCallback(async () => {
+    if (!sheetAlert) return;
+    const targetId = sheetAlert.id;
+    setSheetAlert(null);
+    try {
+      await dispatch(acknowledgeAlertAsync(targetId)).unwrap();
+      setToast({ kind: 'success', text: 'Acknowledged.' });
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === 'string'
+            ? err
+            : 'Could not acknowledge alert.';
+      setToast({ kind: 'error', text: msg });
+    }
+  }, [dispatch, sheetAlert]);
+
+  const onCopyIdFromSheet = useCallback(() => {
+    if (!sheetAlert) return;
+    Clipboard.setString(sheetAlert.id);
+    setSheetAlert(null);
+    setToast({ kind: 'success', text: 'Copied alert ID.' });
+  }, [sheetAlert]);
 
   const showOrgs = !filterOrgId && orgRollups.length > 0;
   const showRecent = recent.length > 0;
@@ -128,7 +171,11 @@ export function SystemsScreen() {
             <SectionHeader label="ACTIVE ISSUES" />
             {activeIssues.map((alert, idx) => (
               <View key={alert.id}>
-                <IssueRow alert={alert} onPress={() => onPressIssue(alert)} />
+                <IssueRow
+                  alert={alert}
+                  onPress={() => onPressIssue(alert)}
+                  onLongPress={() => onLongPressAlert(alert)}
+                />
                 {idx < activeIssues.length - 1 ? <Divider color={theme.border} /> : null}
               </View>
             ))}
@@ -152,13 +199,33 @@ export function SystemsScreen() {
             <SectionHeader label="RECENT (24H)" />
             {recent.map((alert, idx) => (
               <View key={alert.id}>
-                <RecentRow alert={alert} onPress={() => onPressIssue(alert)} />
+                <RecentRow
+                  alert={alert}
+                  onPress={() => onPressIssue(alert)}
+                  onLongPress={() => onLongPressAlert(alert)}
+                />
                 {idx < recent.length - 1 ? <Divider color={theme.border} /> : null}
               </View>
             ))}
           </>
         ) : null}
       </ScrollView>
+
+      <AlertActionSheet
+        visible={!!sheetAlert}
+        alert={sheetAlert}
+        onClose={onCloseSheet}
+        onAcknowledge={onAcknowledgeFromSheet}
+        onCopyId={onCopyIdFromSheet}
+      />
+
+      <Toast
+        visible={!!toast}
+        text={toast?.text ?? ''}
+        kind={toast?.kind ?? 'success'}
+        onHidden={() => setToast(null)}
+        bottomOffset={insets.bottom + spacing[16]}
+      />
     </View>
   );
 }

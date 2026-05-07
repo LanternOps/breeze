@@ -1,20 +1,15 @@
 import { useState } from 'react';
 import {
-  View,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
-} from 'react-native';
-import {
-  Button,
+  StyleSheet,
   Text,
   TextInput,
-  HelperText,
-  Surface,
-  RadioButton,
-  useTheme,
-} from 'react-native-paper';
+  View,
+} from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
@@ -23,6 +18,9 @@ import {
   normalizeServerUrl,
   setServerUrl,
 } from '../../services/serverConfig';
+import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
+import { Spinner } from '../../components/Spinner';
+import { haptic } from '../../lib/motion';
 
 type Selection = 'us' | 'eu' | 'custom';
 
@@ -37,9 +35,26 @@ function detectInitialSelection(initialUrl: string | null | undefined): Selectio
   return matched ? matched.id : 'custom';
 }
 
+function CheckGlyph({ color }: { color: string }) {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 24 24">
+      <Path
+        d="M5 12 L10 17 L19 7"
+        stroke={color}
+        strokeWidth={2.25}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}
+
 export function ServerSelectScreen({ initialUrl, onSelected }: Props) {
-  const theme = useTheme();
-  const [selection, setSelection] = useState<Selection>(() => detectInitialSelection(initialUrl));
+  const theme = useApprovalTheme('dark');
+  const [selection, setSelection] = useState<Selection>(() =>
+    detectInitialSelection(initialUrl),
+  );
   const [customUrl, setCustomUrl] = useState(() => {
     if (!initialUrl) return '';
     const matched = SERVER_PRESETS.find((p) => p.url === initialUrl);
@@ -49,7 +64,8 @@ export function ServerSelectScreen({ initialUrl, onSelected }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const customValid = selection !== 'custom' || isValidServerUrl(customUrl);
-  const showCustomError = selection === 'custom' && customUrl.length > 0 && !customValid;
+  const showCustomError =
+    selection === 'custom' && customUrl.length > 0 && !customValid;
   const canContinue = selection !== 'custom' || customValid;
 
   async function handleContinue() {
@@ -57,7 +73,7 @@ export function ServerSelectScreen({ initialUrl, onSelected }: Props) {
     let urlToSave: string;
     if (selection === 'custom') {
       if (!isValidServerUrl(customUrl)) {
-        setError('Enter a valid URL (https://your-server.example.com)');
+        setError('Enter a valid URL like https://your-server.example.com');
         return;
       }
       urlToSave = normalizeServerUrl(customUrl);
@@ -67,19 +83,25 @@ export function ServerSelectScreen({ initialUrl, onSelected }: Props) {
       urlToSave = preset.url;
     }
 
+    haptic.tap();
     setSaving(true);
     try {
       await setServerUrl(urlToSave);
       onSelected();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save server URL');
+      setError(err instanceof Error ? err.message : 'Could not save server URL.');
     } finally {
       setSaving(false);
     }
   }
 
+  function selectOption(next: Selection) {
+    haptic.tap();
+    setSelection(next);
+  }
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.bg0 }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
@@ -89,85 +111,170 @@ export function ServerSelectScreen({ initialUrl, onSelected }: Props) {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
-            <Text variant="headlineLarge" style={[styles.title, { color: theme.colors.primary }]}>
+            <Text style={[type.title, { color: theme.textHi }]}>
               Choose your server
             </Text>
-            <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
-              Select the Breeze region you sign in to
+            <Text
+              style={[
+                type.body,
+                { color: theme.textMd, marginTop: spacing[2] },
+              ]}
+            >
+              Pick the Breeze region you sign in to.
             </Text>
           </View>
 
-          <Surface
-            style={[styles.formContainer, { backgroundColor: theme.colors.surface }]}
-            elevation={2}
+          <View
+            style={[
+              styles.card,
+              { backgroundColor: theme.bg1, borderColor: theme.border },
+            ]}
           >
-            <RadioButton.Group
-              onValueChange={(value) => setSelection(value as Selection)}
-              value={selection}
-            >
-              {SERVER_PRESETS.map((preset) => (
-                <RadioButton.Item
+            {SERVER_PRESETS.map((preset) => {
+              const selected = selection === preset.id;
+              return (
+                <Pressable
                   key={preset.id}
-                  value={preset.id}
-                  label={preset.label}
-                  position="leading"
-                  style={styles.radioItem}
-                  labelStyle={styles.radioLabel}
-                />
-              ))}
-              <RadioButton.Item
-                value="custom"
-                label="Custom server"
-                position="leading"
-                style={styles.radioItem}
-                labelStyle={styles.radioLabel}
-              />
-            </RadioButton.Group>
+                  onPress={() => selectOption(preset.id)}
+                  style={({ pressed }) => [
+                    styles.optionRow,
+                    {
+                      backgroundColor: theme.bg2,
+                      borderColor: selected ? theme.brand : theme.bg2,
+                      opacity: pressed ? 0.85 : 1,
+                    },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[type.bodyMd, { color: theme.textHi }]}>
+                      {preset.label}
+                    </Text>
+                    <Text
+                      style={[
+                        type.meta,
+                        { color: theme.textLo, marginTop: spacing[1] },
+                      ]}
+                    >
+                      {preset.url}
+                    </Text>
+                  </View>
+                  {selected && <CheckGlyph color={theme.brand} />}
+                </Pressable>
+              );
+            })}
 
-            {selection !== 'custom' && (
-              <Text variant="bodySmall" style={[styles.helper, { color: theme.colors.onSurfaceVariant }]}>
-                {SERVER_PRESETS.find((p) => p.id === selection)?.url}
-              </Text>
-            )}
+            <Pressable
+              onPress={() => selectOption('custom')}
+              style={({ pressed }) => [
+                styles.optionRow,
+                {
+                  backgroundColor: theme.bg2,
+                  borderColor: selection === 'custom' ? theme.brand : theme.bg2,
+                  opacity: pressed ? 0.85 : 1,
+                },
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[type.bodyMd, { color: theme.textHi }]}>
+                  Custom server
+                </Text>
+                <Text
+                  style={[
+                    type.meta,
+                    { color: theme.textLo, marginTop: spacing[1] },
+                  ]}
+                >
+                  Self-hosted or other region
+                </Text>
+              </View>
+              {selection === 'custom' && <CheckGlyph color={theme.brand} />}
+            </Pressable>
 
             {selection === 'custom' && (
-              <View style={styles.customWrapper}>
-                <TextInput
-                  label="Server URL"
-                  value={customUrl}
-                  onChangeText={setCustomUrl}
-                  mode="outlined"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  placeholder="https://breeze.example.com"
-                  error={showCustomError}
-                />
-                <HelperText type={showCustomError ? 'error' : 'info'} visible={true}>
+              <View style={{ marginTop: spacing[4] }}>
+                <Text style={[type.metaCaps, { color: theme.textLo }]}>
+                  SERVER URL
+                </Text>
+                <View
+                  style={[
+                    styles.inputWrap,
+                    {
+                      backgroundColor: theme.bg2,
+                      borderColor: showCustomError ? palette.deny.base : theme.bg2,
+                    },
+                  ]}
+                >
+                  <TextInput
+                    value={customUrl}
+                    onChangeText={setCustomUrl}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    spellCheck={false}
+                    keyboardType="url"
+                    placeholder="https://breeze.example.com"
+                    placeholderTextColor={theme.textLo}
+                    style={[
+                      type.body,
+                      {
+                        color: theme.textHi,
+                        padding: spacing[4],
+                        minHeight: 48,
+                        flex: 1,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text
+                  style={[
+                    type.meta,
+                    {
+                      color: showCustomError ? palette.deny.base : theme.textLo,
+                      marginTop: spacing[2],
+                    },
+                  ]}
+                >
                   {showCustomError
-                    ? 'Enter a valid http(s):// URL'
-                    : 'Enter the full https:// URL for your Breeze server'}
-                </HelperText>
+                    ? 'Enter a valid http(s):// URL.'
+                    : 'Use the full https:// URL for your Breeze server.'}
+                </Text>
               </View>
             )}
 
-            {error && (
-              <HelperText type="error" visible={true}>
-                {error}
-              </HelperText>
-            )}
+            {error ? (
+              <View
+                style={[
+                  styles.errorBlock,
+                  {
+                    backgroundColor: palette.deny.wash,
+                    borderColor: palette.deny.base,
+                  },
+                ]}
+              >
+                <Text style={[type.meta, { color: theme.textHi }]}>{error}</Text>
+              </View>
+            ) : null}
 
-            <Button
-              mode="contained"
+            <Pressable
               onPress={handleContinue}
-              loading={saving}
               disabled={!canContinue || saving}
-              style={styles.continueButton}
-              contentStyle={styles.buttonContent}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                {
+                  backgroundColor: theme.brand,
+                  opacity:
+                    !canContinue || saving ? 0.5 : pressed ? 0.85 : 1,
+                },
+              ]}
             >
-              Continue
-            </Button>
-          </Surface>
+              {saving ? (
+                <Spinner size={18} color={palette.dark.textHi} />
+              ) : (
+                <Text style={[type.bodyMd, { color: palette.dark.textHi }]}>
+                  Continue
+                </Text>
+              )}
+            </Pressable>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -180,15 +287,43 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: spacing[6],
   },
-  header: { alignItems: 'center', marginBottom: 32 },
-  title: { fontWeight: 'bold', marginBottom: 8 },
-  formContainer: { padding: 24, borderRadius: 16 },
-  radioItem: { paddingVertical: 4 },
-  radioLabel: { textAlign: 'left' },
-  helper: { marginTop: 8, marginLeft: 16 },
-  customWrapper: { marginTop: 12 },
-  continueButton: { marginTop: 16 },
-  buttonContent: { paddingVertical: 8 },
+  header: {
+    alignItems: 'center',
+    marginBottom: spacing[8],
+  },
+  card: {
+    padding: spacing[6],
+    borderRadius: radii.lg,
+    borderWidth: 1,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing[4],
+    borderRadius: radii.md,
+    borderWidth: 1.5,
+    marginBottom: spacing[3],
+  },
+  inputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radii.md,
+    marginTop: spacing[2],
+    borderWidth: 1,
+  },
+  errorBlock: {
+    marginTop: spacing[4],
+    padding: spacing[3],
+    borderRadius: radii.md,
+    borderWidth: 1,
+  },
+  primaryButton: {
+    marginTop: spacing[6],
+    paddingVertical: spacing[5],
+    borderRadius: radii.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

@@ -184,16 +184,17 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             onPressPrivacy={() => safeOpen(PRIVACY_URL)}
             onSignOut={onSignOut}
           />
+          {/* Toast inside the sliding container so its left/right gutters
+              are relative to the sheet (84% width), not the modal root. */}
+          <Toast
+            visible={!!toast}
+            text={toast?.text ?? ''}
+            kind={toast?.kind ?? 'success'}
+            onHidden={() => setToast(null)}
+            bottomOffset={insets.bottom + spacing[16]}
+          />
         </Animated.View>
       </View>
-
-      <Toast
-        visible={!!toast}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        bottomOffset={spacing[10]}
-      />
 
       <ChangePasswordSheet
         visible={passwordOpen}

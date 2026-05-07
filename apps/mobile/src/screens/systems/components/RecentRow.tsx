@@ -8,6 +8,7 @@ import { relativeTime } from '../../../lib/relativeTime';
 interface Props {
   alert: Alert;
   onPress: () => void;
+  onLongPress?: () => void;
 }
 
 function severityColor(sev: Alert['severity']): string {
@@ -25,7 +26,7 @@ function severityColor(sev: Alert['severity']): string {
 
 // Lighter than IssueRow: no device subtitle, no severity weight in copy.
 // Recent is context, not action.
-export function RecentRow({ alert, onPress }: Props) {
+export function RecentRow({ alert, onPress, onLongPress }: Props) {
   const theme = useApprovalTheme('dark');
   const dot = alert.acknowledged ? theme.textLo : severityColor(alert.severity);
 
@@ -35,6 +36,14 @@ export function RecentRow({ alert, onPress }: Props) {
         haptic.tap();
         onPress();
       }}
+      onLongPress={
+        onLongPress
+          ? () => {
+              haptic.tap();
+              onLongPress();
+            }
+          : undefined
+      }
       style={({ pressed }) => ({
         paddingHorizontal: spacing[6],
         paddingVertical: spacing[3],

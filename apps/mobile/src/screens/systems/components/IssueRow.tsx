@@ -8,6 +8,7 @@ import { relativeTime } from '../../../lib/relativeTime';
 interface Props {
   alert: Alert;
   onPress: () => void;
+  onLongPress?: () => void;
 }
 
 function severityColor(sev: Alert['severity']): string {
@@ -26,7 +27,7 @@ function severityColor(sev: Alert['severity']): string {
   }
 }
 
-export function IssueRow({ alert, onPress }: Props) {
+export function IssueRow({ alert, onPress, onLongPress }: Props) {
   const theme = useApprovalTheme('dark');
   const dot = severityColor(alert.severity);
   const subtitle = alert.deviceName ?? '';
@@ -38,6 +39,14 @@ export function IssueRow({ alert, onPress }: Props) {
         haptic.tap();
         onPress();
       }}
+      onLongPress={
+        onLongPress
+          ? () => {
+              haptic.tap();
+              onLongPress();
+            }
+          : undefined
+      }
       style={({ pressed }) => ({
         paddingHorizontal: spacing[6],
         paddingVertical: spacing[3],

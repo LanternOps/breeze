@@ -180,21 +180,33 @@ export async function getLastNotificationResponse(): Promise<Notifications.Notif
 }
 
 /**
- * Parse notification data for alert navigation
+ * Parse notification data for alert navigation.
+ *
+ * Server side (apps/api/src/services/notifications.ts) emits FCM data
+ * payloads for `alert.*` events with `alertId`, `severity`, and
+ * `eventType` (e.g. `alert.triggered`). It does *not* set a `type` field
+ * today, so we recognize alert pushes by `eventType` prefix or the
+ * presence of `alertId` alongside any explicit `type: 'alert'` marker
+ * (kept for forward compatibility).
  */
 export function parseAlertNotification(
-  notification: Notifications.Notification
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
 ): { alertId: string; severity: string } | null {
   const data = notification.request.content.data;
+  if (!data) return null;
 
-  if (data && data.type === 'alert' && data.alertId) {
-    return {
-      alertId: data.alertId as string,
-      severity: (data.severity as string) || 'low',
-    };
-  }
+  const alertId = typeof data.alertId === 'string' ? data.alertId : null;
+  if (!alertId) return null;
 
-  return null;
+  const eventType = typeof data.eventType === 'string' ? data.eventType : '';
+  const explicitType = data.type === 'alert';
+  const isAlertEvent = eventType.startsWith('alert.') || explicitType;
+  if (!isAlertEvent) return null;
+
+  return {
+    alertId,
+    severity: typeof data.severity === 'string' ? data.severity : 'low',
+  };
 }
 
 export function parseApprovalNotification(

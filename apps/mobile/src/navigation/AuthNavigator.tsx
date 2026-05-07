@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { useTheme } from 'react-native-paper';
 
 import { LoginScreen } from '../screens/auth/LoginScreen';
 import { MfaChallengeScreen } from '../screens/auth/MfaChallengeScreen';
 import { ServerSelectScreen } from '../screens/auth/ServerSelectScreen';
 import { getServerUrl } from '../services/serverConfig';
 import { useAppSelector } from '../store';
+import { Spinner } from '../components/Spinner';
+import { palette, fontFamily } from '../theme';
 
 export type AuthStackParamList = {
   ServerSelect: { initialUrl?: string | null } | undefined;
@@ -18,7 +19,6 @@ export type AuthStackParamList = {
 const Stack = createNativeStackNavigator<AuthStackParamList>();
 
 export function AuthNavigator() {
-  const theme = useTheme();
   const mfaChallenge = useAppSelector((state) => state.auth.mfaChallenge);
   const [initialRoute, setInitialRoute] = useState<keyof AuthStackParamList | null>(null);
   const [initialUrl, setInitialUrl] = useState<string | null>(null);
@@ -43,10 +43,10 @@ export function AuthNavigator() {
           flex: 1,
           justifyContent: 'center',
           alignItems: 'center',
-          backgroundColor: theme.colors.background,
+          backgroundColor: palette.dark.bg0,
         }}
       >
-        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Spinner size={28} color={palette.brand.base} />
       </View>
     );
   }
@@ -62,9 +62,23 @@ export function AuthNavigator() {
   return (
     <Stack.Navigator
       initialRouteName={initialRoute}
-      screenOptions={{ headerShown: false }}
+      screenOptions={{
+        headerStyle: { backgroundColor: palette.dark.bg0 },
+        headerShadowVisible: false,
+        headerTintColor: palette.dark.textHi,
+        headerTitleStyle: {
+          fontFamily: fontFamily.sansSemiBold,
+          fontSize: 17,
+          color: palette.dark.textHi,
+        },
+        contentStyle: { backgroundColor: palette.dark.bg0 },
+        headerShown: false,
+      }}
     >
-      <Stack.Screen name="ServerSelect">
+      <Stack.Screen
+        name="ServerSelect"
+        options={{ headerShown: true, title: 'Server' }}
+      >
         {({ navigation, route }) => (
           <ServerSelectScreen
             initialUrl={route.params?.initialUrl ?? initialUrl}
