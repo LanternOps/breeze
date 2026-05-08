@@ -19,39 +19,32 @@
  *
  * The script is idempotent — repeated runs won't enqueue duplicate
  * dev_update commands for devices that already have a pending or
- * sent recovery command in flight.
+ * sent recovery command in flight. If the run aborts mid-loop (DB
+ * blip, network), re-running picks up where it stopped because of
+ * that same idempotency check.
+ *
+ * Exit codes:
+ *   0  every recoverable device queued (or no work to do)
+ *   1  fatal error before/after the loop, or one or more per-device
+ *      enqueues threw (operator should retry; idempotent)
+ *   2  one or more devices were skipped during --apply (e.g. latest
+ *      registered binary is still on a broken version — operator
+ *      forgot to bump BREEZE_VERSION first). Distinct from 1 so
+ *      shell scripts can decide whether re-running will help.
  */
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import { closeDb, db, withSystemDbAccessContext } from '../src/db';
 import { agentVersions } from '../src/db/schema/agentVersions';
 import { devices, deviceCommands } from '../src/db/schema/devices';
-import { normalizeAgentArchitecture } from '../src/routes/agents/helpers';
-
-// Versions known to ship with the broken trust root. If you discover
-// another, append it here — the regression test in
-// agent/internal/updater/updater_test.go prevents new releases from
-// joining this list.
-const BROKEN_AGENT_VERSIONS = ['0.65.5', '0.65.6'] as const;
-
-const RECOVERY_COMMAND_MARKER = 'agent_update_trust_root_recovery';
-
-type DeviceRow = {
-  id: string;
-  hostname: string | null;
-  agentVersion: string | null;
-  osType: string | null;
-  architecture: string | null;
-  status: string;
-};
-
-type AgentVersionRow = {
-  version: string;
-  platform: string;
-  architecture: string;
-  downloadUrl: string;
-  checksum: string;
-};
+import {
+  AgentVersionRow,
+  BROKEN_AGENT_VERSIONS,
+  DeviceRow,
+  Plan,
+  RECOVERY_COMMAND_MARKER,
+  planRecovery,
+} from './recover-stuck-agents.lib';
 
 async function selectAffectedDevices(): Promise<DeviceRow[]> {
   return db
@@ -104,59 +97,6 @@ async function hasRecoveryAlreadyQueued(deviceId: string): Promise<boolean> {
     )
     .limit(1);
   return rows.length > 0;
-}
-
-type Plan = {
-  device: DeviceRow;
-  binary: AgentVersionRow;
-};
-
-type Skip = {
-  device: DeviceRow;
-  reason: string;
-};
-
-function planRecovery(devs: DeviceRow[], binaries: AgentVersionRow[]): {
-  plans: Plan[];
-  skipped: Skip[];
-} {
-  const byPlatformArch = new Map<string, AgentVersionRow>();
-  for (const b of binaries) {
-    byPlatformArch.set(`${b.platform}/${b.architecture}`, b);
-  }
-
-  const plans: Plan[] = [];
-  const skipped: Skip[] = [];
-
-  for (const d of devs) {
-    if (!d.osType) {
-      skipped.push({ device: d, reason: 'os_type is null' });
-      continue;
-    }
-    const arch = normalizeAgentArchitecture(d.architecture);
-    if (!arch) {
-      skipped.push({ device: d, reason: `unrecognised architecture: ${d.architecture}` });
-      continue;
-    }
-    const binary = byPlatformArch.get(`${d.osType}/${arch}`);
-    if (!binary) {
-      skipped.push({
-        device: d,
-        reason: `no isLatest=true agent binary registered for ${d.osType}/${arch}`,
-      });
-      continue;
-    }
-    if (BROKEN_AGENT_VERSIONS.includes(binary.version as typeof BROKEN_AGENT_VERSIONS[number])) {
-      skipped.push({
-        device: d,
-        reason: `latest binary is still ${binary.version} (broken). Bump BREEZE_VERSION on this server first.`,
-      });
-      continue;
-    }
-    plans.push({ device: d, binary });
-  }
-
-  return { plans, skipped };
 }
 
 async function enqueueRecovery(plan: Plan): Promise<'queued' | 'already-pending'> {
@@ -217,6 +157,12 @@ async function run(apply: boolean): Promise<void> {
 
     if (plans.length === 0) {
       console.log('\n[recover-stuck-agents] No recoverable devices.');
+      // Skips with no plans during --apply still mean the operator's intent
+      // wasn't fully satisfied (e.g. forgot to bump BREEZE_VERSION). Surface
+      // it via exit code 2 so a wrapping shell script doesn't declare victory.
+      if (apply && skipped.length > 0) {
+        process.exitCode = 2;
+      }
       return;
     }
 
@@ -224,19 +170,30 @@ async function run(apply: boolean): Promise<void> {
 
     let queued = 0;
     let alreadyPending = 0;
+    let failed = 0;
     for (const p of plans) {
       const label = `  - ${p.device.hostname ?? p.device.id} (${p.device.agentVersion} ${p.device.osType}/${p.device.architecture}) → ${p.binary.version}`;
       if (!apply) {
         console.log(label);
         continue;
       }
-      const outcome = await enqueueRecovery(p);
-      if (outcome === 'queued') {
-        queued++;
-        console.log(`${label}  [queued]`);
-      } else {
-        alreadyPending++;
-        console.log(`${label}  [skipped: recovery already pending]`);
+      try {
+        const outcome = await enqueueRecovery(p);
+        if (outcome === 'queued') {
+          queued++;
+          console.log(`${label}  [queued]`);
+        } else {
+          alreadyPending++;
+          console.log(`${label}  [skipped: recovery already pending]`);
+        }
+      } catch (err) {
+        // Don't abort the whole loop on a single device's DB blip — re-running
+        // is safe (hasRecoveryAlreadyQueued de-dupes), but if the loop dies
+        // here the operator is left without a tally and may not know which
+        // devices made it through. Keep going and report at the end.
+        failed++;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`${label}  [FAILED: ${msg}]`);
       }
     }
 
@@ -245,7 +202,23 @@ async function run(apply: boolean): Promise<void> {
       return;
     }
 
-    console.log(`\n[recover-stuck-agents] Done. Queued ${queued}, skipped ${alreadyPending} already-pending.`);
+    console.log(
+      `\n[recover-stuck-agents] Done. Queued ${queued}, ${alreadyPending} already-pending` +
+        (failed > 0 ? `, ${failed} failed` : '') +
+        (skipped.length > 0 ? `, ${skipped.length} pre-skipped` : '') +
+        '.',
+    );
+    if (failed > 0) {
+      console.error(
+        `[recover-stuck-agents] ${failed} device(s) failed to enqueue — re-run is safe and idempotent.`,
+      );
+      process.exitCode = 1;
+    } else if (skipped.length > 0) {
+      // No per-device failures, but at least one device couldn't be reached
+      // by the safety/eligibility checks. Operator probably needs to act
+      // (e.g. bump BREEZE_VERSION) before another run will help.
+      process.exitCode = 2;
+    }
     console.log(
       '[recover-stuck-agents] Agents will pick up the command on their next heartbeat (within ~60s).',
     );
