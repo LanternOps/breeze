@@ -42,16 +42,23 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	version := tools.GetPayloadString(cmd.Payload, "version", "dev")
 	component := tools.GetPayloadString(cmd.Payload, "component", devUpdateComponentAgent)
+	// preserveAutoUpdate=true tells handleDevUpdateAgent NOT to disable
+	// auto_update after the swap. Used by server-orchestrated recovery
+	// flows (see apps/api/scripts/recover-stuck-agents.ts) where the
+	// goal is to get back onto the auto-update path, not to pin a dev
+	// binary. Default false preserves the original dev-push behaviour.
+	preserveAutoUpdate := tools.GetPayloadBool(cmd.Payload, "preserveAutoUpdate", false)
 
 	log.Info("dev_update received",
 		"version", version,
 		"component", component,
 		"downloadUrl", downloadURL,
+		"preserveAutoUpdate", preserveAutoUpdate,
 	)
 
 	switch component {
 	case devUpdateComponentAgent, "":
-		return handleDevUpdateAgent(h, start, downloadURL, checksum, version)
+		return handleDevUpdateAgent(h, start, downloadURL, checksum, version, preserveAutoUpdate)
 	case devUpdateComponentDesktopHelper:
 		return handleDevUpdateDesktopHelper(h, start, downloadURL, checksum, version)
 	default:
@@ -59,15 +66,19 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 }
 
-func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, version string) tools.CommandResult {
-	// Disable auto-update so the heartbeat doesn't overwrite the dev binary
-	// after the agent restarts. Persisted to disk via viper so it survives
-	// the restart triggered by the update.
-	h.config.AutoUpdate = false
-	if err := config.SetAndPersist("auto_update", false); err != nil {
-		log.Warn("failed to persist auto_update=false — dev build may revert after restart", "error", err.Error())
+func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, version string, preserveAutoUpdate bool) tools.CommandResult {
+	if preserveAutoUpdate {
+		log.Info("dev_update preserving auto_update — likely a server-orchestrated recovery push")
+	} else {
+		// Disable auto-update so the heartbeat doesn't overwrite the dev binary
+		// after the agent restarts. Persisted to disk via viper so it survives
+		// the restart triggered by the update.
+		h.config.AutoUpdate = false
+		if err := config.SetAndPersist("auto_update", false); err != nil {
+			log.Warn("failed to persist auto_update=false — dev build may revert after restart", "error", err.Error())
+		}
+		log.Info("auto_update disabled and persisted for dev push")
 	}
-	log.Info("auto_update disabled and persisted for dev push")
 
 	// Resolve current binary path
 	binaryPath, err := os.Executable()

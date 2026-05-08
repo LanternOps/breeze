@@ -14,6 +14,8 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint --ext .ts src",
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
+    "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
+    "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
     "start": "node dist/index.cjs",
     "test": "vitest",
