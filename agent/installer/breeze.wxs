@@ -84,7 +84,7 @@
     <CustomAction
       Id="HardenProgramDataAcl"
       Property="BREEZE_ACL_CMD"
-      ExeCommand="/c icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
+      ExeCommand="/c (if not exist &quot;[ProgramDataBreezeDir].&quot; mkdir &quot;[ProgramDataBreezeDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDataDir].&quot; mkdir &quot;[ProgramDataBreezeDataDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeLogsDir].&quot; mkdir &quot;[ProgramDataBreezeLogsDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
       Execute="immediate"
       Return="check" />
 
