@@ -65,9 +65,18 @@ CLAUDE.md
 .claude/skills/
 .claude/settings.example.json
 
-# Internal docs (not for public repo)
+# Internal docs (not for public repo). Use /internal/* (not /internal) so
+# selective re-inclusion below works — once a directory itself is ignored,
+# git won't recurse into it and !rules don't match.
 .internal/
-/internal
+/internal/*
+# Release manifest public keys + README are checked in so the agent's
+# embedded trust-root regression test (TestEmbeddedTrustRootMatchesRepoPubKey)
+# has a tracked source of truth. Private keys stay out.
+!/internal/release-keys/
+/internal/release-keys/*
+!/internal/release-keys/*.pub
+!/internal/release-keys/README.md
 
 # Stray screenshots
 *.png
