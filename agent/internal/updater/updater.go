@@ -61,10 +61,17 @@ var ErrTextBusy = fmt.Errorf("binary is currently executing")
 
 const maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
 
+// trustedUpdateManifestPublicKeys is the embedded trust root for release
+// manifest signatures. It MUST match the raw Ed25519 public key in
+// internal/release-keys/release-manifest.ed25519.pub (the SPKI suffix); the
+// release.yml workflow signs every manifest with the corresponding private
+// key. TestEmbeddedTrustRootMatchesRepoPubKey enforces that match at build
+// time so the agent never ships with a mismatched trust root again.
+//
+// Self-hosters can append additional base64 raw Ed25519 public keys via the
+// BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS env var (read in trustedManifestKeys).
 var trustedUpdateManifestPublicKeys = []string{
-	// Breeze production update manifest trust root. Self-hosters can append
-	// additional base64 raw Ed25519 public keys with BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS.
-	"7eYBdr5+J5Rnwlil8FccFX/uAO8AnYxHmzVlhJnr++c=",
+	"yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=",
 }
 
 type updateManifest struct {

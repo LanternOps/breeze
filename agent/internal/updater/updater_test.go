@@ -3,9 +3,11 @@ package updater
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -104,6 +106,57 @@ func signedReleaseArtifactDownloadInfo(t *testing.T, version, assetName, rawURL 
 		Manifest:          string(payload),
 		ManifestSignature: base64.StdEncoding.EncodeToString(signature),
 	}
+}
+
+// TestEmbeddedTrustRootMatchesRepoPubKey guards against shipping the agent
+// with an Ed25519 trust root that doesn't match the key the release pipeline
+// actually signs manifests with. PR #568 (May 2026) baked in a wrong key,
+// silently breaking auto-update for v0.65.5 and v0.65.6 — agents downloaded
+// the manifest, failed signature verification, and parked devices in
+// "updating" state forever. This test compares the embedded key against the
+// repo-tracked public key file (whose private counterpart is the GitHub
+// secret RELEASE_MANIFEST_ED25519_PRIVATE_KEY) so the same regression
+// can't slip in again.
+func TestEmbeddedTrustRootMatchesRepoPubKey(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot resolve test file location via runtime.Caller")
+	}
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+	pubPath := filepath.Join(repoRoot, "internal", "release-keys", "release-manifest.ed25519.pub")
+
+	pemBytes, err := os.ReadFile(pubPath)
+	if err != nil {
+		t.Fatalf("repo manifest pub key not readable at %s: %v", pubPath, err)
+	}
+
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "PUBLIC KEY" {
+		t.Fatalf("expected a PEM PUBLIC KEY block in %s", pubPath)
+	}
+
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse SPKI from %s: %v", pubPath, err)
+	}
+	edKey, ok := parsed.(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("expected ed25519.PublicKey in %s, got %T", pubPath, parsed)
+	}
+	expected := base64.StdEncoding.EncodeToString(edKey)
+
+	for _, k := range trustedUpdateManifestPublicKeys {
+		if k == expected {
+			return
+		}
+	}
+	t.Fatalf(
+		"trustedUpdateManifestPublicKeys does not contain the repo manifest pub key.\n"+
+			"  expected (raw base64 of %s): %s\n"+
+			"  embedded: %v\n"+
+			"If you rotated the manifest signing key, update agent/internal/updater/updater.go to match.",
+		pubPath, expected, trustedUpdateManifestPublicKeys,
+	)
 }
 
 func TestNewCreatesUpdater(t *testing.T) {
