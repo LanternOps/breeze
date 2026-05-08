@@ -244,6 +244,16 @@ jobs:
       - name: Build API
         run: pnpm build --filter=@breeze/api
 
+      - name: Verify expected dist artefacts exist
+        # tsup config defines named entries — a regression to a single
+        # entry would silently drop dist/scripts/recover-stuck-agents.cjs
+        # (the runbook target), and a typo there could move dist/index.cjs
+        # off the path the production Dockerfile CMDs at. Fail loudly.
+        run: |
+          test -f apps/api/dist/index.cjs || { echo "missing apps/api/dist/index.cjs"; exit 1; }
+          test -f apps/api/dist/scripts/recover-stuck-agents.cjs || { echo "missing apps/api/dist/scripts/recover-stuck-agents.cjs"; exit 1; }
+          echo "Both expected dist artefacts present"
+
       - name: Upload API artifact
         uses: actions/upload-artifact@v7
         with:
