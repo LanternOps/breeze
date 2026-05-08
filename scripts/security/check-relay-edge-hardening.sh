@@ -30,7 +30,8 @@ for file in docker/turnserver.conf docker-compose.yml deploy/docker-compose.prod
   require_grep 'total-quota|--total-quota' "$file" "$file must include total TURN quotas"
   require_grep 'denied-peer-ip=.*10\.0\.0\.0|--denied-peer-ip=10\.0\.0\.0' "$file" "$file must deny private TURN peers"
   require_grep 'denied-peer-ip=.*169\.254\.0\.0|--denied-peer-ip=169\.254\.0\.0' "$file" "$file must deny link-local/metadata TURN peers"
-  require_grep 'no-loopback-peers|--no-loopback-peers' "$file" "$file must deny loopback TURN peers"
+  require_grep 'denied-peer-ip=.*127\.0\.0\.0|--denied-peer-ip=127\.0\.0\.0' "$file" "$file must deny IPv4 loopback TURN peers"
+  require_grep 'denied-peer-ip=.*::1|--denied-peer-ip=::1' "$file" "$file must deny IPv6 loopback TURN peers"
   require_grep 'no-multicast-peers|--no-multicast-peers' "$file" "$file must deny multicast TURN peers"
 done
 

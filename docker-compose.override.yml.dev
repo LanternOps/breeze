@@ -116,9 +116,8 @@ services:
       --listening-port=3478
       --tls-listening-port=5349
       --fingerprint
-      --lt-cred-mech
+      --use-auth-secret
       --relay-threads=4
-      --max-allocations-quota=12
       --log-file=stdout
       --verbose
       --min-port=49152

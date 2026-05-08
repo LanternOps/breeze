@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Check, Copy, Loader2, Download, Link, ArrowLeft, Info } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { showToast } from '../shared/Toast';
 
 type Platform = 'windows' | 'macos' | 'linux';
@@ -141,7 +142,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       }
 
       const blob = await dlRes.blob();
-      const filename = selectedPlatform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+      const filename =
+        filenameFromContentDisposition(dlRes.headers.get('Content-Disposition'))
+        ?? fallbackInstallerFilename(selectedPlatform);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

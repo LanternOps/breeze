@@ -915,13 +915,13 @@ sudo log show --predicate 'process == "breeze-agent"' --last 1h
 ### Windows (Services)
 
 ```powershell
-Start-Service breeze-agent
-Stop-Service breeze-agent
-Restart-Service breeze-agent
-Get-Service breeze-agent
+Start-Service BreezeAgent
+Stop-Service BreezeAgent
+Restart-Service BreezeAgent
+Get-Service BreezeAgent
 
 # View logs
-Get-EventLog -LogName Application -Source breeze-agent -Newest 50
+Get-EventLog -LogName Application -Source BreezeAgent -Newest 50
 ```
 
 ---

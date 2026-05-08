@@ -87,6 +87,8 @@ services:
       PUBLIC_APP_URL: https://${BREEZE_DOMAIN}
       DASHBOARD_URL: https://${BREEZE_DOMAIN}
       PUBLIC_API_URL: https://${BREEZE_DOMAIN}
+      API_URL: ${API_URL:-}
+      FORCE_HTTPS: ${FORCE_HTTPS:-true}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
@@ -244,11 +246,9 @@ services:
       --fingerprint
       --use-auth-secret
       --relay-threads=4
-      --max-allocations-quota=12
       --user-quota=4
       --total-quota=1000
       --max-bps=${TURN_MAX_BPS:-5000000}
-      --no-loopback-peers
       --no-multicast-peers
       --denied-peer-ip=0.0.0.0-0.255.255.255
       --denied-peer-ip=10.0.0.0-10.255.255.255

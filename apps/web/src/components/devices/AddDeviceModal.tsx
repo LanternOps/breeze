@@ -4,6 +4,7 @@ import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { navigateTo } from '@/lib/navigation';
 
 function detectUserOS(): 'windows' | 'macos' | 'linux' {
@@ -232,7 +233,8 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
       const blob = await dlRes.blob();
       const filename =
-        selectedPlatform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+        filenameFromContentDisposition(dlRes.headers.get('Content-Disposition'))
+        ?? fallbackInstallerFilename(selectedPlatform);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

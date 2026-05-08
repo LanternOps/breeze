@@ -21,7 +21,7 @@ The watchdog is installed automatically alongside the agent during normal instal
 
 ## How It Works
 
-The watchdog runs as a separate system service (`breeze-watchdog`) and monitors the agent through three independent health checks:
+The watchdog runs as a separate system service (`breeze-watchdog` on Linux, `BreezeWatchdog` on Windows) and monitors the agent through three independent health checks:
 
 1. **Process liveness** — Is the agent process still running? Detects crashes and unexpected exits.
 2. **IPC connectivity** — Can the watchdog reach the agent over its local IPC socket? Detects hangs and deadlocks.
@@ -184,7 +184,7 @@ These fields update as the watchdog reports its state through heartbeats and fai
 The agent process crashed and could not be automatically recovered after the configured number of attempts. Use the **Restart Agent** action from the device detail page, or SSH into the device and manually restart the agent service. Check the watchdog logs for recovery failure details: `GET /devices/:id/watchdog-logs?level=error`.
 
 **Watchdog status shows `offline`.**
-The watchdog service itself is not running. Check the system service manager on the device (`systemctl status breeze-watchdog` on Linux, `launchctl list | grep breeze-watchdog` on macOS, `Get-Service breeze-watchdog` on Windows).
+The watchdog service itself is not running. Check the system service manager on the device (`systemctl status breeze-watchdog` on Linux, `launchctl list | grep breeze-watchdog` on macOS, `Get-Service BreezeWatchdog` on Windows).
 
 **Agent keeps restarting in a loop.**
 The watchdog recovers the agent, but it immediately crashes again. This is usually caused by a bad configuration file or a corrupted binary. Check the agent's own diagnostic logs for startup errors. The watchdog will eventually exhaust its recovery attempts and enter failover, preventing an infinite restart loop.

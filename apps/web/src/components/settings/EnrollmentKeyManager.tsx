@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
@@ -224,7 +225,9 @@ export default function EnrollmentKeyManager() {
       }
 
       const blob = await response.blob();
-      const filename = platform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+      const filename =
+        filenameFromContentDisposition(response.headers.get('Content-Disposition'))
+        ?? fallbackInstallerFilename(platform);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
