@@ -24,7 +24,7 @@ concurrency:
 env:
   NODE_VERSION: '22'
   PNPM_VERSION: '9.15.7'
-  GO_VERSION: '1.25.9'
+  GO_VERSION: '1.25.10'
 
 jobs:
   lint:
