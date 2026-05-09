@@ -35,6 +35,20 @@ import { db } from '../../db';
 // Add deliberately, with a comment. Empty for now.
 const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([]);
 
+// System-scoped tables: per-deployment infrastructure with no tenant column.
+// These have ENABLE + FORCE ROW LEVEL SECURITY but no permissive policies —
+// only the system DB context (superuser / runOutsideDbContext) can access them.
+// The auto-discovery query won't surface these (no org_id column, not in any
+// tenant list), but they are enumerated here for explicit documentation and
+// so that a future "all-tables RLS enabled" audit can assert against this list.
+//
+// NOTE: device_commands is the canonical prior example (agent WS path, system-
+// scoped by design) — see apps/api/src/db/schema/devices.ts.
+const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
+  'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
+  'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
+]);
+
 // Tables with org_id metadata that are intentionally not generic org-tenant
 // tables. OAuth token rows are user/client secrets; org_id is retained for
 // lifecycle filtering only, and tenant-wide revocation uses system DB context
