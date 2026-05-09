@@ -48,11 +48,18 @@ export default defineConfig({
         // covered.  Add their sha256 hashes here so they pass CSP validation.
         // If a CSP script-src-elem violation appears in the browser console,
         // copy the suggested sha256 hash from the error into this array.
+        //
+        // ClientRouter swap script: this hash is for the inline script Astro's
+        // <ClientRouter> injects during view-transition swaps (issue #618).
+        // It is constant per Astro version; if you bump astro, re-verify and
+        // update.  Hash-chasing here is a known-fragile workaround --
+        // longer-term we should migrate to a nonce-based CSP.
         resources: [
           "'self'",
           'https://cdn.jsdelivr.net',
           'https://static.cloudflareinsights.com',
-          "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='"
+          "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='",
+          "'sha256-6wgjuQN80bYuvy8C2/v+mFX1HAEgrfvSs+beElRyx+8='"
         ]
       },
       styleDirective: {

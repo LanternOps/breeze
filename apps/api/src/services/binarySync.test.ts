@@ -27,7 +27,27 @@ vi.mock("../db", () => ({
   },
 }));
 
-import { syncFromGitHub } from "./binarySync";
+const fsMocks = vi.hoisted(() => ({
+  readdir: vi.fn(),
+  readFile: vi.fn(),
+  stat: vi.fn(),
+}));
+
+vi.mock("node:fs/promises", () => fsMocks);
+
+vi.mock("node:fs", () => ({
+  createReadStream: () => {
+    const { Readable } = require("node:stream");
+    return Readable.from(Buffer.from("local agent bytes"));
+  },
+}));
+
+vi.mock("./s3Storage", () => ({
+  isS3Configured: () => false,
+  syncDirectory: vi.fn(),
+}));
+
+import { syncBinaries, syncFromGitHub } from "./binarySync";
 
 function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -143,5 +163,32 @@ describe("binarySync", () => {
         }),
       }),
     );
+  });
+
+  it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
+    // The agent_versions table has a UNIQUE constraint on
+    // (version, platform, architecture, component). The local-binary path used
+    // to omit `component`, so Postgres rejected the upsert with
+    // "no unique or exclusion constraint matching the ON CONFLICT
+    // specification" and the wrapping transaction rolled back, leaving
+    // agent_versions empty after every API restart.
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    delete process.env.BREEZE_VERSION;
+
+    fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+    fsMocks.readFile.mockResolvedValue("0.65.7" as any);
+
+    await syncBinaries();
+
+    const targets = dbMocks.onConflictDoUpdate.mock.calls.map(
+      (call: any[]) => (call[0] as { target: unknown[] }).target,
+    );
+    expect(targets.length).toBeGreaterThan(0);
+    for (const target of targets) {
+      expect(target).toHaveLength(4);
+    }
   });
 });

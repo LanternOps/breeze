@@ -352,10 +352,14 @@ export async function syncBinaries(): Promise<void> {
             isLatest: true,
           })
           .onConflictDoUpdate({
+            // Match the actual unique constraint
+            // (version, platform, architecture, component). `component`
+            // defaults to 'agent' in the schema for the local-binary path.
             target: [
               agentVersions.version,
               agentVersions.platform,
               agentVersions.architecture,
+              agentVersions.component,
             ],
             set: {
               downloadUrl,
