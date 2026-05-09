@@ -10,6 +10,7 @@ import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveS
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS } from '../services/permissions';
 import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
+import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -298,6 +299,7 @@ const partnerSettingsSchema = z.object({
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
   }).optional(),
+  organizationOrder: z.array(z.string().uuid()).max(10_000).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -522,11 +524,93 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     .offset(offset)
     .orderBy(organizations.createdAt);
 
+  // Apply the partner's preferred organization order, when one is set.
+  // - partner scope: load own partner settings.
+  // - system scope: only when a partnerId filter is in the query.
+  // - organization scope: list is at most one row, nothing to reorder.
+  let ordered = data;
+  let orderPartnerId: string | null = null;
+  if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
+  else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
+  if (orderPartnerId) {
+    try {
+      const settingsRow = await withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ settings: partners.settings })
+          .from(partners)
+          .where(and(eq(partners.id, orderPartnerId as string), isNull(partners.deletedAt)))
+          .limit(1);
+        return row;
+      });
+      const preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
+        ?.organizationOrder;
+      ordered = applyOrganizationOrder(data, preferredOrder);
+    } catch {
+      // Soft-fail: if we can't load partner settings, fall back to createdAt order.
+    }
+  }
+
   return c.json({
-    data,
+    data: ordered,
     pagination: { page, limit, total: Number(count) }
   });
 });
+
+// PATCH /organizations/reorder — partner-level preferred order of org IDs.
+// Persists to partners.settings.organizationOrder. Idempotent; the request
+// body fully replaces the current order. Unknown / no-longer-accessible IDs
+// are silently dropped.
+const reorderOrganizationsSchema = z.object({
+  orderedIds: z.array(z.string().uuid()).max(10_000),
+});
+
+orgRoutes.patch(
+  '/organizations/reorder',
+  requireScope('partner'),
+  requirePartner,
+  requireOrgWrite,
+  zValidator('json', reorderOrganizationsSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { orderedIds } = c.req.valid('json');
+    const partnerId = auth.partnerId as string;
+
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    const sanitized = sanitizeOrganizationOrder(orderedIds, accessibleOrgIds);
+
+    const [current] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
+      .limit(1);
+    if (!current) {
+      return c.json({ error: 'Partner not found' }, 404);
+    }
+    const currentSettings = (current.settings as Record<string, unknown>) || {};
+    const newSettings = { ...currentSettings, organizationOrder: sanitized };
+
+    const [partner] = await db
+      .update(partners)
+      .set({ settings: newSettings, updatedAt: new Date() })
+      .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
+      .returning();
+    if (!partner) {
+      return c.json({ error: 'Partner not found' }, 404);
+    }
+
+    const auditOrgId = await resolveAuditOrgIdForPartner(partnerId);
+    writeRouteAudit(c, {
+      orgId: auditOrgId,
+      action: 'partner.organizationOrder.update',
+      resourceType: 'partner',
+      resourceId: partner.id,
+      resourceName: partner.name,
+      details: { count: sanitized.length },
+    });
+
+    return c.json({ organizationOrder: sanitized });
+  },
+);
 
 orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');

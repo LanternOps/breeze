@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, type DragEvent } from 'react';
 import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
@@ -46,6 +46,8 @@ export default function OrganizationsPage() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);
+  const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
 
   // Sites state
   const [sites, setSites] = useState<Site[]>([]);
@@ -159,6 +161,65 @@ export default function OrganizationsPage() {
     setSiteModalMode('closed');
     setSelectedSite(null);
     window.location.hash = org.id;
+  };
+
+  const persistOrganizationOrder = useCallback(async (orderedIds: string[]) => {
+    try {
+      const res = await fetchWithAuth('/orgs/organizations/reorder', {
+        method: 'PATCH',
+        body: JSON.stringify({ orderedIds })
+      });
+      if (!res.ok) throw new Error(`Reorder failed (${res.status})`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save organization order');
+      // Revert by re-fetching the authoritative order from the server.
+      void fetchOrganizations();
+    }
+  }, [fetchOrganizations]);
+
+  const handleOrgDragStart = (event: DragEvent<HTMLLIElement>, org: Organization) => {
+    setDraggedOrgId(org.id);
+    event.dataTransfer.effectAllowed = 'move';
+    // Firefox requires data to be set or the drag won't fire.
+    try { event.dataTransfer.setData('text/plain', org.id); } catch { /* noop */ }
+  };
+
+  const handleOrgDragOver = (event: DragEvent<HTMLLIElement>, org: Organization) => {
+    if (!draggedOrgId || draggedOrgId === org.id) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    if (dragOverOrgId !== org.id) setDragOverOrgId(org.id);
+  };
+
+  const handleOrgDragLeave = (event: DragEvent<HTMLLIElement>) => {
+    // Only clear when leaving the row entirely, not when entering a child.
+    const related = event.relatedTarget as Node | null;
+    if (!related || !(event.currentTarget as Node).contains(related)) {
+      setDragOverOrgId(null);
+    }
+  };
+
+  const handleOrgDrop = (event: DragEvent<HTMLLIElement>, targetOrg: Organization) => {
+    event.preventDefault();
+    setDragOverOrgId(null);
+    const sourceId = draggedOrgId;
+    setDraggedOrgId(null);
+    if (!sourceId || sourceId === targetOrg.id) return;
+
+    const sourceIndex = organizations.findIndex(o => o.id === sourceId);
+    const targetIndex = organizations.findIndex(o => o.id === targetOrg.id);
+    if (sourceIndex === -1 || targetIndex === -1) return;
+
+    const next = [...organizations];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setOrganizations(next);
+    void persistOrganizationOrder(next.map(o => o.id));
+  };
+
+  const handleOrgDragEnd = () => {
+    setDraggedOrgId(null);
+    setDragOverOrgId(null);
   };
 
   const handleCloseModal = () => {
@@ -407,17 +468,43 @@ export default function OrganizationsPage() {
               </div>
             ) : (
               <ul className="divide-y">
-                {filteredOrgs.map(org => (
+                {filteredOrgs.map(org => {
+                  const dragEnabled = searchQuery.trim().length === 0;
+                  const isDragging = draggedOrgId === org.id;
+                  const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
+                  return (
                   <li
                     key={org.id}
                     onClick={() => handleSelectOrg(org)}
+                    draggable={dragEnabled}
+                    onDragStart={dragEnabled ? (e) => handleOrgDragStart(e, org) : undefined}
+                    onDragOver={dragEnabled ? (e) => handleOrgDragOver(e, org) : undefined}
+                    onDragLeave={dragEnabled ? handleOrgDragLeave : undefined}
+                    onDrop={dragEnabled ? (e) => handleOrgDrop(e, org) : undefined}
+                    onDragEnd={dragEnabled ? handleOrgDragEnd : undefined}
                     className={`group relative cursor-pointer px-4 py-3 transition hover:bg-muted/50 ${
                       selectedOrg?.id === org.id
                         ? 'bg-muted/60 border-l-2 border-l-primary'
                         : 'border-l-2 border-l-transparent'
-                    }`}
+                    } ${isDragging ? 'opacity-50' : ''} ${isDropTarget ? 'border-t-2 border-t-primary' : ''}`}
                   >
                     <div className="flex items-start justify-between gap-2">
+                      {dragEnabled && (
+                        <span
+                          className="mt-0.5 cursor-grab text-muted-foreground/40 opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
+                          title="Drag to reorder"
+                          aria-hidden="true"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="9" cy="6" r="1" />
+                            <circle cx="9" cy="12" r="1" />
+                            <circle cx="9" cy="18" r="1" />
+                            <circle cx="15" cy="6" r="1" />
+                            <circle cx="15" cy="12" r="1" />
+                            <circle cx="15" cy="18" r="1" />
+                          </svg>
+                        </span>
+                      )}
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{org.name}</p>
                         <div className="mt-1 flex items-center gap-2">
@@ -466,7 +553,8 @@ export default function OrganizationsPage() {
                       </div>
                     </div>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </div>

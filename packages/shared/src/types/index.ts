@@ -580,6 +580,10 @@ export interface PartnerSettings {
   defaults?: InheritableDefaultSettings;
   branding?: InheritableBrandingSettings;
   aiBudgets?: InheritableAiBudgetSettings;
+  // Partner-level preferred order of organization IDs. The org list endpoint
+  // returns matching orgs in this order; orgs not present in the array
+  // (newly created or stale entries) are appended in createdAt order.
+  organizationOrder?: string[];
 }
 
 // ============================================
