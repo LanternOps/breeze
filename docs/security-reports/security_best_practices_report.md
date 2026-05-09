@@ -1,6 +1,6 @@
 # Security Best Practices Review Report
 
-Split report index: [/Users/toddhebebrand/breeze/security_reports/README.md](/Users/toddhebebrand/breeze/security_reports/README.md)
+Split report index: [README.md](./README.md)
 
 Date: 2026-03-30
 Repository: /Users/toddhebebrand/breeze

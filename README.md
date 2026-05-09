@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://breezermm.com/features/"><strong>▶ Live Demos</strong></a> •
   <a href="#security">Security</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
@@ -28,6 +29,10 @@
 
 <p align="center">
   <img src="docs/breeze-ai-demo.gif" alt="Breeze AI Demo — Check a device's health" width="800" />
+</p>
+
+<p align="center">
+  <em>Want to click around?</em> <a href="https://breezermm.com/features/"><strong>Interactive feature demos at breezermm.com/features</strong></a> (e.g. <a href="https://breezermm.com/features/remote-access/">Remote Access</a>).
 </p>
 
 ---

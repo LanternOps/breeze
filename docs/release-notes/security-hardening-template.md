@@ -21,7 +21,7 @@ Copy this into the GitHub Release body when tagging the version that ships PR #5
 
 This is a cross-cutting security hardening pass landing fixes from a parallel review covering 24 areas: remote access, public installer/enrollment, system tools and command execution, AI/MCP execution and approvals, OAuth dynamic client registration, auth/session/MFA/SSO, multi-tenant isolation, backup/restore authorization, integrations and webhooks, frontend CSP, agent trust boundary, API keys and rate limiting, reports/exports/audit-log exposure, background jobs/queues, RLS migrations, admin lifecycle, log/SNMP ingestion, Tauri viewer/helper local-app security, installer privilege and ACLs, crypto and secret rotation, TURN/relay/WebRTC edge, production deploy defaults, and high-privilege third-party sync jobs.
 
-The full review tracker is at `security_reports/security_review_tracker_2026-05-02.md`.
+The full review tracker is at `docs/security-reports/security_review_tracker_2026-05-02.md`.
 
 ## Highlights
 
