@@ -43,7 +43,7 @@ Breeze is a full-featured remote monitoring and management platform with AI buil
 
 Software features are exploding, but people can't keep up. Every RMM on the market adds more buttons, more tabs, more dashboards. Breeze takes a different approach: **an AI agent that actually uses the features for you.** It investigates alerts, remediates issues, documents what it did, and only bothers you when it needs a human decision.
 
-Breeze is free, open source (AGPL-3.0), and designed to be self-hosted or [cloud-hosted through LanternOps](https://lanternops.io).
+Breeze is free, open source (AGPL-3.0), and designed to be self-hosted or [cloud-hosted at breezermm.com](https://breezermm.com).
 
 ### Why Breeze?
 
@@ -61,8 +61,8 @@ Breeze has privileged access to every device it manages. We take that seriously.
 
 | Layer | What We Do |
 |---|---|
-| **Authentication** | Argon2id passwords, JWT with 15-min expiry, TOTP MFA, SHA-256 hashed tokens |
-| **Authorization** | RBAC with scope-based multi-tenancy, database-level tenant isolation via PostgreSQL session variables |
+| **Authentication** | Argon2id passwords, JWT with 15-min expiry, TOTP MFA, SHA-256 hashed tokens, email verification on signup |
+| **Authorization** | RBAC with scope-based multi-tenancy, forced PostgreSQL row-level security on every tenant table — no app-layer-only fallback, even table owners can't bypass |
 | **Encryption** | AES-256-GCM at rest, TLS 1.2+ in transit, HSTS preload, no plaintext secrets stored anywhere |
 | **Agent hardening** | Bearer token auth (SHA-256 hashed), 0600 config file permissions, optional Cloudflare mTLS |
 | **Rate limiting** | Redis sliding window on all auth endpoints and agent APIs — fail-closed if Redis is unavailable |
@@ -71,6 +71,7 @@ Breeze has privileged access to every device it manages. We take that seriously.
 | **Supply chain** | 5 automated scanners in CI: CodeQL SAST, Gitleaks, npm audit, govulncheck, Trivy CVE scanning |
 | **Audit trail** | Structured audit logging with actor tracking, org-scoped retention policies, S3 archival |
 | **Operational** | Secret rotation runbooks, disaster recovery procedures (RTO < 1 hour, RPO < 15 minutes) |
+| **Abuse controls** | Cross-tenant platform-admin suspend endpoint, email-verification gate on signup, fail-closed token revocation |
 
 For the full security whitepaper, including SOC 2 alignment mapping, see **[Security Practices](docs/SECURITY_PRACTICES.md)**.
 
@@ -83,27 +84,48 @@ To report a vulnerability: **[security@lanternops.io](mailto:security@lanternops
 ### Device Management
 - **Hardware & software inventory** — CPU, memory, storage, network, installed applications, versions
 - **Real-time device health** — Health checks with configurable thresholds and alerting
-- **Policies** — Define and enforce configuration policies across device groups
+- **Configuration policies** — Hierarchical policy management with feature links and per-assignment resolution
 - **Advanced filtering** — Query your fleet with powerful filters across any device attribute
-- **Network discovery** — Scan and map networks to find unmanaged devices *(in progress)*
+- **Network discovery** — ARP, ICMP, port, and SNMP scans to find unmanaged devices on each site
+- **Custom fields & tags** — Extend device records with your own metadata
+- **Configuration drift & change tracking** — Audit baselines, CIS hardening checks, software/peripheral policies
 
 ### Remote Access
 - **Remote terminal** — Full shell access to managed devices
 - **Remote file browser** — Browse, upload, and download files
-- **Remote desktop** — Visual remote control of devices
+- **Remote desktop** — Visual remote control of devices, multi-display, clipboard sync, computer-control automation
+- **Native viewer & helper apps** — Tauri-based desktop apps for macOS and Windows
 - **Activity monitoring** — See what's happening on a device in real time
+- **TURN relay** — Built-in coturn for WebRTC traversal across NATs and firewalls
 
 ### Automation
 - **Remote scripting** — Execute scripts (PowerShell, Bash, Python) across devices
-- **Patch management** — Inventory, approve, and deploy OS and application patches
-- **Alerting** — Configurable alerts with severity classification and routing
-- **Backup** — Managed backup for critical device data *(in progress)*
+- **Patch management** — Inventory, approve, and deploy OS and application patches; maintenance windows + update rings
+- **Alerts & notifications** — Configurable alerts with severity classification, routing, webhook delivery
+- **Playbooks** — Reusable remediation workflows
+- **Deployments** — Push agents and software at scale
+- **Watchdog** — Self-healing agent supervisor that auto-restarts on failure
+
+### Backup & Recovery
+- **Endpoint snapshot backup** — Restic-based snapshots to S3-compatible storage
+- **Bare-metal recovery** — Full-disk restore for Windows endpoints
+- **Hyper-V & SQL Server agents** — Application-aware backups
+- **Cloud-to-cloud (M365)** — Email, OneDrive, SharePoint, Teams, calendar
+- **Disaster recovery & verification** — Restore tests, encryption, retention policies
+
+### Integrations
+- **EDR** — SentinelOne and Huntress with risk-classified actions and incident correlation
+- **PSA** — Connect to popular ticketing systems
+- **Mobile** — iOS/Android app for alerts, approvals, and on-call response
+- **MCP server** — Connect Claude.ai, ChatGPT, Cursor, or any MCP-aware AI agent over OAuth 2.1
+- **SSO** — SAML and OpenID Connect
 
 ### AI Brain (BYOK)
 - **AI chat on every page** — Context-aware assistant that knows what you're looking at
 - **Tool-equipped agent** — The AI doesn't just talk, it acts — querying devices, running diagnostics, executing remediations
 - **Risk-classified actions** — Every AI action is validated against a risk engine before execution. Dangerous actions require human approval. Always.
 - **Bring your own key** — Plug in your Anthropic API key and the brain works out of the box
+- **External AI agents via MCP** — Or connect Claude.ai, ChatGPT, Cursor through the built-in MCP server with OAuth 2.1 + PKCE
 
 > **🧠 [LanternOps Brain](https://lanternops.io)** — Want persistent memory, cross-tenant intelligence, automated playbooks, and compliance evidence generation? LanternOps is the managed AI brain for Breeze. Same RMM, smarter brain. [Learn more →](https://lanternops.io)
 
@@ -113,7 +135,7 @@ To report a vulnerability: **[security@lanternops.io](mailto:security@lanternops
 
 ### Option 1: Cloud Hosted (Easiest)
 
-Skip infrastructure entirely. [Sign up at LanternOps](https://lanternops.io) and have a fully managed Breeze instance in minutes.
+Skip infrastructure entirely. [Sign up at breezermm.com](https://breezermm.com) and have a fully managed Breeze instance in minutes.
 
 ### Option 2: Self-Hosted (Docker)
 
@@ -162,8 +184,9 @@ Or install directly:
 cd agent
 make build
 
-# The binary will be at agent/bin/breeze-agent
-# See docs/AGENT_INSTALLATION.md for enrollment instructions
+# Binaries land in agent/bin/ — including breeze-agent, breeze-desktop-helper,
+# breeze-watchdog, and breeze-backup.
+# See docs/AGENT_INSTALLATION.md for enrollment instructions.
 ```
 
 ### Enable the AI Brain (Optional)
@@ -176,7 +199,7 @@ make build
 
 ## AI Brain
 
-Breeze ships with the Claude Agent SDK integrated. The AI isn't a separate product or plugin — it's woven into the platform.
+Breeze ships with the Claude Agent SDK integrated and an MCP server you can point any AI agent at. The AI isn't a separate product or plugin — it's woven into the platform, and the same risk engine governs every action whether it comes from the in-product chat or from an external agent over MCP.
 
 ### How It Works
 
@@ -245,12 +268,14 @@ Every entity in Breeze is scoped to this hierarchy. Permissions, policies, alert
 |---|---|
 | Frontend | Astro + React Islands |
 | API | Hono (TypeScript) |
-| Database | PostgreSQL + Drizzle ORM |
+| Database | PostgreSQL with forced row-level security + Drizzle ORM |
 | Queue | BullMQ + Redis |
-| Agent | Go (cross-platform) |
-| Real-time | HTTP polling + WebSocket |
-| Remote Access | WebRTC |
-| AI | Claude Agent SDK (Anthropic) |
+| Agent | Go (cross-platform); native helper/viewer in Tauri (Rust) |
+| Mobile | React Native (Expo) |
+| Real-time | WebSocket + HTTP polling |
+| Remote Access | WebRTC + coturn TURN relay |
+| Reverse Proxy | Caddy with automatic Let's Encrypt |
+| AI | Claude Agent SDK (Anthropic), MCP server with OAuth 2.1 |
 
 ### Brain Connector
 
@@ -289,40 +314,41 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ### Now
 - [x] Device inventory (hardware, software, network, security)
-- [x] Remote terminal
-- [x] Remote file browser
-- [x] Remote desktop
-- [x] Activity monitoring
+- [x] Remote terminal, file browser, desktop, activity monitoring
 - [x] Remote scripting
-- [x] Patch management
+- [x] Patch management with maintenance windows + update rings
 - [x] Health checks & alerting
-- [x] Policies
+- [x] Configuration policies (hierarchical with feature links)
 - [x] Advanced filtering
 - [x] AI chat with tool-equipped agent (BYOK)
 - [x] Risk-classified action engine
 - [x] Multi-tenant hierarchy
-- [x] macOS agent
-- [x] Windows agent
-- [ ] Linux agent testing & hardening
-- [ ] Network discovery
-- [ ] Backup
+- [x] macOS, Windows, and Linux agents
+- [x] Network discovery (ARP, ICMP, port, SNMP)
+- [x] Endpoint backup (snapshot, bare-metal recovery, Hyper-V, SQL Server)
+- [x] Cloud-to-cloud backup (M365)
+- [x] EDR integrations (SentinelOne, Huntress)
+- [x] MCP server with OAuth 2.1 for external AI agents
+- [x] Mobile app (iOS / Android)
+- [x] Native viewer + helper desktop apps (macOS, Windows)
+- [x] Watchdog auto-restart and agent self-update
+- [x] Reports & client-facing exports
+- [x] CIS hardening checks and audit baselines
+- [x] Email verification + cross-tenant abuse controls
+- [x] SSO (SAML, OIDC)
 
 ### Next
-- [ ] LanternOps Brain connector (managed AI brain)
-- [ ] Event stream architecture (RMM → Brain)
-- [ ] Playbook engine
-- [ ] Approval workflow UI
-- [ ] Compliance framework evaluations
-- [ ] Client-facing report generation
-- [ ] Agent auto-update mechanism
+- [ ] LanternOps Brain connector (managed AI brain with cross-tenant intelligence)
+- [ ] Playbook engine (executable workflow runtime)
+- [ ] Approval workflow UI for high-risk AI actions
+- [ ] Expanded compliance framework evaluations
+- [ ] PSA integrations (ConnectWise, Autotask, HaloPSA)
+- [ ] Documentation platform integrations (IT Glue, Hudu)
 
 ### Later
 - [ ] Cross-tenant intelligence
 - [ ] Proactive remediation
-- [ ] Mobile app
 - [ ] Marketplace for community playbooks
-- [ ] PSA integration (ConnectWise, Autotask, HaloPSA)
-- [ ] Documentation platform integration (IT Glue, Hudu)
 
 ---
 
@@ -330,9 +356,10 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 | Platform | Agent Status | Notes |
 |---|---|---|
-| macOS | ✅ Working | Primary development platform |
-| Windows | ✅ Working | Full feature parity with macOS |
-| Linux | 🧪 Built, testing | Core features working, looking for testers |
+| macOS | ✅ Working | Primary development platform; native helper + viewer |
+| Windows | ✅ Working | Full feature parity with macOS; signed MSI installer + Watchdog service |
+| Linux | ✅ Working | Daemon + service install via systemd; remote desktop and discovery require root |
+| iOS / Android | ✅ Mobile app | Alerts, approvals, on-call response |
 
 ---
 
@@ -350,15 +377,15 @@ cd breeze
 # Install dependencies
 pnpm install
 
-# Set up the database
-pnpm db:push
+# Apply database migrations
+pnpm db:migrate
 
-# Start the dev server
+# Start the dev server (API + web + helper)
 pnpm dev
 
 # Build the Go agent
 cd agent
-go build -o breeze-agent ./cmd/agent
+make build  # outputs to agent/bin/
 ```
 
 ### Ways to Contribute
@@ -393,7 +420,10 @@ Tactical RMM is a solid project. Breeze is AI-native — the agent SDK and tool 
 Absolutely. The multi-tenant hierarchy works for internal IT too — just use Organizations as departments or offices.
 
 **What AI models are supported?**
-Breeze uses the Claude Agent SDK (Anthropic). BYOK mode requires an Anthropic API key. We chose Claude for its tool-use capabilities and reasoning quality. We're open to community contributions for other model support.
+For the in-product AI chat, Breeze uses the Claude Agent SDK (Anthropic). BYOK mode requires an Anthropic API key. We chose Claude for its tool-use capabilities and reasoning quality. Separately, Breeze runs a built-in MCP server with OAuth 2.1 + PKCE, so you can connect Claude.ai, ChatGPT, Cursor, or any other MCP-compatible AI agent — using whichever model that platform runs. We're open to community contributions for additional in-product model providers.
+
+**Is there an agent auto-update?**
+Yes. The Breeze agent has a built-in updater that pulls signed release artifacts and self-installs across macOS, Windows, and Linux. The Watchdog service supervises the agent process and restarts it on failure. Production deployments verify Ed25519-signed release manifests via `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`.
 
 **Is my data safe?**
 Self-hosted: your data never leaves your infrastructure. Cloud-hosted: data is isolated per partner with strict tenant separation. See our [Security Practices](docs/SECURITY_PRACTICES.md) for the full security whitepaper, including SOC 2 alignment mapping, encryption standards, and audit controls.
