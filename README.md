@@ -116,9 +116,7 @@ To report a vulnerability: **[security@lanternops.io](mailto:security@lanternops
 ### Integrations
 - **EDR** — SentinelOne and Huntress with risk-classified actions and incident correlation
 - **PSA** — Connect to popular ticketing systems
-- **Mobile** — iOS/Android app for alerts, approvals, and on-call response
 - **MCP server** — Connect Claude.ai, ChatGPT, Cursor, or any MCP-aware AI agent over OAuth 2.1
-- **SSO** — SAML and OpenID Connect
 
 ### AI Brain (BYOK)
 - **AI chat on every page** — Context-aware assistant that knows what you're looking at
@@ -271,7 +269,6 @@ Every entity in Breeze is scoped to this hierarchy. Permissions, policies, alert
 | Database | PostgreSQL with forced row-level security + Drizzle ORM |
 | Queue | BullMQ + Redis |
 | Agent | Go (cross-platform); native helper/viewer in Tauri (Rust) |
-| Mobile | React Native (Expo) |
 | Real-time | WebSocket + HTTP polling |
 | Remote Access | WebRTC + coturn TURN relay |
 | Reverse Proxy | Caddy with automatic Let's Encrypt |
@@ -329,13 +326,11 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 - [x] Cloud-to-cloud backup (M365)
 - [x] EDR integrations (SentinelOne, Huntress)
 - [x] MCP server with OAuth 2.1 for external AI agents
-- [x] Mobile app (iOS / Android)
 - [x] Native viewer + helper desktop apps (macOS, Windows)
 - [x] Watchdog auto-restart and agent self-update
 - [x] Reports & client-facing exports
 - [x] CIS hardening checks and audit baselines
 - [x] Email verification + cross-tenant abuse controls
-- [x] SSO (SAML, OIDC)
 
 ### Next
 - [ ] LanternOps Brain connector (managed AI brain with cross-tenant intelligence)
@@ -344,6 +339,8 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 - [ ] Expanded compliance framework evaluations
 - [ ] PSA integrations (ConnectWise, Autotask, HaloPSA)
 - [ ] Documentation platform integrations (IT Glue, Hudu)
+- [ ] Mobile app (iOS / Android) — alerts, approvals, on-call response
+- [ ] SSO (SAML, OIDC) — implemented, awaiting field validation
 
 ### Later
 - [ ] Cross-tenant intelligence
@@ -359,7 +356,6 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 | macOS | ✅ Working | Primary development platform; native helper + viewer |
 | Windows | ✅ Working | Full feature parity with macOS; signed MSI installer + Watchdog service |
 | Linux | ✅ Working | Daemon + service install via systemd; remote desktop and discovery require root |
-| iOS / Android | ✅ Mobile app | Alerts, approvals, on-call response |
 
 ---
 
