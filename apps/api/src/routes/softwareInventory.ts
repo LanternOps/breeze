@@ -60,12 +60,31 @@ const deviceDrilldownQuerySchema = z.object({
 // Helpers
 // ============================================
 
-function resolveOrgId(auth: AuthContext): string | null {
-  if (auth.orgId) return auth.orgId;
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return auth.accessibleOrgIds[0] ?? null;
+type ResolveOrgIdResult =
+  | { orgId: string }
+  | { error: string; status: 400 | 403 };
+
+function resolveOrgId(auth: AuthContext, requestedOrgId?: string): ResolveOrgIdResult {
+  if (requestedOrgId) {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (auth.orgId) {
+      if (requestedOrgId !== auth.orgId) {
+        return { error: 'Access to this organization denied', status: 403 };
+      }
+      return { orgId: requestedOrgId };
+    }
+    if (!accessibleOrgIds.includes(requestedOrgId)) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: requestedOrgId };
   }
-  return null;
+
+  if (auth.orgId) return { orgId: auth.orgId };
+  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
+    const single = auth.accessibleOrgIds[0];
+    if (single) return { orgId: single };
+  }
+  return { error: 'Organization context required', status: 400 };
 }
 
 type PolicyStatus = 'allowed' | 'blocked' | 'audit' | 'no_policy';
@@ -173,10 +192,11 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   const auth = c.get('auth') as AuthContext;
   const { search, vendor, limit, offset, sortBy, sortOrder } = c.req.valid('query');
 
-  const orgId = resolveOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'Organization context required' }, 400);
+  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
+  const { orgId } = orgResult;
 
   const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
@@ -279,10 +299,11 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
   const auth = c.get('auth') as AuthContext;
   const { softwareName, vendor } = c.req.valid('json');
 
-  const orgId = resolveOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'Organization context required' }, 400);
+  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
+  const { orgId } = orgResult;
 
   // Find or create "Default Allowlist" policy
   const [existing] = await db
@@ -359,10 +380,11 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
   const auth = c.get('auth') as AuthContext;
   const { softwareName, vendor } = c.req.valid('json');
 
-  const orgId = resolveOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'Organization context required' }, 400);
+  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
+  const { orgId } = orgResult;
 
   // Find or create "Default Blocklist" policy
   const [existing] = await db
@@ -436,10 +458,11 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
   const auth = c.get('auth') as AuthContext;
   const { softwareName, vendor } = c.req.valid('json');
 
-  const orgId = resolveOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'Organization context required' }, 400);
+  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
+  const { orgId } = orgResult;
 
   // Remove from both Default Allowlist and Default Blocklist
   const defaults = await db
@@ -486,10 +509,11 @@ softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zVal
   const softwareName = decodeURIComponent(c.req.param('name'));
   const { vendor, limit, offset } = c.req.valid('query');
 
-  const orgId = resolveOrgId(auth);
-  if (!orgId) {
-    return c.json({ error: 'Organization context required' }, 400);
+  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
+  const { orgId } = orgResult;
 
   const conditions: SQL[] = [
     eq(devices.orgId, orgId),

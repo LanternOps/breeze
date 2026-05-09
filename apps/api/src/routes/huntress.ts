@@ -286,7 +286,7 @@ huntressRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, body.orgId);
+    const orgResult = resolveOrgId(auth, body.orgId ?? requestedOrgId(c));
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }

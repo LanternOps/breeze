@@ -228,7 +228,8 @@ const updateProfileSchema = z.object({
 
 const scanSchema = z.object({
   profileId: z.string().uuid(),
-  agentId: z.string().optional()
+  agentId: z.string().optional(),
+  orgId: z.string().uuid().optional()
 });
 
 const listJobsSchema = z.object({
@@ -521,7 +522,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, body.profileId)];
