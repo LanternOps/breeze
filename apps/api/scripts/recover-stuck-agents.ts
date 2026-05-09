@@ -99,10 +99,37 @@ async function hasRecoveryAlreadyQueued(deviceId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-async function enqueueRecovery(plan: Plan): Promise<'queued' | 'already-pending'> {
+function getServerOrigin(): string {
+  const candidate =
+    process.env.PUBLIC_API_URL?.trim() ||
+    process.env.PUBLIC_APP_URL?.trim() ||
+    process.env.BREEZE_SERVER?.trim();
+  if (!candidate) {
+    throw new Error(
+      'Cannot determine server origin: set PUBLIC_API_URL (or PUBLIC_APP_URL / BREEZE_SERVER) so dev_update download URLs match the agent\'s expected server host.',
+    );
+  }
+  return candidate.replace(/\/+$/, '');
+}
+
+// The agent's downloader (updater.go:downloadFromURL) rejects download URLs
+// whose host doesn't match its configured server origin — so we cannot pass
+// the github.com URL stored in agent_versions.downloadUrl when the server is
+// running BINARY_SOURCE=github. Build a server-relative URL instead; the
+// API's /api/v1/agents/download/:os/:arch route will 302 to GitHub from
+// there (or serve from disk/S3 in non-github mode), and Go's HTTP client
+// follows the redirect transparently because the host check has already
+// passed on the originating URL.
+function buildAgentDownloadUrl(serverOrigin: string, platform: string, architecture: string): string {
+  const osParam = platform === 'macos' ? 'darwin' : platform;
+  return `${serverOrigin}/api/v1/agents/download/${osParam}/${architecture}`;
+}
+
+async function enqueueRecovery(plan: Plan, serverOrigin: string): Promise<'queued' | 'already-pending'> {
   if (await hasRecoveryAlreadyQueued(plan.device.id)) {
     return 'already-pending';
   }
+  const downloadUrl = buildAgentDownloadUrl(serverOrigin, plan.binary.platform, plan.binary.architecture);
   await db.insert(deviceCommands).values({
     deviceId: plan.device.id,
     type: 'dev_update',
@@ -111,7 +138,7 @@ async function enqueueRecovery(plan: Plan): Promise<'queued' | 'already-pending'
     payload: {
       version: plan.binary.version,
       component: 'agent',
-      downloadUrl: plan.binary.downloadUrl,
+      downloadUrl,
       checksum: plan.binary.checksum,
       // preserveAutoUpdate is honoured by v0.65.7+ agents; older
       // agents don't read it and will set auto_update=false after
@@ -126,6 +153,7 @@ async function enqueueRecovery(plan: Plan): Promise<'queued' | 'already-pending'
 
 async function run(apply: boolean): Promise<void> {
   return withSystemDbAccessContext(async () => {
+    const serverOrigin = getServerOrigin();
     const [devs, binaries] = await Promise.all([
       selectAffectedDevices(),
       selectLatestBinaries(),
@@ -135,6 +163,8 @@ async function run(apply: boolean): Promise<void> {
       console.log('[recover-stuck-agents] No devices on broken versions — nothing to do.');
       return;
     }
+
+    console.log(`[recover-stuck-agents] Server origin (for dev_update download URLs): ${serverOrigin}`);
 
     console.log(
       `[recover-stuck-agents] Found ${devs.length} device(s) on ${BROKEN_AGENT_VERSIONS.join(' / ')}.`,
@@ -178,7 +208,7 @@ async function run(apply: boolean): Promise<void> {
         continue;
       }
       try {
-        const outcome = await enqueueRecovery(p);
+        const outcome = await enqueueRecovery(p, serverOrigin);
         if (outcome === 'queued') {
           queued++;
           console.log(`${label}  [queued]`);
