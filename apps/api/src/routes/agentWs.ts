@@ -26,6 +26,7 @@ import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../serv
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { getActiveTrustKeyset } from '../services/manifestSigning';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -1831,10 +1832,16 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
               // Check for pending commands and send them
               const pendingCommands = await runWithAgentDbAccess(async () => getPendingCommands(agentId));
+              // Deliver per-deployment manifest trust keys so v0.65.9+ agents
+              // can pin them and verify locally-signed update manifests
+              // (closes #625). Empty for hosted SaaS where the LanternOps
+              // build-time trust root is the only required key.
+              const manifestTrustKeys = await runOutsideDbContext(() => getActiveTrustKeyset());
               ws.send(JSON.stringify({
                 type: 'heartbeat_ack',
                 timestamp: Date.now(),
-                commands: pendingCommands
+                commands: pendingCommands,
+                manifestTrustKeys,
               }));
               break;
             }
