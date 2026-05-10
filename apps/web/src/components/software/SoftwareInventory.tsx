@@ -324,7 +324,11 @@ export default function SoftwareInventory({ onSwitchToPolicies }: SoftwareInvent
                           </button>
                           {actionMenu?.name === row.name && (
                             <div
-                              className="absolute right-0 top-9 z-10 w-44 rounded-md border bg-card shadow-lg"
+                              className="fixed z-50 w-44 rounded-md border bg-card shadow-lg"
+                              style={{
+                                left: `${Math.min(actionMenu.x - 160, window.innerWidth - 192)}px`,
+                                top: `${actionMenu.y + 8}px`,
+                              }}
                               onClick={(e) => e.stopPropagation()}
                             >
                               <button
