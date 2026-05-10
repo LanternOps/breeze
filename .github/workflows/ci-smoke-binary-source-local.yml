@@ -60,6 +60,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build API
+        run: pnpm --filter=@breeze/api build
+
       - name: Stage a fake local agent binary
         env:
           WORKSPACE: ${{ github.workspace }}
