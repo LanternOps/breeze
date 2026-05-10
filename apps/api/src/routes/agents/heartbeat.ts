@@ -27,6 +27,7 @@ import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
+import { getActiveTrustKeyset } from '../../services/manifestSigning';
 
 export const heartbeatRoutes = new Hono();
 
@@ -412,6 +413,11 @@ if (latestHelper) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
   }
 
+  // Per-deployment manifest trust keys for self-host agent updates (#625).
+  // Empty for hosted SaaS where the build-time LanternOps trust root is the
+  // only key the agent needs.
+  const manifestTrustKeys = await getActiveTrustKeyset();
+
   return c.json({
     commands: commands.map(cmd => ({
       id: cmd.id,
@@ -427,6 +433,7 @@ if (latestHelper) {
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
     manageRemoteManagement: manageRemoteManagement || undefined,
+    manifestTrustKeys,
   });
 });
 

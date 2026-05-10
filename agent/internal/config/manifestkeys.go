@@ -3,7 +3,16 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/spf13/viper"
 )
+
+// ActiveConfigFile returns the absolute path of the currently loaded agent
+// config file, or "" if Load() has not been called. Callers writing changes
+// to disk should pass this through to SaveTo / PinManifestKeys.
+func ActiveConfigFile() string {
+	return viper.ConfigFileUsed()
+}
 
 // ManifestTrustKey is a per-deployment Ed25519 public key delivered by the
 // API via enrollment or heartbeat ack and pinned TOFU-style on the agent.

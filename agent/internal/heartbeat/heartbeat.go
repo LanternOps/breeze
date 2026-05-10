@@ -89,15 +89,25 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands               []Command       `json:"commands"`
-	ConfigUpdate           map[string]any  `json:"configUpdate,omitempty"`
-	UpgradeTo              string          `json:"upgradeTo,omitempty"`
-	RenewCert              bool            `json:"renewCert,omitempty"`
-	RotateToken            bool            `json:"rotateToken,omitempty"`
-	HelperEnabled          bool            `json:"helperEnabled,omitempty"`
-	HelperSettings         *HelperSettings `json:"helperSettings,omitempty"`
-	HelperUpgradeTo        string          `json:"helperUpgradeTo,omitempty"`
-	ManageRemoteManagement bool            `json:"manageRemoteManagement,omitempty"`
+	Commands               []Command          `json:"commands"`
+	ConfigUpdate           map[string]any     `json:"configUpdate,omitempty"`
+	UpgradeTo              string             `json:"upgradeTo,omitempty"`
+	RenewCert              bool               `json:"renewCert,omitempty"`
+	RotateToken            bool               `json:"rotateToken,omitempty"`
+	HelperEnabled          bool               `json:"helperEnabled,omitempty"`
+	HelperSettings         *HelperSettings    `json:"helperSettings,omitempty"`
+	HelperUpgradeTo        string             `json:"helperUpgradeTo,omitempty"`
+	ManageRemoteManagement bool               `json:"manageRemoteManagement,omitempty"`
+	ManifestTrustKeys      []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+}
+
+// ManifestTrustKey is a per-deployment Ed25519 pubkey delivered by the API
+// for self-host agent updates (#625). The agent pins these TOFU-style and
+// merges them with the embedded LanternOps trust root.
+type ManifestTrustKey struct {
+	KeyID        string `json:"keyId"`
+	PublicKeyB64 string `json:"publicKeyB64"`
+	ValidFrom    string `json:"validFrom,omitempty"`
 }
 
 type HelperSettings struct {
@@ -2128,6 +2138,29 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
+	}
+
+	// Pin per-deployment manifest trust keys delivered by the server (#625).
+	// TOFU semantics: rotation is rejected by config.PinManifestKeys to defend
+	// against a compromised API pushing an attacker key. We refresh the
+	// in-memory config from disk after a successful pin so subsequently
+	// dispatched updaters immediately see the new pinned keys.
+	if len(response.ManifestTrustKeys) > 0 {
+		keys := make([]config.ManifestTrustKey, 0, len(response.ManifestTrustKeys))
+		for _, k := range response.ManifestTrustKeys {
+			if k.KeyID == "" || k.PublicKeyB64 == "" {
+				continue
+			}
+			keys = append(keys, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
+		}
+		if len(keys) > 0 {
+			cfgPath := config.ActiveConfigFile()
+			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
+				log.Warn("manifest trust key pin rejected", "error", err.Error())
+			} else if reloaded, rerr := config.Reload(); rerr == nil && reloaded != nil {
+				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+			}
+		}
 	}
 
 	// Process any commands via worker pool
