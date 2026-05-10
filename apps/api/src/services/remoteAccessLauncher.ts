@@ -1,4 +1,5 @@
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
+import { isAllowedLauncherScheme } from '@breeze/shared';
 
 // Build the launch URL the Connect Desktop button should fire for a device,
 // based on the partner's configured remote-access providers and the device's
@@ -31,7 +32,15 @@ export function buildRemoteAccessLaunchUrl(
   if (typeof idValue !== 'string' || idValue.length === 0) return null;
   if (!provider.urlTemplate) return null;
 
-  return provider.urlTemplate
+  const built = provider.urlTemplate
     .replaceAll('{id}', encodeURIComponent(idValue))
     .replaceAll('{password}', encodeURIComponent(provider.password ?? ''));
+
+  // Belt-and-suspenders: re-check the scheme on the *substituted* URL. The
+  // input validator at orgs.ts already rejects disallowed-scheme templates,
+  // but a template like `j{id}cript:foo` passes the template-time check
+  // (scheme is `j`, not denylisted) and only resolves to `javascript:` after
+  // the device id is substituted. Refuse to return such a URL.
+  if (!isAllowedLauncherScheme(built)) return null;
+  return built;
 }

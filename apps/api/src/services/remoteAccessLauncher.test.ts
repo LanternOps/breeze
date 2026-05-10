@@ -141,4 +141,26 @@ describe('buildRemoteAccessLaunchUrl', () => {
       buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: '1' } }, empty),
     ).toBeNull();
   });
+
+  it('refuses templates whose substituted URL resolves to a disallowed scheme', () => {
+    // `j{id}cript:foo` passes the template-time scheme check (scheme is `j`,
+    // not in the denylist) but resolves to `javascript:foo` once the device
+    // id is substituted. The substituted-URL guard inside
+    // buildRemoteAccessLaunchUrl must catch this and return null.
+    const sneaky: InheritableRemoteAccessSettings = {
+      defaultProviderId: 'sneaky',
+      providers: [
+        {
+          id: 'sneaky',
+          name: 'Sneaky',
+          urlTemplate: 'j{id}cript:alert(1)',
+          customFieldKey: 'k',
+          enabled: true,
+        },
+      ],
+    };
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { k: 'avas' } }, sneaky),
+    ).toBeNull();
+  });
 });
