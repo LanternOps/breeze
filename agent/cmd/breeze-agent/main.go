@@ -890,6 +890,21 @@ func enrollDevice(enrollmentKey string) {
 		}
 	}
 
+	// Pin per-deployment manifest trust keys delivered at enrollment (#625).
+	// Self-host (BINARY_SOURCE=local) deployments sign update manifests with
+	// a per-deployment Ed25519 key whose public half is delivered here.
+	if len(enrollResp.ManifestTrustKeys) > 0 {
+		pinned := make([]string, 0, len(enrollResp.ManifestTrustKeys))
+		for _, k := range enrollResp.ManifestTrustKeys {
+			if k.KeyID == "" || k.PublicKeyB64 == "" {
+				continue
+			}
+			pinned = append(pinned, k.KeyID+":"+k.PublicKeyB64)
+		}
+		cfg.PinnedManifestPubKeys = pinned
+		enrollLog.Info("pinned manifest trust keys from enrollment", "count", len(pinned))
+	}
+
 	if err := config.SaveTo(cfg, cfgFile); err != nil {
 		enrollError(catConfig,
 			fmt.Sprintf(

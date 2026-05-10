@@ -63,14 +63,24 @@ type MtlsCertData struct {
 }
 
 type EnrollResponse struct {
-	AgentID           string        `json:"agentId"`
-	AuthToken         string        `json:"authToken"`
-	WatchdogAuthToken string        `json:"watchdogAuthToken"`
-	HelperAuthToken   string        `json:"helperAuthToken"`
-	OrgID             string        `json:"orgId"`
-	SiteID            string        `json:"siteId"`
-	Config            AgentConfig   `json:"config"`
-	Mtls              *MtlsCertData `json:"mtls"`
+	AgentID           string             `json:"agentId"`
+	AuthToken         string             `json:"authToken"`
+	WatchdogAuthToken string             `json:"watchdogAuthToken"`
+	HelperAuthToken   string             `json:"helperAuthToken"`
+	OrgID             string             `json:"orgId"`
+	SiteID            string             `json:"siteId"`
+	Config            AgentConfig        `json:"config"`
+	Mtls              *MtlsCertData      `json:"mtls"`
+	ManifestTrustKeys []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+}
+
+// ManifestTrustKey is a per-deployment Ed25519 pubkey delivered at enrollment
+// for self-host agent updates (#625). The agent pins these alongside the
+// embedded LanternOps trust root.
+type ManifestTrustKey struct {
+	KeyID        string `json:"keyId"`
+	PublicKeyB64 string `json:"publicKeyB64"`
+	ValidFrom    string `json:"validFrom,omitempty"`
 }
 
 type RenewCertResponse struct {
