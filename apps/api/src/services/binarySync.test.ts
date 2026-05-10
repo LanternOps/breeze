@@ -47,6 +47,16 @@ vi.mock("./s3Storage", () => ({
   syncDirectory: vi.fn(),
 }));
 
+const manifestSigningMocks = vi.hoisted(() => ({
+  ensureActiveSigningKey: vi.fn(async () => ({
+    keyId: "deploy-test-aaaaaaaa",
+    publicKeyB64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  })),
+  signManifest: vi.fn(async () => "test-signature-base64"),
+}));
+
+vi.mock("./manifestSigning", () => manifestSigningMocks);
+
 import { syncBinaries, syncFromGitHub } from "./binarySync";
 
 function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
@@ -163,6 +173,55 @@ describe("binarySync", () => {
         }),
       }),
     );
+  });
+
+  it("populates releaseManifest, manifestSignature, signingKeyId in local-binary mode (closes: #625)", async () => {
+    // v0.65.8 broke self-host updates by hard-rejecting null manifest fields
+    // in /agent-versions/:v/download. The local-binary path now signs every
+    // upserted row with the per-deployment Ed25519 key.
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    delete process.env.BREEZE_VERSION;
+
+    fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+    fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+
+    await syncBinaries();
+
+    expect(manifestSigningMocks.ensureActiveSigningKey).toHaveBeenCalled();
+    expect(manifestSigningMocks.signManifest).toHaveBeenCalled();
+
+    const insertCalls = dbMocks.insertValues.mock.calls.map(
+      (call: any[]) => call[0] as Record<string, unknown>,
+    );
+    expect(insertCalls.length).toBeGreaterThan(0);
+    for (const values of insertCalls) {
+      expect(values.releaseManifest).toEqual(expect.any(String));
+      expect(values.manifestSignature).toBe("test-signature-base64");
+      expect(values.signingKeyId).toBe("deploy-test-aaaaaaaa");
+      // Manifest must include the canonical fields validated by
+      // /agent-versions/:v/download's validateReleaseManifest().
+      const manifest = JSON.parse(values.releaseManifest as string);
+      expect(manifest).toMatchObject({
+        version: "0.65.9",
+        component: "agent",
+        platform: "linux",
+        arch: "amd64",
+      });
+      expect(manifest.url).toContain("/agents/download/linux/amd64");
+      expect(manifest.checksum).toEqual(expect.any(String));
+    }
+
+    const conflictSets = dbMocks.onConflictDoUpdate.mock.calls.map(
+      (call: any[]) => (call[0] as { set: Record<string, unknown> }).set,
+    );
+    for (const set of conflictSets) {
+      expect(set.releaseManifest).toEqual(expect.any(String));
+      expect(set.manifestSignature).toBe("test-signature-base64");
+      expect(set.signingKeyId).toBe("deploy-test-aaaaaaaa");
+    }
   });
 
   it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {

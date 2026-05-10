@@ -12,6 +12,7 @@ import {
   isReleaseArtifactManifestVerificationConfigured,
   verifyReleaseArtifactManifestAsset,
 } from "./releaseArtifactManifest";
+import { ensureActiveSigningKey, signManifest } from "./manifestSigning";
 
 const GITHUB_REPO = process.env.GITHUB_REPO || "LanternOps/breeze";
 
@@ -322,10 +323,28 @@ export async function syncBinaries(): Promise<void> {
       process.env.BREEZE_SERVER ||
       `http://localhost:${process.env.API_PORT || "3001"}`;
 
+    // Sign every locally-registered manifest so /agent-versions/:v/download
+    // returns 200 (the strict-signing check from #568 hard-rejects null
+    // manifest fields). Key is generated lazily on first call and reused
+    // across the loop. See docs/deploy/agent-update-trust-bootstrap.md.
+    const { keyId } = await ensureActiveSigningKey();
+
     await db.transaction(async (tx) => {
       for (const bin of binaries) {
         const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
         const downloadUrl = `${serverUrl}/api/v1/agents/download/${osParam}/${bin.architecture}`;
+
+        const manifestObj = {
+          version,
+          component: "agent",
+          platform: bin.platform,
+          arch: bin.architecture,
+          url: downloadUrl,
+          checksum: bin.checksum,
+          size: Number(bin.fileSize),
+        };
+        const releaseManifest = JSON.stringify(manifestObj);
+        const manifestSignature = await signManifest(releaseManifest);
 
         // Demote existing "isLatest" entries for this platform/arch
         await tx
@@ -350,6 +369,9 @@ export async function syncBinaries(): Promise<void> {
             checksum: bin.checksum,
             fileSize: bin.fileSize,
             isLatest: true,
+            releaseManifest,
+            manifestSignature,
+            signingKeyId: keyId,
           })
           .onConflictDoUpdate({
             // Match the actual unique constraint
@@ -366,6 +388,9 @@ export async function syncBinaries(): Promise<void> {
               checksum: bin.checksum,
               fileSize: bin.fileSize,
               isLatest: true,
+              releaseManifest,
+              manifestSignature,
+              signingKeyId: keyId,
             },
           });
       }
