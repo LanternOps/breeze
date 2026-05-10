@@ -1,0 +1,133 @@
+name: smoke-binary-source-local
+
+# Verifies that the BINARY_SOURCE=local agent-update path stays end-to-end
+# functional. v0.65.8 (#625) shipped a strict-signing change that broke this
+# silently — the regression only surfaced when an agent tried to update.
+# This job makes that scenario fail the PR instead of the fleet.
+
+on:
+  pull_request:
+    paths:
+      - "apps/api/src/services/binarySync.ts"
+      - "apps/api/src/services/binarySync.selftest.ts"
+      - "apps/api/src/services/manifestSigning.ts"
+      - "apps/api/src/routes/agentVersions.ts"
+      - "apps/api/src/db/schema/manifestSigningKeys.ts"
+      - "apps/api/migrations/**"
+      - ".github/workflows/ci-smoke-binary-source-local.yml"
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: BINARY_SOURCE=local download path
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze
+          POSTGRES_DB: breeze
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stage a fake local agent binary
+        env:
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          mkdir -p "$WORKSPACE/tmp/agent/bin"
+          dd if=/dev/urandom of="$WORKSPACE/tmp/agent/bin/breeze-agent-linux-amd64" bs=1024 count=4
+          echo "0.65.9" > "$WORKSPACE/tmp/VERSION"
+
+      - name: Boot API in BINARY_SOURCE=local mode
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          BINARY_SOURCE: local
+          BREEZE_VERSION: "0.65.9"
+          DATABASE_URL: postgres://breeze:breeze@localhost:5432/breeze
+          REDIS_URL: redis://localhost:6379
+          NODE_ENV: production
+          PUBLIC_APP_URL: http://localhost:3001
+          # Production-strict env that the API requires at boot post-#568.
+          JWT_SECRET: ci-smoke-bsl-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: e9367714341ea19491ff7cd095d1a97e15ae3f7962416723ecfb29a89ed71eb9
+          MFA_ENCRYPTION_KEY: e86f8b88f2c058d428de55c4abec1b50a3cd960a7205dffdb65be8130abbb777
+          ENROLLMENT_KEY_PEPPER: ci-smoke-bsl-enrollment-pepper-Hy4Bz9Mp2Wq6Tv0Lk3
+          MFA_RECOVERY_CODE_PEPPER: ci-smoke-bsl-mfa-recovery-pepper-Nq8Zx2Vm5Tr9Lp1
+          AGENT_ENROLLMENT_SECRET: ci-smoke-bsl-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
+          ENROLLMENT_SECRET_ENFORCEMENT_MODE: warn
+          IS_HOSTED: "false"
+          TRUSTED_PROXY_CIDRS: 127.0.0.1/32
+          # Self-host doesn't need release-artifact-manifest envs because the
+          # API generates its own per-deployment Ed25519 key on first boot.
+          # Leaving RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS unset is the actual
+          # broken-by-default path the deployment doc tells operators to use.
+        run: |
+          export AGENT_BINARY_DIR="$WORKSPACE/tmp/agent/bin"
+          export BINARY_VERSION_FILE="$WORKSPACE/tmp/VERSION"
+          pnpm --filter=@breeze/api start &
+          API_PID=$!
+          echo "Waiting for /health/ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3001/health/ready >/dev/null 2>&1; then
+              echo "API healthy after ${i} polls."
+              break
+            fi
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+              echo "API process exited before becoming healthy — boot self-test likely failed."
+              exit 1
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:3001/health/ready || { echo "API never became healthy"; kill "$API_PID" 2>/dev/null; exit 1; }
+          echo "API_PID=$API_PID" >> "$GITHUB_ENV"
+
+      - name: Verify download endpoint returns 200 with signed manifest
+        run: |
+          STATUS=$(curl -s -o /tmp/dl.json -w '%{http_code}' \
+            'http://localhost:3001/api/v1/agent-versions/0.65.9/download?platform=linux&arch=amd64&component=agent')
+          echo "Download endpoint returned: ${STATUS}"
+          cat /tmp/dl.json | jq . || cat /tmp/dl.json
+          if [ "$STATUS" != "200" ]; then
+            echo "Expected 200 (regression: #625 returned 409 here on v0.65.8)."
+            exit 1
+          fi
+          jq -e '.manifest != null and (.manifest | length) > 0' /tmp/dl.json
+          jq -e '.manifestSignature != null and (.manifestSignature | length) > 0' /tmp/dl.json
+          jq -e '.signingKeyId != null and (.signingKeyId | startswith("deploy-"))' /tmp/dl.json
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -n "${API_PID:-}" ]; then
+            kill "$API_PID" 2>/dev/null || true
+          fi
