@@ -15,6 +15,7 @@ import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
 import { PERMISSIONS } from "../services/permissions";
 import { verifyReleaseArtifactManifestAsset } from "../services/releaseArtifactManifest";
+import { getActivePublicKeys as getActiveDeploymentSigningPubKeys } from "../services/manifestSigning";
 
 // Map Go GOOS / user-facing platform names to DB platform names
 const PLATFORM_MAP: Record<string, string> = {
@@ -80,7 +81,7 @@ type ReleaseArtifactManifest = {
   assets?: unknown;
 };
 
-function getUpdateManifestPublicKeys(): Buffer[] {
+async function getUpdateManifestPublicKeys(): Promise<Buffer[]> {
   const configured = [
     process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS,
     process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS,
@@ -88,19 +89,31 @@ function getUpdateManifestPublicKeys(): Buffer[] {
     .filter((value): value is string => Boolean(value?.trim()))
     .join(",");
 
-  return configured
+  const fromEnv = configured
     .split(",")
     .map((value) => value.trim())
-    .filter(Boolean)
+    .filter(Boolean);
+
+  // Per-deployment signing keys (self-host BINARY_SOURCE=local). The set is
+  // small (typically one active key) and on a hot lookup path; cache layered
+  // higher up if this becomes a bottleneck. See #625.
+  let fromDb: string[] = [];
+  try {
+    fromDb = await getActiveDeploymentSigningPubKeys();
+  } catch (err) {
+    console.warn("[agentVersions] Failed to load deployment signing pubkeys:", err);
+  }
+
+  return [...fromEnv, ...fromDb]
     .map((value) => Buffer.from(value, "base64"))
     .filter((key) => key.length === 32);
 }
 
-function verifyEd25519ManifestSignature(
+async function verifyEd25519ManifestSignature(
   manifest: string,
   signature: string,
-): boolean {
-  const keys = getUpdateManifestPublicKeys();
+): Promise<boolean> {
+  const keys = await getUpdateManifestPublicKeys();
   if (keys.length === 0) {
     return true;
   }
@@ -149,7 +162,7 @@ function assetNameFromDownloadUrl(downloadUrl: string): string | null {
   }
 }
 
-async function validateReleaseManifest(args: {
+export async function validateReleaseManifest(args: {
   manifest: string | null | undefined;
   signature: string | null | undefined;
   version: string;
@@ -214,7 +227,7 @@ async function validateReleaseManifest(args: {
     return { ok: false, reason: "release_manifest_metadata_mismatch" };
   }
 
-  if (!verifyEd25519ManifestSignature(args.manifest, args.signature)) {
+  if (!(await verifyEd25519ManifestSignature(args.manifest, args.signature))) {
     return { ok: false, reason: "invalid_release_manifest_signature" };
   }
 

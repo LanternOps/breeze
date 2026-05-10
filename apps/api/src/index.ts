@@ -1268,6 +1268,22 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Binary sync failed (non-fatal):', err);
   }
 
+  // Boot-time self-test for self-host BINARY_SOURCE=local: round-trip a
+  // synthetic manifest through sign + validate. If this fails, agent updates
+  // would silently 409 at runtime (#625). Fail fast so operators see the
+  // problem during `docker compose up` rather than after agents are stuck.
+  if ((process.env.BINARY_SOURCE || 'github').trim().toLowerCase() === 'local') {
+    try {
+      const { runManifestSelfTest } = await import('./services/binarySync.selftest');
+      await runWithSystemDbAccess(async () => {
+        await runManifestSelfTest();
+      });
+    } catch (err) {
+      console.error('[startup] Manifest signing self-test failed:', err);
+      throw err;
+    }
+  }
+
   server = serve({
     fetch: app.fetch,
     port
