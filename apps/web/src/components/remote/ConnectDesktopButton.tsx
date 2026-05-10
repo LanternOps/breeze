@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, Download, X, Globe } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
+import { isAllowedLauncherScheme } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
@@ -135,7 +136,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       //   - http(s):// → open in a new browser tab (ScreenConnect, web-launchers)
       //   - any other scheme → hand off to the OS protocol handler (RustDesk, etc.)
       // Either way, skip the built-in WebRTC desktop flow.
-      if (remoteAccessLaunchUrl) {
+      //
+      // Defense in depth: the API validator rejects javascript:, data:,
+      // vbscript:, file:, etc. at write time, but we re-check the scheme on
+      // the client before firing so a stale row from a pre-validator era,
+      // a future API regression, or a tampered response can't execute a
+      // hostile scheme in the partner's origin.
+      if (remoteAccessLaunchUrl && isAllowedLauncherScheme(remoteAccessLaunchUrl)) {
         setStatus('launching');
         if (/^https?:\/\//i.test(remoteAccessLaunchUrl)) {
           window.open(remoteAccessLaunchUrl, '_blank', 'noopener,noreferrer');
@@ -144,6 +151,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         }
         setTimeout(() => setStatus('idle'), 1500);
         return;
+      } else if (remoteAccessLaunchUrl) {
+        // URL came back with a disallowed scheme — fall through to the
+        // built-in WebRTC flow rather than fire something dangerous.
+        console.warn('[ConnectDesktop] Refusing to fire remote-access URL with disallowed scheme; falling back to built-in.');
       }
 
       // Auto-detect: fall back to VNC when the WebRTC path can't work but VNC relay is enabled.

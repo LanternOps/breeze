@@ -12,6 +12,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
+import { isAllowedLauncherScheme } from '@breeze/shared';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -306,16 +307,21 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   organizationOrder: z.array(z.string().uuid()).max(10_000).optional(),
   remoteAccessProviders: z.object({
-    defaultProviderId: z.string().optional(),
+    defaultProviderId: z.string().max(100).optional(),
     providers: z.array(z.object({
-      id: z.string().min(1),
-      name: z.string().min(1),
+      id: z.string().min(1).max(100),
+      name: z.string().min(1).max(100),
       // urlTemplate may be either a custom-scheme template
       // (e.g. 'rustdesk://{id}?password={password}') or an https launcher
       // (e.g. 'https://acme.screenconnect.com/Host#Access///{id}/Join').
       // The browser auto-detects launch mode by prefix.
       // {id} must appear or the launcher would always resolve to the same
       // URL and ignore the per-device identifier.
+      // Dangerous schemes (javascript:, data:, vbscript:, file:, about:,
+      // chrome:, jar:, blob:, view-source:, filesystem:) are rejected by
+      // isAllowedLauncherScheme so a malicious partner admin cannot plant
+      // stored XSS that fires when an org-scope user clicks Connect Desktop.
+      // The web client repeats the same check before firing the URL.
       urlTemplate: z.string()
         .min(1)
         .max(2000)
@@ -324,13 +330,13 @@ const partnerSettingsSchema = z.object({
           'Template must include the {id} placeholder for the per-device value',
         )
         .refine(
-          (t) => /^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(t),
-          'Template must start with a URL scheme followed by a colon (e.g. rustdesk:, https:)',
+          (t) => isAllowedLauncherScheme(t),
+          'Template must start with an allowed URL scheme (https, http, rustdesk, teamviewer, anydesk, splashtop, etc.); javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source:, filesystem: are rejected',
         ),
-      customFieldKey: z.string().min(1),
-      password: z.string().optional(),
+      customFieldKey: z.string().min(1).max(100),
+      password: z.string().max(2000).optional(),
       enabled: z.boolean(),
-    })).optional(),
+    })).max(50).optional(),
   }).optional(),
 });
 
