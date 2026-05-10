@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **#625 — `BINARY_SOURCE=local` agent updates broken on v0.65.8.** The strict-signing
+  enforcement from #568 hard-rejected unsigned manifests on `/agent-versions/:v/download`,
+  but the local-binary sync path didn't sign anything. Self-hosted operators using
+  `BINARY_SOURCE=local` saw every agent auto-update return 409 with
+  `signed_release_manifest_required`, leaving devices stuck in `status='updating'`. Fix:
+  the API now generates a per-deployment Ed25519 signing keypair on first boot
+  (encrypted with `APP_ENCRYPTION_KEY`, stored in a new `manifest_signing_keys` table)
+  and signs every locally-registered manifest. The public key is delivered to agents
+  via the enrollment response (new agents) and the heartbeat response (existing agents,
+  pinned TOFU-style) so the next manifest verification succeeds.
+
 ### Added
+- Boot-time manifest signing self-test for `BINARY_SOURCE=local` deployments. Round-trips
+  a synthetic manifest through `signManifest` → `validateReleaseManifest` and aborts
+  startup if either side disagrees. Catches misconfigurations during `docker compose up`
+  rather than after the fleet is stuck.
+- CI smoke test job (`smoke-binary-source-local`) that boots the API in
+  `BINARY_SOURCE=local` mode against a fake binary and asserts the download endpoint
+  returns 200 with non-null manifest fields. Triggered by changes to `binarySync`,
+  `manifestSigning`, `agentVersions`, or migrations.
+- `recover-stuck-agents` script extended to v0.65.7 and v0.65.8 — operators on those
+  versions can run `pnpm recover:stuck-agents -- --apply` after deploying v0.65.9 to
+  unstick fleets that can't auto-update through the strict-signing gate.
+- `docs/deploy/agent-update-trust-bootstrap.md` documenting the trust model, recovery
+  procedure, and key rotation guidance.
 - Cloudflare mTLS client certificate management for agent-to-server mutual TLS authentication
 - Device quarantine workflow with admin approval/deny for certificate-based trust
 - AI agent migration to Claude Agent SDK with managed query loop
