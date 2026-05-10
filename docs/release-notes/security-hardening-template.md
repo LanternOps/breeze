@@ -11,7 +11,7 @@ Copy this into the GitHub Release body when tagging the version that ships PR #5
 > ⚠️ **This release has required pre-deploy steps.** Full runbook: [`UPGRADING.md`](https://github.com/LanternOps/breeze/blob/main/UPGRADING.md).
 >
 > 1. Run the FORCE-RLS ownership pre-check (one SQL query — see UPGRADING.md).
-> 2. Add to `.env`: `APP_ENCRYPTION_KEY` (set to your **current** `JWT_SECRET`), `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER`.
+> 2. Add to `.env`: `APP_ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER` — generate each as a **dedicated** random hex (`openssl rand -hex 32`); the production validator rejects boot if any two reuse the same value (including `JWT_SECRET`). Existing `enc:v1:` rows keep decrypting via the legacy `JWT_SECRET` fallback.
 > 3. If behind a reverse proxy with `TRUST_PROXY_HEADERS=true`: set `TRUSTED_PROXY_CIDRS` to your proxy IPs.
 > 4. Deploy. Watch the API logs for warnings — each tells you which legacy path is still live.
 >

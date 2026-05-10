@@ -3,9 +3,13 @@
 > ## TL;DR — Upgrading to the SR-001..SR-024 security-hardening release
 >
 > 1. **Run the FORCE-RLS ownership pre-check** (one SQL query — section below) before deploying.
-> 2. **Add to `.env`:**
->    - `APP_ENCRYPTION_KEY` = your **current** `JWT_SECRET` value
->    - `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER` = random hex strings (`openssl rand -hex 32`)
+> 2. **Add to `.env`** — each must be a **dedicated** random hex string (`openssl rand -hex 32`); the production validator rejects boot if any two of these reuse the same value:
+>    - `APP_ENCRYPTION_KEY`
+>    - `MFA_ENCRYPTION_KEY`
+>    - `ENROLLMENT_KEY_PEPPER`
+>    - `MFA_RECOVERY_CODE_PEPPER`
+>
+>    Existing `enc:v1:` rows keep decrypting via the legacy `JWT_SECRET` fallback (you'll see one-time warnings — see [Post-deploy](#post-deploy)).
 > 3. **If behind a reverse proxy** with `TRUST_PROXY_HEADERS=true`: set `TRUSTED_PROXY_CIDRS` to your proxy IPs.
 > 4. **Deploy API**, watch logs for the warnings in the [Post-deploy](#post-deploy) table — each is a backlog item, not an outage.
 > 5. **Plan the next release.** Several flag defaults are temporary (see [Backward-compatibility windows](#backward-compatibility-windows-will-tighten-in-the-next-release)).
@@ -42,14 +46,16 @@ If any rows return, transfer ownership to the admin role before deploying:
 ALTER TABLE <tablename> OWNER TO breeze;
 ```
 
-**2. Required env vars** (add to `.env`):
+**2. Required env vars** (add to `.env`).
+
+> **Each value must be unique.** In production the API config validator (`apps/api/src/config/validate.ts`) refuses to boot if any two of `JWT_SECRET`, `APP_ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, or `MFA_RECOVERY_CODE_PEPPER` share the same string. Generate every value below with a fresh `openssl rand -hex 32`.
 
 | Variable | What to set | Why |
 |---|---|---|
-| `APP_ENCRYPTION_KEY` | Your **current** `JWT_SECRET` value | Preserves existing `enc:v1:` rows. Only generate fresh if you also run `pnpm tsx scripts/re-encrypt-secrets.ts`. |
-| `MFA_ENCRYPTION_KEY` | Random hex string (e.g. `openssl rand -hex 32`) | Required by docker-compose. Existing rows decrypt via legacy fallback. |
-| `ENROLLMENT_KEY_PEPPER` | Random hex string | New writes use this; lookups also try `APP_ENCRYPTION_KEY` and `JWT_SECRET` for backward compatibility. |
-| `MFA_RECOVERY_CODE_PEPPER` | Random hex string | Recovery codes are write-only currently — set to anything. |
+| `APP_ENCRYPTION_KEY` | Fresh random hex (`openssl rand -hex 32`) — must differ from `JWT_SECRET` | New writes use this key. Existing `enc:v1:` rows decrypt via the legacy `JWT_SECRET`/`SESSION_SECRET` fallback (one-time warning per row); migrate them with `pnpm tsx scripts/re-encrypt-secrets.ts` when convenient. |
+| `MFA_ENCRYPTION_KEY` | Fresh random hex (`openssl rand -hex 32`) | Required by docker-compose. Existing rows decrypt via legacy fallback. |
+| `ENROLLMENT_KEY_PEPPER` | Fresh random hex | New writes use this; lookups also try `APP_ENCRYPTION_KEY` and `JWT_SECRET` for backward compatibility. |
+| `MFA_RECOVERY_CODE_PEPPER` | Fresh random hex | Recovery codes are write-only currently — set to anything (random). |
 
 **Optional but recommended:**
 
