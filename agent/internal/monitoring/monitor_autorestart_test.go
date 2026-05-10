@@ -99,7 +99,7 @@ func TestMaybeAutoRestart(t *testing.T) {
 				MaxRestartAttempts:     5,
 				RestartCooldownSeconds: 0,
 			},
-			initialState: nil, // don't pre-create
+			initialState:  nil, // don't pre-create
 			wantAttempted: true,
 			wantAttempts:  1,
 		},

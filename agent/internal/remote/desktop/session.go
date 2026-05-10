@@ -125,7 +125,6 @@ type Session struct {
 	lastEncodedFrame []byte
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
-
 }
 
 // SessionManager manages remote desktop sessions

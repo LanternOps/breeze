@@ -28,7 +28,7 @@ var zeroKey = make([]byte, 32)
 type Conn struct {
 	conn       net.Conn
 	sessionKey []byte
-	keyMu      sync.RWMutex   // protects sessionKey
+	keyMu      sync.RWMutex // protects sessionKey
 	sendSeq    atomic.Uint64
 	recvSeq    atomic.Uint64
 	mu         sync.Mutex // serializes writes

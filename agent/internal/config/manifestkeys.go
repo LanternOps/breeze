@@ -1,11 +1,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/spf13/viper"
 )
+
+// ErrManifestTrustRotationRejected is returned by PinManifestKeys when the
+// caller supplies a different pubkey for an already-pinned keyId. This is a
+// possible compromise signal — callers should surface it loudly.
+var ErrManifestTrustRotationRejected = errors.New("manifest trust key rotation rejected")
 
 // ActiveConfigFile returns the absolute path of the currently loaded agent
 // config file, or "" if Load() has not been called. Callers writing changes
@@ -56,7 +62,7 @@ func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
 		}
 		if cur, ok := existing[k.KeyID]; ok {
 			if cur != k.PublicKeyB64 {
-				return fmt.Errorf("manifest key rotation rejected for keyId=%s: pinned pubkey differs from new value", k.KeyID)
+				return fmt.Errorf("%w for keyId=%s: pinned pubkey differs from new value", ErrManifestTrustRotationRejected, k.KeyID)
 			}
 			continue
 		}

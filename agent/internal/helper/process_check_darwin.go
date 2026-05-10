@@ -30,6 +30,7 @@ func isOurProcess(pid int, binaryPath string) bool {
 // The PID-tracked check in the watcher fails when:
 //   - the helper was spawned via IPC (PID returned as 0)
 //   - helper_status.yaml hasn't been written yet (Tauri still booting)
+//
 // In those windows the watcher would respawn even though a helper is alive,
 // piling up orphaned processes. Session arg is ignored — macOS is single-
 // session from the agent's perspective.

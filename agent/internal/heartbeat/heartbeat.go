@@ -89,25 +89,16 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands               []Command          `json:"commands"`
-	ConfigUpdate           map[string]any     `json:"configUpdate,omitempty"`
-	UpgradeTo              string             `json:"upgradeTo,omitempty"`
-	RenewCert              bool               `json:"renewCert,omitempty"`
-	RotateToken            bool               `json:"rotateToken,omitempty"`
-	HelperEnabled          bool               `json:"helperEnabled,omitempty"`
-	HelperSettings         *HelperSettings    `json:"helperSettings,omitempty"`
-	HelperUpgradeTo        string             `json:"helperUpgradeTo,omitempty"`
-	ManageRemoteManagement bool               `json:"manageRemoteManagement,omitempty"`
-	ManifestTrustKeys      []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
-}
-
-// ManifestTrustKey is a per-deployment Ed25519 pubkey delivered by the API
-// for self-host agent updates (#625). The agent pins these TOFU-style and
-// merges them with the embedded LanternOps trust root.
-type ManifestTrustKey struct {
-	KeyID        string `json:"keyId"`
-	PublicKeyB64 string `json:"publicKeyB64"`
-	ValidFrom    string `json:"validFrom,omitempty"`
+	Commands               []Command              `json:"commands"`
+	ConfigUpdate           map[string]any         `json:"configUpdate,omitempty"`
+	UpgradeTo              string                 `json:"upgradeTo,omitempty"`
+	RenewCert              bool                   `json:"renewCert,omitempty"`
+	RotateToken            bool                   `json:"rotateToken,omitempty"`
+	HelperEnabled          bool                   `json:"helperEnabled,omitempty"`
+	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
+	HelperUpgradeTo        string                 `json:"helperUpgradeTo,omitempty"`
+	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
+	ManifestTrustKeys      []api.ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
 }
 
 type HelperSettings struct {
@@ -2141,10 +2132,12 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 
 	// Pin per-deployment manifest trust keys delivered by the server (#625).
-	// TOFU semantics: rotation is rejected by config.PinManifestKeys to defend
-	// against a compromised API pushing an attacker key. We refresh the
-	// in-memory config from disk after a successful pin so subsequently
-	// dispatched updaters immediately see the new pinned keys.
+	// TOFU: PinManifestKeys rejects a *changed* pubkey for an already-pinned
+	// keyId. This blocks an attacker with API write access (but not the signing
+	// key) from rotating in their own key. It does NOT defend against a
+	// host-level compromise of the API — the signing key and APP_ENCRYPTION_KEY
+	// live there. See docs/deploy/agent-update-trust-bootstrap.md for the
+	// threat model.
 	if len(response.ManifestTrustKeys) > 0 {
 		keys := make([]config.ManifestTrustKey, 0, len(response.ManifestTrustKeys))
 		for _, k := range response.ManifestTrustKeys {
@@ -2156,8 +2149,16 @@ func (h *Heartbeat) sendHeartbeat() {
 		if len(keys) > 0 {
 			cfgPath := config.ActiveConfigFile()
 			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
-				log.Warn("manifest trust key pin rejected", "error", err.Error())
-			} else if reloaded, rerr := config.Reload(); rerr == nil && reloaded != nil {
+				if errors.Is(err, config.ErrManifestTrustRotationRejected) {
+					log.Error("SECURITY: manifest trust key rotation rejected — possible API compromise or operator-initiated rotation",
+						"error", err.Error())
+					// NOTE: out-of-band investigation needed before trusting future updates from this server.
+				} else {
+					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+				}
+			} else if reloaded, rerr := config.Reload(); rerr != nil {
+				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
+			} else if reloaded != nil {
 				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
 			}
 		}
@@ -2994,8 +2995,8 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		ServerURL:             h.config.ServerURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
-		BinaryPath:             binaryPath,
-		BackupPath:             backupPath,
+		BinaryPath:            binaryPath,
+		BackupPath:            backupPath,
 		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
 	}
 

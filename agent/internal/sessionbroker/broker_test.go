@@ -601,8 +601,8 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 
 	b := &Broker{
 		sessions: map[string]*Session{
-			sess1.SessionID:    sess1,
-			sess2.SessionID:    sess2,
+			sess1.SessionID:     sess1,
+			sess2.SessionID:     sess2,
 			loginSess.SessionID: loginSess,
 		},
 		byIdentity:   make(map[string][]*Session),

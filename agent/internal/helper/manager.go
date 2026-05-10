@@ -76,9 +76,9 @@ type Manager struct {
 	isOurProcessFunc  func(pid int, binaryPath string) bool
 	stopByPIDFunc     func(pid int) error
 
-	pendingHelperVersion  string
-	updateFailures        int
-	abandonedVersion      string // version we gave up updating to
+	pendingHelperVersion string
+	updateFailures       int
+	abandonedVersion     string // version we gave up updating to
 }
 
 // New creates a new helper Manager.
@@ -670,7 +670,6 @@ func (m *Manager) stopSessionWatcherBounded(state *sessionState, d time.Duration
 	}
 	m.mu.Lock()
 }
-
 
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)

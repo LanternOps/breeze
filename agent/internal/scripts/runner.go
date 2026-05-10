@@ -15,12 +15,12 @@ import (
 )
 
 type ScriptResult struct {
-	Status      string `json:"status"`
-	ExitCode    int    `json:"exitCode"`
-	Stdout      string `json:"stdout"`
-	Stderr      string `json:"stderr"`
-	DurationMs  int64  `json:"durationMs"`
-	ErrorMsg    string `json:"errorMessage,omitempty"`
+	Status     string `json:"status"`
+	ExitCode   int    `json:"exitCode"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	DurationMs int64  `json:"durationMs"`
+	ErrorMsg   string `json:"errorMessage,omitempty"`
 }
 
 type ScriptRunner struct {

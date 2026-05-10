@@ -19,16 +19,16 @@ var log = logging.L("audit")
 
 // Event types for audit logging.
 const (
-	EventCommandReceived = "command_received"
-	EventCommandExecuted = "command_executed"
-	EventScriptExecution = "script_execution"
-	EventServiceAction   = "service_action"
+	EventCommandReceived  = "command_received"
+	EventCommandExecuted  = "command_executed"
+	EventScriptExecution  = "script_execution"
+	EventServiceAction    = "service_action"
 	EventFileModification = "file_modification"
-	EventConfigChange    = "config_change"
-	EventPrivilegedOp    = "privileged_operation"
-	EventAgentStart      = "agent_start"
-	EventAgentStop       = "agent_stop"
-	EventLogRotated      = "log_rotated"
+	EventConfigChange     = "config_change"
+	EventPrivilegedOp     = "privileged_operation"
+	EventAgentStart       = "agent_start"
+	EventAgentStop        = "agent_stop"
+	EventLogRotated       = "log_rotated"
 )
 
 // criticalEvents are event types that require fsync after writing.

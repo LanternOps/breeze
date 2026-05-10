@@ -11,19 +11,19 @@ type stubEncoder struct {
 	quality QualityPreset
 }
 
-func (s *stubEncoder) Encode([]byte) ([]byte, error)        { return nil, nil }
-func (s *stubEncoder) SetCodec(Codec) error                 { return nil }
-func (s *stubEncoder) SetQuality(q QualityPreset) error     { s.quality = q; return nil }
-func (s *stubEncoder) SetBitrate(b int) error               { s.bitrate = b; return nil }
-func (s *stubEncoder) SetFPS(int) error                     { return nil }
-func (s *stubEncoder) SetDimensions(int, int) error         { return nil }
-func (s *stubEncoder) SetPixelFormat(PixelFormat)           {}
-func (s *stubEncoder) Close() error                         { return nil }
-func (s *stubEncoder) Name() string                         { return "stub" }
-func (s *stubEncoder) IsHardware() bool                     { return false }
-func (s *stubEncoder) IsPlaceholder() bool                  { return false }
-func (s *stubEncoder) SetD3D11Device(uintptr, uintptr)      {}
-func (s *stubEncoder) SupportsGPUInput() bool               { return false }
+func (s *stubEncoder) Encode([]byte) ([]byte, error)         { return nil, nil }
+func (s *stubEncoder) SetCodec(Codec) error                  { return nil }
+func (s *stubEncoder) SetQuality(q QualityPreset) error      { s.quality = q; return nil }
+func (s *stubEncoder) SetBitrate(b int) error                { s.bitrate = b; return nil }
+func (s *stubEncoder) SetFPS(int) error                      { return nil }
+func (s *stubEncoder) SetDimensions(int, int) error          { return nil }
+func (s *stubEncoder) SetPixelFormat(PixelFormat)            {}
+func (s *stubEncoder) Close() error                          { return nil }
+func (s *stubEncoder) Name() string                          { return "stub" }
+func (s *stubEncoder) IsHardware() bool                      { return false }
+func (s *stubEncoder) IsPlaceholder() bool                   { return false }
+func (s *stubEncoder) SetD3D11Device(uintptr, uintptr)       {}
+func (s *stubEncoder) SupportsGPUInput() bool                { return false }
 func (s *stubEncoder) EncodeTexture(uintptr) ([]byte, error) { return nil, nil }
 
 func newTestAdaptive(initial, min, max int) (*AdaptiveBitrate, *stubEncoder) {

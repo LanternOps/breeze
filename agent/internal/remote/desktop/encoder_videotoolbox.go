@@ -615,8 +615,8 @@ func (v *videotoolboxEncoder) IsPlaceholder() bool {
 	return false
 }
 
-func (v *videotoolboxEncoder) SetD3D11Device(device, context uintptr)            {}
-func (v *videotoolboxEncoder) SupportsGPUInput() bool                            { return false }
+func (v *videotoolboxEncoder) SetD3D11Device(device, context uintptr) {}
+func (v *videotoolboxEncoder) SupportsGPUInput() bool                 { return false }
 func (v *videotoolboxEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	return nil, errors.New("GPU input not supported by videotoolbox encoder")
 }

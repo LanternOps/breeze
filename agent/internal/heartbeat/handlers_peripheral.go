@@ -62,10 +62,10 @@ func handlePeripheralPolicySync(h *Heartbeat, cmd Command) tools.CommandResult {
 		if err := h.submitPeripheralEvents(events); err != nil {
 			cmdLog.Error("failed to submit peripheral events", "error", err.Error())
 			return tools.NewSuccessResult(map[string]any{
-				"policiesSaved":  len(payload.Policies),
-				"devicesFound":   len(detected),
+				"policiesSaved":   len(payload.Policies),
+				"devicesFound":    len(detected),
 				"eventsGenerated": len(events),
-				"submitError":    err.Error(),
+				"submitError":     err.Error(),
 			}, time.Since(start).Milliseconds())
 		}
 		cmdLog.Info("peripheral events submitted", "count", len(events))

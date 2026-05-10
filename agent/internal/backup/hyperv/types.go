@@ -18,10 +18,10 @@ var (
 
 // HyperVVM describes a discovered Hyper-V virtual machine.
 type HyperVVM struct {
-	ID             string       `json:"id"`              // Hyper-V GUID
+	ID             string       `json:"id"` // Hyper-V GUID
 	Name           string       `json:"name"`
-	State          string       `json:"state"`           // Running, Off, Saved, Paused
-	Generation     int          `json:"generation"`      // 1 or 2
+	State          string       `json:"state"`      // Running, Off, Saved, Paused
+	Generation     int          `json:"generation"` // 1 or 2
 	MemoryMB       int64        `json:"memoryMb"`
 	ProcessorCount int          `json:"processorCount"`
 	VHDPaths       []VHDInfo    `json:"vhdPaths"`

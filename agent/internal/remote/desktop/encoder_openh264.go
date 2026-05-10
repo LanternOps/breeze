@@ -257,12 +257,12 @@ func (e *openH264Encoder) Encode(frame []byte) ([]byte, error) {
 		IPicHeight:   int32(e.height),
 		UiTimeStamp:  tsMs,
 	}
-	srcPic.IStride[0] = int32(e.width)     // Y stride
-	srcPic.IStride[1] = int32(e.width / 2) // U stride
-	srcPic.IStride[2] = int32(e.width / 2) // V stride
-	srcPic.PData[0] = (*uint8)(unsafe.Pointer(&i420[0]))              // Y plane
-	srcPic.PData[1] = (*uint8)(unsafe.Pointer(&i420[ySize]))          // U plane
-	srcPic.PData[2] = (*uint8)(unsafe.Pointer(&i420[ySize+uvSize]))   // V plane
+	srcPic.IStride[0] = int32(e.width)                              // Y stride
+	srcPic.IStride[1] = int32(e.width / 2)                          // U stride
+	srcPic.IStride[2] = int32(e.width / 2)                          // V stride
+	srcPic.PData[0] = (*uint8)(unsafe.Pointer(&i420[0]))            // Y plane
+	srcPic.PData[1] = (*uint8)(unsafe.Pointer(&i420[ySize]))        // U plane
+	srcPic.PData[2] = (*uint8)(unsafe.Pointer(&i420[ySize+uvSize])) // V plane
 
 	e.frameIdx++
 
@@ -399,7 +399,7 @@ func (e *openH264Encoder) Close() error {
 	return nil
 }
 
-func (e *openH264Encoder) Name() string               { return "openh264" }
+func (e *openH264Encoder) Name() string                { return "openh264" }
 func (e *openH264Encoder) IsHardware() bool            { return false }
 func (e *openH264Encoder) IsPlaceholder() bool         { return false }
 func (e *openH264Encoder) SetD3D11Device(_, _ uintptr) {}

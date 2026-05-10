@@ -7,14 +7,14 @@ import (
 
 // mockProvider is a simple in-memory BackupProvider for testing.
 type mockProvider struct {
-	files     map[string]string // remotePath -> content (simulated)
-	uploadErr error
+	files       map[string]string // remotePath -> content (simulated)
+	uploadErr   error
 	downloadErr error
-	listErr   error
-	deleteErr error
-	uploads   []string // track upload calls
-	downloads []string // track download calls
-	deletes   []string // track delete calls
+	listErr     error
+	deleteErr   error
+	uploads     []string // track upload calls
+	downloads   []string // track download calls
+	deletes     []string // track delete calls
 }
 
 func newMockProvider() *mockProvider {

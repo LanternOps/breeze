@@ -198,8 +198,8 @@ func TestClassifyAssetAccessPoint(t *testing.T) {
 
 func TestClassifyAssetServer(t *testing.T) {
 	tests := []struct {
-		name  string
-		host  DiscoveredHost
+		name string
+		host DiscoveredHost
 	}{
 		{
 			name: "ssh_and_postgres",

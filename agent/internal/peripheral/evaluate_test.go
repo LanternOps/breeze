@@ -361,4 +361,3 @@ func TestEvaluateOneWithException(t *testing.T) {
 		t.Fatalf("Action = %q, want %q (exception overrides block)", result.Action, "allow")
 	}
 }
-

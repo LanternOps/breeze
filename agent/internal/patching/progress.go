@@ -5,10 +5,10 @@ type ProgressCallback func(event ProgressEvent)
 
 // ProgressEvent describes the current state of a download or install operation.
 type ProgressEvent struct {
-	Phase       string  `json:"phase"`       // "downloading", "installing", "verifying"
+	Phase       string  `json:"phase"` // "downloading", "installing", "verifying"
 	PatchID     string  `json:"patchId"`
 	PatchTitle  string  `json:"patchTitle,omitempty"`
-	Percent     float64 `json:"percent"`     // 0-100
+	Percent     float64 `json:"percent"` // 0-100
 	BytesTotal  int64   `json:"bytesTotal"`
 	BytesDone   int64   `json:"bytesDone"`
 	CurrentItem int     `json:"currentItem"` // which patch in the batch (1-based)

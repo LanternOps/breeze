@@ -76,9 +76,9 @@ func TestQuerySNMPV3CaseInsensitive(t *testing.T) {
 
 func TestSnmpToString(t *testing.T) {
 	tests := []struct {
-		name  string
-		pdu   gosnmp.SnmpPDU
-		want  string
+		name string
+		pdu  gosnmp.SnmpPDU
+		want string
 	}{
 		{
 			name: "nil_value",

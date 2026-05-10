@@ -57,7 +57,7 @@ type mftEncoder struct {
 	d3d11Device    uintptr // ID3D11Device (from capturer, not owned)
 	d3d11Context   uintptr // ID3D11DeviceContext (from capturer, not owned)
 	gpuConv        *gpuConverter
-	gpuFrameCount  uint64 // frames since gpuConv was (re)created, for diagnostic logging
+	gpuFrameCount  uint64  // frames since gpuConv was (re)created, for diagnostic logging
 	dxgiManager    uintptr // IMFDXGIDeviceManager
 	dxgiResetToken uint32
 	gpuEnabled     bool

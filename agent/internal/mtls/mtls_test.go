@@ -61,9 +61,9 @@ func TestLoadClientCertValid(t *testing.T) {
 
 func TestLoadClientCertInvalidPEM(t *testing.T) {
 	tests := []struct {
-		name    string
-		cert    string
-		key     string
+		name string
+		cert string
+		key  string
 	}{
 		{"empty cert", "", "not-a-key"},
 		{"empty key", "not-a-cert", ""},

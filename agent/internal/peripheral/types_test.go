@@ -15,7 +15,7 @@ func TestPolicyJSONRoundTrip(t *testing.T) {
 		TargetType:  "organization",
 		TargetIDs: PolicyTargetIDs{
 			SiteIDs:   []string{"site-1"},
-			GroupIDs:   []string{"grp-1"},
+			GroupIDs:  []string{"grp-1"},
 			DeviceIDs: []string{"dev-a"},
 		},
 		Exceptions: []ExceptionRule{

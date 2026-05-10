@@ -24,12 +24,12 @@ var (
 
 // WASAPI constants
 const (
-	eRender         = 0
-	eConsole        = 0
-	audclntStreamLoopback    = 0x00020000
-	audclntShareModeShared   = 0
-	waveFormatIEEEFloat      = 0x0003
-	waveFormatExtensible     = 0xFFFE
+	eRender                = 0
+	eConsole               = 0
+	audclntStreamLoopback  = 0x00020000
+	audclntShareModeShared = 0
+	waveFormatIEEEFloat    = 0x0003
+	waveFormatExtensible   = 0xFFFE
 
 	// COM vtable indices (IUnknown = 0,1,2; interface methods start at 3)
 	mmdeGetDefaultAudioEndpoint = 4  // IMMDeviceEnumerator::GetDefaultAudioEndpoint
@@ -97,7 +97,7 @@ func (w *wasapiCapturer) Start(callback func([]byte)) error {
 	hr, _, _ = syscall.SyscallN(
 		procCoCreateInstance.Addr(),
 		uintptr(unsafe.Pointer(&clsidMMDeviceEnumerator)),
-		0, // pUnkOuter
+		0,                         // pUnkOuter
 		uintptr(0x1|0x2|0x4|0x10), // CLSCTX_ALL
 		uintptr(unsafe.Pointer(&iidIMMDeviceEnumerator)),
 		uintptr(unsafe.Pointer(&enumerator)),
@@ -153,9 +153,9 @@ func (w *wasapiCapturer) Start(callback func([]byte)) error {
 		uintptr(audclntShareModeShared),
 		uintptr(audclntStreamLoopback),
 		uintptr(bufferDuration),
-		0, // periodicity
+		0,            // periodicity
 		mixFormatPtr, // must be valid COM memory — free AFTER Initialize
-		0, // AudioSessionGuid
+		0,            // AudioSessionGuid
 	)
 	// Free COM memory now that Initialize has consumed it.
 	procCoTaskMemFree.Call(mixFormatPtr)

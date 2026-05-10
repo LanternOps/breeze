@@ -1,8 +1,8 @@
 package config
 
 import (
+	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -72,8 +72,8 @@ func TestPinManifestKeys_RejectsRotationByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rotation rejection error, got nil")
 	}
-	if !strings.Contains(err.Error(), "rotation rejected") {
-		t.Fatalf("expected rotation-rejected error, got: %v", err)
+	if !errors.Is(err, ErrManifestTrustRotationRejected) {
+		t.Fatalf("expected ErrManifestTrustRotationRejected, got: %v", err)
 	}
 
 	// Pubkey on disk must remain unchanged.

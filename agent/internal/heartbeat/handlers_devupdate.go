@@ -121,8 +121,8 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 		ServerURL:             h.config.ServerURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
-		BinaryPath:             binaryPath,
-		BackupPath:             backupPath,
+		BinaryPath:            binaryPath,
+		BackupPath:            backupPath,
 		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
 	}
 

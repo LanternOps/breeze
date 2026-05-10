@@ -659,8 +659,8 @@ func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder
 		ServerURL:             cfg.ServerURL,
 		AuthToken:             tok,
 		CurrentVersion:        "", // Not tracking agent version from watchdog.
-		BinaryPath:             binaryPath,
-		BackupPath:             binaryPath + ".bak",
+		BinaryPath:            binaryPath,
+		BackupPath:            binaryPath + ".bak",
 		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
@@ -691,8 +691,8 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHol
 		AuthToken:             tok,
 		CurrentVersion:        version,
 		Component:             "watchdog",
-		BinaryPath:             exePath,
-		BackupPath:             exePath + ".bak",
+		BinaryPath:            exePath,
+		BackupPath:            exePath + ".bak",
 		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {

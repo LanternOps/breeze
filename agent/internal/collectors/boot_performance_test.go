@@ -50,7 +50,7 @@ func TestCalculateImpactScore(t *testing.T) {
 		},
 		{
 			name:        "max both",
-			cpuTimeMs:   20000,                   // Over cap
+			cpuTimeMs:   20000,                  // Over cap
 			diskIoBytes: 2 * 1024 * 1024 * 1024, // Over cap
 			wantMin:     100,
 			wantMax:     100,

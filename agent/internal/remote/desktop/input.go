@@ -2,7 +2,7 @@ package desktop
 
 // InputEvent represents a mouse or keyboard input event
 type InputEvent struct {
-	Type      string   `json:"type"`      // "mouse_move", "mouse_click", "mouse_scroll", "key_press", "key_release"
+	Type      string   `json:"type"` // "mouse_move", "mouse_click", "mouse_scroll", "key_press", "key_release"
 	X         int      `json:"x,omitempty"`
 	Y         int      `json:"y,omitempty"`
 	Button    string   `json:"button,omitempty"`    // "left", "right", "middle"

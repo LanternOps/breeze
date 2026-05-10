@@ -901,8 +901,19 @@ func enrollDevice(enrollmentKey string) {
 			}
 			pinned = append(pinned, k.KeyID+":"+k.PublicKeyB64)
 		}
-		cfg.PinnedManifestPubKeys = pinned
-		enrollLog.Info("pinned manifest trust keys from enrollment", "count", len(pinned))
+		if len(pinned) == 0 {
+			// All entries malformed — preserve any pre-existing pinned set rather
+			// than silently destroying trust state.
+			enrollLog.Warn("enrollment response delivered manifest trust keys but all entries were malformed; not overwriting existing pinned set",
+				"received", len(enrollResp.ManifestTrustKeys))
+		} else {
+			if dropped := len(enrollResp.ManifestTrustKeys) - len(pinned); dropped > 0 {
+				enrollLog.Warn("dropped malformed manifest trust keys from enrollment",
+					"received", len(enrollResp.ManifestTrustKeys), "kept", len(pinned), "dropped", dropped)
+			}
+			cfg.PinnedManifestPubKeys = pinned
+			enrollLog.Info("pinned manifest trust keys from enrollment", "count", len(pinned))
+		}
 	}
 
 	if err := config.SaveTo(cfg, cfgFile); err != nil {

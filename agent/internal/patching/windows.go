@@ -19,12 +19,12 @@ var log = logging.L("patching")
 
 // WUA OperationResultCode constants
 const (
-	wuaResultNotStarted       = 0
-	wuaResultInProgress       = 1
-	wuaResultSucceeded        = 2
-	wuaResultSucceededReboot  = 3
-	wuaResultFailed           = 4
-	wuaResultAborted          = 5
+	wuaResultNotStarted      = 0
+	wuaResultInProgress      = 1
+	wuaResultSucceeded       = 2
+	wuaResultSucceededReboot = 3
+	wuaResultFailed          = 4
+	wuaResultAborted         = 5
 )
 
 // WindowsUpdateProvider integrates with Windows Update.

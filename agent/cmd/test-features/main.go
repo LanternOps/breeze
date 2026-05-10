@@ -38,10 +38,12 @@ func testSoftware() {
 		return
 	}
 	fmt.Printf("Found %d installed applications\n\n", len(items))
-	
+
 	// Show first 5
 	for i, item := range items {
-		if i >= 5 { break }
+		if i >= 5 {
+			break
+		}
 		b, _ := json.MarshalIndent(item, "", "  ")
 		fmt.Println(string(b))
 	}
@@ -59,13 +61,13 @@ func testCapture() {
 		return
 	}
 	defer cap.Close()
-	
+
 	img, err := cap.Capture()
 	if err != nil {
 		fmt.Printf("Error capturing: %v\n", err)
 		return
 	}
-	
+
 	fmt.Printf("Captured screen: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
 	fmt.Println("Screen capture working!")
 }
@@ -73,7 +75,7 @@ func testCapture() {
 func testInput() {
 	fmt.Println("=== Testing Input Handler (macOS) ===")
 	handler := desktop.NewInputHandler("user_session")
-	
+
 	// Test mouse move (safe - just moves cursor slightly)
 	fmt.Println("Testing mouse move...")
 	if err := handler.SendMouseMove(100, 100); err != nil {
@@ -81,6 +83,6 @@ func testInput() {
 	} else {
 		fmt.Println("Mouse move: OK")
 	}
-	
+
 	fmt.Println("\nInput handler initialized (not executing keys for safety)")
 }

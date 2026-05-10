@@ -241,9 +241,9 @@ func TestCompareIPs(t *testing.T) {
 		{"greater_than", "10.0.0.2", "10.0.0.1", false},
 		{"different_octets", "10.0.0.1", "10.0.1.1", true},
 		// When either IP is invalid, falls back to string comparison (a < b)
-		{"first_invalid", "invalid", "10.0.0.1", false},  // 'i' > '1'
-		{"second_invalid", "10.0.0.1", "invalid", true},  // '1' < 'i'
-		{"both_invalid_alpha", "bar", "foo", true},        // 'b' < 'f'
+		{"first_invalid", "invalid", "10.0.0.1", false}, // 'i' > '1'
+		{"second_invalid", "10.0.0.1", "invalid", true}, // '1' < 'i'
+		{"both_invalid_alpha", "bar", "foo", true},      // 'b' < 'f'
 		{"both_invalid_equal", "foo", "foo", false},
 	}
 

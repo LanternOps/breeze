@@ -18,9 +18,9 @@ type SystemStateManifest struct {
 
 // Artifact is a single collected system state item.
 type Artifact struct {
-	Name      string `json:"name"`      // e.g. "registry_SYSTEM", "etc_tree"
-	Category  string `json:"category"`  // registry, boot, drivers, certs, services, packages, config
-	Path      string `json:"path"`      // path within staging dir
+	Name      string `json:"name"`     // e.g. "registry_SYSTEM", "etc_tree"
+	Category  string `json:"category"` // registry, boot, drivers, certs, services, packages, config
+	Path      string `json:"path"`     // path within staging dir
 	SizeBytes int64  `json:"sizeBytes"`
 }
 

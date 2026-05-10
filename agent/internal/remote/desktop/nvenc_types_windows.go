@@ -73,11 +73,11 @@ var (
 
 const (
 	// Device and resource types
-	nvencDeviceTypeDX    uint32 = 0 // NV_ENC_DEVICE_TYPE_DIRECTX
-	nvencInputResDX      uint32 = 0 // NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX
-	nvencBufFmtARGB      uint32 = 0x01000000
-	nvencBufFmtNV12      uint32 = 0x00000001
-	nvencBufUsageInput   uint32 = 0 // NV_ENC_INPUT_IMAGE
+	nvencDeviceTypeDX  uint32 = 0 // NV_ENC_DEVICE_TYPE_DIRECTX
+	nvencInputResDX    uint32 = 0 // NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX
+	nvencBufFmtARGB    uint32 = 0x01000000
+	nvencBufFmtNV12    uint32 = 0x00000001
+	nvencBufUsageInput uint32 = 0 // NV_ENC_INPUT_IMAGE
 
 	// Rate control
 	nvencRCConstQP uint32 = 0
@@ -94,32 +94,32 @@ const (
 	nvencPicStructFrame uint32 = 1
 
 	// Tuning info
-	nvencTuningUndef         uint32 = 0
-	nvencTuningHighQuality   uint32 = 1
-	nvencTuningLowLatency    uint32 = 2
-	nvencTuningUltraLowLat   uint32 = 3
-	nvencTuningLossless      uint32 = 4
+	nvencTuningUndef       uint32 = 0
+	nvencTuningHighQuality uint32 = 1
+	nvencTuningLowLatency  uint32 = 2
+	nvencTuningUltraLowLat uint32 = 3
+	nvencTuningLossless    uint32 = 4
 
 	// Status codes
-	nvencSuccess                   = 0
-	nvencErrNoEncodeDevice         = 1
-	nvencErrUnsupportedDevice      = 2
-	nvencErrInvalidEncoderDevice   = 3
-	nvencErrInvalidDevice          = 4
-	nvencErrDeviceNotExist         = 5
-	nvencErrInvalidPtr             = 6
-	nvencErrInvalidParam           = 8
-	nvencErrInvalidCall            = 9
-	nvencErrOutOfMemory            = 10
-	nvencErrEncoderNotInitialized  = 11
-	nvencErrUnsupportedParam       = 12
-	nvencErrLockBusy               = 13
-	nvencErrNotEnoughBuffer        = 14
-	nvencErrInvalidVersion         = 15
-	nvencErrMapFailed              = 16
-	nvencErrNeedMoreInput          = 17
-	nvencErrEncoderBusy            = 18
-	nvencErrGeneric                = 20
+	nvencSuccess                  = 0
+	nvencErrNoEncodeDevice        = 1
+	nvencErrUnsupportedDevice     = 2
+	nvencErrInvalidEncoderDevice  = 3
+	nvencErrInvalidDevice         = 4
+	nvencErrDeviceNotExist        = 5
+	nvencErrInvalidPtr            = 6
+	nvencErrInvalidParam          = 8
+	nvencErrInvalidCall           = 9
+	nvencErrOutOfMemory           = 10
+	nvencErrEncoderNotInitialized = 11
+	nvencErrUnsupportedParam      = 12
+	nvencErrLockBusy              = 13
+	nvencErrNotEnoughBuffer       = 14
+	nvencErrInvalidVersion        = 15
+	nvencErrMapFailed             = 16
+	nvencErrNeedMoreInput         = 17
+	nvencErrEncoderBusy           = 18
+	nvencErrGeneric               = 20
 
 	nvencInfiniteGOP uint32 = 0xffffffff
 )
@@ -146,8 +146,8 @@ func nvencStatusStr(code uintptr) string {
 // =============================================================================
 
 type nvencFuncList struct {
-	Version  uint32
-	_pad     uint32
+	Version uint32
+	_pad    uint32
 	// Function pointers — indices [0] through [42]
 	OpenEncodeSession         uintptr // [0] deprecated
 	GetEncodeGUIDCount        uintptr // [1]
@@ -212,14 +212,14 @@ type nvencOpenSessionParams struct {
 
 // NV_ENC_CREATE_BITSTREAM_BUFFER — 776 bytes
 type nvencCreateBitstreamBuffer struct {
-	Version   uint32
-	_size     uint32  // deprecated
-	_memHeap  uint32  // deprecated
-	_res0     uint32
-	Buffer    uintptr // out: handle for LockBitstream/EncodePicture
-	_bufPtr   uintptr // out, reserved
-	_res1     [58]uint32
-	_res2     [64]uintptr
+	Version  uint32
+	_size    uint32 // deprecated
+	_memHeap uint32 // deprecated
+	_res0    uint32
+	Buffer   uintptr // out: handle for LockBitstream/EncodePicture
+	_bufPtr  uintptr // out, reserved
+	_res1    [58]uint32
+	_res2    [64]uintptr
 }
 
 // NV_ENC_REGISTER_RESOURCE — 1536 bytes
@@ -254,21 +254,21 @@ type nvencMapInputResource struct {
 
 // NV_ENC_LOCK_BITSTREAM — 1544 bytes
 type nvencLockBitstream struct {
-	Version        uint32
-	Flags          uint32  // bitfield: doNotWait(0), ltrFrame(1), getRCStats(2)
+	Version         uint32
+	Flags           uint32  // bitfield: doNotWait(0), ltrFrame(1), getRCStats(2)
 	OutputBitstream uintptr // in: bitstream buffer handle
-	_sliceOffsets  uintptr
-	FrameIdx       uint32  // out
-	HWEncodeStatus uint32  // out
-	NumSlices      uint32  // out
-	BitstreamSize  uint32  // out: byte count
-	OutputTS       uint64  // out
-	OutputDur      uint64  // out
-	DataPtr        uintptr // out: pointer to compressed H264 data
-	PictureType    uint32  // out
-	PictureStruct  uint32  // out
-	FrameAvgQP     uint32  // out
-	_rest          [1468]byte
+	_sliceOffsets   uintptr
+	FrameIdx        uint32  // out
+	HWEncodeStatus  uint32  // out
+	NumSlices       uint32  // out
+	BitstreamSize   uint32  // out: byte count
+	OutputTS        uint64  // out
+	OutputDur       uint64  // out
+	DataPtr         uintptr // out: pointer to compressed H264 data
+	PictureType     uint32  // out
+	PictureStruct   uint32  // out
+	FrameAvgQP      uint32  // out
+	_rest           [1468]byte
 }
 
 // NV_ENC_PIC_PARAMS — 2840 bytes
@@ -337,25 +337,25 @@ type nvencPresetConfig [5128]byte
 // Field offsets within nvencConfig
 const (
 	ncfgVersion        = 0
-	ncfgProfileGUID    = 4   // GUID, 16 bytes
-	ncfgGOPLength      = 20  // uint32
-	ncfgFrameIntervalP = 24  // int32
+	ncfgProfileGUID    = 4  // GUID, 16 bytes
+	ncfgGOPLength      = 20 // uint32
+	ncfgFrameIntervalP = 24 // int32
 	// rcParams starts at offset 40 (NV_ENC_RC_PARAMS, 128 bytes)
-	ncfgRCVersion  = 40 // uint32 (rcParams.version)
-	ncfgRCMode     = 44 // uint32 (rcParams.rateControlMode)
-	ncfgRCAvgBR    = 60 // uint32 (rcParams.averageBitRate)
-	ncfgRCMaxBR    = 64 // uint32 (rcParams.maxBitRate)
-	ncfgRCVBVBuf   = 68 // uint32 (rcParams.vbvBufferSize)
-	ncfgRCVBVInit  = 72 // uint32 (rcParams.vbvInitialDelay)
+	ncfgRCVersion = 40 // uint32 (rcParams.version)
+	ncfgRCMode    = 44 // uint32 (rcParams.rateControlMode)
+	ncfgRCAvgBR   = 60 // uint32 (rcParams.averageBitRate)
+	ncfgRCMaxBR   = 64 // uint32 (rcParams.maxBitRate)
+	ncfgRCVBVBuf  = 68 // uint32 (rcParams.vbvBufferSize)
+	ncfgRCVBVInit = 72 // uint32 (rcParams.vbvInitialDelay)
 	// encodeCodecConfig (union) starts at offset 168
 	// For H264: NV_ENC_CONFIG_H264 fields
-	ncfgH264Bitfields  = 168 // uint32 bitfield
-	ncfgH264Level      = 172 // uint32
-	ncfgH264IDRPeriod  = 176 // uint32
-	ncfgH264MaxRefFrm  = 228 // uint32
-	ncfgH264SliceMode  = 232 // uint32
-	ncfgH264SliceData  = 236 // uint32
-	ncfgH264Entropy    = 212 // uint32 (NV_ENC_H264_ENTROPY_CODING_MODE)
+	ncfgH264Bitfields = 168 // uint32 bitfield
+	ncfgH264Level     = 172 // uint32
+	ncfgH264IDRPeriod = 176 // uint32
+	ncfgH264MaxRefFrm = 228 // uint32
+	ncfgH264SliceMode = 232 // uint32
+	ncfgH264SliceData = 236 // uint32
+	ncfgH264Entropy   = 212 // uint32 (NV_ENC_H264_ENTROPY_CODING_MODE)
 )
 
 // H264 config bitfield flags (at ncfgH264Bitfields)

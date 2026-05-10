@@ -15,21 +15,21 @@ var log = logging.L("httputil")
 
 // RetryConfig controls the retry behavior for HTTP requests.
 type RetryConfig struct {
-	MaxRetries   int
-	InitialDelay time.Duration
-	MaxDelay     time.Duration
+	MaxRetries    int
+	InitialDelay  time.Duration
+	MaxDelay      time.Duration
 	BackoffFactor float64
-	JitterFrac   float64 // ±fraction of delay to randomize (e.g. 0.3 = ±30%)
+	JitterFrac    float64 // ±fraction of delay to randomize (e.g. 0.3 = ±30%)
 }
 
 // DefaultRetryConfig returns sensible defaults for agent→server calls.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		MaxRetries:   3,
-		InitialDelay: 1 * time.Second,
-		MaxDelay:     30 * time.Second,
+		MaxRetries:    3,
+		InitialDelay:  1 * time.Second,
+		MaxDelay:      30 * time.Second,
 		BackoffFactor: 2.0,
-		JitterFrac:   0.3,
+		JitterFrac:    0.3,
 	}
 }
 

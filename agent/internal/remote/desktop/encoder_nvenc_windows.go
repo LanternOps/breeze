@@ -244,8 +244,8 @@ func (e *nvencEncoder) initialize() error {
 
 	// Step 3: Get preset config defaults for ultra-low-latency
 	var presetCfg nvencPresetConfig
-	*(*uint32)(unsafe.Pointer(&presetCfg[0])) = nvencStructVerExt(5)       // preset config version
-	*(*uint32)(unsafe.Pointer(&presetCfg[8])) = nvencStructVerExt(9)       // embedded NV_ENC_CONFIG version
+	*(*uint32)(unsafe.Pointer(&presetCfg[0])) = nvencStructVerExt(5)            // preset config version
+	*(*uint32)(unsafe.Pointer(&presetCfg[8])) = nvencStructVerExt(9)            // embedded NV_ENC_CONFIG version
 	*(*uint32)(unsafe.Pointer(&presetCfg[8+ncfgRCVersion])) = nvencStructVer(1) // embedded RC_PARAMS version
 
 	r, _, _ = syscall.SyscallN(

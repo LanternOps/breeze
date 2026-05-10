@@ -57,15 +57,15 @@ const (
 
 // IVssAsync vtable indices.
 const (
-	vtblAsyncWait       = 3
+	vtblAsyncWait        = 3
 	vtblAsyncQueryStatus = 4
 )
 
 // VSS backup type constants.
 const (
-	vssBackupTypeFull     = 5
-	vssBoolTrue      uint32 = 1
-	vssBoolFalse     uint32 = 0
+	vssBackupTypeFull        = 5
+	vssBoolTrue       uint32 = 1
+	vssBoolFalse      uint32 = 0
 )
 
 const (
@@ -213,7 +213,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 		deviceName, err := p.getSnapshotDeviceName(backupComponents, entry.snapID)
 		if err != nil {
 			warnMsg := fmt.Sprintf("GetSnapshotProperties failed for volume %s: %s", entry.volume, err.Error())
-			slog.Warn("vss: "+warnMsg)
+			slog.Warn("vss: " + warnMsg)
 			warnings = append(warnings, warnMsg)
 			continue
 		}

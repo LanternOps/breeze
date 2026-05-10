@@ -517,10 +517,10 @@ func (c *dxgiCapturer) releaseDXGI() {
 }
 
 var (
-	_ ScreenCapturer   = (*dxgiCapturer)(nil)
-	_ BGRAProvider     = (*dxgiCapturer)(nil)
-	_ TightLoopHint    = (*dxgiCapturer)(nil)
-	_ FrameChangeHint  = (*dxgiCapturer)(nil)
-	_ TextureProvider  = (*dxgiCapturer)(nil)
+	_ ScreenCapturer    = (*dxgiCapturer)(nil)
+	_ BGRAProvider      = (*dxgiCapturer)(nil)
+	_ TightLoopHint     = (*dxgiCapturer)(nil)
+	_ FrameChangeHint   = (*dxgiCapturer)(nil)
+	_ TextureProvider   = (*dxgiCapturer)(nil)
 	_ DirtyRectProvider = (*dxgiCapturer)(nil)
 )
