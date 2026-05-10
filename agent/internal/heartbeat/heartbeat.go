@@ -2958,11 +2958,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:      h.config.ServerURL,
-		AuthToken:      h.secureToken,
-		CurrentVersion: h.agentVersion,
-		BinaryPath:     binaryPath,
-		BackupPath:     backupPath,
+		ServerURL:             h.config.ServerURL,
+		AuthToken:             h.secureToken,
+		CurrentVersion:        h.agentVersion,
+		BinaryPath:             binaryPath,
+		BackupPath:             backupPath,
+		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
 	}
 
 	u := updater.New(updaterCfg)

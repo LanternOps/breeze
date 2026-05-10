@@ -34,6 +34,13 @@ type Config struct {
 	Component      string
 	BinaryPath     string
 	BackupPath     string
+
+	// PinnedManifestPubKeys are deployment-specific Ed25519 pubkeys delivered
+	// by the API via enrollment/heartbeat and pinned TOFU-style. Format
+	// matches agent config: "<keyId>:<base64-raw-pubkey>". Merged with the
+	// embedded LanternOps trust root in trustedManifestKeys() so self-host
+	// (BINARY_SOURCE=local) deployments can verify locally-signed manifests.
+	PinnedManifestPubKeys []string
 }
 
 // Updater handles agent auto-updates
@@ -162,11 +169,21 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 	return map[string]struct{}{}
 }
 
-func trustedManifestKeys() []ed25519.PublicKey {
+func (u *Updater) trustedManifestKeys() []ed25519.PublicKey {
 	configured := strings.TrimSpace(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"))
 	rawKeys := append([]string{}, trustedUpdateManifestPublicKeys...)
 	if configured != "" {
 		rawKeys = append(rawKeys, strings.Split(configured, ",")...)
+	}
+	// Per-deployment pinned keys delivered by the API via enrollment/heartbeat
+	// (see #625). Format on disk: "<keyId>:<base64-pubkey>".
+	if u != nil && u.config != nil {
+		for _, entry := range u.config.PinnedManifestPubKeys {
+			parts := strings.SplitN(entry, ":", 2)
+			if len(parts) == 2 && parts[1] != "" {
+				rawKeys = append(rawKeys, parts[1])
+			}
+		}
 	}
 
 	keys := make([]ed25519.PublicKey, 0, len(rawKeys))
@@ -346,7 +363,7 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 		return updateManifest{}, fmt.Errorf("invalid update manifest signature encoding")
 	}
 
-	keys := trustedManifestKeys()
+	keys := u.trustedManifestKeys()
 	if len(keys) == 0 {
 		return updateManifest{}, fmt.Errorf("no trusted update manifest public keys configured")
 	}

@@ -656,11 +656,12 @@ func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
-		ServerURL:      cfg.ServerURL,
-		AuthToken:      tok,
-		CurrentVersion: "", // Not tracking agent version from watchdog.
-		BinaryPath:     binaryPath,
-		BackupPath:     binaryPath + ".bak",
+		ServerURL:             cfg.ServerURL,
+		AuthToken:             tok,
+		CurrentVersion:        "", // Not tracking agent version from watchdog.
+		BinaryPath:             binaryPath,
+		BackupPath:             binaryPath + ".bak",
+		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
 		journal.Log(watchdog.LevelError, "update.agent_failed", map[string]any{
@@ -686,12 +687,13 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHol
 		return fmt.Errorf("failed to determine executable path: %w", err)
 	}
 	u := updater.New(&updater.Config{
-		ServerURL:      cfg.ServerURL,
-		AuthToken:      tok,
-		CurrentVersion: version,
-		Component:      "watchdog",
-		BinaryPath:     exePath,
-		BackupPath:     exePath + ".bak",
+		ServerURL:             cfg.ServerURL,
+		AuthToken:             tok,
+		CurrentVersion:        version,
+		Component:             "watchdog",
+		BinaryPath:             exePath,
+		BackupPath:             exePath + ".bak",
+		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
 		journal.Log(watchdog.LevelError, "update.watchdog_failed", map[string]any{
