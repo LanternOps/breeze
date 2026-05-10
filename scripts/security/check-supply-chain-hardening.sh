@@ -166,6 +166,11 @@ for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
     "$compose must not mount the raw Docker socket"
   reject_grep 'watchtower' "$compose" \
     "$compose must not include Watchtower by default"
+  # Defense-in-depth: even without the Watchtower service present, an
+  # auto-update opt-in label on a tracked compose file would re-introduce
+  # the supply-chain risk the broader rule above forbids (#603).
+  reject_grep 'com\.centurylinklabs\.watchtower\.enable[[:space:]]*[:=][[:space:]]*"?(true|1|yes)"?' "$compose" \
+    "$compose must not declare Watchtower auto-update opt-in labels (com.centurylinklabs.watchtower.enable=true) on any service"
   reject_grep '--requirepass[[:space:]]+\$\{?REDIS_PASSWORD' "$compose" \
     "$compose must not expose REDIS_PASSWORD in redis-server command args"
   reject_grep 'REDISCLI_AUTH' "$compose" \
