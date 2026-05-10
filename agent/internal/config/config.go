@@ -115,6 +115,12 @@ type Config struct {
 	// Auto-update toggle (default: true)
 	AutoUpdate bool `mapstructure:"auto_update"`
 
+	// PinnedManifestPubKeys are deployment-specific Ed25519 pubkeys delivered
+	// via enrollment/heartbeat and pinned TOFU-style. Format: "<keyId>:<base64-raw-pubkey>".
+	// Merged with the embedded LanternOps trust root in updater.trustedManifestKeys()
+	// so self-host (BINARY_SOURCE=local) deployments can sign their own manifests.
+	PinnedManifestPubKeys []string `mapstructure:"pinned_manifest_pub_keys" yaml:"pinned_manifest_pub_keys"`
+
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
@@ -371,6 +377,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("auto_update", cfg.AutoUpdate)
+	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
 	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
 	// bearer tokens are persisted below in root-only secrets.yaml.
 	if cfg.HelperAuthToken != "" {
