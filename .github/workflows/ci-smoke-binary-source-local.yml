@@ -77,6 +77,9 @@ jobs:
           BINARY_SOURCE: local
           BREEZE_VERSION: "0.65.9"
           DATABASE_URL: postgres://breeze:breeze@localhost:5432/breeze
+          DATABASE_URL_APP: postgres://breeze_app:breeze@localhost:5432/breeze
+          BREEZE_APP_DB_PASSWORD: breeze
+          POSTGRES_PASSWORD: breeze
           REDIS_URL: redis://localhost:6379
           NODE_ENV: production
           PUBLIC_APP_URL: http://localhost:3001
