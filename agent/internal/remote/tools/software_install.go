@@ -27,8 +27,13 @@ var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 // InstallSoftware downloads a package from a presigned URL, verifies its checksum,
 // and executes it with the provided silent install arguments.
-func InstallSoftware(payload map[string]any) CommandResult {
+func InstallSoftware(payload map[string]any) (result CommandResult) {
 	startTime := time.Now()
+	// Stamp StartedAt on every return path so the server can record the
+	// real start instead of reconstructing it from durationMs.
+	defer func() {
+		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
+	}()
 
 	downloadUrl, errResult := RequirePayloadString(payload, "downloadUrl")
 	if errResult != nil {
@@ -94,7 +99,7 @@ func InstallSoftware(payload map[string]any) CommandResult {
 		return result
 	}
 
-	result := map[string]any{
+	successPayload := map[string]any{
 		"softwareName": softwareName,
 		"version":      version,
 		"fileType":     fileType,
@@ -104,9 +109,9 @@ func InstallSoftware(payload map[string]any) CommandResult {
 		"success":      true,
 	}
 	if outputTruncated {
-		result["outputTruncated"] = true
+		successPayload["outputTruncated"] = true
 	}
-	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+	return NewSuccessResult(successPayload, time.Since(startTime).Milliseconds())
 }
 
 func validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version string) (string, string, string, string, string, string, error) {

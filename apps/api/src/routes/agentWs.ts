@@ -553,6 +553,10 @@ const commandResultSchema = z.object({
   stdout: z.string().max(5_000_000).optional(),
   stderr: z.string().max(5_000_000).optional(),
   durationMs: z.number().int().optional(),
+  // RFC3339 timestamp captured by the agent at the moment the command's
+  // primary work began. Optional for back-compat with pre-startedAt agents,
+  // which the server falls back to reconstructing from durationMs.
+  startedAt: z.string().datetime().optional(),
   error: z.string().max(10_000).optional(),
   result: z.any().optional().refine(
     (val) => {

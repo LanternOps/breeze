@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceCommands } from '../../db/schema';
+import { deviceCommands, deploymentResults } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
@@ -150,6 +150,46 @@ commandsRoutes.post(
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
     if (!uuidRegex.test(commandId)) {
+      // Software install commands carry their tracking IDs in the commandId
+      // itself: `sw-install-<deploymentUuid>-<deviceUuid>`. Persist the
+      // outcome to deployment_results so the dashboard reflects reality.
+      const swInstallMatch = commandId.match(
+        /^sw-install-([0-9a-f-]{36})-([0-9a-f-]{36})$/i,
+      );
+      if (swInstallMatch) {
+        const [, deploymentIdFromCmd, deviceIdFromCmd] = swInstallMatch;
+        if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
+          const drStatus =
+            data.status === 'completed'
+              ? data.exitCode && data.exitCode !== 0
+                ? 'failed'
+                : 'completed'
+              : 'failed';
+          const completedAt = new Date();
+          // Prefer agent-reported startedAt (post-#631); fall back to
+          // reconstructing from durationMs for older agents that don't carry it.
+          const startedAt = data.startedAt
+            ? new Date(data.startedAt)
+            : data.durationMs
+              ? new Date(completedAt.getTime() - data.durationMs)
+              : completedAt;
+          await db
+            .update(deploymentResults)
+            .set({
+              status: drStatus,
+              startedAt,
+              completedAt,
+              exitCode: data.exitCode ?? null,
+              output: data.stdout ?? null,
+              errorMessage: data.error ?? data.stderr ?? null,
+            })
+            .where(and(
+              eq(deploymentResults.deploymentId, deploymentIdFromCmd),
+              eq(deploymentResults.deviceId, deviceId),
+              eq(deploymentResults.status, 'pending'),
+            ));
+        }
+      }
       return c.json({ success: true });
     }
 

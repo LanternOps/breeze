@@ -214,6 +214,10 @@ type CommandResult struct {
 	Stderr     string `json:"stderr,omitempty"`
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
+	// RFC3339Nano timestamp captured by the agent at the moment the command's
+	// primary work began. Set by command handlers that care about the server-
+	// side reconstruction (e.g. software_install). Empty when not applicable.
+	StartedAt string `json:"startedAt,omitempty"`
 }
 
 // NewSuccessResult creates a successful command result with data
