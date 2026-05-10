@@ -32,8 +32,13 @@ import { db } from '../../db';
  */
 
 // Tables that intentionally do not carry RLS isolation policies.
-// Add deliberately, with a comment. Empty for now.
-const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([]);
+// Add deliberately, with a comment.
+const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
+  // System-scoped: per-deployment infrastructure with no tenant column.
+  // Forced RLS, no policies → only system context can access. See
+  // INTENTIONAL_UNSCOPED below for the documented set.
+  'manifest_signing_keys',
+]);
 
 // System-scoped tables: per-deployment infrastructure with no tenant column.
 // These have ENABLE + FORCE ROW LEVEL SECURITY but no permissive policies —
