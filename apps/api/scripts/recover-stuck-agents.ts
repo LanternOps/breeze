@@ -1,17 +1,23 @@
 #!/usr/bin/env tsx
 /**
- * One-time recovery for agents whose embedded manifest trust root was
- * baked wrong in v0.65.5/v0.65.6 (PR #568). Those agents cannot
- * auto-update because manifest signature verification always fails, so
- * they will never pick up the v0.65.7 fix on their own.
+ * One-time recovery for agents stuck on a "won't auto-update" version. Two
+ * regressions feed into this script (see BROKEN_AGENT_VERSIONS for both):
+ *
+ *   - v0.65.5 / v0.65.6 baked the wrong manifest trust root (#568) — agents
+ *     can't verify manifests at all.
+ *   - v0.65.7 / v0.65.8 predate per-deployment manifest pinning (#625) —
+ *     self-host BINARY_SOURCE=local servers sign manifests with a deploy-
+ *     specific Ed25519 key the agent doesn't trust until v0.65.9 lands and
+ *     the heartbeat / enrollment pub-key delivery kicks in.
  *
  * For each affected device we queue a dev_update command pointing at
  * the latest binary from agent_versions. dev_update uses
  * UpdateFromURL, which skips manifest verification and only checks a
  * checksum the API computed after verifying the GitHub release
- * manifest — so the trust chain becomes API → agent (already
- * established via bearer token + TLS) instead of GitHub → agent
- * (which is what's broken).
+ * manifest (or, in BINARY_SOURCE=local mode, after computing the hash
+ * during syncBinaries). Trust chain becomes API → agent (already
+ * established via bearer token + TLS) instead of (LanternOps key | deploy
+ * key) → agent (which is what's broken for these versions).
  *
  * Usage (from the API container):
  *   pnpm recover:stuck-agents               # dry run (default)

@@ -6,13 +6,27 @@
 // in recover-stuck-agents.ts.
 import { normalizeAgentArchitecture } from '../src/routes/agents/helpers';
 
-// Versions known to ship with the broken trust root. Exact-match only —
-// agent versions are bare semver per project convention (no `v` prefix,
-// no pre-release suffixes in releases), so a string equality check is
-// sufficient. If you discover another, append it here; the regression
-// test in agent/internal/updater/updater_test.go prevents new releases
-// from joining this list.
-export const BROKEN_AGENT_VERSIONS = ['0.65.5', '0.65.6'] as const;
+// Versions whose agents cannot reach the latest server via auto-update and
+// need a one-time dev_update push to recover. Two failure modes are pooled
+// here because the recovery flow is the same:
+//
+//   0.65.5 / 0.65.6: shipped with the wrong embedded manifest trust root
+//   (#568), so manifest signature verification always fails. v0.65.7 fixed
+//   the trust root.
+//
+//   0.65.7 / 0.65.8: predate the per-deployment manifest pinning shipped in
+//   v0.65.9 (#625). On self-host BINARY_SOURCE=local servers, locally-signed
+//   manifests are rejected because these agents only trust the LanternOps
+//   build-time key. v0.65.9 agents pin the per-deployment pubkey via
+//   heartbeat/enrollment and recover from there.
+//
+// Exact-match only — agent versions are bare semver per project convention
+// (no `v` prefix, no pre-release suffixes in releases). The regression test
+// in agent/internal/updater/updater_test.go prevents new releases from
+// joining the trust-root group; the heartbeat-pinning machinery in
+// agent/internal/heartbeat/heartbeat.go prevents new releases from joining
+// the per-deployment-pin group.
+export const BROKEN_AGENT_VERSIONS = ['0.65.5', '0.65.6', '0.65.7', '0.65.8'] as const;
 
 export const RECOVERY_COMMAND_MARKER = 'agent_update_trust_root_recovery';
 
