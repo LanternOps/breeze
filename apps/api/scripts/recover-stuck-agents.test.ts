@@ -121,4 +121,13 @@ describe('planRecovery', () => {
     expect(BROKEN_AGENT_VERSIONS).toContain('0.65.5');
     expect(BROKEN_AGENT_VERSIONS).toContain('0.65.6');
   });
+
+  it('flags all known stuck-version agents (#612 + #625)', () => {
+    // 0.65.5 / 0.65.6: wrong embedded manifest trust root (#568, PR #612).
+    // 0.65.7 / 0.65.8: predate per-deployment manifest pinning (#625);
+    //   on BINARY_SOURCE=local these agents reject locally-signed manifests.
+    expect(BROKEN_AGENT_VERSIONS).toEqual(
+      expect.arrayContaining(['0.65.5', '0.65.6', '0.65.7', '0.65.8']),
+    );
+  });
 });

@@ -829,6 +829,57 @@ func TestTrustedManifestKeys_IncludesPinnedKeys(t *testing.T) {
 	}
 }
 
+// TestVerifyUpdateManifest_AcceptsManifestSignedByPinnedKey exercises the full
+// per-deployment trust path end-to-end: generate a fresh Ed25519 keypair, sign
+// a manifest JSON, pin the pubkey via Config.PinnedManifestPubKeys, and assert
+// that verifyUpdateManifest accepts the manifest. This is the gap left by
+// TestTrustedManifestKeys_IncludesPinnedKeys, which only checked that the key
+// appears in the slice — not that the signature path actually works (#625).
+func TestVerifyUpdateManifest_AcceptsManifestSignedByPinnedKey(t *testing.T) {
+	// nil uses crypto/rand internally — same as the existing test helpers.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+
+	manifest := updateManifest{
+		Version:   "0.65.9",
+		Component: "agent",
+		Platform:  manifestPlatform(),
+		Arch:      runtime.GOARCH,
+		URL:       "https://selftest.local/agent",
+		Checksum:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Size:      4096,
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, manifestJSON)
+	sigB64 := base64.StdEncoding.EncodeToString(sig)
+
+	u := &Updater{
+		config: &Config{
+			Component:             "agent",
+			PinnedManifestPubKeys: []string{"deploy-test:" + pubB64},
+		},
+	}
+	info := downloadInfo{
+		URL:               manifest.URL,
+		Checksum:          manifest.Checksum,
+		Manifest:          string(manifestJSON),
+		ManifestSignature: sigB64,
+	}
+	got, err := u.verifyUpdateManifest(info, "0.65.9")
+	if err != nil {
+		t.Fatalf("verifyUpdateManifest: %v", err)
+	}
+	if got.Version != "0.65.9" {
+		t.Fatalf("expected version 0.65.9, got %q", got.Version)
+	}
+}
+
 // TestTrustedManifestKeys_SkipsMalformedPinnedEntries ensures that bad entries
 // in the pinned list (no colon, blank pubkey, wrong base64) don't crash or
 // poison the trust set — they're just dropped.

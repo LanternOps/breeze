@@ -120,6 +120,9 @@ export async function ensureActiveSigningKey(): Promise<ActiveSigningKey> {
     throw new Error('encryptSecret returned null for Ed25519 seed');
   }
 
+  // keyId is operator-readable (date helps in support tickets); uniqueness is
+  // enforced by the UNIQUE constraint on key_id, the random suffix is just
+  // collision-avoidance for same-day generation.
   const keyId = `deploy-${new Date().toISOString().slice(0, 10)}-${randomBytes(4).toString('hex')}`;
 
   await withSystemDbAccessContext(async () => {

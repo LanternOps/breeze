@@ -26,6 +26,11 @@ import { normalizeAgentArchitecture } from '../src/routes/agents/helpers';
 // joining the trust-root group; the heartbeat-pinning machinery in
 // agent/internal/heartbeat/heartbeat.go prevents new releases from joining
 // the per-deployment-pin group.
+//
+// REMOVAL: this list can be deleted once `SELECT count(*) FROM devices
+// WHERE agent_version IN (...)` returns 0 across hosted + known self-host
+// fleets. As of 2026-05-10 there are still active 0.65.7 / 0.65.8 agents
+// on at least one self-host deployment; revisit after 90 days.
 export const BROKEN_AGENT_VERSIONS = ['0.65.5', '0.65.6', '0.65.7', '0.65.8'] as const;
 
 export const RECOVERY_COMMAND_MARKER = 'agent_update_trust_root_recovery';

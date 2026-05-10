@@ -47,6 +47,30 @@ Agents pick up the command on their next heartbeat (~60s) and self-update. Once 
 
 If you can't deploy v0.65.9 yet, set `BREEZE_VERSION=0.65.7` in `/opt/breeze/.env` and `docker compose up -d binaries-init api web` — the fleet will sit on v0.65.7 quietly without 409 loops.
 
+> **Note (as of 2026-05-10)**: the v0.65.7 fallback works only while
+> v0.65.7 binaries are still in your local `breeze_binaries` volume.
+> If you've garbage-collected old versions, this fallback no longer
+> applies — your only recovery path is forward to v0.65.9.
+
+## What this protects against (and what it doesn't)
+
+The per-deployment signing key + TOFU pinning is meaningfully better than
+shipping unsigned manifests, but the trust posture is narrower than the
+hosted-SaaS model where the LanternOps build-time key is baked into agent
+binaries:
+
+| Attack | Defense |
+|---|---|
+| Tampering with `agent_versions.downloadUrl` via SQL injection or RLS bypass | Defended — manifest signature verifies the URL pinned at sign time |
+| Read-only DB compromise + replay of an old signed manifest | Partially defended — manifests pin version + checksum + size; replaying yesterday's manifest for today's binary fails the checksum check |
+| API write access without the signing key, attempting to rotate in an attacker pubkey | Defended — TOFU rejects rotation; agents log a SECURITY error |
+| Compromise of the API host (signing key + APP_ENCRYPTION_KEY both live there) | **Not defended.** An attacker with host access can sign arbitrary manifests with the deployment key. Rotate keys + audit binary checksums after any host compromise. |
+| MITM between API and agent | Defended by TLS at the transport layer; signing is defense in depth |
+
+Self-host operators who want stronger separation should run a build pipeline
+that signs manifests with an HSM-backed key and pin the corresponding pubkey
+via `BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS`.
+
 ## What if I want to rotate the per-deployment key?
 
 Today: not supported automatically. The TOFU pin is intentional — a server pushing a different key for the same `keyId` is treated as an attacker and rejected by `config.PinManifestKeys`. To rotate:

@@ -35,8 +35,9 @@ vi.mock("../middleware/auth", () => ({
   requireMfa: () => vi.fn(async (_c: any, next: any) => next()),
 }));
 
-import { agentVersionRoutes } from "./agentVersions";
+import { agentVersionRoutes, validateReleaseManifest } from "./agentVersions";
 import { db } from "../db";
+import * as manifestSigning from "../services/manifestSigning";
 
 function makeSignedReleaseManifest(overrides: Record<string, unknown> = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -435,5 +436,79 @@ describe("agentVersions routes", () => {
 
       expect(res.status).toBe(400);
     });
+  });
+});
+
+describe("validateReleaseManifest — fail-closed behaviour (#625 C3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+  });
+
+  it("fails closed when DB lookup throws and no env keys are configured", async () => {
+    // Before this fix (C3), getUpdateManifestPublicKeys silently swallowed
+    // the DB error, returned keys.length === 0, and verifyEd25519Manifest
+    // Signature returned true — bypassing signature verification entirely.
+    vi.spyOn(manifestSigning, "getActivePublicKeys").mockRejectedValue(
+      new Error("connection refused"),
+    );
+
+    const result = await validateReleaseManifest({
+      manifest: JSON.stringify({
+        version: "0.65.9",
+        component: "agent",
+        platform: "linux",
+        arch: "amd64",
+        url: "http://x",
+        checksum: "a".repeat(64),
+        size: 1,
+      }),
+      signature: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      version: "0.65.9",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "http://x",
+      checksum: "a".repeat(64),
+      fileSize: 1,
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("soft-passes when DB returns no keys and no env keys are configured (hosted SaaS empty-keyset intent)", async () => {
+    // Empty because neither env vars nor DB rows are set — this is the normal
+    // hosted-SaaS state where agents trust the LanternOps build-time key
+    // directly and the API has no deployment signing key. Must remain a
+    // soft-pass so hosted agents can download updates.
+    vi.spyOn(manifestSigning, "getActivePublicKeys").mockResolvedValue([]);
+
+    const manifestObj = {
+      version: "0.65.9",
+      component: "agent",
+      platform: "linux",
+      arch: "amd64",
+      url: "http://x",
+      checksum: "a".repeat(64),
+      size: 1,
+    };
+
+    const result = await validateReleaseManifest({
+      manifest: JSON.stringify(manifestObj),
+      // Signature is ignored when keyset is intentionally empty (soft-pass).
+      signature: "A".repeat(88),
+      version: "0.65.9",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "http://x",
+      checksum: "a".repeat(64),
+      fileSize: 1,
+    });
+
+    expect(result.ok).toBe(true);
   });
 });

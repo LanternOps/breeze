@@ -893,6 +893,10 @@ func enrollDevice(enrollmentKey string) {
 	// Pin per-deployment manifest trust keys delivered at enrollment (#625).
 	// Self-host (BINARY_SOURCE=local) deployments sign update manifests with
 	// a per-deployment Ed25519 key whose public half is delivered here.
+	//
+	// Enrollment is fresh-trust: no existing pin to defend against rotation, so
+	// we set the pinned set directly. Subsequent updates flow through
+	// config.PinManifestKeys (TOFU). See #625.
 	if len(enrollResp.ManifestTrustKeys) > 0 {
 		pinned := make([]string, 0, len(enrollResp.ManifestTrustKeys))
 		for _, k := range enrollResp.ManifestTrustKeys {
