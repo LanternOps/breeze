@@ -185,6 +185,15 @@ type Heartbeat struct {
 	tokenRotating     atomic.Bool
 	upgradeInProgress atomic.Bool
 
+	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
+	// Suspends auto-update until the rotation conflict is resolved (server
+	// stops sending the conflicting key, restoring an idempotent re-pin) or
+	// the agent restarts. Without this gate, a single SECURITY log line is
+	// the only signal of a possible API compromise — auto-update would
+	// otherwise continue against the still-pinned (legitimate) key, masking
+	// the rejection from the operator.
+	manifestTrustRotationRejected atomic.Bool
+
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
@@ -2150,16 +2159,22 @@ func (h *Heartbeat) sendHeartbeat() {
 			cfgPath := config.ActiveConfigFile()
 			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
 				if errors.Is(err, config.ErrManifestTrustRotationRejected) {
-					log.Error("SECURITY: manifest trust key rotation rejected — possible API compromise or operator-initiated rotation",
+					h.manifestTrustRotationRejected.Store(true)
+					log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
 						"error", err.Error())
-					// NOTE: out-of-band investigation needed before trusting future updates from this server.
 				} else {
 					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
 				}
-			} else if reloaded, rerr := config.Reload(); rerr != nil {
-				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
-			} else if reloaded != nil {
-				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+			} else {
+				// Successful pin (idempotent or genuine new keyId append) means
+				// the conflict — if any — is no longer present. Clear the
+				// rotation-rejected gate so auto-update can resume.
+				h.manifestTrustRotationRejected.Store(false)
+				if reloaded, rerr := config.Reload(); rerr != nil {
+					log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
+				} else if reloaded != nil {
+					h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+				}
 			}
 		}
 	}
@@ -2178,7 +2193,10 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		if h.config.AutoUpdate {
+		if h.manifestTrustRotationRejected.Load() {
+			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
+				"targetVersion", response.UpgradeTo)
+		} else if h.config.AutoUpdate {
 			if h.upgradeInProgress.CompareAndSwap(false, true) {
 				go h.handleUpgrade(response.UpgradeTo)
 			} else {

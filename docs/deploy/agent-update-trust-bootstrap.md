@@ -71,6 +71,21 @@ Self-host operators who want stronger separation should run a build pipeline
 that signs manifests with an HSM-backed key and pin the corresponding pubkey
 via `BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS`.
 
+### TOFU pinning is additive, not exclusive
+
+Once an agent has pinned its first key on enrollment, the pin set grows monotonically:
+
+- **Same `keyId` with a different pubkey** is rejected (`ErrManifestTrustRotationRejected`). The agent logs a `SECURITY` error and suspends auto-update until the conflict resolves or the agent restarts. This is the rotation-attack defense.
+- **A new `keyId`** delivered by the API in any subsequent heartbeat is silently appended to the pin set. There is no operator confirmation step, and the agent has no mechanism to reject "unexpected" new keyIds.
+
+What this means in practice: an attacker who gains *host-level write access to the API* (not just DB access) can insert a new row into `manifest_signing_keys`, have it delivered via the next heartbeat, and have agents pin it. Once pinned, the attacker can sign arbitrary manifests under the new keyId and agents will accept them. The TOFU defense only protects against `keyId` *reuse* with a different key — not against entirely new keyIds.
+
+This is within the documented threat boundary (host compromise out of scope), but operators should be aware:
+- Retiring a `keyId` server-side (`status='retired'`) stops the API from delivering it but does **not** cause agents to remove it from their local pin file. Re-enrollment is currently the only way to clear the agent's pin set.
+- Agents that have been compromise-pinned with an attacker's keyId will continue trusting it indefinitely until re-enrolled.
+
+If you need exclusive (non-additive) pinning, run an out-of-band signing pipeline and pin a single key via `BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS` instead — keys delivered via heartbeat will still be pinned, but the env-pinned key is checked first and is not removable from the in-memory trust set.
+
 ## What if I want to rotate the per-deployment key?
 
 Today: not supported automatically. The TOFU pin is intentional — a server pushing a different key for the same `keyId` is treated as an attacker and rejected by `config.PinManifestKeys`. To rotate:

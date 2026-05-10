@@ -113,6 +113,18 @@ async function getUpdateManifestPublicKeys(): Promise<Buffer[]> {
     .map((value) => Buffer.from(value, "base64"))
     .filter((key) => key.length === 32);
 
+  // Defense in depth: if the DB returned rows but every one decoded to a
+  // non-32-byte value (corrupt row, schema regression, encoding mismatch),
+  // the filter strips them all and we'd reach the empty-keyset soft-pass in
+  // verifyEd25519ManifestSignature with dbLoadFailed=false — silently
+  // accepting unsigned manifests. Treat that as a load failure.
+  if (fromDb.length > 0 && result.length === fromEnv.length) {
+    console.error(
+      `[agentVersions] manifest_signing_keys returned ${fromDb.length} row(s) but none decode to valid 32-byte Ed25519 keys — failing closed`,
+    );
+    dbLoadFailed = true;
+  }
+
   // Tag the result so verifyEd25519ManifestSignature can fail closed when
   // the only reason we have no keys is "DB load failed".
   return Object.assign(result, { dbLoadFailed });
