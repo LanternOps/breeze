@@ -498,6 +498,9 @@ export interface InheritableNotificationSettings {
   slackChannel?: string;
   webhooks?: string[];
   preferences?: Record<string, Record<string, boolean>>;
+  pushoverAppToken?: string;
+  pushoverDefaultSound?: string;
+  pushoverDefaultPriority?: -2 | -1 | 0 | 1 | 2;
 }
 
 export interface InheritableEventLogSettings {

@@ -15,7 +15,8 @@ import {
   escalationPolicies,
   notificationRoutingRules,
   devices,
-  organizations
+  organizations,
+  partners
 } from '../db/schema';
 import { eq, and, inArray, asc } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
@@ -27,8 +28,11 @@ import {
   sendWebhookNotification,
   sendInAppNotification,
   sendPagerDutyNotification,
+  sendPushoverNotification,
   type WebhookConfig,
   type PagerDutyConfig,
+  type PushoverConfig,
+  type PushoverPriority,
   type AlertSeverity
 } from './notificationSenders';
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
@@ -453,6 +457,17 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
         error = pagerDutyResult.error;
         break;
 
+      case 'pushover':
+        const pushoverResult = await sendPushoverChannelNotification(
+          channelConfig as PushoverConfig,
+          alertForSend,
+          device,
+          org
+        );
+        success = pushoverResult.success;
+        error = pushoverResult.error;
+        break;
+
       // In-app notifications are handled automatically in processAlertNotifications
       // This case is here for completeness if in_app is added as a channel type
       case 'in_app' as typeof channel.type:
@@ -643,6 +658,73 @@ async function sendPagerDutyChannelNotification(
     : undefined;
 
   const result = await sendPagerDutyNotification(config, {
+    alertId: alert.id,
+    alertName: alert.title,
+    severity: alert.severity as AlertSeverity,
+    summary: alert.message || alert.title,
+    deviceId: alert.deviceId,
+    deviceName: device?.displayName ?? device?.hostname ?? undefined,
+    orgId: alert.orgId,
+    orgName: org?.name,
+    triggeredAt: alert.triggeredAt.toISOString(),
+    ruleId: alert.ruleId ?? undefined,
+    dashboardUrl
+  });
+
+  return {
+    success: result.success,
+    error: result.error
+  };
+}
+
+/**
+ * Send notification via Pushover channel.
+ *
+ * Per-org channels may leave the application token blank; in that case we
+ * fall back to the partner-level `pushoverAppToken` (and optional default
+ * sound / priority) from `partners.settings.notifications`. This mirrors the
+ * Slack-webhook-URL inheritance pattern.
+ */
+async function sendPushoverChannelNotification(
+  config: PushoverConfig,
+  alert: typeof alerts.$inferSelect,
+  device: typeof devices.$inferSelect | undefined,
+  org: typeof organizations.$inferSelect | undefined
+): Promise<{ success: boolean; error?: string }> {
+  const merged: PushoverConfig = { ...config };
+
+  const tokenBlank = !merged.token || merged.token.trim().length === 0;
+  if (tokenBlank && org?.partnerId) {
+    const inherited = await runWithSystemDbAccess(async () => {
+      const [partner] = await db
+        .select({ settings: partners.settings })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .limit(1);
+      const notifications = (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications;
+      return {
+        pushoverAppToken: typeof notifications?.pushoverAppToken === 'string' ? notifications.pushoverAppToken : undefined,
+        pushoverDefaultSound: typeof notifications?.pushoverDefaultSound === 'string' ? notifications.pushoverDefaultSound : undefined,
+        pushoverDefaultPriority: typeof notifications?.pushoverDefaultPriority === 'number' ? notifications.pushoverDefaultPriority as PushoverPriority : undefined,
+      };
+    });
+
+    if (inherited.pushoverAppToken) {
+      merged.token = inherited.pushoverAppToken;
+    }
+    if (merged.sound === undefined && inherited.pushoverDefaultSound) {
+      merged.sound = inherited.pushoverDefaultSound;
+    }
+    if (merged.priority === undefined && inherited.pushoverDefaultPriority !== undefined) {
+      merged.priority = inherited.pushoverDefaultPriority;
+    }
+  }
+
+  const dashboardUrl = process.env.DASHBOARD_URL
+    ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
+    : undefined;
+
+  const result = await sendPushoverNotification(merged, {
     alertId: alert.id,
     alertName: alert.title,
     severity: alert.severity as AlertSeverity,

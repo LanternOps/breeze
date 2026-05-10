@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, Mail, MessageSquare, Bell, Webhook, Phone } from 'lucide-react';
+import { Plus, Trash2, Mail, MessageSquare, Bell, Webhook, Phone, Smartphone } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NotificationChannelType } from './NotificationChannelList';
 
@@ -43,9 +43,17 @@ const smsConfigSchema = z.object({
   phoneNumbers: z.array(z.string().min(1, 'Phone number is required')).min(1, 'At least one phone number is required')
 });
 
+const pushoverConfigSchema = z.object({
+  token: z.string().max(30, 'Token must be 30 characters or fewer').optional(),
+  user: z.string().min(1, 'User or group key is required').max(30, 'User key must be 30 characters or fewer'),
+  device: z.string().max(25, 'Device name must be 25 characters or fewer').optional(),
+  priority: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  sound: z.string().max(40).optional()
+});
+
 const notificationChannelSchema = z.object({
   name: z.string().min(1, 'Channel name is required'),
-  type: z.enum(['email', 'slack', 'teams', 'pagerduty', 'webhook', 'sms']),
+  type: z.enum(['email', 'slack', 'teams', 'pagerduty', 'webhook', 'sms', 'pushover']),
   enabled: z.boolean(),
   // Config fields (validated conditionally based on type)
   emailRecipients: z.array(z.object({ value: z.string() })).optional(),
@@ -64,10 +72,46 @@ const notificationChannelSchema = z.object({
   smsPhoneNumbers: z.array(z.object({ value: z.string().trim() })).optional(),
   smsFrom: z.string().optional(),
   smsMessagingServiceSid: z.string().optional(),
+  pushoverToken: z.string().optional(),
+  pushoverUser: z.string().optional(),
+  pushoverDevice: z.string().optional(),
+  pushoverPriority: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]).optional(),
+  pushoverSound: z.string().optional(),
   // Per-channel templates
   templateTriggered: z.string().optional(),
   templateResolved: z.string().optional(),
 }).superRefine((data, ctx) => {
+  if (data.type === 'pushover') {
+    const user = data.pushoverUser?.trim() || '';
+    if (user.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pushoverUser'],
+        message: 'Pushover user or group key is required'
+      });
+    } else if (user.length > 30) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pushoverUser'],
+        message: 'User key must be 30 characters or fewer'
+      });
+    }
+    if (data.pushoverToken && data.pushoverToken.length > 30) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pushoverToken'],
+        message: 'Token must be 30 characters or fewer'
+      });
+    }
+    if (data.pushoverDevice && data.pushoverDevice.length > 25) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pushoverDevice'],
+        message: 'Device name must be 25 characters or fewer'
+      });
+    }
+  }
+
   if (data.type !== 'sms') {
     return;
   }
@@ -131,7 +175,8 @@ const channelTypeOptions: { value: NotificationChannelType; label: string; icon:
   { value: 'teams', label: 'Microsoft Teams', icon: MessageSquare, description: 'Post alerts to Teams channel' },
   { value: 'pagerduty', label: 'PagerDuty', icon: Bell, description: 'Create PagerDuty incidents' },
   { value: 'webhook', label: 'Webhook', icon: Webhook, description: 'Send to custom HTTP endpoint' },
-  { value: 'sms', label: 'SMS', icon: Phone, description: 'Send SMS notifications' }
+  { value: 'sms', label: 'SMS', icon: Phone, description: 'Send SMS notifications' },
+  { value: 'pushover', label: 'Pushover', icon: Smartphone, description: 'Push to phones via Pushover (emergency-priority capable)' }
 ];
 
 export default function NotificationChannelForm({
@@ -169,6 +214,11 @@ export default function NotificationChannelForm({
       smsPhoneNumbers: [{ value: '' }],
       smsFrom: '',
       smsMessagingServiceSid: '',
+      pushoverToken: '',
+      pushoverUser: '',
+      pushoverDevice: '',
+      pushoverPriority: 0,
+      pushoverSound: '',
       templateTriggered: '',
       templateResolved: '',
       ...defaultValues
@@ -420,6 +470,109 @@ export default function NotificationChannelForm({
                 <option value="warning">Warning</option>
                 <option value="info">Info</option>
               </select>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pushover Configuration */}
+      {watchType === 'pushover' && (
+        <div className="rounded-md border bg-muted/20 p-4">
+          <h3 className="text-sm font-semibold mb-4">Pushover Configuration</h3>
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="pushover-token" className="text-sm font-medium">
+                  Application Token
+                </label>
+                <input
+                  id="pushover-token"
+                  type="password"
+                  placeholder="Leave blank to inherit from partner"
+                  maxLength={30}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('pushoverToken')}
+                />
+                {errors.pushoverToken?.message ? (
+                  <p className="text-xs text-destructive">{errors.pushoverToken.message}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    30-char app key from your Pushover application. Blank uses partner default.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="pushover-user" className="text-sm font-medium">
+                  User or Group Key
+                </label>
+                <input
+                  id="pushover-user"
+                  type="text"
+                  placeholder="30-character user/group key"
+                  maxLength={30}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('pushoverUser')}
+                />
+                {errors.pushoverUser?.message ? (
+                  <p className="text-xs text-destructive">{errors.pushoverUser.message}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    User key from your Pushover dashboard, or a group key for fan-out.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="space-y-2">
+                <label htmlFor="pushover-device" className="text-sm font-medium">
+                  Device (optional)
+                </label>
+                <input
+                  id="pushover-device"
+                  type="text"
+                  placeholder="iphone-bdunn"
+                  maxLength={25}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('pushoverDevice')}
+                />
+                {errors.pushoverDevice?.message && (
+                  <p className="text-xs text-destructive">{errors.pushoverDevice.message}</p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="pushover-priority" className="text-sm font-medium">
+                  Priority
+                </label>
+                <select
+                  id="pushover-priority"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('pushoverPriority', { valueAsNumber: true })}
+                >
+                  <option value={-2}>Lowest (no notification UI)</option>
+                  <option value={-1}>Low (silent)</option>
+                  <option value={0}>Normal</option>
+                  <option value={1}>High (bypass quiet hours)</option>
+                  <option value={2}>Emergency (repeats until ack)</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Falls back to alert severity mapping when unset.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="pushover-sound" className="text-sm font-medium">
+                  Sound (optional)
+                </label>
+                <input
+                  id="pushover-sound"
+                  type="text"
+                  placeholder="pushover"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  {...register('pushoverSound')}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Built-in name (pushover, bike, bugle, …) or your custom sound.
+                </p>
+              </div>
             </div>
           </div>
         </div>

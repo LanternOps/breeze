@@ -261,6 +261,9 @@ const partnerSettingsSchema = z.object({
     slackChannel: z.string().optional(),
     webhooks: z.array(z.string()).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
+    pushoverAppToken: z.string().max(30).optional(),
+    pushoverDefaultSound: z.string().max(40).optional(),
+    pushoverDefaultPriority: z.number().int().min(-2).max(2).optional(),
   }).optional(),
   eventLogs: z.object({
     enabled: z.boolean().optional(),

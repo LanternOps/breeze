@@ -167,6 +167,23 @@ export default function NotificationChannelsPage() {
           config.messagingServiceSid = values.smsMessagingServiceSid.trim();
         }
         break;
+      case 'pushover':
+        config = {
+          user: values.pushoverUser?.trim() ?? ''
+        };
+        if (values.pushoverToken?.trim()) {
+          config.token = values.pushoverToken.trim();
+        }
+        if (values.pushoverDevice?.trim()) {
+          config.device = values.pushoverDevice.trim();
+        }
+        if (values.pushoverSound?.trim()) {
+          config.sound = values.pushoverSound.trim();
+        }
+        if (typeof values.pushoverPriority === 'number') {
+          config.priority = values.pushoverPriority;
+        }
+        break;
     }
 
     // Per-channel templates
@@ -231,6 +248,15 @@ export default function NotificationChannelsPage() {
           : [{ value: '' }];
         base.smsFrom = config.from as string;
         base.smsMessagingServiceSid = config.messagingServiceSid as string;
+        break;
+      case 'pushover':
+        base.pushoverToken = (config.token as string) ?? '';
+        base.pushoverUser = (config.user as string) ?? '';
+        base.pushoverDevice = (config.device as string) ?? '';
+        base.pushoverSound = (config.sound as string) ?? '';
+        if (typeof config.priority === 'number') {
+          base.pushoverPriority = config.priority as -2 | -1 | 0 | 1 | 2;
+        }
         break;
     }
 

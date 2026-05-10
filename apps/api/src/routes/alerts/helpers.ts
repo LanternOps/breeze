@@ -12,6 +12,7 @@ import {
   validateWebhookConfig,
   validateSmsConfig,
   validatePagerDutyConfig,
+  validatePushoverConfig,
 } from '../../services/notificationSenders';
 
 export type AlertRuleRow = typeof alertRules.$inferSelect;
@@ -170,7 +171,7 @@ export function containsNotificationBindingOverride(value: unknown) {
 }
 
 export function validateNotificationChannelConfig(
-  type: 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms',
+  type: 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms' | 'pushover',
   config: unknown
 ): string[] {
   if (!isRecord(config)) {
@@ -200,6 +201,16 @@ export function validateNotificationChannelConfig(
 
   if (type === 'pagerduty') {
     return validatePagerDutyConfig(config).errors;
+  }
+
+  if (type === 'pushover') {
+    // Per-org channel may leave token blank to inherit from partner.
+    // Only enforce that the rest of the shape is OK.
+    const cfg = config as { token?: unknown; user?: unknown };
+    const tokenForCheck = typeof cfg.token === 'string' && cfg.token.trim().length > 0
+      ? cfg.token
+      : 'x'.repeat(30);
+    return validatePushoverConfig({ ...config, token: tokenForCheck }).errors;
   }
 
   return [];

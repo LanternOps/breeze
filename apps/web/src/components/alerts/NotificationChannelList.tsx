@@ -9,6 +9,7 @@ import {
   Mail,
   MessageSquare,
   Bell,
+  Smartphone,
   Webhook,
   Phone,
   CheckCircle,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-export type NotificationChannelType = 'email' | 'slack' | 'teams' | 'pagerduty' | 'webhook' | 'sms';
+export type NotificationChannelType = 'email' | 'slack' | 'teams' | 'pagerduty' | 'webhook' | 'sms' | 'pushover';
 
 export type NotificationChannel = {
   id: string;
@@ -71,6 +72,11 @@ const channelTypeConfig: Record<
     label: 'SMS',
     icon: Phone,
     color: 'bg-teal-500/20 text-teal-700 border-teal-500/40'
+  },
+  pushover: {
+    label: 'Pushover',
+    icon: Smartphone,
+    color: 'bg-rose-500/20 text-rose-700 border-rose-500/40'
   }
 };
 
@@ -112,6 +118,10 @@ function getChannelDescription(channel: NotificationChannel): string {
       return 'PagerDuty integration';
     case 'webhook':
       return (config.url as string) || 'Custom webhook';
+    case 'pushover':
+      return typeof config.user === 'string' && config.user.length > 0
+        ? `Key ${config.user.slice(0, 6)}…`
+        : 'Pushover (inherited)';
     case 'sms': {
       const phoneNumbers = Array.isArray(config.phoneNumbers)
         ? (config.phoneNumbers as string[]).filter((value) => typeof value === 'string' && value.trim().length > 0)
@@ -202,6 +212,7 @@ export default function NotificationChannelList({
             <option value="pagerduty">PagerDuty</option>
             <option value="webhook">Webhook</option>
             <option value="sms">SMS</option>
+            <option value="pushover">Pushover</option>
           </select>
         </div>
       </div>
