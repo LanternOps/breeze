@@ -1,3 +1,16 @@
+/**
+ * Per-deployment Ed25519 manifest signing for self-host BINARY_SOURCE=local agent updates.
+ *
+ * The private key is encrypted with APP_ENCRYPTION_KEY and stored in `manifest_signing_keys`.
+ * syncBinaries (binarySync.ts) calls ensureActiveSigningKey() on startup to provision a key,
+ * then signs each manifest. getActiveTrustKeyset() delivers the public keyset to agents via
+ * REST heartbeat and enrollment so they can verify locally-signed update manifests.
+ *
+ * Trust posture: defends against DB-only compromise (SQL injection, Postgres takeover,
+ * RLS bypass mutating downloadUrl). Does NOT defend against host compromise — the
+ * encryption key, the DB, and the API process all run on the same host in the typical
+ * self-host topology. See docs/deploy/agent-update-trust-bootstrap.md and issue #625.
+ */
 import {
   generateKeyPairSync,
   createPrivateKey,
@@ -21,14 +34,18 @@ export interface ManifestTrustKey {
 }
 
 const RAW_KEY_LEN = 32;
-// Ed25519 SPKI prefix: SEQUENCE(SEQUENCE(OID 1.3.101.112) BITSTRING(0)).
-// Last 32 bytes of the SPKI export are the raw public key.
-// PKCS8 prefix for Ed25519 used to wrap raw seed back into Node-importable form.
+// PKCS8 prefix for Ed25519: wraps a raw 32-byte seed back into a
+// Node-importable DER form (type: 'pkcs8'). Used by privateKeyFromRawSeed().
 const PKCS8_ED25519_PREFIX = Buffer.from(
   '302e020100300506032b657004220420',
   'hex',
 );
 
+/**
+ * Extracts the raw 32-byte public key from an Ed25519 SPKI DER buffer.
+ * SPKI format: SEQUENCE(SEQUENCE(OID 1.3.101.112) BITSTRING(0 + 32 bytes)).
+ * The last 32 bytes of the export are always the raw public key.
+ */
 function rawPubFromSpki(spki: Buffer): string {
   return spki.subarray(spki.length - RAW_KEY_LEN).toString('base64');
 }

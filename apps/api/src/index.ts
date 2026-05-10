@@ -1260,12 +1260,17 @@ async function bootstrap(): Promise<void> {
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
+  const binarySource = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
   try {
     await runWithSystemDbAccess(async () => {
       await syncBinaries();
     });
   } catch (err) {
-    console.error('[startup] Binary sync failed (non-fatal):', err);
+    if (binarySource === 'local') {
+      console.error('[startup] Binary sync failed in BINARY_SOURCE=local mode (fatal):', err);
+      throw err;
+    }
+    console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
   }
 
   // Boot-time self-test for self-host BINARY_SOURCE=local: round-trip a

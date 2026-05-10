@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext } from '../../db';
 import {
   devices,
   deviceMetrics,
@@ -27,7 +27,7 @@ import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
-import { getActiveTrustKeyset } from '../../services/manifestSigning';
+import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
 
 export const heartbeatRoutes = new Hono();
 
@@ -413,10 +413,22 @@ if (latestHelper) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
   }
 
-  // Per-deployment manifest trust keys for self-host agent updates (#625).
-  // Empty for hosted SaaS where the build-time LanternOps trust root is the
-  // only key the agent needs.
-  const manifestTrustKeys = await getActiveTrustKeyset();
+  // Returns the active signing keyset from manifest_signing_keys. On hosted
+  // SaaS the table is empty because nothing in the GitHub-source path calls
+  // ensureActiveSigningKey(); on self-host (BINARY_SOURCE=local) syncBinaries
+  // populates it. See docs/deploy/agent-update-trust-bootstrap.md (#625).
+  // runOutsideDbContext is required because this handler runs inside an
+  // agentAuthMiddleware withDbAccessContext(organization) scope, which would
+  // suppress the inner withSystemDbAccessContext inside getActiveTrustKeyset
+  // (short-circuit at db/index.ts:103-105), causing the RLS policy
+  // manifest_signing_keys_system_only to return zero rows.
+  let manifestTrustKeys: ManifestTrustKey[] = [];
+  try {
+    manifestTrustKeys = await runOutsideDbContext(() => getActiveTrustKeyset());
+  } catch (err) {
+    console.error(`[heartbeat] Failed to load manifest trust keyset for agentId=${agentId}:`, err);
+    captureException(err);
+  }
 
   return c.json({
     commands: commands.map(cmd => ({

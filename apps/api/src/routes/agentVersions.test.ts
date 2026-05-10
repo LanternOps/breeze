@@ -15,6 +15,15 @@ vi.mock("../db", () => ({
   },
 }));
 
+vi.mock("../services/manifestSigning", () => ({
+  // Simulate no DB-provisioned deployment keys by default so tests that
+  // don't set env vars still get a soft-pass (no env + no DB = empty keyset).
+  getActivePublicKeys: vi.fn().mockResolvedValue([]),
+  getActiveTrustKeyset: vi.fn().mockResolvedValue([]),
+  ensureActiveSigningKey: vi.fn().mockResolvedValue({ keyId: "test-key", publicKeyB64: "" }),
+  signManifest: vi.fn().mockResolvedValue("test-signature"),
+}));
+
 vi.mock("../services/auditEvents", () => ({
   writeRouteAudit: vi.fn(),
 }));

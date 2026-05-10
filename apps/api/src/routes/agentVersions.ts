@@ -98,15 +98,24 @@ async function getUpdateManifestPublicKeys(): Promise<Buffer[]> {
   // small (typically one active key) and on a hot lookup path; cache layered
   // higher up if this becomes a bottleneck. See #625.
   let fromDb: string[] = [];
+  let dbLoadFailed = false;
   try {
     fromDb = await getActiveDeploymentSigningPubKeys();
   } catch (err) {
-    console.warn("[agentVersions] Failed to load deployment signing pubkeys:", err);
+    console.warn(
+      `[agentVersions] Failed to load deployment signing pubkeys (failing closed):`,
+      err
+    );
+    dbLoadFailed = true;
   }
 
-  return [...fromEnv, ...fromDb]
+  const result = [...fromEnv, ...fromDb]
     .map((value) => Buffer.from(value, "base64"))
     .filter((key) => key.length === 32);
+
+  // Tag the result so verifyEd25519ManifestSignature can fail closed when
+  // the only reason we have no keys is "DB load failed".
+  return Object.assign(result, { dbLoadFailed });
 }
 
 async function verifyEd25519ManifestSignature(
@@ -115,7 +124,11 @@ async function verifyEd25519ManifestSignature(
 ): Promise<boolean> {
   const keys = await getUpdateManifestPublicKeys();
   if (keys.length === 0) {
-    return true;
+    // Empty by intent (no env + no DB rows on a fresh hosted deploy) is a
+    // soft-pass. Empty *because the DB lookup threw* must fail closed —
+    // this used to be a silent verification bypass on transient DB outages
+    // for self-host (#625 review-CRIT-1).
+    return !(keys as { dbLoadFailed?: boolean }).dbLoadFailed;
   }
 
   let signatureBytes: Buffer;
