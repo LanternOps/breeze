@@ -299,6 +299,155 @@ describe("agentVersions routes", () => {
       expect(body.manifestSignature).toBe(signed.signature);
     });
 
+    it("rewrites downloadUrl to server-relative when PUBLIC_API_URL is set (#646 — hosted SaaS auto-update fix)", async () => {
+      const checksum = "b".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        platform: "windows",
+        arch: "amd64",
+        url: "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-agent-windows-amd64.exe",
+        checksum,
+        size: 1234,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "windows",
+                architecture: "amd64",
+                component: "agent",
+                downloadUrl:
+                  "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-agent-windows-amd64.exe",
+                checksum,
+                fileSize: BigInt(1234),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=windows&arch=amd64",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Server-relative URL so the agent's downloadFromURL host check
+        // passes. The actual binary is served via /agents/download/:os/:arch
+        // (which 302s to github in BINARY_SOURCE=github mode).
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/windows/amd64",
+        );
+        expect(body.checksum).toBe(checksum);
+        // Manifest stays unmodified — its url field still references the
+        // canonical github URL. The agent (v0.65.10+) accepts the mismatch
+        // because checksum is the trust binding.
+        expect(body.manifest).toBe(signed.manifest);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("maps platform=macos to /darwin in the server-relative URL", async () => {
+      const checksum = "b".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        platform: "macos",
+        arch: "arm64",
+        url: "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-agent-darwin-arm64",
+        checksum,
+        size: 1234,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "macos",
+                architecture: "arm64",
+                component: "agent",
+                downloadUrl:
+                  "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-agent-darwin-arm64",
+                checksum,
+                fileSize: BigInt(1234),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=darwin&arch=arm64",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/darwin/arm64",
+        );
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("keeps canonical github URL for component=helper (download route is agent-only)", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-helper-windows.msi";
+      const checksum = "b".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "helper",
+        platform: "windows",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 1234,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "windows",
+                architecture: "amd64",
+                component: "helper",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(1234),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=windows&arch=amd64&component=helper",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(canonical);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
     it("should return 404 for unknown version", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({

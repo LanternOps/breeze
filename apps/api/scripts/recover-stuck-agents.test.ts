@@ -24,7 +24,7 @@ function makeBinary(overrides: Partial<AgentVersionRow> = {}): AgentVersionRow {
     // Use a version outside BROKEN_AGENT_VERSIONS as the default target — the
     // recovery safety check refuses to dispatch a broken target back at the
     // fleet (the load-bearing assertion below).
-    version: '0.65.9',
+    version: '0.65.10',
     platform: 'linux',
     architecture: 'amd64',
     downloadUrl: 'https://example/agent-linux-amd64',
@@ -39,7 +39,7 @@ describe('planRecovery', () => {
     expect(skipped).toEqual([]);
     expect(plans).toHaveLength(1);
     expect(plans[0].device.id).toBe('dev-1');
-    expect(plans[0].binary.version).toBe('0.65.9');
+    expect(plans[0].binary.version).toBe('0.65.10');
   });
 
   it('refuses to dispatch when the latest registered binary is itself a broken version (the safety check that prevented an outage)', () => {
@@ -122,12 +122,16 @@ describe('planRecovery', () => {
     expect(BROKEN_AGENT_VERSIONS).toContain('0.65.6');
   });
 
-  it('flags all known stuck-version agents (#612 + #625)', () => {
+  it('flags all known stuck-version agents (#612 + #625 + #646)', () => {
     // 0.65.5 / 0.65.6: wrong embedded manifest trust root (#568, PR #612).
     // 0.65.7 / 0.65.8: predate per-deployment manifest pinning (#625);
     //   on BINARY_SOURCE=local these agents reject locally-signed manifests.
+    // 0.65.9: enforces manifest.URL == info.URL strictly (#646);
+    //   on BINARY_SOURCE=github the server now hands out a server-relative
+    //   download URL that doesn't match the github.com URL signed into the
+    //   manifest, so 0.65.9 agents reject.
     expect(BROKEN_AGENT_VERSIONS).toEqual(
-      expect.arrayContaining(['0.65.5', '0.65.6', '0.65.7', '0.65.8']),
+      expect.arrayContaining(['0.65.5', '0.65.6', '0.65.7', '0.65.8', '0.65.9']),
     );
   });
 });

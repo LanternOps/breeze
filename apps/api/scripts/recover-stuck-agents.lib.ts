@@ -20,6 +20,13 @@ import { normalizeAgentArchitecture } from '../src/routes/agents/helpers';
 //   build-time key. v0.65.9 agents pin the per-deployment pubkey via
 //   heartbeat/enrollment and recover from there.
 //
+//   0.65.9: enforces manifest.URL == info.URL in updater.go (the older
+//   check relaxed by #646 in v0.65.10). On hosted-SaaS BINARY_SOURCE=github
+//   servers, the API now hands out a server-relative download URL so the
+//   agent's host check passes — but the signed manifest still carries the
+//   canonical github.com URL, so the equality check fails on 0.65.9 agents.
+//   v0.65.10 agents accept the mismatch and rely on the checksum binding.
+//
 // Exact-match only — agent versions are bare semver per project convention
 // (no `v` prefix, no pre-release suffixes in releases). The regression test
 // in agent/internal/updater/updater_test.go prevents new releases from
@@ -29,9 +36,9 @@ import { normalizeAgentArchitecture } from '../src/routes/agents/helpers';
 //
 // REMOVAL: this list can be deleted once `SELECT count(*) FROM devices
 // WHERE agent_version IN (...)` returns 0 across hosted + known self-host
-// fleets. As of 2026-05-10 there are still active 0.65.7 / 0.65.8 agents
-// on at least one self-host deployment; revisit after 90 days.
-export const BROKEN_AGENT_VERSIONS = ['0.65.5', '0.65.6', '0.65.7', '0.65.8'] as const;
+// fleets. As of 2026-05-11 there are still active 0.65.7 / 0.65.8 / 0.65.9
+// agents on at least one deployment; revisit after 90 days.
+export const BROKEN_AGENT_VERSIONS = ['0.65.5', '0.65.6', '0.65.7', '0.65.8', '0.65.9'] as const;
 
 export const RECOVERY_COMMAND_MARKER = 'agent_update_trust_root_recovery';
 

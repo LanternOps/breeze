@@ -187,6 +187,50 @@ function assetNameFromDownloadUrl(downloadUrl: string): string | null {
   }
 }
 
+// Server-origin discovery for handing agents a download URL that matches
+// their configured control-plane host. The agent's downloadFromURL enforces
+// host equality with its ServerURL to prevent leaking the bearer token to a
+// third-party origin (e.g. github.com). When PUBLIC_API_URL is set, the
+// API rewrites the response's downloadUrl to a server-relative path; the
+// existing /api/v1/agents/download/:os/:arch route then 302s to github (or
+// streams locally) — credentials stay on the trusted origin. Issue #646.
+function getServerOriginForDownloadResponse(): string | null {
+  const candidate =
+    process.env.PUBLIC_API_URL?.trim() ||
+    process.env.PUBLIC_APP_URL?.trim() ||
+    process.env.BREEZE_SERVER?.trim();
+  if (!candidate) {
+    return null;
+  }
+  return candidate.replace(/\/+$/, "");
+}
+
+// Maps the DB platform value (which uses "macos") to the Go GOOS value that
+// the /api/v1/agents/download/:os/:arch route expects (which uses "darwin").
+function dbPlatformToRouteOs(dbPlatform: string): string {
+  return dbPlatform === "macos" ? "darwin" : dbPlatform;
+}
+
+// Construct the server-relative download URL the agent should use. Only
+// applies to component=agent today — helper/viewer auto-update flows have
+// their own update mechanisms and aren't served through the agent download
+// route. Returns null to signal "fall back to the canonical (github) URL".
+function buildServerRelativeAgentDownloadUrl(
+  dbPlatform: string,
+  architecture: string,
+  component: string,
+): string | null {
+  if (component !== "agent") {
+    return null;
+  }
+  const origin = getServerOriginForDownloadResponse();
+  if (!origin) {
+    return null;
+  }
+  const os = dbPlatformToRouteOs(dbPlatform);
+  return `${origin}/api/v1/agents/download/${os}/${architecture}`;
+}
+
 export async function validateReleaseManifest(args: {
   manifest: string | null | undefined;
   signature: string | null | undefined;
@@ -299,9 +343,19 @@ agentVersionRoutes.get(
       );
     }
 
+    const serverRelativeUrl = buildServerRelativeAgentDownloadUrl(
+      platform,
+      arch,
+      component,
+    );
+
     return c.json({
       version: latestVersion.version,
-      downloadUrl: latestVersion.downloadUrl,
+      // Server-relative URL when PUBLIC_API_URL is set (hosted SaaS); the
+      // existing /api/v1/agents/download/:os/:arch route redirects to github
+      // or serves locally. Otherwise fall back to the canonical URL stored
+      // in agent_versions. Issue #646.
+      downloadUrl: serverRelativeUrl ?? latestVersion.downloadUrl,
       checksum: latestVersion.checksum,
       releaseManifest: latestVersion.releaseManifest,
       manifestSignature: latestVersion.manifestSignature,
@@ -378,9 +432,19 @@ agentVersionRoutes.get(
       );
     }
 
+    const serverRelativeUrl = buildServerRelativeAgentDownloadUrl(
+      versionInfo.platform,
+      versionInfo.architecture,
+      versionInfo.component,
+    );
+
     // Return JSON with download URL, checksum, and signed release manifest.
+    // url is server-relative when PUBLIC_API_URL is set so the agent's
+    // host check passes; the binary itself is served via the existing
+    // /api/v1/agents/download/:os/:arch route (302 to github in
+    // BINARY_SOURCE=github mode, local stream otherwise). Issue #646.
     return c.json({
-      url: versionInfo.downloadUrl,
+      url: serverRelativeUrl ?? versionInfo.downloadUrl,
       checksum: versionInfo.checksum,
       manifest: versionInfo.releaseManifest,
       manifestSignature: versionInfo.manifestSignature,

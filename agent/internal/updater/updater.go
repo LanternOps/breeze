@@ -400,7 +400,13 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 	if manifest.Arch != runtime.GOARCH {
 		return updateManifest{}, fmt.Errorf("update manifest architecture mismatch: expected %s, got %s", runtime.GOARCH, manifest.Arch)
 	}
-	if manifest.URL != info.URL || manifest.Checksum != info.Checksum {
+	// The checksum equality below is the trust binding — it ties the
+	// signed manifest to the bytes the server is offering. We deliberately
+	// do NOT require manifest.URL == info.URL: the signed URL is canonical
+	// (e.g. github.com release artifact) while info.URL may be a server-
+	// relative proxy URL the API uses to keep the download flow inside the
+	// agent's trusted origin (see downloadFromURL host check). Issue #646.
+	if manifest.Checksum != info.Checksum {
 		return updateManifest{}, fmt.Errorf("update manifest does not match download metadata")
 	}
 	if len(manifest.Checksum) != 64 {
@@ -428,14 +434,25 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 		return updateManifest{}, fmt.Errorf("release artifact manifest version mismatch: expected %s, got %s", version, manifest.Release)
 	}
 
-	assetName, err := assetNameFromURL(info.URL)
-	if err != nil {
-		return updateManifest{}, fmt.Errorf("invalid release artifact download URL: %w", err)
+	// Asset name is derived from the agent's own platform/arch/component
+	// rather than parsed from info.URL — the URL may be a server-relative
+	// proxy (e.g. https://breeze.example.com/api/v1/agents/download/...)
+	// whose last segment is not the asset filename. The signed manifest's
+	// asset list still uses canonical names like "breeze-agent-windows-amd64.exe".
+	// Issue #646.
+	expected := u.expectedReleaseAssetNames()
+	if len(expected) == 0 {
+		return updateManifest{}, fmt.Errorf("no expected release asset names configured for component %q", u.component())
 	}
-	if expected := u.expectedReleaseAssetNames(); len(expected) > 0 {
-		if _, ok := expected[assetName]; !ok {
-			return updateManifest{}, fmt.Errorf("release artifact manifest asset mismatch: expected %v, got %s", expected, assetName)
-		}
+	if len(expected) != 1 {
+		// Defensive: expectedReleaseAssetNames always returns exactly one
+		// entry per (platform, arch, component) tuple. Surface this clearly
+		// if a future change adds ambiguity rather than silently picking one.
+		return updateManifest{}, fmt.Errorf("ambiguous expected asset names for component %q: %v", u.component(), expected)
+	}
+	var assetName string
+	for name := range expected {
+		assetName = name
 	}
 
 	var selected *releaseArtifactAsset

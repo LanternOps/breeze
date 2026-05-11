@@ -517,6 +517,65 @@ func TestDownloadBinaryAcceptsSignedReleaseArtifactManifest(t *testing.T) {
 	}
 }
 
+// Regression for #646: the agent must accept a server-relative info.URL even
+// when the signed manifest references the canonical github.com asset URL.
+// Binary trust is bound by checksum (verified against the signed assets list),
+// not by URL string equality.
+func TestDownloadBinaryAcceptsServerRelativeUrlWithMatchingChecksum(t *testing.T) {
+	binaryContent := []byte("fake binary v1.0.0 served via server-relative proxy")
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	assetName := "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+
+	// Signed manifest references the canonical github URL; the API hands back
+	// a server-relative URL pointing at its own proxy route.
+	canonicalAssetURL := "https://github.com/LanternOps/breeze/releases/download/v1.0.0/" + assetName
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			signed := signedReleaseArtifactDownloadInfo(t, "1.0.0", assetName, canonicalAssetURL, binaryContent)
+			// Override the URL handed to the agent: server-relative proxy
+			// path, NOT the canonical (cross-origin) URL signed into the
+			// manifest. Manifest signature stays intact; manifest's Assets[]
+			// list still names the asset canonically.
+			signed.URL = "http://" + r.Host + "/api/v1/agents/download/" + runtime.GOOS + "/" + runtime.GOARCH
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(signed)
+		case r.URL.Path == "/api/v1/agents/download/"+runtime.GOOS+"/"+runtime.GOARCH:
+			// Stand-in for the existing /agents/download route which 302s to
+			// github in BINARY_SOURCE=github mode. For the test we just stream
+			// the bytes directly.
+			w.Write(binaryContent)
+		default:
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	u := New(&Config{
+		ServerURL: server.URL,
+		AuthToken: secmem.NewSecureString("test-token"),
+	})
+	u.client = server.Client()
+
+	tempPath, manifest, err := u.downloadBinary("1.0.0")
+	if err != nil {
+		t.Fatalf("server-relative URL with matching checksum should be accepted: %v", err)
+	}
+	defer os.Remove(tempPath)
+	if manifest.Checksum == "" {
+		t.Fatal("expected manifest checksum to be returned")
+	}
+	downloaded, _ := os.ReadFile(tempPath)
+	if string(downloaded) != string(binaryContent) {
+		t.Fatalf("downloaded content mismatch")
+	}
+}
+
 func TestDownloadBinaryRejectsWrongSignedReleaseArtifact(t *testing.T) {
 	binaryContent := []byte("fake helper artifact")
 
