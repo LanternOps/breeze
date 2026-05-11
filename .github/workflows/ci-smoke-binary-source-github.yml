@@ -169,8 +169,12 @@ jobs:
           LOCATION=$(curl -s -o /dev/null -w '%{redirect_url}' \
             'http://localhost:3001/api/v1/agents/download/linux/amd64')
           echo "Redirect target: ${LOCATION}"
+          # GitHub returns the org slug lowercased in 302 Location headers
+          # even though the canonical case is "LanternOps". Compare case-
+          # insensitively to be robust against either form.
+          shopt -s nocasematch
           case "$LOCATION" in
-            https://github.com/LanternOps/breeze/releases/download/*)
+            https://github.com/lanternops/breeze/releases/download/*)
               echo "OK — redirect points at github releases"
               ;;
             *)
@@ -178,6 +182,7 @@ jobs:
               exit 1
               ;;
           esac
+          shopt -u nocasematch
 
       - name: Stop API
         if: always()
