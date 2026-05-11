@@ -75,6 +75,9 @@ jobs:
 
       - name: Boot API in BINARY_SOURCE=github mode
         env:
+          # Authenticate binarySync's github API call so we don't hit the
+          # 60/hour unauthenticated rate limit on the shared CI runner IP.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BINARY_SOURCE: github
           # Use the most recent published release whose manifest format is
           # known to be compatible with the current API code. Bump this when

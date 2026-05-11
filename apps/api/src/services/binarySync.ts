@@ -445,12 +445,24 @@ export async function syncFromGitHub(
     ? `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${requestedVersion}`
     : `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 
-  const ghResp = await fetch(ghUrl, {
-    headers: {
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "breeze-api",
-    },
-  });
+  // Authenticate the API call when a token is available. Unauthenticated
+  // requests are capped at 60/hour per IP — fine for prod droplets where
+  // binarySync runs once at boot, but breaks shared-IP environments like
+  // CI runners. Operators behind NAT with multiple deployments may also
+  // benefit. Token is opt-in via env; no breaking change for existing
+  // deployments. Accepts both GITHUB_TOKEN (used by GitHub Actions) and
+  // GH_TOKEN (used by the gh CLI).
+  const ghToken =
+    process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
+  const ghHeaders: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "breeze-api",
+  };
+  if (ghToken) {
+    ghHeaders.Authorization = `Bearer ${ghToken}`;
+  }
+
+  const ghResp = await fetch(ghUrl, { headers: ghHeaders });
   if (!ghResp.ok) {
     throw new Error(`GitHub API error: ${ghResp.status}`);
   }
