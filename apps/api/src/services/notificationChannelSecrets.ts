@@ -106,6 +106,8 @@ function secretKeysForType(type: string): string[] {
       return ['webhookUrl'];
     case 'pagerduty':
       return ['routingKey', 'integrationKey'];
+    case 'pushover':
+      return ['token', 'user'];
     case 'webhook':
       return ['url', 'authToken', 'authPassword', 'apiKeyValue'];
     default:
