@@ -87,8 +87,8 @@ vi.mock('./verificationService', () => ({
   safePublish: (...args: unknown[]) => safePublishMock(...(args as [])),
 }));
 
-import { processBackupVerificationResult, timeoutStaleVerifications } from './verificationScheduled';
-import { backupVerifications, verificationOrgById } from './store';
+import { processBackupVerificationResult, recalculateReadinessScores, timeoutStaleVerifications } from './verificationScheduled';
+import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 
 describe('verification timeout handling', () => {
   beforeEach(() => {
@@ -160,6 +160,41 @@ describe('verification timeout handling', () => {
         backupVerifications.splice(index, 1);
       }
       verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('skips non-UUID orgIds during readiness recompute fallback', async () => {
+    const validOrgId = '22222222-2222-4222-8222-222222222222';
+    const validDeviceId = 'dev-valid-uuid';
+    const invalidDeviceId = 'dev-bad-orgid';
+
+    backupJobs.push(
+      { id: 'job-bad-orgid', type: 'scheduled', deviceId: invalidDeviceId, configId: 'cfg', policyId: 'pol', snapshotId: 'snap', status: 'completed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), totalSize: 0 },
+      { id: 'job-good-orgid', type: 'scheduled', deviceId: validDeviceId, configId: 'cfg', policyId: 'pol', snapshotId: 'snap', status: 'completed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), totalSize: 0 },
+    );
+    jobOrgById.set('job-bad-orgid', 'org-123');
+    jobOrgById.set('job-good-orgid', validOrgId);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const count = await recalculateReadinessScores();
+
+      expect(recomputeRecoveryReadinessForDeviceMock).toHaveBeenCalledWith(validOrgId, validDeviceId);
+      expect(recomputeRecoveryReadinessForDeviceMock).not.toHaveBeenCalledWith('org-123', invalidDeviceId);
+      expect(count).toBeGreaterThanOrEqual(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[backupVerification] Skipping job with non-UUID orgId during readiness recompute',
+        expect.objectContaining({ jobId: 'job-bad-orgid', targetOrg: 'org-123' }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+      const idxBad = backupJobs.findIndex((j) => j.id === 'job-bad-orgid');
+      if (idxBad >= 0) backupJobs.splice(idxBad, 1);
+      const idxGood = backupJobs.findIndex((j) => j.id === 'job-good-orgid');
+      if (idxGood >= 0) backupJobs.splice(idxGood, 1);
+      jobOrgById.delete('job-bad-orgid');
+      jobOrgById.delete('job-good-orgid');
     }
   });
 

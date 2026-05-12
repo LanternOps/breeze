@@ -4,6 +4,7 @@ import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
@@ -90,6 +91,20 @@ export default function OrganizationsPage() {
     }
   }, []);
 
+  // Refresh both the local list and the global org store (consumed by the
+  // side nav). Using allSettled so a sidebar-refresh hiccup doesn't undo the
+  // user-visible success of the create/delete that already committed.
+  const refreshOrgs = useCallback(async () => {
+    const results = await Promise.allSettled([
+      fetchOrganizations(),
+      useOrgStore.getState().fetchOrganizations(),
+    ]);
+    const rejected = results.find((r) => r.status === 'rejected');
+    if (rejected && rejected.status === 'rejected') {
+      console.warn('[OrganizationsPage] org refresh partially failed', rejected.reason);
+    }
+  }, [fetchOrganizations]);
+
   const fetchSites = useCallback(async (orgId: string) => {
     setSitesLoading(true);
     try {
@@ -164,7 +179,7 @@ export default function OrganizationsPage() {
 
       const createdOrg = await response.json().catch(() => null) as { id?: string } | null;
 
-      await fetchOrganizations();
+      await refreshOrgs();
       handleCloseModal();
 
       // Guide the user straight into adding their first site for the new org.
@@ -203,7 +218,7 @@ export default function OrganizationsPage() {
       }
 
       const deletedId = selectedOrg.id;
-      await fetchOrganizations();
+      await refreshOrgs();
       handleCloseModal();
 
       if (selectedOrg?.id === deletedId) {

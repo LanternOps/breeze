@@ -70,6 +70,10 @@ export async function cleanupStaleOauthClients(
   now: Date = new Date(),
 ): Promise<number> {
   const cutoff = new Date(now.getTime() - DCR_STALE_CLIENT_TTL_MS);
+  // Date objects bound inside raw `sql` template fragments have no column-type
+  // context, so postgres-js cannot serialize them and throws ERR_INVALID_ARG_TYPE.
+  // Drizzle helpers like lt() above are fine because they know the column type.
+  const nowIso = now.toISOString();
   const deleted = await db
     .delete(oauthClients)
     .where(
@@ -84,18 +88,18 @@ export async function cleanupStaleOauthClients(
         sql`NOT EXISTS (
           SELECT 1 FROM ${oauthGrants}
           WHERE ${oauthGrants.clientId} = ${oauthClients.id}
-          AND ${oauthGrants.expiresAt} >= ${now}
+          AND ${oauthGrants.expiresAt} >= ${nowIso}
         )`,
         sql`NOT EXISTS (
           SELECT 1 FROM ${oauthAuthorizationCodes}
           WHERE ${oauthAuthorizationCodes.clientId} = ${oauthClients.id}
-          AND ${oauthAuthorizationCodes.expiresAt} >= ${now}
+          AND ${oauthAuthorizationCodes.expiresAt} >= ${nowIso}
         )`,
         sql`NOT EXISTS (
           SELECT 1 FROM ${oauthRefreshTokens}
           WHERE ${oauthRefreshTokens.clientId} = ${oauthClients.id}
           AND ${oauthRefreshTokens.revokedAt} IS NULL
-          AND ${oauthRefreshTokens.expiresAt} >= ${now}
+          AND ${oauthRefreshTokens.expiresAt} >= ${nowIso}
         )`,
       ),
     )
@@ -116,6 +120,10 @@ export async function cleanupExpiredOauthLifecycleRows(
   retentionMs: number = OAUTH_LIFECYCLE_ROW_RETENTION_MS,
 ): Promise<OauthLifecycleCleanupCounts> {
   const cutoff = new Date(now.getTime() - retentionMs);
+  // See note in cleanupStaleOauthClients: Dates bound inside raw `sql` need
+  // explicit ISO string conversion since postgres-js has no column-type hint.
+  const nowIso = now.toISOString();
+  const cutoffIso = cutoff.toISOString();
 
   const [authCodes, interactions, sessions, grants, refreshTokens] = await Promise.all([
     db.delete(oauthAuthorizationCodes)
@@ -134,16 +142,16 @@ export async function cleanupExpiredOauthLifecycleRows(
           SELECT 1 FROM ${oauthRefreshTokens}
           WHERE ${oauthRefreshTokens.payload}->>'grantId' = ${oauthGrants.id}
           AND ${oauthRefreshTokens.revokedAt} IS NULL
-          AND ${oauthRefreshTokens.expiresAt} >= ${now}
+          AND ${oauthRefreshTokens.expiresAt} >= ${nowIso}
         )`,
       ))
       .returning({ id: oauthGrants.id }),
     db.delete(oauthRefreshTokens)
       .where(sql`(
-        ${oauthRefreshTokens.expiresAt} < ${cutoff}
+        ${oauthRefreshTokens.expiresAt} < ${cutoffIso}
         OR (
           ${oauthRefreshTokens.revokedAt} IS NOT NULL
-          AND ${oauthRefreshTokens.revokedAt} < ${cutoff}
+          AND ${oauthRefreshTokens.revokedAt} < ${cutoffIso}
         )
       )`)
       .returning({ id: oauthRefreshTokens.id }),

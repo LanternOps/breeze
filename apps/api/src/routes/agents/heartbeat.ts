@@ -51,7 +51,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
 
   if (data.role && data.role !== agent.role) {
-    return c.json({ error: 'Agent credential role mismatch' }, 403);
+    // Return 401 with re_enrollment_required so the watchdog/agent can drop its
+    // stale token and re-provision via IPC or /rotate-token. A 403 here causes
+    // a stale pre-#568 watchdog binary (using the main agent token but declaring
+    // role=watchdog) to retry forever; the agent's authstate.Monitor only backs
+    // off on 401, so this is what breaks the loop.
+    console.warn('[heartbeat] Agent credential role mismatch', {
+      deviceId: agent.deviceId,
+      expected: agent.role,
+      declared: data.role,
+    });
+    return c.json({
+      error: 'Agent credential role mismatch',
+      code: 're_enrollment_required',
+      expected: agent.role,
+      declared: data.role,
+    }, 401);
   }
 
   const isWatchdog = agent.role === 'watchdog';

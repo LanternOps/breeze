@@ -678,7 +678,11 @@ describe('agent routes', () => {
         })
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(401);
+      const body = await res.json() as { code?: string; expected?: string; declared?: string };
+      expect(body.code).toBe('re_enrollment_required');
+      expect(body.expected).toBe('agent');
+      expect(body.declared).toBe('watchdog');
       expect(claimPendingCommandsForDevice).not.toHaveBeenCalled();
     });
 
