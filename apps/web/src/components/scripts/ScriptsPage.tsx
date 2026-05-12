@@ -6,6 +6,7 @@ import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
@@ -268,9 +269,10 @@ export default function ScriptsPage() {
   const handleImport = async (systemScript: SystemScript) => {
     setImportingId(systemScript.id);
     try {
+      const currentOrgId = useOrgStore.getState().currentOrgId;
       const response = await fetchWithAuth(`/scripts/import/${systemScript.id}`, {
         method: 'POST',
-        body: JSON.stringify({})
+        body: JSON.stringify(currentOrgId ? { orgId: currentOrgId } : {})
       });
 
       if (!response.ok) {

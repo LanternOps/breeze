@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, History } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -64,9 +65,12 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       const url = isNew ? '/scripts' : `/scripts/${scriptId}`;
       const method = isNew ? 'POST' : 'PUT';
 
+      const currentOrgId = useOrgStore.getState().currentOrgId;
+      const payload = isNew && currentOrgId ? { ...values, orgId: currentOrgId } : values;
+
       const response = await fetchWithAuth(url, {
         method,
-        body: JSON.stringify(values)
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
