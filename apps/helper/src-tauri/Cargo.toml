@@ -20,5 +20,5 @@ serde_yaml = "0.9"
 reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
 tokio = { version = "1", features = ["sync"] }
 futures-util = "0.3"
-whoami = "1"
+whoami = "2"
 chrono = "0.4"
