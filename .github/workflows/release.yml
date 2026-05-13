@@ -2247,5 +2247,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
+            PUBLIC_ENABLE_REGISTRATION=true
           cache-from: type=gha
           cache-to: type=gha,mode=max

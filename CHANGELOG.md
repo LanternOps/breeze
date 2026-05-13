@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Public registration silently disabled on all v0.65.x web images.** PR #568
+  flipped the `PUBLIC_ENABLE_REGISTRATION` source default from `true` to `false`
+  without a rollout mitigation. Because Vite/Astro bakes `import.meta.env.PUBLIC_*`
+  values into the bundle at build time, and `apps/web/Dockerfile` defaulted the
+  build ARG to `false`, every v0.65.x web image hardcoded
+  `PUBLIC_ENABLE_REGISTRATION=false` — `/register` redirected to
+  `/login?reason=registration-disabled` with no env-var override possible. Hosted
+  SaaS signups have been dead since v0.65.0. Fix: source default reverted to
+  `true`, Dockerfile ARG default reverted to `true`, and `release.yml` now
+  explicitly passes `PUBLIC_ENABLE_REGISTRATION=true` as a build-arg for
+  defense-in-depth.
 - **#625 — `BINARY_SOURCE=local` agent updates broken on v0.65.8.** The strict-signing
   enforcement from #568 hard-rejected unsigned manifests on `/agent-versions/:v/download`,
   but the local-binary sync path didn't sign anything. Self-hosted operators using
