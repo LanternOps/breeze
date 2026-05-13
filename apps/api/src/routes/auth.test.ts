@@ -108,7 +108,9 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
-  })
+  }),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (_c: any, next: any) => next())
 }));
 
 import {

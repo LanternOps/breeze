@@ -45,6 +45,10 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
+  // account_deletion_requests: user-id scoped (Shape 6). The denormalised
+  // org_id is retained for ops/audit attribution only; the RLS policy uses
+  // breeze_current_user_id(), not breeze_has_org_access.
+  'account_deletion_requests',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
