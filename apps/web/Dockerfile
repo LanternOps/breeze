@@ -4,7 +4,7 @@
 
 # Stage 1: Base image with pnpm
 FROM node:26-alpine@sha256:e71ac5e964b9201072425d59d2e876359efa25dc96bb1768cb73295728d6e4ea AS base
-RUN corepack enable && corepack prepare pnpm@9.15.7 --activate
+RUN npm install -g pnpm@9.15.7
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
