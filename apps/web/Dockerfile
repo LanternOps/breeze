@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Base image with pnpm
-FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS base
+FROM node:26-alpine@sha256:e71ac5e964b9201072425d59d2e876359efa25dc96bb1768cb73295728d6e4ea AS base
 RUN corepack enable && corepack prepare pnpm@9.15.7 --activate
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -48,7 +48,7 @@ WORKDIR /app/apps/web
 RUN pnpm build
 
 # Stage 4: Production runner
-FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS runner
+FROM node:26-alpine@sha256:e71ac5e964b9201072425d59d2e876359efa25dc96bb1768cb73295728d6e4ea AS runner
 WORKDIR /app
 
 # Install wget for healthcheck
