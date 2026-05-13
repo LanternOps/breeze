@@ -399,7 +399,8 @@ fn get_os_username() -> String {
     // When running as SYSTEM (spawned by agent service), whoami returns "SYSTEM".
     // Fall back to the USERNAME environment variable which is set to the
     // logged-in user's name even for SYSTEM processes in user sessions.
-    let name = whoami::username();
+    // whoami 2.x returns Result; fall back to env if it errors.
+    let name = whoami::username().unwrap_or_default();
     if name.eq_ignore_ascii_case("system") || name.ends_with('$') {
         if let Ok(env_user) = std::env::var("USERNAME") {
             if !env_user.is_empty()
