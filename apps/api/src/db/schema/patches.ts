@@ -93,6 +93,8 @@ export const patches = pgTable('patches', {
   id: uuid('id').primaryKey().defaultRandom(),
   source: patchSourceEnum('source').notNull(),
   externalId: varchar('external_id', { length: 255 }).notNull(),
+  vendor: varchar('vendor', { length: 255 }),
+  packageId: varchar('package_id', { length: 256 }),
   title: varchar('title', { length: 500 }).notNull(),
   description: text('description'),
   severity: patchSeverityEnum('severity'),
