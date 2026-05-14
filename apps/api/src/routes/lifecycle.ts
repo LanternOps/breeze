@@ -43,8 +43,11 @@ import { PERMISSIONS } from '../services/permissions';
 export const lifecycleRoutes = new Hono();
 export const lifecycleAdminRoutes = new Hono();
 
-lifecycleRoutes.use('*', authMiddleware);
-lifecycleAdminRoutes.use('*', authMiddleware);
+// Scoped to the actual route prefixes — these sub-apps are mounted at `/`
+// (apps/api/src/index.ts), so a `'*'` wildcard would leak the middleware onto
+// sibling routes like `/agent-versions/:v/download` (see #683).
+lifecycleRoutes.use('/me/*', authMiddleware);
+lifecycleAdminRoutes.use('/admin/*', authMiddleware);
 
 const REVOKE_RATE_LIMIT = 10;
 const REVOKE_RATE_WINDOW_SECONDS = 60;
