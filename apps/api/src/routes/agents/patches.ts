@@ -37,6 +37,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
         patchData.kbNumber ||
         `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
       const inferredOsType = inferPatchOsType(patchData.source, device.osType);
+      const metadata = patchData.packageId ? { packageId: patchData.packageId } : null;
 
       const [patch] = await tx
         .insert(patches)
@@ -50,6 +51,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
           releaseDate: sanitizeDate(patchData.releaseDate),
           requiresReboot: patchData.requiresRestart || false,
           downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null,
+          metadata,
           ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
         })
         .onConflictDoUpdate({
@@ -60,6 +62,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             severity: patchData.severity || 'unknown',
             category: patchData.category || null,
             requiresReboot: patchData.requiresRestart || false,
+            metadata: metadata,
             ...(inferredOsType
               ? {
                   osTypes: sql`CASE
@@ -101,6 +104,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
           patchData.kbNumber ||
           `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
         const inferredOsType = inferPatchOsType(patchData.source, device.osType);
+        const metadata = patchData.packageId ? { packageId: patchData.packageId } : null;
 
         const [patch] = await tx
           .insert(patches)
@@ -110,6 +114,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             title: patchData.name,
             severity: 'unknown',
             category: patchData.category || null,
+            metadata,
             ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
           })
           .onConflictDoUpdate({
@@ -117,6 +122,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             set: {
               title: patchData.name,
               category: patchData.category || null,
+              metadata: metadata,
               ...(inferredOsType
                 ? {
                     osTypes: sql`CASE
