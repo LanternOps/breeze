@@ -437,6 +437,8 @@ export const submitPatchesSchema = z.object({
     name: z.string().min(1),
     version: z.string().optional(),
     currentVersion: z.string().optional(),
+    packageId: z.string().max(256).optional(),
+    vendor: z.string().max(255).optional(),
     kbNumber: z.string().optional(),
     externalId: z.string().optional(),
     category: z.string().optional(),
@@ -450,6 +452,8 @@ export const submitPatchesSchema = z.object({
   installed: z.array(z.object({
     name: z.string().min(1),
     version: z.string().optional(),
+    packageId: z.string().max(256).optional(),
+    vendor: z.string().max(255).optional(),
     kbNumber: z.string().optional(),
     externalId: z.string().optional(),
     category: z.string().optional(),

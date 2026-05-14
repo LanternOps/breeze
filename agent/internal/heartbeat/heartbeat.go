@@ -1555,6 +1555,10 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 				category = "homebrew"
 			}
 		}
+		externalId := p.KBNumber
+		if externalId == "" {
+			externalId = p.ID
+		}
 		items[i] = map[string]any{
 			"name":            p.Title,
 			"version":         p.Version,
@@ -1562,7 +1566,9 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 			"severity":        severity,
 			"description":     p.Description,
 			"source":          h.mapPatchProviderSource(p.Provider),
-			"externalId":      p.KBNumber,
+			"externalId":      externalId,
+			"packageId":       p.ID,
+			"vendor":          extractVendor(p.Provider, p.ID),
 			"kbNumber":        p.KBNumber,
 			"size":            p.Size,
 			"requiresRestart": p.RebootRequired,
@@ -1579,12 +1585,18 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 		if category == "" {
 			category = h.mapPatchProviderCategory(p.Provider)
 		}
+		externalId := p.KBNumber
+		if externalId == "" {
+			externalId = p.ID
+		}
 		m := map[string]any{
 			"name":       p.Title,
 			"version":    p.Version,
 			"category":   category,
 			"source":     h.mapPatchProviderSource(p.Provider),
-			"externalId": p.KBNumber,
+			"externalId": externalId,
+			"packageId":  p.ID,
+			"vendor":     extractVendor(p.Provider, p.ID),
 		}
 		if p.KBNumber != "" {
 			m["kbNumber"] = p.KBNumber
@@ -1671,6 +1683,8 @@ func (h *Heartbeat) mapPatchProviderSource(provider string) string {
 		return "third_party"
 	case "chocolatey":
 		return "third_party"
+	case "winget":
+		return "third_party"
 	case "apt", "yum":
 		return "linux"
 	default:
@@ -1682,13 +1696,23 @@ func (h *Heartbeat) mapPatchProviderCategory(provider string) string {
 	switch provider {
 	case "windows-update", "apple-softwareupdate":
 		return "system"
-	case "homebrew", "chocolatey":
+	case "homebrew", "chocolatey", "winget":
 		return "application"
 	case "apt", "yum":
 		return "system"
 	default:
 		return "application"
 	}
+}
+
+func extractVendor(provider, packageID string) string {
+	if provider != "winget" {
+		return ""
+	}
+	if i := strings.Index(packageID, "."); i > 0 {
+		return packageID[:i]
+	}
+	return ""
 }
 
 func (h *Heartbeat) mapPatchSeverity(severity string) string {

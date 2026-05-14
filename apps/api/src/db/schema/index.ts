@@ -63,6 +63,7 @@ export * from './sla';
 export * from './drPlans';
 export * from './localVault';
 export * from './incidentResponse';
+export * from './thirdPartyCatalog';
 export * from './tunnels';
 export * from './installerBootstrapTokens';
 export * from './deploymentInvites';

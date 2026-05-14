@@ -48,6 +48,7 @@ import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches/index';
+import { thirdPartyCatalogRoutes } from './routes/thirdPartyCatalog';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
@@ -721,6 +722,7 @@ api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
+api.route('/third-party-catalog', thirdPartyCatalogRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
 // Device-blocked check sits in front of mobile + approvals routes so a

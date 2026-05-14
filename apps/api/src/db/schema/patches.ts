@@ -93,6 +93,9 @@ export const patches = pgTable('patches', {
   id: uuid('id').primaryKey().defaultRandom(),
   source: patchSourceEnum('source').notNull(),
   externalId: varchar('external_id', { length: 255 }).notNull(),
+  vendor: varchar('vendor', { length: 255 }),
+  packageId: varchar('package_id', { length: 256 }),
+  version: varchar('version', { length: 64 }),
   title: varchar('title', { length: 500 }).notNull(),
   description: text('description'),
   severity: patchSeverityEnum('severity'),
@@ -111,6 +114,7 @@ export const patches = pgTable('patches', {
   uninstallCommand: text('uninstall_command'),
   detectScript: text('detect_script'),
   metadata: jsonb('metadata'),
+  cveIds: text('cve_ids').array(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
