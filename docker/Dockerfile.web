@@ -21,7 +21,10 @@ ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
 ENV PUBLIC_ENABLE_REGISTRATION=${PUBLIC_ENABLE_REGISTRATION}
 RUN pnpm --filter @breeze/web build
-# Create a self-contained deployment (resolves pnpm symlinks)
+# Create a self-contained deployment (resolves pnpm symlinks).
+# pnpm 10's deploy command requires workspace deps be declared injected.
+# TODO: declare @breeze/shared (and other workspace deps) as injected in
+# apps/web/package.json and drop --legacy. See pnpm v10 release notes.
 RUN pnpm --filter @breeze/web deploy --legacy --prod /deployed
 
 FROM base AS runner
