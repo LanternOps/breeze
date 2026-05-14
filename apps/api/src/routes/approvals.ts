@@ -5,6 +5,7 @@ import { and, eq, gt, desc } from 'drizzle-orm';
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { mobileDeviceBlockedMiddleware } from '../middleware/mobileDeviceBlocked';
 import { approvalRequests } from '../db/schema/approvals';
 import { aiToolExecutions } from '../db/schema/ai';
 import { oauthGrants, oauthRefreshTokens } from '../db/schema/oauth';
@@ -14,6 +15,7 @@ import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/
 export const approvalRoutes = new Hono();
 
 approvalRoutes.use('*', authMiddleware);
+approvalRoutes.use('*', mobileDeviceBlockedMiddleware);
 
 approvalRoutes.get('/pending', async (c) => {
   const userId = c.get('auth').user.id;

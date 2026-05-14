@@ -17,6 +17,7 @@ import {
   sites
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { mobileDeviceBlockedMiddleware } from '../middleware/mobileDeviceBlocked';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -212,8 +213,10 @@ const summaryQuerySchema = z.object({
   orgId: z.string().uuid().optional()
 });
 
-// Apply auth middleware to all routes
+// Apply auth middleware to all routes. mobileDeviceBlockedMiddleware
+// must run after auth so the lookup is scoped to the authenticated user.
 mobileRoutes.use('*', authMiddleware);
+mobileRoutes.use('*', mobileDeviceBlockedMiddleware);
 
 // POST /notifications/register - Compatibility push token registration endpoint
 mobileRoutes.post(

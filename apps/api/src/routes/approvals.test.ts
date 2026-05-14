@@ -8,6 +8,12 @@ vi.mock('../db', () => ({
     update: vi.fn(),
     delete: vi.fn(),
   },
+  runOutsideDbContext: <T>(fn: () => Promise<T>) => fn(),
+  withSystemDbAccessContext: <T>(fn: () => Promise<T>) => fn(),
+}));
+
+vi.mock('../middleware/mobileDeviceBlocked', () => ({
+  mobileDeviceBlockedMiddleware: vi.fn((_c: any, next: any) => next()),
 }));
 
 vi.mock('../services/expoPush', () => ({

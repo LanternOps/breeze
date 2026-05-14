@@ -53,7 +53,6 @@ import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
 import { approvalRoutes } from './routes/approvals';
 import { lifecycleRoutes, lifecycleAdminRoutes } from './routes/lifecycle';
-import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
@@ -723,12 +722,10 @@ api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
-// Device-blocked check sits in front of mobile + approvals routes so a
-// blocked phone gets a structured 403 from EVERY mobile-app API call,
-// not just approval endpoints. The middleware only acts when the
-// X-Breeze-Mobile-Device-Id header is present, so non-mobile clients
-// (web dashboard, MCP) sail through unchanged.
-api.use('/mobile/*', mobileDeviceBlockedMiddleware);
+// The device-blocked check is mounted inside mobileRoutes / approvalRoutes
+// AFTER authMiddleware so the lookup can be scoped to the authenticated
+// user. Mounting it at this layer (in front of /mobile/*) would let an
+// unauthenticated caller probe the mobile_devices table by deviceId.
 api.route('/mobile', mobileRoutes);
 api.route('/mobile/approvals', approvalRoutes);
 api.route('/', lifecycleRoutes);
