@@ -22,3 +22,17 @@ export const thirdPartyPackageCatalog = pgTable('third_party_package_catalog', {
 });
 
 export type ThirdPartyPackageCatalog = typeof thirdPartyPackageCatalog.$inferSelect;
+
+export const thirdPartyReleaseTests = pgTable('third_party_release_tests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  catalogId: uuid('catalog_id').notNull().references(() => thirdPartyPackageCatalog.id, { onDelete: 'cascade' }),
+  version: varchar('version', { length: 64 }).notNull(),
+  status: varchar('status', { length: 32 }).notNull().default('queued'),
+  result: varchar('result', { length: 32 }),
+  log: text('log'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type ThirdPartyReleaseTest = typeof thirdPartyReleaseTests.$inferSelect;
