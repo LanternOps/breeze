@@ -28,6 +28,7 @@ export type Patch = {
   releaseDate: string;
   approvalStatus: PatchApprovalStatus;
   description?: string;
+  vendor?: string | null;
 };
 
 type PatchListProps = {
@@ -411,7 +412,17 @@ export default function PatchList({
                         </button>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="font-medium text-foreground">{patch.title}</div>
+                        <div className="font-medium text-foreground">
+                          {patch.title}
+                          {patch.source === 'third_party' && patch.vendor && (
+                            <span
+                              data-testid={`patch-row-${patch.id}-vendor`}
+                              className="ml-2 text-xs text-muted-foreground font-normal"
+                            >
+                              by {patch.vendor}
+                            </span>
+                          )}
+                        </div>
                         {patch.description && (
                           <div className="text-xs text-muted-foreground">{patch.description}</div>
                         )}

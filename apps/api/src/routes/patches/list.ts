@@ -46,6 +46,8 @@ listRoutes.get(
         title: patches.title,
         description: patches.description,
         source: patches.source,
+        vendor: patches.vendor,
+        packageId: patches.packageId,
         severity: patches.severity,
         category: patches.category,
         osTypes: patches.osTypes,

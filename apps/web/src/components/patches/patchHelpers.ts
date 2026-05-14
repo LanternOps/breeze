@@ -59,20 +59,22 @@ function normalizeOs(value?: string): string {
 export function normalizePatch(raw: Record<string, unknown>, index: number): Patch {
   const id = raw.id ?? raw.patchId ?? raw.patch_id ?? `patch-${index}`;
   const title = raw.title ?? raw.name ?? raw.patchTitle ?? 'Untitled patch';
-  const source = raw.sourceName ?? raw.source_label ?? raw.source;
+  const source = raw.source ?? raw.sourceName ?? raw.source_label;
   const os = raw.os ?? raw.osType ?? raw.os_type ?? raw.platform;
   const releaseDate = raw.releaseDate ?? raw.releasedAt ?? raw.release_date ?? raw.createdAt ?? '';
   const approvalStatus = raw.approvalStatus ?? raw.approval_status ?? raw.status;
+  const vendor = raw.vendor ?? null;
 
   return {
     id: String(id),
     title: String(title),
     severity: normalizeSeverity(raw.severity ? String(raw.severity) : undefined),
-    source: formatSourceLabel(source),
+    source: typeof source === 'string' && source.trim() ? source : 'unknown',
     os: normalizeOs(os ? String(os) : undefined),
     releaseDate: String(releaseDate),
     approvalStatus: normalizeApprovalStatus(approvalStatus ? String(approvalStatus) : undefined),
-    description: raw.description ? String(raw.description) : undefined
+    description: raw.description ? String(raw.description) : undefined,
+    vendor: typeof vendor === 'string' && vendor.trim() ? vendor : null,
   };
 }
 
