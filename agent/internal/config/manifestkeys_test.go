@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"math/rand"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,21 +102,28 @@ func TestPinManifestKeys_EmptyInput(t *testing.T) {
 }
 
 func TestPinManifestKeys_DeterministicOrder(t *testing.T) {
-	// Map iteration in Go is randomized — without an explicit sort, two
-	// runs of PinManifestKeys with the same input could write the entries
-	// in different orders, causing spurious agent.yaml diffs. Verify the
-	// output is sorted (lexicographic ~ keyId-sorted since ':' < base64).
+	// Map iteration in Go is randomized — without an explicit sort by keyId,
+	// two runs of PinManifestKeys would write entries in different orders
+	// and produce spurious agent.yaml diffs.
+	//
+	// Naively looping with the same input slice can hide regressions: the
+	// runtime's hash seed is fixed once per binary invocation, so iteration
+	// order over a single map produced from the same insertion order tends
+	// to be repeatable within a test. To actually exercise variable bucket
+	// layouts, we shuffle the input slice with a seeded PRNG before each
+	// iteration. The output (which is built via a map then sorted) must
+	// be byte-identical across all iterations regardless of insertion order.
 	cfgPath := writeBaseConfig(t, t.TempDir())
 
-	input := []ManifestTrustKey{
+	base := []ManifestTrustKey{
 		{KeyID: "deploy-2026-05-09-cccc", PublicKeyB64: "CCCC"},
 		{KeyID: "deploy-2026-05-09-aaaa", PublicKeyB64: "AAAA"},
 		{KeyID: "deploy-2026-05-09-eeee", PublicKeyB64: "EEEE"},
 		{KeyID: "deploy-2026-05-09-bbbb", PublicKeyB64: "BBBB"},
 		{KeyID: "deploy-2026-05-09-dddd", PublicKeyB64: "DDDD"},
-	}
-	if err := PinManifestKeys(cfgPath, input); err != nil {
-		t.Fatalf("first pin: %v", err)
+		{KeyID: "deploy-2026-05-09-ffff", PublicKeyB64: "FFFF"},
+		{KeyID: "deploy-2026-05-09-gggg", PublicKeyB64: "GGGG"},
+		{KeyID: "deploy-2026-05-09-hhhh", PublicKeyB64: "HHHH"},
 	}
 
 	want := []string{
@@ -123,15 +132,41 @@ func TestPinManifestKeys_DeterministicOrder(t *testing.T) {
 		"deploy-2026-05-09-cccc:CCCC",
 		"deploy-2026-05-09-dddd:DDDD",
 		"deploy-2026-05-09-eeee:EEEE",
+		"deploy-2026-05-09-ffff:FFFF",
+		"deploy-2026-05-09-gggg:GGGG",
+		"deploy-2026-05-09-hhhh:HHHH",
 	}
 
-	for i := 0; i < 5; i++ {
-		loaded, err := Load(cfgPath)
+	// First pin establishes the full set on disk.
+	if err := PinManifestKeys(cfgPath, append([]ManifestTrustKey(nil), base...)); err != nil {
+		t.Fatalf("initial pin: %v", err)
+	}
+
+	rng := rand.New(rand.NewSource(0xDEADBEEF))
+
+	var firstSerialization string
+	for i := 0; i < 50; i++ {
+		// Shuffle a copy of the input so PinManifestKeys iterates a
+		// different insertion order each pass. Combined with map-iteration
+		// randomization this maximizes bucket-layout variance.
+		shuffled := append([]ManifestTrustKey(nil), base...)
+		rng.Shuffle(len(shuffled), func(a, b int) { shuffled[a], shuffled[b] = shuffled[b], shuffled[a] })
+
+		// Re-pin with the shuffled set (all duplicates → no on-disk write
+		// from the dedupe branch, so we instead build a fresh tempdir for
+		// each iteration to exercise the changed branch).
+		dir := t.TempDir()
+		freshCfg := writeBaseConfig(t, dir)
+		if err := PinManifestKeys(freshCfg, shuffled); err != nil {
+			t.Fatalf("iter %d pin: %v", i, err)
+		}
+
+		loaded, err := Load(freshCfg)
 		if err != nil {
-			t.Fatalf("load: %v", err)
+			t.Fatalf("iter %d load: %v", i, err)
 		}
 		if len(loaded.PinnedManifestPubKeys) != len(want) {
-			t.Fatalf("iter %d: expected %d keys, got %d", i, len(want), len(loaded.PinnedManifestPubKeys))
+			t.Fatalf("iter %d: expected %d keys, got %d (entries=%v)", i, len(want), len(loaded.PinnedManifestPubKeys), loaded.PinnedManifestPubKeys)
 		}
 		for j, entry := range loaded.PinnedManifestPubKeys {
 			if entry != want[j] {
@@ -139,11 +174,33 @@ func TestPinManifestKeys_DeterministicOrder(t *testing.T) {
 			}
 		}
 
-		// Pin again with the same input (all duplicates → no changes), then
-		// pin once more with a brand-new key reshuffled in to make the
-		// changed-branch run and confirm sort stays stable.
-		if err := PinManifestKeys(cfgPath, input); err != nil {
-			t.Fatalf("iter %d dedupe pin: %v", i, err)
+		// Belt-and-suspenders: assert byte-equality of the joined output
+		// across every iteration. Any nondeterminism in PinManifestKeys
+		// would surface here even if the per-index check above missed it.
+		serialized := strings.Join(loaded.PinnedManifestPubKeys, "|")
+		if i == 0 {
+			firstSerialization = serialized
+		} else if serialized != firstSerialization {
+			t.Fatalf("iter %d serialization drift: got %q, want %q", i, serialized, firstSerialization)
+		}
+	}
+
+	// Bonus pass on the original config: re-pinning with shuffled duplicates
+	// must still be a no-op (the dedupe branch runs and short-circuits).
+	for i := 0; i < 10; i++ {
+		shuffled := append([]ManifestTrustKey(nil), base...)
+		rng.Shuffle(len(shuffled), func(a, b int) { shuffled[a], shuffled[b] = shuffled[b], shuffled[a] })
+		if err := PinManifestKeys(cfgPath, shuffled); err != nil {
+			t.Fatalf("dedupe pin %d: %v", i, err)
+		}
+		loaded, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("dedupe load %d: %v", i, err)
+		}
+		for j, entry := range loaded.PinnedManifestPubKeys {
+			if entry != want[j] {
+				t.Errorf("dedupe iter %d index %d: got %q, want %q", i, j, entry, want[j])
+			}
 		}
 	}
 }

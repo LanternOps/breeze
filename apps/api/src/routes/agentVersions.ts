@@ -143,8 +143,6 @@ async function getUpdateManifestPublicKeys(): Promise<Buffer[]> {
  * When the DB lookup fails outright (`dbLoadFailed`), we always return false
  * regardless of the opt-in — never soft-pass on a transient DB outage
  * (#625 review-CRIT-1).
- *
- * Exported so unit tests can exercise the empty-keyset behavior directly.
  */
 export async function verifyEd25519ManifestSignature(
   manifest: string,
@@ -175,9 +173,17 @@ export async function verifyEd25519ManifestSignature(
   try {
     signatureBytes = Buffer.from(signature, "base64");
   } catch {
+    // Make abuse probes greppable: malformed base64 is rare in normal traffic
+    // and worth logging (without echoing the signature itself).
+    console.warn(
+      "[agentVersions] verifyEd25519ManifestSignature: signature base64 parse failed — rejecting",
+    );
     return false;
   }
   if (signatureBytes.length !== 64) {
+    console.warn(
+      `[agentVersions] verifyEd25519ManifestSignature: signature is ${signatureBytes.length} bytes, expected 64 — rejecting`,
+    );
     return false;
   }
 
