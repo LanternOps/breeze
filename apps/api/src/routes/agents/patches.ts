@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches, devicePatches } from '../../db/schema';
+import { enqueueWingetReleaseTest } from '../../jobs/wingetReleaseTestWorker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitPatchesSchema } from './schemas';
@@ -88,6 +89,20 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
         .returning();
 
       if (patch) {
+        if (
+          enriched.matchedCatalogId &&
+          patchData.version &&
+          process.env.ENABLE_AI_PATCH_TESTING === '1'
+        ) {
+          // Fire-and-forget - don't block the patch submit on test queueing.
+          enqueueWingetReleaseTest({
+            catalogId: enriched.matchedCatalogId,
+            version: patchData.version,
+          }).catch((err) => {
+            console.error('[ReleaseTest] enqueue failed', err);
+          });
+        }
+
         await tx
           .insert(devicePatches)
           .values({
