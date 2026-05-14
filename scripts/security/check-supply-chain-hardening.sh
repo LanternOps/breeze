@@ -86,6 +86,16 @@ require_grep '"packageManager": "pnpm@10\.33\.4"' package.json \
   "package.json must pin pnpm to an audit-endpoint-compatible version"
 require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/security.yml \
   "security workflow must use pnpm 10.33.4+ for blocking audit"
+# Defense-in-depth: every site that installs pnpm must pin the same version
+# as the packageManager field, so a single uncoordinated bump can't sneak in.
+require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/ci.yml \
+  "CI workflow must pin PNPM_VERSION to 10.33.4"
+require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/release.yml \
+  "release workflow must pin PNPM_VERSION to 10.33.4"
+for dockerfile in apps/api/Dockerfile apps/web/Dockerfile docker/Dockerfile.api docker/Dockerfile.web; do
+  require_grep 'npm install -g pnpm@10\.33\.4' "$dockerfile" \
+    "$dockerfile must pin pnpm to 10.33.4"
+done
 require_grep '^  security-audit:' .github/workflows/ci.yml \
   "CI must include a blocking security-audit job"
 require_grep 'SECURITY_AUDIT_RESULT' .github/workflows/ci.yml \
