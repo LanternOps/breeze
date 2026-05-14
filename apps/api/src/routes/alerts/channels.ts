@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { notificationChannels, organizations, partners } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -31,6 +31,7 @@ import {
   ensureOrgAccess,
   getNotificationChannelWithOrgCheck,
   validateNotificationChannelConfig,
+  validatePushoverChannelInheritance,
 } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
 
@@ -153,6 +154,16 @@ channelsRoutes.post(
       }, 400);
     }
 
+    if (data.type === 'pushover') {
+      const inheritanceError = await validatePushoverChannelInheritance(orgId, data.config);
+      if (inheritanceError) {
+        return c.json({
+          error: `Invalid ${data.type} channel configuration`,
+          details: [inheritanceError]
+        }, 400);
+      }
+    }
+
     const [channel] = await db
       .insert(notificationChannels)
       .values({
@@ -215,6 +226,16 @@ channelsRoutes.put(
           error: `Invalid ${channel.type} channel configuration`,
           details: configErrors
         }, 400);
+      }
+
+      if (channel.type === 'pushover') {
+        const inheritanceError = await validatePushoverChannelInheritance(channel.orgId, configForValidation);
+        if (inheritanceError) {
+          return c.json({
+            error: `Invalid ${channel.type} channel configuration`,
+            details: [inheritanceError]
+          }, 400);
+        }
       }
     }
 
@@ -436,30 +457,40 @@ channelsRoutes.post(
 
           if (tokenBlank || userBlank) {
             // Mirror dispatcher inheritance: pull defaults from the channel's
-            // partner.settings.notifications when blank.
-            const [orgRow] = await db
-              .select({ partnerId: organizations.partnerId })
-              .from(organizations)
-              .where(eq(organizations.id, channel.orgId))
-              .limit(1);
-            if (orgRow?.partnerId) {
+            // partner.settings.notifications when blank. Org-tier callers do
+            // not have partner-read RLS, so we must escape the request DB
+            // context and run the lookup under system scope. Otherwise the
+            // partner row is silently filtered and inheritance fails open
+            // with a misleading "token required" error.
+            const inherited = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+              const [orgRow] = await db
+                .select({ partnerId: organizations.partnerId })
+                .from(organizations)
+                .where(eq(organizations.id, channel.orgId))
+                .limit(1);
+              if (!orgRow?.partnerId) {
+                return null;
+              }
               const [partner] = await db
                 .select({ settings: partners.settings })
                 .from(partners)
                 .where(eq(partners.id, orgRow.partnerId))
                 .limit(1);
-              const notifications = (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications;
-              if (tokenBlank && typeof notifications?.pushoverAppToken === 'string') {
-                cfg.token = notifications.pushoverAppToken;
+              return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
+            }));
+
+            if (inherited) {
+              if (tokenBlank && typeof inherited.pushoverAppToken === 'string') {
+                cfg.token = inherited.pushoverAppToken;
               }
-              if (userBlank && typeof notifications?.pushoverDefaultUser === 'string') {
-                cfg.user = notifications.pushoverDefaultUser;
+              if (userBlank && typeof inherited.pushoverDefaultUser === 'string') {
+                cfg.user = inherited.pushoverDefaultUser;
               }
-              if (cfg.sound === undefined && typeof notifications?.pushoverDefaultSound === 'string') {
-                cfg.sound = notifications.pushoverDefaultSound;
+              if (cfg.sound === undefined && typeof inherited.pushoverDefaultSound === 'string') {
+                cfg.sound = inherited.pushoverDefaultSound;
               }
-              if (cfg.priority === undefined && typeof notifications?.pushoverDefaultPriority === 'number') {
-                cfg.priority = notifications.pushoverDefaultPriority as PushoverPriority;
+              if (cfg.priority === undefined && typeof inherited.pushoverDefaultPriority === 'number') {
+                cfg.priority = inherited.pushoverDefaultPriority as PushoverPriority;
               }
             }
           }
