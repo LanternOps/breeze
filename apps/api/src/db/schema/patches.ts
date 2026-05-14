@@ -113,6 +113,7 @@ export const patches = pgTable('patches', {
   uninstallCommand: text('uninstall_command'),
   detectScript: text('detect_script'),
   metadata: jsonb('metadata'),
+  cveIds: text('cve_ids').array(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

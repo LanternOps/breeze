@@ -15,6 +15,8 @@ export const thirdPartyPackageCatalog = pgTable('third_party_package_catalog', {
   lastTestedResult: varchar('last_tested_result', { length: 32 }),
   notes: text('notes'),
   homepageUrl: text('homepage_url'),
+  lastCveCheckAt: timestamp('last_cve_check_at', { withTimezone: true }),
+  osvEcosystem: varchar('osv_ecosystem', { length: 64 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
