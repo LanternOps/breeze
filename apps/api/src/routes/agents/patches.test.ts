@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches } from '../../db/schema';
+import * as enrichmentModule from '../../services/thirdPartyEnrichment';
 import { patchesRoutes } from './patches';
 
 const AGENT_ID = 'agent-001';
@@ -73,6 +74,21 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+vi.mock('../../services/thirdPartyEnrichment', () => ({
+  enrichFromCatalog: vi.fn(async (input: {
+    title: string;
+    vendor: string | null;
+    severity: string | null;
+    category?: string | null;
+  }) => ({
+    title: input.title,
+    vendor: input.vendor,
+    severity: input.severity,
+    category: input.category ?? null,
+    matchedCatalogId: null,
+  })),
+}));
+
 vi.mock('./helpers', () => ({
   inferPatchOsType: vi.fn((_source: string, osType: string | null | undefined) => osType),
   parseDate: vi.fn((value: string | undefined) => (value ? new Date(value) : null)),
@@ -92,6 +108,13 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(enrichmentModule.enrichFromCatalog).mockImplementation(async (input) => ({
+      title: input.title,
+      vendor: input.vendor,
+      severity: input.severity,
+      category: input.category ?? null,
+      matchedCatalogId: null,
+    }));
     patchRows = [];
     patchUpsertSet = undefined;
     app = new Hono();
@@ -184,5 +207,44 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
       vendor: 'Mozilla',
       packageId: 'Mozilla.Firefox',
     }));
+  });
+
+  it('uses enriched title/vendor/severity from catalog in the upsert', async () => {
+    vi.mocked(enrichmentModule.enrichFromCatalog).mockResolvedValue({
+      title: 'Mozilla Firefox',
+      vendor: 'Mozilla',
+      severity: 'important',
+      category: 'application',
+      matchedCatalogId: 'cat-1',
+    });
+
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patches: [
+          {
+            name: 'firefox',
+            source: 'third_party',
+            packageId: 'Mozilla.Firefox',
+            version: '121.0',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(enrichmentModule.enrichFromCatalog).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'third_party',
+      packageId: 'Mozilla.Firefox',
+      title: 'firefox',
+    }));
+    expect(patchUpsertSet).toEqual(expect.objectContaining({
+      title: 'Mozilla Firefox',
+      vendor: 'Mozilla',
+      severity: 'important',
+    }));
+
+    vi.mocked(enrichmentModule.enrichFromCatalog).mockRestore();
   });
 });

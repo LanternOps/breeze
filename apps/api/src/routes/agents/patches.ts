@@ -4,6 +4,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches, devicePatches } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitPatchesSchema } from './schemas';
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
 
@@ -37,32 +38,40 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
         patchData.kbNumber ||
         `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
       const inferredOsType = inferPatchOsType(patchData.source, device.osType);
+      const enriched = await enrichFromCatalog({
+        source: patchData.source,
+        packageId: patchData.packageId ?? null,
+        title: patchData.name,
+        vendor: patchData.vendor ?? null,
+        severity: patchData.severity ?? null,
+        category: patchData.category ?? null,
+      });
 
       const [patch] = await tx
         .insert(patches)
         .values({
           source: patchData.source,
           externalId: externalId,
-          title: patchData.name,
+          title: enriched.title,
           description: patchData.description || null,
-          severity: patchData.severity || 'unknown',
-          category: patchData.category || null,
+          severity: enriched.severity ?? 'unknown',
+          category: enriched.category,
           releaseDate: sanitizeDate(patchData.releaseDate),
           requiresReboot: patchData.requiresRestart || false,
           downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null,
-          vendor: patchData.vendor ?? null,
+          vendor: enriched.vendor,
           packageId: patchData.packageId ?? null,
           ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
         })
         .onConflictDoUpdate({
           target: [patches.source, patches.externalId],
           set: {
-            title: patchData.name,
+            title: enriched.title,
             description: patchData.description || null,
-            severity: patchData.severity || 'unknown',
-            category: patchData.category || null,
+            severity: enriched.severity ?? 'unknown',
+            category: enriched.category,
             requiresReboot: patchData.requiresRestart || false,
-            vendor: patchData.vendor ?? sql`${patches.vendor}`,
+            vendor: enriched.vendor ?? sql`${patches.vendor}`,
             packageId: patchData.packageId ?? sql`${patches.packageId}`,
             ...(inferredOsType
               ? {
