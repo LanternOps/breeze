@@ -1671,6 +1671,8 @@ func (h *Heartbeat) mapPatchProviderSource(provider string) string {
 		return "third_party"
 	case "chocolatey":
 		return "third_party"
+	case "winget":
+		return "third_party"
 	case "apt", "yum":
 		return "linux"
 	default:
@@ -1682,7 +1684,7 @@ func (h *Heartbeat) mapPatchProviderCategory(provider string) string {
 	switch provider {
 	case "windows-update", "apple-softwareupdate":
 		return "system"
-	case "homebrew", "chocolatey":
+	case "homebrew", "chocolatey", "winget":
 		return "application"
 	case "apt", "yum":
 		return "system"
