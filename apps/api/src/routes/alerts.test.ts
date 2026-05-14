@@ -636,4 +636,36 @@ describe('alert routes', () => {
       expect(body.testResult.message).toContain('Test SMS sent');
     });
   });
+
+  describe('notification channel test endpoint — unsupported types', () => {
+    it('returns 501 with a renderable error when channel.type has no handler', async () => {
+      const unsupportedChannelId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      // Simulate deploy drift: DB row has a `type` value the switch does not handle.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: unsupportedChannelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Future channel type',
+              // Cast through unknown: this value isn't in the TS enum on purpose.
+              type: 'pushover' as unknown as 'email',
+              config: {}
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${unsupportedChannelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(501);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(typeof body.error).toBe('string');
+      expect(body.error).toContain('pushover');
+    });
+  });
 });

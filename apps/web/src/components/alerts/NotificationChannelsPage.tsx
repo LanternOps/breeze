@@ -5,25 +5,9 @@ import NotificationChannelForm, { type NotificationChannelFormValues } from './N
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import { extractApiError } from '@/lib/apiError';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
-
-// API errors can arrive as plain strings, zod issue objects from zValidator,
-// or a {details} field. Extract a renderable message rather than letting
-// `new Error(obj)` produce `[object Object]`.
-function extractApiError(data: unknown, fallback: string): string {
-  if (!data || typeof data !== 'object') return fallback;
-  const body = data as { error?: unknown; details?: unknown };
-  if (typeof body.error === 'string') return body.error;
-  if (body.error && typeof body.error === 'object') {
-    const zodIssues = (body.error as { issues?: Array<{ message?: string }> }).issues;
-    if (Array.isArray(zodIssues) && zodIssues.length > 0) {
-      return zodIssues.map((i) => i.message).filter(Boolean).join('; ') || fallback;
-    }
-  }
-  if (typeof body.details === 'string') return body.details;
-  return fallback;
-}
 
 type RoutingRule = {
   id: string;
@@ -55,10 +39,18 @@ export default function NotificationChannelsPage() {
   const fetchRoutingRules = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/alerts/routing-rules');
-      if (!response.ok) return;
+      if (!response.ok) {
+        // Routing rules are a secondary panel; don't block the page. Log
+        // to console so failures are still debuggable.
+        const data = await response.json().catch(() => null);
+        console.warn('[NotificationChannelsPage]', extractApiError(data, `Failed to fetch routing rules (HTTP ${response.status})`));
+        return;
+      }
       const data = await response.json();
       setRoutingRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
-    } catch { /* non-critical */ }
+    } catch (err) {
+      console.warn('[NotificationChannelsPage] fetchRoutingRules', err);
+    }
   }, []);
 
   const fetchChannels = useCallback(async () => {
@@ -71,7 +63,8 @@ export default function NotificationChannelsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch notification channels');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to fetch notification channels'));
       }
       const data = await response.json();
       setChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
@@ -308,7 +301,8 @@ export default function NotificationChannelsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to delete channel');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to delete channel'));
       }
 
       await fetchChannels();
@@ -350,7 +344,10 @@ export default function NotificationChannelsPage() {
   const handleDeleteRoutingRule = async (ruleId: string) => {
     try {
       const response = await fetchWithAuth(`/alerts/routing-rules/${ruleId}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error('Failed to delete routing rule');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to delete routing rule'));
+      }
       await fetchRoutingRules();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete routing rule');
