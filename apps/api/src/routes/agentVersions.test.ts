@@ -748,4 +748,23 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
     );
     expect(result).toBe(false);
   });
+
+  it("does NOT soft-pass when keyset is configured — forged signature still rejected even with opt-in", async () => {
+    // Generate a real keypair and register its pubkey via env, but then call
+    // verify with a forged (random) signature. The opt-in must ONLY kick in
+    // when the keyset is genuinely empty; once any trust root is configured,
+    // a bad signature is still a bad signature.
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+    const rawPublicKey = publicDer.subarray(publicDer.length - 32);
+    process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS = rawPublicKey.toString("base64");
+
+    const forgedSignature = Buffer.alloc(64, 0xab).toString("base64");
+    const result = await verifyEd25519ManifestSignature(
+      "{\"foo\":1}",
+      forgedSignature,
+      { allowEmptyKeysetSoftPass: true },
+    );
+    expect(result).toBe(false);
+  });
 });

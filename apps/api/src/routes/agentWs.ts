@@ -1845,29 +1845,33 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               // getActiveTrustKeyset would otherwise be short-circuited and
               // RLS would return zero rows. Wrapped in try/catch so a
               // transient trust-keyset failure never breaks the ack (#644).
-              let manifestTrustKeys: unknown[] | undefined;
+              //
+              // On failure we emit `manifestTrustKeys: []` to mirror the REST
+              // heartbeat handler in routes/agents/heartbeat.ts. The agent
+              // gates pin updates on `len(ManifestTrustKeys) > 0` (see
+              // agent/internal/heartbeat/heartbeat.go:2174), so empty and
+              // omission are equivalent on the wire — emitting `[]` keeps the
+              // two heartbeat paths byte-for-byte consistent and avoids
+              // wire-shape divergence between WS and REST.
+              let manifestTrustKeys: unknown[] = [];
               try {
                 manifestTrustKeys = await runOutsideDbContext(() =>
                   getActiveTrustKeyset(),
                 );
               } catch (err) {
-                console.warn(
-                  `[AgentWs] failed to load manifest trust keyset for ${agentId}:`,
-                  err instanceof Error ? err.message : err,
+                console.error(
+                  `[AgentWs] Failed to load manifest trust keyset for agentId=${agentId}:`,
+                  err,
                 );
-                // Omit the field on failure rather than send empty — empty
-                // would look indistinguishable from "no keys provisioned"
-                // and could cause the agent to wipe its pinned set.
-                manifestTrustKeys = undefined;
+                captureException(err);
+                manifestTrustKeys = [];
               }
 
               ws.send(JSON.stringify({
                 type: 'heartbeat_ack',
                 timestamp: Date.now(),
                 commands: pendingCommands,
-                ...(manifestTrustKeys !== undefined
-                  ? { manifestTrustKeys }
-                  : {}),
+                manifestTrustKeys,
               }));
               break;
             }
