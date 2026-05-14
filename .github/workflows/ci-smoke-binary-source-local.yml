@@ -18,6 +18,9 @@ on:
   push:
     branches: [main]
 
+env:
+  PNPM_VERSION: '10.33.4'
+
 jobs:
   smoke:
     name: BINARY_SOURCE=local download path
@@ -52,6 +55,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
