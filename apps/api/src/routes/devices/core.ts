@@ -21,7 +21,12 @@ import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
-import { buildRemoteAccessLaunchUrl } from '../../services/remoteAccessLauncher';
+import {
+  resolveRemoteAccessLaunch,
+  type RemoteAccessLaunchResult,
+  type RemoteAccessLaunchSkipReason,
+} from '../../services/remoteAccessLauncher';
+import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { sendCommandToAgent, isAgentConnected } from '../agentWs';
@@ -473,36 +478,36 @@ coreRoutes.get(
       console.error(`[DeviceDetail] Failed to resolve remote access policy for ${deviceId}:`, err);
     }
 
-    // Build the deep-link URL the Connect Desktop button should fire when the
-    // partner has a third-party remote-tool provider configured (RustDesk,
-    // ScreenConnect, TeamViewer, etc.). Building this server-side keeps the
-    // provider's preset password out of the web bundle. Non-critical — silently
-    // null on error so the button falls back to the built-in WebRTC flow.
+    // Resolve whether a third-party remote-tool launcher (RustDesk,
+    // ScreenConnect, TeamViewer, etc.) is configured and usable for this
+    // device. We DO NOT return the substituted launch URL here. That is
+    // issued by POST /devices/:id/remote-access-launch on click so the
+    // password-bearing URL is never broadcast in detail-fetch responses.
+    // The flags below only tell the UI whether to render the launcher
+    // button and what to surface if the configuration is wrong.
     //
-    // The partners table has partner-axis RLS, and the request scope is the
-    // user's (organization or partner) — not the partner whose settings we
-    // need. Wrap the lookup in a system-scope DB context so the policy
-    // engine doesn't filter the row out. This mirrors how
-    // remoteAccessPolicy.ts uses systemAuth for the same reason.
-    let remoteAccessLaunchUrl: string | null = null;
+    // Skip-reason vocabulary lets the UI distinguish expected-empty
+    // ('no_provider_configured'), configuration error ('config_error'),
+    // and a potential security event ('scheme_not_allowed': partner
+    // template was tampered to resolve to a disallowed scheme only after
+    // substitution).
+    let hasRemoteAccessLauncher = false;
+    let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     try {
-      const partnerSettings = await withSystemDbAccessContext(async () => {
-        const [partnerRow] = await db
-          .select({ settings: partners.settings })
-          .from(partners)
-          .innerJoin(organizations, eq(organizations.partnerId, partners.id))
-          .where(eq(organizations.id, device.orgId))
-          .limit(1);
-        return (partnerRow?.settings ?? {}) as PartnerSettings;
-      });
-      const providers: InheritableRemoteAccessSettings | undefined =
-        partnerSettings.remoteAccessProviders;
-      remoteAccessLaunchUrl = buildRemoteAccessLaunchUrl(
-        { customFields: device.customFields as Record<string, unknown> | null },
-        providers,
+      const launcher = await resolveRemoteAccessLauncherForDevice(
+        deviceId,
+        device.orgId,
+        device.customFields as Record<string, unknown> | null,
       );
+      if (launcher.launchUrl) {
+        hasRemoteAccessLauncher = true;
+      } else {
+        remoteAccessLaunchSkipReason = launcher.skipReason;
+      }
     } catch (err) {
-      console.error(`[DeviceDetail] Failed to resolve remote-access launch URL for ${deviceId}:`, err);
+      captureException(err, c);
+      console.error(`[DeviceDetail] Failed to resolve remote-access launcher for ${deviceId}:`, err);
+      remoteAccessLaunchSkipReason = 'config_error';
     }
 
     return c.json({
@@ -515,7 +520,131 @@ coreRoutes.get(
       siteTimezone: site?.timezone || 'UTC',
       orgName: org?.name ?? null,
       remoteAccessPolicy,
-      remoteAccessLaunchUrl,
+      hasRemoteAccessLauncher,
+      remoteAccessLaunchSkipReason,
+    });
+  }
+);
+
+/**
+ * Look up the partner's remote-access launcher config for a device and
+ * return the structured result describing whether a launch URL is available.
+ *
+ * The partners table has partner-axis RLS, and the request scope is the
+ * user's (organization or partner), not the partner whose settings we
+ * need. We wrap the lookup in a system-scope DB context so the policy
+ * engine doesn't filter the row out. This mirrors how remoteAccessPolicy.ts
+ * uses systemAuth for the same reason.
+ */
+async function resolveRemoteAccessLauncherForDevice(
+  _deviceId: string,
+  orgId: string,
+  customFields: Record<string, unknown> | null,
+): Promise<RemoteAccessLaunchResult> {
+  const partnerSettings = await withSystemDbAccessContext(async () => {
+    const [partnerRow] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .innerJoin(organizations, eq(organizations.partnerId, partners.id))
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    return (partnerRow?.settings ?? {}) as PartnerSettings;
+  });
+  const providers: InheritableRemoteAccessSettings | undefined =
+    partnerSettings.remoteAccessProviders;
+  return resolveRemoteAccessLaunch({ customFields }, providers);
+}
+
+// POST /devices/:id/remote-access-launch - Issue a one-shot remote-access
+// launch URL. The substituted URL (which may contain a preset password) is
+// returned only in response to an explicit click and is never embedded in
+// the device detail response. Each issuance is recorded in the audit log.
+//
+// REGISTRATION ORDER: this must be declared before PATCH/DELETE /:id
+// handlers below so Hono's match-in-registration-order rule routes
+// /:id/remote-access-launch correctly.
+coreRoutes.post(
+  '/:id/remote-access-launch',
+  requireScope('organization', 'partner', 'system'),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    let launcher: RemoteAccessLaunchResult;
+    try {
+      launcher = await resolveRemoteAccessLauncherForDevice(
+        deviceId,
+        device.orgId,
+        device.customFields as Record<string, unknown> | null,
+      );
+    } catch (err) {
+      captureException(err, c);
+      console.error(`[RemoteAccessLaunch] Failed to resolve launcher for ${deviceId}:`, err);
+      return c.json({ error: 'Failed to resolve remote-access launcher', code: 'config_error' }, 500);
+    }
+
+    if (launcher.skipReason === 'scheme_not_allowed') {
+      // Loud failure: the partner template resolved to a disallowed scheme
+      // only after substitution. Emit a dedicated audit event so this shows
+      // up in the audit log and route to Sentry. Do NOT include the URL or
+      // the password in any logged field.
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: 'device.remote_access_launch_url.scheme_rejected',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname,
+        details: {
+          deviceId,
+          providerId: launcher.providerId,
+        },
+        result: 'denied',
+      });
+      captureException(
+        new Error('Remote-access launcher resolved to disallowed scheme after substitution'),
+        c,
+      );
+      return c.json(
+        { error: 'Remote-access launcher rejected by scheme policy', code: 'scheme_not_allowed' },
+        422,
+      );
+    }
+
+    if (!launcher.launchUrl) {
+      // Match GET /devices/:id 404 convention used elsewhere for missing
+      // sub-resources; the UI uses `hasRemoteAccessLauncher` on the detail
+      // response to know whether to surface the button at all, so this
+      // path is only reachable from race conditions or out-of-date UI.
+      return c.json(
+        { error: 'No remote-access launcher available for this device', code: launcher.skipReason ?? 'unavailable' },
+        404,
+      );
+    }
+
+    // Success: record the issuance. NEVER write the launch URL or password
+    // into the audit row. Only deviceId, providerId, and the scheme.
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.remote_access_launch_url.issued',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname,
+      details: {
+        deviceId,
+        providerId: launcher.providerId,
+        scheme: launcher.scheme,
+      },
+    });
+
+    return c.json({
+      launchUrl: launcher.launchUrl,
+      scheme: launcher.scheme,
+      providerId: launcher.providerId,
     });
   }
 );
