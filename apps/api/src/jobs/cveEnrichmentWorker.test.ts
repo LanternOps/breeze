@@ -38,6 +38,7 @@ vi.mock('../db/schema', () => ({
     source: 'patches.source',
     severity: 'patches.severity',
     packageId: 'patches.packageId',
+    version: 'patches.version',
     metadata: 'patches.metadata',
     cveIds: 'patches.cveIds',
     updatedAt: 'patches.updatedAt',
@@ -66,6 +67,8 @@ vi.mock('../db', () => ({
 
 vi.mock('../services/osvClient', () => ({
   queryOsvForPackage: (...args: unknown[]) => queryOsvForPackage(...args),
+  OsvRateLimitError: class OsvRateLimitError extends Error {},
+  OsvServerError: class OsvServerError extends Error {},
 }));
 
 import { runCveEnrichmentBatch } from './cveEnrichmentWorker';

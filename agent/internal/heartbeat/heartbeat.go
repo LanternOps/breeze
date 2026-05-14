@@ -1705,9 +1705,6 @@ func (h *Heartbeat) mapPatchProviderCategory(provider string) string {
 	}
 }
 
-// extractVendor returns the publisher segment of a winget-style package ID
-// (e.g. "Mozilla.Firefox" -> "Mozilla"). Returns "" if provider is not winget
-// or the ID has no dot.
 func extractVendor(provider, packageID string) string {
 	if provider != "winget" {
 		return ""

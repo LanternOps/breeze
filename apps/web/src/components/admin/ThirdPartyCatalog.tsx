@@ -39,16 +39,24 @@ const severityStyles: Record<string, string> = {
   unknown: 'bg-gray-100 text-gray-700',
 };
 
+type PendingTest = {
+  entryId: string;
+  startedAt: number;
+  initialLastTestedAt: string | null;
+};
+
 export default function ThirdPartyCatalog() {
   const [items, setItems] = useState<CatalogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const [search, setSearch] = useState('');
   const [showOnlyTested, setShowOnlyTested] = useState(false);
   const [editor, setEditor] = useState<EditorState>({ kind: 'closed' });
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [retestingId, setRetestingId] = useState<string | null>(null);
+  const [pendingTests, setPendingTests] = useState<PendingTest[]>([]);
 
   const fetchCatalog = useCallback(async () => {
     try {
@@ -75,6 +83,47 @@ export default function ThirdPartyCatalog() {
     return () => clearTimeout(timer);
   }, [fetchCatalog, search]);
 
+  // Poll after re-test trigger so admin sees result without a manual refresh.
+  useEffect(() => {
+    if (pendingTests.length === 0) return;
+    const interval = setInterval(() => {
+      fetchCatalog();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [pendingTests.length, fetchCatalog]);
+
+  // Detect completion: when a polled entry's lastTestedAt advances past
+  // the value captured at trigger time, remove from pending + show a toast.
+  useEffect(() => {
+    if (pendingTests.length === 0) return;
+    const stillPending: PendingTest[] = [];
+    const completed: { entry: CatalogEntry; result: string }[] = [];
+    for (const pending of pendingTests) {
+      const entry = items.find((it) => it.id === pending.entryId);
+      if (!entry) {
+        stillPending.push(pending);
+        continue;
+      }
+      const advanced =
+        entry.lastTestedAt &&
+        (!pending.initialLastTestedAt ||
+          new Date(entry.lastTestedAt).getTime() >
+            new Date(pending.initialLastTestedAt).getTime());
+      if (advanced && entry.lastTestedResult) {
+        completed.push({ entry, result: entry.lastTestedResult });
+      } else {
+        stillPending.push(pending);
+      }
+    }
+    if (completed.length > 0) {
+      setPendingTests(stillPending);
+      const summary = completed
+        .map((c) => `${c.entry.friendlyName}: ${c.result}`)
+        .join('; ');
+      setNotice(`Test complete — ${summary}`);
+    }
+  }, [items, pendingTests]);
+
   const handleRetest = async (entry: CatalogEntry) => {
     const version = window.prompt(
       `Run smoke test for ${entry.friendlyName} at which version?`,
@@ -83,6 +132,7 @@ export default function ThirdPartyCatalog() {
     if (!version || !version.trim()) return;
     setRetestingId(entry.id);
     setError(undefined);
+    setNotice(undefined);
     try {
       const response = await fetchWithAuth(`/third-party-catalog/${entry.id}/test`, {
         method: 'POST',
@@ -93,6 +143,15 @@ export default function ThirdPartyCatalog() {
         const err = await response.json().catch(() => ({}));
         throw new Error(err?.error ?? `Failed to queue test (${response.status})`);
       }
+      setPendingTests((prev) => [
+        ...prev.filter((p) => p.entryId !== entry.id),
+        {
+          entryId: entry.id,
+          startedAt: Date.now(),
+          initialLastTestedAt: entry.lastTestedAt,
+        },
+      ]);
+      setNotice(`Test queued for ${entry.friendlyName}. Polling for result…`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to queue test');
     } finally {
@@ -190,6 +249,21 @@ export default function ThirdPartyCatalog() {
         </div>
       )}
 
+      {notice && (
+        <div
+          data-testid="catalog-notice"
+          className="bg-blue-50 text-blue-800 px-4 py-3 rounded mb-4 flex items-center justify-between gap-2"
+        >
+          <span>{notice}</span>
+          <button
+            onClick={() => setNotice(undefined)}
+            className="text-blue-600 hover:underline text-sm"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-12 text-gray-500">Loading catalog…</div>
       ) : items.length === 0 ? (
@@ -255,7 +329,14 @@ export default function ThirdPartyCatalog() {
                     )}
                   </td>
                   <td className="px-4 py-2">
-                    {entry.lastTestedResult ? (
+                    {pendingTests.some((p) => p.entryId === entry.id) ? (
+                      <span
+                        data-testid={`catalog-row-${entry.id}-test-running`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800"
+                      >
+                        <RefreshCw className="w-3 h-3 animate-spin" /> running…
+                      </span>
+                    ) : entry.lastTestedResult ? (
                       <span
                         data-testid={`catalog-row-${entry.id}-test-status`}
                         className={`inline-block px-2 py-0.5 rounded text-xs ${

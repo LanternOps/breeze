@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 
 import { thirdPartyCatalogRoutes } from './index';
+
+const mockPlatformAdminState = vi.hoisted(() => ({
+  isPlatformAdmin: true,
+}));
 
 const mockCatalogTable = vi.hoisted(() => ({
   id: 'thirdPartyPackageCatalog.id',
@@ -41,6 +46,23 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   thirdPartyPackageCatalog: mockCatalogTable,
+}));
+
+vi.mock('../../middleware/platformAdmin', () => ({
+  platformAdminMiddleware: vi.fn(async (c: any, next: any) => {
+    if (!mockPlatformAdminState.isPlatformAdmin) {
+      throw new HTTPException(403, { message: 'platform admin access required' });
+    }
+
+    c.set('auth', {
+      user: {
+        id: '11111111-1111-4111-8111-111111111111',
+        email: 'platform@example.com',
+        isPlatformAdmin: true,
+      },
+    });
+    return next();
+  }),
 }));
 
 import { db } from '../../db';
@@ -111,8 +133,17 @@ describe('third-party catalog routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPlatformAdminState.isPlatformAdmin = true;
     app = new Hono();
     app.route('/third-party-catalog', thirdPartyCatalogRoutes);
+  });
+
+  it('rejects GET without platform admin access', async () => {
+    mockPlatformAdminState.isPlatformAdmin = false;
+
+    const res = await app.request('/third-party-catalog');
+
+    expect([401, 403]).toContain(res.status);
   });
 
   it('lists catalog items with limit pagination', async () => {

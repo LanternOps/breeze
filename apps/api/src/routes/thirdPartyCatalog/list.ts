@@ -4,8 +4,11 @@ import { and, eq, ilike, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { thirdPartyPackageCatalog } from '../../db/schema';
 import { listCatalogQuerySchema } from './schemas';
+import { platformAdminMiddleware } from '../../middleware/platformAdmin';
 
 export const listRoutes = new Hono();
+
+listRoutes.use('*', platformAdminMiddleware);
 
 listRoutes.get('/', zValidator('query', listCatalogQuerySchema), async (c) => {
   const q = c.req.valid('query');

@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches } from '../../db/schema';
 import * as enrichmentModule from '../../services/thirdPartyEnrichment';
+import * as wingetWorker from '../../jobs/wingetReleaseTestWorker';
 import { patchesRoutes } from './patches';
 
 const AGENT_ID = 'agent-001';
@@ -72,6 +73,13 @@ vi.mock('../../db/schema', () => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
+}));
+
+vi.mock('../../jobs/wingetReleaseTestWorker', () => ({
+  enqueueWingetReleaseTest: vi.fn(async () => ({
+    testId: 'queued',
+    alreadyExisted: false,
+  })),
 }));
 
 vi.mock('../../services/thirdPartyEnrichment', () => ({
@@ -246,5 +254,128 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     }));
 
     vi.mocked(enrichmentModule.enrichFromCatalog).mockRestore();
+  });
+
+  it('persists agent-supplied version into patches.version', async () => {
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patches: [
+          {
+            name: 'Mozilla Firefox',
+            source: 'third_party',
+            packageId: 'Mozilla.Firefox',
+            vendor: 'Mozilla',
+            version: '121.0.1',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(patchUpsertSet).toEqual(expect.objectContaining({
+      version: '121.0.1',
+    }));
+  });
+});
+
+describe('PUT /agents/:id/patches - ENABLE_AI_PATCH_TESTING gating', () => {
+  let app: Hono;
+  const originalEnv = process.env.ENABLE_AI_PATCH_TESTING;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.ENABLE_AI_PATCH_TESTING;
+    vi.mocked(enrichmentModule.enrichFromCatalog).mockResolvedValue({
+      title: 'Mozilla Firefox',
+      vendor: 'Mozilla',
+      severity: 'important',
+      category: 'application',
+      matchedCatalogId: 'cat-1',
+    });
+    vi.mocked(wingetWorker.enqueueWingetReleaseTest).mockResolvedValue({
+      testId: 'queued',
+      alreadyExisted: false,
+    });
+    app = new Hono();
+    app.route('/agents', patchesRoutes);
+
+    vi.mocked(db.select).mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => Object.assign(Promise.resolve([
+          { id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID, osType: 'windows' },
+        ]), {
+          limit: vi.fn().mockResolvedValue([
+            { id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID, osType: 'windows' },
+          ]),
+        })),
+      })),
+    }) as never);
+
+    vi.mocked(db.transaction).mockImplementation(async (fn) => {
+      const tx = {
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({
+            where: vi.fn().mockResolvedValue(undefined),
+          })),
+        })),
+        insert: vi.fn(() => ({
+          values: vi.fn((values) => ({
+            onConflictDoUpdate: vi.fn(() => ({
+              returning: vi.fn().mockResolvedValue([{ id: PATCH_ID, ...values }]),
+            })),
+          })),
+        })),
+      };
+      return fn(tx);
+    });
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.ENABLE_AI_PATCH_TESTING;
+    } else {
+      process.env.ENABLE_AI_PATCH_TESTING = originalEnv;
+    }
+  });
+
+  const payload = {
+    patches: [
+      {
+        name: 'Mozilla Firefox',
+        source: 'third_party',
+        packageId: 'Mozilla.Firefox',
+        vendor: 'Mozilla',
+        version: '121.0',
+      },
+    ],
+  };
+
+  it('does NOT enqueue release test when ENABLE_AI_PATCH_TESTING is unset', async () => {
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    expect(wingetWorker.enqueueWingetReleaseTest).not.toHaveBeenCalled();
+  });
+
+  it('enqueues release test when ENABLE_AI_PATCH_TESTING is set', async () => {
+    process.env.ENABLE_AI_PATCH_TESTING = '1';
+
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    expect(wingetWorker.enqueueWingetReleaseTest).toHaveBeenCalledWith({
+      catalogId: 'cat-1',
+      version: '121.0',
+    });
   });
 });

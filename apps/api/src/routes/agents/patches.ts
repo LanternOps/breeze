@@ -9,6 +9,14 @@ import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitPatchesSchema } from './schemas';
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
 
+// Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
+function deriveVendor(packageId: string | null | undefined, fallback: string | null | undefined): string | null {
+  if (packageId && /^[^.]+\.[^.]+/.test(packageId)) {
+    return packageId.split('.')[0] ?? fallback ?? null;
+  }
+  return fallback ?? null;
+}
+
 export const patchesRoutes = new Hono();
 
 patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
@@ -39,11 +47,12 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
         patchData.kbNumber ||
         `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
       const inferredOsType = inferPatchOsType(patchData.source, device.osType);
+      const derivedVendor = deriveVendor(patchData.packageId, patchData.vendor);
       const enriched = await enrichFromCatalog({
         source: patchData.source,
         packageId: patchData.packageId ?? null,
         title: patchData.name,
-        vendor: patchData.vendor ?? null,
+        vendor: derivedVendor,
         severity: patchData.severity ?? null,
         category: patchData.category ?? null,
       });
@@ -62,6 +71,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
           downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null,
           vendor: enriched.vendor,
           packageId: patchData.packageId ?? null,
+          version: patchData.version ?? null,
           ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
         })
         .onConflictDoUpdate({
@@ -74,6 +84,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             requiresReboot: patchData.requiresRestart || false,
             vendor: enriched.vendor ?? sql`${patches.vendor}`,
             packageId: patchData.packageId ?? sql`${patches.packageId}`,
+            version: patchData.version ?? sql`${patches.version}`,
             ...(inferredOsType
               ? {
                   osTypes: sql`CASE
@@ -138,8 +149,9 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             title: patchData.name,
             severity: 'unknown',
             category: patchData.category || null,
-            vendor: patchData.vendor ?? null,
+            vendor: deriveVendor(patchData.packageId, patchData.vendor),
             packageId: patchData.packageId ?? null,
+            version: patchData.version ?? null,
             ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
           })
           .onConflictDoUpdate({
@@ -147,8 +159,9 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
             set: {
               title: patchData.name,
               category: patchData.category || null,
-              vendor: patchData.vendor ?? sql`${patches.vendor}`,
+              vendor: deriveVendor(patchData.packageId, patchData.vendor) ?? sql`${patches.vendor}`,
               packageId: patchData.packageId ?? sql`${patches.packageId}`,
+              version: patchData.version ?? sql`${patches.version}`,
               ...(inferredOsType
                 ? {
                     osTypes: sql`CASE

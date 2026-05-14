@@ -146,4 +146,66 @@ describe('executeWingetReleaseTest', () => {
       })
     );
   });
+
+  it('marks the row inconclusive and rethrows when the inner runner crashes after status flips to running', async () => {
+    mocks.state.selectRows = [[{
+      id: 'rt-crash',
+      catalogId: 'cat-1',
+      version: '2.0.0',
+      packageId: 'Some.Pkg',
+    }]];
+    // Simulate a non-throwing inner runner being replaced by a hard throw
+    // (i.e. an error path that the inner try/catch does NOT cover, such as
+    // a DB write failure on the 'running' update). We simulate that by
+    // making runWingetReleaseTest reject AND the inner catch's follow-up
+    // 'completed' update succeed — but for THIS test we want the outer
+    // safety net specifically. Throw from the runner with a sentinel that
+    // bypasses the inner catch by patching the mock to throw a non-Error.
+    // Easiest: make the runner throw, and the inner catch will normalise
+    // it. To exercise the OUTER catch, make the SECOND db.update (the
+    // 'completed' one) throw. We do that by stubbing the update fn to
+    // throw on its second call.
+    mocks.dbMock.update.mockImplementationOnce((table: unknown) => ({
+      set: vi.fn((value: Record<string, unknown>) => {
+        mocks.state.updateSetCalls.push({ table, value });
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    mocks.dbMock.update.mockImplementationOnce(() => ({
+      set: vi.fn(() => {
+        throw new Error('db connection lost');
+      }),
+    }));
+    // Recovery update inside the outer catch — must succeed so the row
+    // ends up marked inconclusive.
+    mocks.dbMock.update.mockImplementationOnce((table: unknown) => ({
+      set: vi.fn((value: Record<string, unknown>) => {
+        mocks.state.updateSetCalls.push({ table, value });
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    // Suppress noisy console.error in this expected-failure path.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(executeWingetReleaseTest({ testId: 'rt-crash' })).rejects.toThrow(
+      'db connection lost'
+    );
+
+    // The recovery update should have been called with status=completed,
+    // result=inconclusive, and the crash message in `log`.
+    const recovery = mocks.state.updateSetCalls.find(
+      (c) => (c.value as Record<string, unknown>).result === 'inconclusive'
+    );
+    expect(recovery).toBeDefined();
+    expect(recovery!.value).toEqual(
+      expect.objectContaining({
+        status: 'completed',
+        result: 'inconclusive',
+        log: expect.stringContaining('worker crashed: db connection lost'),
+        completedAt: expect.any(Date),
+      })
+    );
+
+    errSpy.mockRestore();
+  });
 });

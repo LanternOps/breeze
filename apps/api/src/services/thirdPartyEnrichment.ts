@@ -1,19 +1,15 @@
 import { db } from '../db';
 import { thirdPartyPackageCatalog } from '../db/schema';
 
-type CatalogEntry = {
-  id: string;
-  source: string;
-  packageId: string;
-  vendor: string;
-  friendlyName: string;
-  category: string;
-  defaultSeverity: 'critical' | 'important' | 'moderate' | 'low' | 'unknown';
-};
+type CatalogEntry = Pick<
+  typeof thirdPartyPackageCatalog.$inferSelect,
+  'id' | 'source' | 'packageId' | 'vendor' | 'friendlyName' | 'category' | 'defaultSeverity'
+>;
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 let cache: Map<string, CatalogEntry> | null = null;
 let cacheLoadedAt = 0;
+let inflight: Promise<void> | null = null;
 
 function cacheKey(source: string, packageId: string): string {
   return `${source}::${packageId}`;
@@ -32,7 +28,7 @@ async function loadCache(): Promise<Map<string, CatalogEntry>> {
 
   const map = new Map<string, CatalogEntry>();
   for (const row of rows) {
-    map.set(cacheKey(row.source, row.packageId), row as CatalogEntry);
+    map.set(cacheKey(row.source, row.packageId), row);
   }
   return map;
 }
@@ -42,9 +38,22 @@ export async function primeCatalogCache(): Promise<void> {
   cacheLoadedAt = Date.now();
 }
 
+// Call from catalog write endpoints after a successful mutation.
+export function invalidateCatalogCache(): void {
+  cache = null;
+  cacheLoadedAt = 0;
+}
+
 async function getCache(): Promise<Map<string, CatalogEntry>> {
   if (!cache || Date.now() - cacheLoadedAt > CACHE_TTL_MS) {
-    await primeCatalogCache();
+    // Singleflight: if a load is already in flight, await it instead of
+    // starting a second concurrent query.
+    if (!inflight) {
+      inflight = primeCatalogCache().finally(() => {
+        inflight = null;
+      });
+    }
+    await inflight;
   }
   return cache!;
 }

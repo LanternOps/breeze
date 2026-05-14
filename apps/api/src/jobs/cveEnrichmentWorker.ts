@@ -1,16 +1,11 @@
-/**
- * CVE Enrichment Worker
- *
- * Scans third-party patches that have a matching catalog entry with
- * `osv_ecosystem` set, queries OSV.dev for known vulnerabilities, and
- * updates `patches.cve_ids` + bumps `patches.severity` when OSV reports
- * a higher severity.
- */
-
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import { patches, thirdPartyPackageCatalog } from '../db/schema';
-import { queryOsvForPackage } from '../services/osvClient';
+import {
+  queryOsvForPackage,
+  OsvRateLimitError,
+  OsvServerError,
+} from '../services/osvClient';
 
 const SEVERITY_RANK: Record<string, number> = {
   critical: 4,
@@ -37,7 +32,7 @@ export async function runCveEnrichmentBatch(
       packageId: patches.packageId,
       currentSeverity: patches.severity,
       ecosystem: thirdPartyPackageCatalog.osvEcosystem,
-      version: sql<string>`COALESCE(${patches.metadata}->>'version', '')`,
+      version: patches.version,
     })
     .from(patches)
     .innerJoin(
@@ -55,16 +50,31 @@ export async function runCveEnrichmentBatch(
     )
     .limit(limit);
 
+  let consecutiveServerErrors = 0;
+
   for (const row of rows) {
     summary.scanned++;
     if (!row.ecosystem || !row.packageId) continue;
+    if (!row.version) {
+      // Without a version we can't query OSV meaningfully. Skip quietly.
+      if (process.env.LOG_LEVEL === 'debug') {
+        // eslint-disable-next-line no-console
+        console.debug('[cveEnrichment] skipping row without version', {
+          patchId: row.patchId,
+          packageId: row.packageId,
+        });
+      }
+      continue;
+    }
 
     try {
       const osv = await queryOsvForPackage({
         ecosystem: row.ecosystem,
         name: row.packageId,
-        version: row.version || '0.0.0',
+        version: row.version,
       });
+
+      consecutiveServerErrors = 0;
 
       if (osv.cveIds.length === 0) continue;
 
@@ -81,8 +91,29 @@ export async function runCveEnrichmentBatch(
         })
         .where(eq(patches.id, row.patchId));
       summary.updated++;
-    } catch (_err) {
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[cveEnrichment] OSV lookup failed', {
+        patchId: row.patchId,
+        ecosystem: row.ecosystem,
+        packageId: row.packageId,
+        version: row.version,
+        error: err instanceof Error ? err.message : String(err),
+      });
       summary.errors++;
+
+      if (err instanceof OsvRateLimitError) {
+        // Stop hammering OSV — abort and rethrow so the scheduler backs off.
+        throw err;
+      }
+      if (err instanceof OsvServerError) {
+        consecutiveServerErrors++;
+        if (consecutiveServerErrors >= 3) {
+          throw err;
+        }
+      } else {
+        consecutiveServerErrors = 0;
+      }
     }
   }
 

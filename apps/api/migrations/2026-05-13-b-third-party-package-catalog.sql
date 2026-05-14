@@ -1,6 +1,5 @@
 -- Curated catalog of third-party packages with Breeze metadata.
--- System-wide (no org_id); writes gated to partner-admin role at the route layer.
--- Intentionally unscoped — will be added to rls-coverage allowlist in Task 11.
+-- System-wide (no org_id); writes gated to platform-admin role at the route layer.
 
 CREATE TABLE IF NOT EXISTS third_party_package_catalog (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

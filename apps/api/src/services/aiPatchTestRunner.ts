@@ -14,12 +14,16 @@ export interface RunArgs {
 }
 
 export interface RunResult {
-  result: 'pass' | 'fail' | 'inconclusive';
+  result: 'pass' | 'fail' | 'inconclusive' | 'skipped';
   notes: string;
   log: string;
 }
 
 export class ValidationError extends Error {}
+
+type RunOutcome =
+  | { kind: 'completed'; stdout: string; stderr: string; code: number }
+  | { kind: 'ssh_error'; reason: string };
 
 function validateInputs(args: RunArgs) {
   if (!VALID_PACKAGE_ID.test(args.packageId)) {
@@ -41,21 +45,40 @@ async function runOnVm(
   target: string,
   sshKey: string,
   command: string
-): Promise<{ stdout: string; stderr: string; code: number }> {
+): Promise<RunOutcome> {
   try {
     const { stdout, stderr } = await execFileAsync(
       'ssh',
       ['-i', sshKey, '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes', target, command],
       { timeout: SSH_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }
     );
-    return { stdout, stderr, code: 0 };
+    return { kind: 'completed', stdout, stderr, code: 0 };
   } catch (err: unknown) {
-    if (err && typeof err === 'object' && 'code' in err) {
-      const e = err as { code?: number; stdout?: string; stderr?: string };
+    if (err && typeof err === 'object') {
+      const e = err as {
+        killed?: boolean;
+        signal?: string;
+        code?: number;
+        stdout?: string;
+        stderr?: string;
+        message?: string;
+      };
+      // Hit the execFile timeout — Node SIGTERMs the child.
+      if (e.killed === true || e.signal === 'SIGTERM') {
+        return { kind: 'ssh_error', reason: `timeout after ${SSH_TIMEOUT_MS}ms` };
+      }
+      // SSH never produced a usable exit code → transport-level failure.
+      if (typeof e.code !== 'number') {
+        return {
+          kind: 'ssh_error',
+          reason: e.message ?? 'ssh command failed without exit code',
+        };
+      }
       return {
+        kind: 'completed',
         stdout: e.stdout ?? '',
         stderr: e.stderr ?? '',
-        code: typeof e.code === 'number' ? e.code : -1,
+        code: e.code,
       };
     }
     throw err;
@@ -73,7 +96,7 @@ async function analyzeWithClaude(input: {
   const client = new Anthropic();
 
   const resp = await client.messages.create({
-    model: 'claude-opus-4-7',
+    model: 'claude-sonnet-4-5-20250929',
     max_tokens: 512,
     system: [
       {
@@ -100,10 +123,23 @@ async function analyzeWithClaude(input: {
   try {
     const parsed = JSON.parse(raw) as { result: 'pass' | 'fail' | 'inconclusive'; notes?: string };
     if (parsed.result !== 'pass' && parsed.result !== 'fail' && parsed.result !== 'inconclusive') {
+      // eslint-disable-next-line no-console
+      console.error('[aiPatchTestRunner] unexpected verdict from Claude', {
+        packageId: input.packageId,
+        version: input.version,
+        raw: raw.slice(0, 500),
+      });
       return { result: 'inconclusive', notes: `unexpected verdict: ${raw.slice(0, 200)}` };
     }
     return { result: parsed.result, notes: parsed.notes ?? '' };
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[aiPatchTestRunner] failed to parse Claude response as JSON', {
+      packageId: input.packageId,
+      version: input.version,
+      raw: raw.slice(0, 500),
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       result: 'inconclusive',
       notes: `failed to parse Claude response as JSON: ${raw.slice(0, 200)}`,
@@ -117,7 +153,7 @@ export async function runWingetReleaseTest(args: RunArgs): Promise<RunResult> {
   const env = readVmEnv();
   if (!env) {
     return {
-      result: 'inconclusive',
+      result: 'skipped',
       notes: 'WIN_TEST_VM_TARGET or WIN_TEST_VM_SSH_KEY missing - AI test skipped',
       log: '',
     };
@@ -126,8 +162,25 @@ export async function runWingetReleaseTest(args: RunArgs): Promise<RunResult> {
   const commands = [
     `winget upgrade --id ${args.packageId} --silent --accept-package-agreements --accept-source-agreements --disable-interactivity`,
   ];
-  const installResult = await runOnVm(env.target, env.sshKey, commands[0]);
-  const log = `exit=${installResult.code}\nstdout:\n${installResult.stdout}\nstderr:\n${installResult.stderr}`;
+  const outcome = await runOnVm(env.target, env.sshKey, commands[0]);
+
+  if (outcome.kind === 'ssh_error') {
+    return {
+      result: 'inconclusive',
+      notes: `SSH transport failed: ${outcome.reason}`,
+      log: '',
+    };
+  }
+
+  const log = `exit=${outcome.code}\nstdout:\n${outcome.stdout}\nstderr:\n${outcome.stderr}`;
+
+  if (outcome.code !== 0) {
+    return {
+      result: 'fail',
+      notes: `winget exit code ${outcome.code}`,
+      log,
+    };
+  }
 
   let verdict: { result: 'pass' | 'fail' | 'inconclusive'; notes: string };
   try {
@@ -138,6 +191,12 @@ export async function runWingetReleaseTest(args: RunArgs): Promise<RunResult> {
       output: log,
     });
   } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[aiPatchTestRunner] Claude analysis threw', {
+      packageId: args.packageId,
+      version: args.version,
+      error: err instanceof Error ? err.message : String(err),
+    });
     verdict = {
       result: 'inconclusive',
       notes: `Claude analysis failed: ${err instanceof Error ? err.message : String(err)}`,

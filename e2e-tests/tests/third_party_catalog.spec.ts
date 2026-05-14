@@ -6,10 +6,8 @@ test.describe('Third-Party Package Catalog', () => {
     const catalog = new ThirdPartyCatalogPage(authedPage);
     await catalog.goto();
 
-    // Total should reflect the seeded ~20 entries.
     await expect(catalog.total()).not.toHaveText('0');
 
-    // At least one row should render — pick a stable winget ID from the seed.
     await expect(authedPage.getByText('Mozilla.Firefox')).toBeVisible();
     await expect(authedPage.getByText('Google.Chrome')).toBeVisible();
   });
@@ -21,7 +19,6 @@ test.describe('Third-Party Package Catalog', () => {
     await catalog.search().fill('firefox');
 
     await expect(authedPage.getByText('Mozilla.Firefox')).toBeVisible();
-    // Google.Chrome should no longer be on the page after the filter applies.
     await expect(authedPage.getByText('Google.Chrome')).toBeHidden();
   });
 

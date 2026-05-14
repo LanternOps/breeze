@@ -19,6 +19,16 @@ const mockCatalogTable = vi.hoisted(() => ({
   updatedAt: 'thirdPartyPackageCatalog.updatedAt',
 }));
 
+const mockReleaseTestsTable = vi.hoisted(() => ({
+  id: 'thirdPartyReleaseTests.id',
+  catalogId: 'thirdPartyReleaseTests.catalogId',
+  status: 'thirdPartyReleaseTests.status',
+}));
+
+const mockEnqueue = vi.hoisted(() => vi.fn());
+const mockExecute = vi.hoisted(() => vi.fn());
+const mockInvalidate = vi.hoisted(() => vi.fn());
+
 const mockPlatformAdminState = vi.hoisted(() => ({
   isPlatformAdmin: true,
 }));
@@ -27,6 +37,7 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
   ilike: (left: unknown, right: unknown) => ({ op: 'ilike', left, right }),
+  inArray: (left: unknown, right: unknown) => ({ op: 'inArray', left, right }),
   or: (...conditions: unknown[]) => ({ op: 'or', conditions }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: 'sql',
@@ -46,6 +57,16 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   thirdPartyPackageCatalog: mockCatalogTable,
+  thirdPartyReleaseTests: mockReleaseTestsTable,
+}));
+
+vi.mock('../../jobs/wingetReleaseTestWorker', () => ({
+  enqueueWingetReleaseTest: mockEnqueue,
+  executeWingetReleaseTest: mockExecute,
+}));
+
+vi.mock('../../services/thirdPartyEnrichment', () => ({
+  invalidateCatalogCache: mockInvalidate,
 }));
 
 vi.mock('../../middleware/platformAdmin', () => ({
@@ -122,6 +143,16 @@ function deleteReturning(rows: Array<{ id: string }>) {
   return {
     where: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(rows),
+    }),
+  };
+}
+
+function inflightSelect(rows: Array<{ id: string }>) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
     }),
   };
 }
@@ -207,5 +238,101 @@ describe('third-party catalog operations routes', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deleted: true });
+  });
+
+  describe('POST /:id/test', () => {
+    const CATALOG_ID = '44444444-4444-4444-8444-444444444444';
+
+    beforeEach(() => {
+      mockEnqueue.mockReset();
+      mockExecute.mockReset();
+      mockExecute.mockResolvedValue(undefined);
+    });
+
+    it('returns 403 without platform admin access', async () => {
+      mockPlatformAdminState.isPlatformAdmin = false;
+
+      const res = await app.request(`/third-party-catalog/${CATALOG_ID}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '121.0' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when catalog entry not found / not breeze-tested', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(inflightSelect([]) as never);
+      mockEnqueue.mockResolvedValueOnce({ testId: null, alreadyExisted: false });
+
+      const res = await app.request(`/third-party-catalog/${CATALOG_ID}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '121.0' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('cannot enqueue test');
+      expect(mockEnqueue).toHaveBeenCalledWith({ catalogId: CATALOG_ID, version: '121.0' });
+    });
+
+    it('returns 202 with body shape on happy path', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(inflightSelect([]) as never);
+      mockEnqueue.mockResolvedValueOnce({ testId: 'test-1', alreadyExisted: false });
+
+      const res = await app.request(`/third-party-catalog/${CATALOG_ID}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '121.0' }),
+      });
+
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ testId: 'test-1', alreadyExisted: false });
+      expect(mockExecute).toHaveBeenCalledWith({ testId: 'test-1' });
+    });
+
+    it('returns 409 when a test is already queued/running', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        inflightSelect([{ id: 'existing-test-id' }]) as never
+      );
+
+      const res = await app.request(`/third-party-catalog/${CATALOG_ID}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '121.0' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'test already in progress',
+        testId: 'existing-test-id',
+      });
+      expect(mockEnqueue).not.toHaveBeenCalled();
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for malformed version (empty string)', async () => {
+      const res = await app.request(`/third-party-catalog/${CATALOG_ID}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when version is missing', async () => {
+      const res = await app.request(`/third-party-catalog/${CATALOG_ID}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(400);
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    });
   });
 });

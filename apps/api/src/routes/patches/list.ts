@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc } from 'drizzle-orm';
+import { and, eq, sql, desc, type SQL } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { patches, patchApprovals } from '../../db/schema';
@@ -26,9 +26,11 @@ listRoutes.get(
     const { page, limit, offset } = getPagination(query);
 
     // Build conditions
-    const conditions = [];
+    const conditions: SQL[] = [];
+    let sourcePredicate: SQL | undefined;
     if (query.source) {
-      conditions.push(eq(patches.source, query.source));
+      sourcePredicate = eq(patches.source, query.source);
+      conditions.push(sourcePredicate);
     }
     if (query.severity) {
       conditions.push(eq(patches.severity, query.severity));
@@ -79,7 +81,7 @@ listRoutes.get(
 
     // Per-source counts (ignores the source filter so the chips reflect
     // the full breakdown of all visible patches).
-    const sourceConditions = conditions.filter((c) => c !== conditions[0] || !query.source);
+    const sourceConditions = conditions.filter((c) => c !== sourcePredicate);
     const sourceWhereClause = sourceConditions.length > 0 ? and(...sourceConditions) : undefined;
     const sourceCounts = await db
       .select({ source: patches.source, count: sql<number>`count(*)::int` })

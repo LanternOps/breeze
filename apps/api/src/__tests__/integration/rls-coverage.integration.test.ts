@@ -54,7 +54,8 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
-  'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by partner-admin role at the route layer.
+  'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
+  'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
