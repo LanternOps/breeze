@@ -255,6 +255,52 @@ describe("agentVersions routes", () => {
       expect(body.reason).toBe("release_manifest_metadata_mismatch");
     });
 
+    it("rejects with invalid_release_manifest_signature when signature is fabricated (#641 — signature checked before metadata)", async () => {
+      // A trust root is configured (so the signature path actually runs),
+      // but the supplied signature is all zeros. Even though the manifest
+      // metadata would mismatch the DB row, the route MUST return
+      // `invalid_release_manifest_signature` first so we never leak the
+      // more specific metadata-mismatch reason to an attacker who never
+      // held a valid signing key.
+      const signed = makeSignedReleaseManifest();
+      process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const fabricatedSignature = Buffer.alloc(64, 0).toString("base64");
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "agent",
+                downloadUrl: "https://s3.example.com/agent-1.0.0",
+                // Metadata that would mismatch the manifest body — but we
+                // should never get far enough to learn that.
+                checksum: "c".repeat(64),
+                fileSize: BigInt(45000000),
+                releaseManifest: signed.manifest,
+                manifestSignature: fabricatedSignature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(
+        "/agent-versions/1.0.0/download?platform=linux&arch=amd64",
+      );
+
+      delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.reason).toBe("invalid_release_manifest_signature");
+    });
+
     it("serves GitHub release artifact manifests after verifying the signed asset checksum", async () => {
       const checksum = "e".repeat(64);
       const signed = makeSignedReleaseArtifactManifest({

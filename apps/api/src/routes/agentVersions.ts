@@ -281,6 +281,14 @@ export async function validateReleaseManifest(args: {
     }
   }
 
+  // Verify the signature BEFORE comparing metadata. If we leak the more
+  // specific `release_manifest_metadata_mismatch` reason to a caller whose
+  // signature was forged, we let attackers probe which DB-row field would
+  // have mismatched without ever holding a valid signing key (#641).
+  if (!(await verifyEd25519ManifestSignature(args.manifest, args.signature))) {
+    return { ok: false, reason: "invalid_release_manifest_signature" };
+  }
+
   const expectedSize = args.fileSize == null ? null : Number(args.fileSize);
   const sizeMatches = expectedSize == null || parsed.size === expectedSize;
 
@@ -294,10 +302,6 @@ export async function validateReleaseManifest(args: {
     !sizeMatches
   ) {
     return { ok: false, reason: "release_manifest_metadata_mismatch" };
-  }
-
-  if (!(await verifyEd25519ManifestSignature(args.manifest, args.signature))) {
-    return { ok: false, reason: "invalid_release_manifest_signature" };
   }
 
   return { ok: true };
