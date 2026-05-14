@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import ThirdPartyCatalogEditor, { type CatalogEditorInitial } from './ThirdPartyCatalogEditor';
 
 type CatalogEntry = {
   id: string;
@@ -18,6 +19,11 @@ type CatalogEntry = {
   homepageUrl: string | null;
 };
 
+type EditorState =
+  | { kind: 'closed' }
+  | { kind: 'add' }
+  | { kind: 'edit'; entry: CatalogEntry };
+
 const severityStyles: Record<string, string> = {
   critical: 'bg-red-100 text-red-800',
   important: 'bg-orange-100 text-orange-800',
@@ -33,6 +39,8 @@ export default function ThirdPartyCatalog() {
   const [error, setError] = useState<string>();
   const [search, setSearch] = useState('');
   const [showOnlyTested, setShowOnlyTested] = useState(false);
+  const [editor, setEditor] = useState<EditorState>({ kind: 'closed' });
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const fetchCatalog = useCallback(async () => {
     try {
@@ -59,6 +67,37 @@ export default function ThirdPartyCatalog() {
     return () => clearTimeout(timer);
   }, [fetchCatalog, search]);
 
+  const handleDelete = async (entry: CatalogEntry) => {
+    if (!window.confirm(`Delete "${entry.friendlyName}" from the catalog?`)) return;
+    setDeletingId(entry.id);
+    setError(undefined);
+    try {
+      const response = await fetchWithAuth(`/third-party-catalog/${entry.id}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error('Failed to delete entry');
+      await fetchCatalog();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const editorInitial: CatalogEditorInitial | undefined =
+    editor.kind === 'edit'
+      ? {
+          id: editor.entry.id,
+          packageId: editor.entry.packageId,
+          vendor: editor.entry.vendor,
+          friendlyName: editor.entry.friendlyName,
+          defaultSeverity: editor.entry.defaultSeverity,
+          breezeTested: editor.entry.breezeTested,
+          notes: editor.entry.notes,
+          homepageUrl: editor.entry.homepageUrl,
+        }
+      : undefined;
+
   return (
     <div className="p-6">
       <div className="flex items-start justify-between mb-6">
@@ -71,13 +110,22 @@ export default function ThirdPartyCatalog() {
             Total entries: <span data-testid="catalog-total">{total}</span>
           </p>
         </div>
-        <button
-          data-testid="catalog-refresh"
-          onClick={fetchCatalog}
-          className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
-        >
-          <RefreshCw className="w-4 h-4" /> Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            data-testid="catalog-refresh"
+            onClick={fetchCatalog}
+            className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
+          >
+            <RefreshCw className="w-4 h-4" /> Refresh
+          </button>
+          <button
+            data-testid="catalog-add-button"
+            onClick={() => setEditor({ kind: 'add' })}
+            className="px-3 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1"
+          >
+            <Plus className="w-4 h-4" /> Add package
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-3 mb-4">
@@ -125,6 +173,7 @@ export default function ThirdPartyCatalog() {
                 <th className="px-4 py-2 font-medium">Winget ID</th>
                 <th className="px-4 py-2 font-medium">Severity</th>
                 <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -171,11 +220,43 @@ export default function ThirdPartyCatalog() {
                       </span>
                     )}
                   </td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        data-testid={`catalog-row-${entry.id}-edit`}
+                        onClick={() => setEditor({ kind: 'edit', entry })}
+                        className="p-1 rounded hover:bg-gray-200"
+                        aria-label="Edit"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        data-testid={`catalog-row-${entry.id}-delete`}
+                        onClick={() => handleDelete(entry)}
+                        disabled={deletingId === entry.id}
+                        className="p-1 rounded hover:bg-gray-200 disabled:opacity-50"
+                        aria-label="Delete"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-600" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {editor.kind !== 'closed' && (
+        <ThirdPartyCatalogEditor
+          initial={editorInitial}
+          onClose={() => setEditor({ kind: 'closed' })}
+          onSaved={() => {
+            setEditor({ kind: 'closed' });
+            fetchCatalog();
+          }}
+        />
       )}
     </div>
   );

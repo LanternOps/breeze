@@ -114,4 +114,108 @@ describe('ThirdPartyCatalog', () => {
     render(<ThirdPartyCatalog />);
     await screen.findByText('Failed to load catalog');
   });
+
+  it('opens the editor when "Add package" is clicked', async () => {
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    fireEvent.click(screen.getByTestId('catalog-add-button'));
+
+    expect(screen.getByTestId('catalog-editor-modal')).toBeTruthy();
+    expect(screen.getByText('Add catalog entry')).toBeTruthy();
+  });
+
+  it('opens the editor pre-filled when edit row clicked', async () => {
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    fireEvent.click(screen.getByTestId('catalog-row-1-edit'));
+
+    expect(screen.getByTestId('catalog-editor-modal')).toBeTruthy();
+    expect(screen.getByText('Edit catalog entry')).toBeTruthy();
+    expect((screen.getByTestId('catalog-editor-packageId') as HTMLInputElement).value).toBe('Mozilla.Firefox');
+    expect((screen.getByTestId('catalog-editor-vendor') as HTMLInputElement).value).toBe('Mozilla');
+  });
+
+  it('POSTs new entry when editor submitted', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (method === 'POST' && url === '/third-party-catalog') {
+        return makeJsonResponse({ id: 'new', packageId: 'Foo.Bar', vendor: 'Foo', friendlyName: 'Foo Bar' });
+      }
+      return makeJsonResponse({ items: sampleItems, total: sampleItems.length });
+    });
+
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    fireEvent.click(screen.getByTestId('catalog-add-button'));
+    fireEvent.change(screen.getByTestId('catalog-editor-packageId'), { target: { value: 'Foo.Bar' } });
+    fireEvent.change(screen.getByTestId('catalog-editor-vendor'), { target: { value: 'Foo' } });
+    fireEvent.change(screen.getByTestId('catalog-editor-friendlyName'), { target: { value: 'Foo Bar' } });
+    fireEvent.click(screen.getByTestId('catalog-editor-submit'));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(([url, init]) =>
+        String(url) === '/third-party-catalog' && (init as RequestInit | undefined)?.method === 'POST'
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(String((postCall![1] as RequestInit).body));
+      expect(body.packageId).toBe('Foo.Bar');
+      expect(body.vendor).toBe('Foo');
+      expect(body.friendlyName).toBe('Foo Bar');
+    });
+  });
+
+  it('PATCHes existing entry on edit submit', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (method === 'PATCH') {
+        return makeJsonResponse({ id: '1', vendor: 'Mozilla Inc.' });
+      }
+      return makeJsonResponse({ items: sampleItems, total: sampleItems.length });
+    });
+
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    fireEvent.click(screen.getByTestId('catalog-row-1-edit'));
+    fireEvent.change(screen.getByTestId('catalog-editor-vendor'), { target: { value: 'Mozilla Inc.' } });
+    fireEvent.click(screen.getByTestId('catalog-editor-submit'));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(([url, init]) =>
+        String(url) === '/third-party-catalog/1' && (init as RequestInit | undefined)?.method === 'PATCH'
+      );
+      expect(patchCall).toBeDefined();
+    });
+  });
+
+  it('DELETEs entry after confirmation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (method === 'DELETE') {
+        return makeJsonResponse({ deleted: true });
+      }
+      return makeJsonResponse({ items: sampleItems, total: sampleItems.length });
+    });
+
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    fireEvent.click(screen.getByTestId('catalog-row-1-delete'));
+
+    await waitFor(() => {
+      const deleteCall = fetchMock.mock.calls.find(([url, init]) =>
+        String(url) === '/third-party-catalog/1' && (init as RequestInit | undefined)?.method === 'DELETE'
+      );
+      expect(deleteCall).toBeDefined();
+    });
+
+    confirmSpy.mockRestore();
+  });
 });
