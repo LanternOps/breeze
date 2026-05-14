@@ -349,11 +349,37 @@ jobs:
             -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
             ./cmd/breeze-agent
 
+      # Windows-only: build a GUI-subsystem sibling from the SAME source so the
+      # scheduled task that launches the user-helper at logon does not allocate
+      # a visible console window. Same Go source, only the -H windowsgui linker
+      # flag differs. See agent/Makefile (build-windows-user-helper) for the
+      # local-dev equivalent.
+      - name: Build user-helper (Windows only)
+        if: matrix.goos == 'windows'
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          BUILD_VERSION: ${{ github.sha }}
+        run: |
+          go build -ldflags="-s -w -X main.version=${BUILD_VERSION} -H windowsgui" \
+            -o "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
+            ./cmd/breeze-agent
+
       - name: Upload Agent artifact
         uses: actions/upload-artifact@v7
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          retention-days: 7
+
+      - name: Upload user-helper artifact (Windows only)
+        if: matrix.goos == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: agent/breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 7
 
   test-agent:

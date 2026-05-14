@@ -8,8 +8,14 @@ import "fmt"
 // spawning is handled by OS-level mechanisms (launchd LaunchAgent, systemd
 // user service, XDG autostart), so the lifecycle manager does not track
 // child processes directly.
+//
+// BinaryPath records which executable the spawner actually launched so
+// callers can distinguish the GUI-subsystem sibling (breeze-user-helper.exe)
+// from the console-subsystem agent fallback in their telemetry. Always
+// empty on non-Windows builds since the stub never spawns.
 type SpawnedHelper struct {
-	PID uint32
+	PID        uint32
+	BinaryPath string
 }
 
 // Close is a no-op on non-Windows platforms.

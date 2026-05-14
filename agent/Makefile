@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
+.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
 VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -39,8 +39,20 @@ build-darwin:
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-darwin-amd64 ./cmd/breeze-agent
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-agent-darwin-arm64 ./cmd/breeze-agent
 
-build-windows:
+build-windows: build-windows-user-helper
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-windows-amd64.exe ./cmd/breeze-agent
+
+# build-windows-user-helper builds the SAME ./cmd/breeze-agent source as a
+# GUI-subsystem PE binary so the scheduled task that launches the user-helper
+# at user logon does not allocate a visible console window. Console-subsystem
+# binaries (the default `go build` output on Windows) get an attached console
+# from the kernel whenever the Task Scheduler spawns them in a user session,
+# regardless of the task XML <Hidden> flag. -H windowsgui flips the PE
+# subsystem byte from 3 to 2; the kernel then allocates no console at all.
+# Same Go program, same subcommands, same agent.yaml — only the linker flag
+# differs.
+build-windows-user-helper:
+	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/breeze-user-helper-windows-amd64.exe ./cmd/breeze-agent
 
 build-winres:
 	@command -v go-winres >/dev/null 2>&1 || (echo "go-winres not found. Install with: go install github.com/tc-hib/go-winres@latest" && exit 1)

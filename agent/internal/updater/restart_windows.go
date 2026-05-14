@@ -94,7 +94,7 @@ func RestartWithHelper(newBinaryPath, targetPath string) error {
 		"Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
 		// Kill any lingering breeze processes (helper, viewer, user helpers)
 		// that might hold file locks on the binary or shared directory.
-		"Get-Process -Name 'breeze-helper','breeze-agent','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+		"Get-Process -Name 'breeze-helper','breeze-agent','breeze-user-helper','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
 		"Start-Sleep -Seconds 2",
 		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeBinary, safeTarget),
 		"Start-Service -Name '" + serviceName + "'",

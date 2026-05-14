@@ -1667,6 +1667,7 @@ func (b *Broker) allowedHelperPaths() []string {
 		filepath.Join(dir, "breeze-desktop-helper"),
 		filepath.Join(dir, "breeze-watchdog"),
 		filepath.Join(dir, "breeze-desktop-helper.exe"),
+		filepath.Join(dir, UserHelperBinaryName),
 		filepath.Join(dir, "breeze-watchdog.exe"),
 	}
 	if runtime.GOOS != "windows" {
@@ -1696,12 +1697,41 @@ func (b *Broker) allowedHelperPaths() []string {
 // binaries currently present on disk. Call this after a dev push that
 // replaces a helper binary so the next connection from the newly spawned
 // helper (which will hash to a new value) is accepted.
-func (b *Broker) RefreshAllowedHashes() {
+// RefreshAllowedHashes recomputes the helper binary hash allowlist from
+// disk and atomically swaps the broker's selfHashes map.
+//
+// Returns the count of successfully-hashed binaries and a non-nil error if
+// the recompute produced zero hashes (every allowed path failed to hash,
+// usually because the helper binaries are missing or unreadable). Callers
+// that just installed a binary should treat a zero-count refresh as a fatal
+// dev-update outcome — the next helper spawn will be rejected at the IPC
+// handshake because no hash in the new map matches the peer.
+func (b *Broker) RefreshAllowedHashes() (int, error) {
 	newHashes := b.computeAllowedHashes()
 	b.mu.Lock()
 	b.selfHashes = newHashes
 	b.mu.Unlock()
 	log.Info("refreshed helper binary hash allowlist", "count", len(newHashes))
+	if len(newHashes) == 0 {
+		return 0, fmt.Errorf("no helper binary hashes could be computed; all helper connections will be rejected")
+	}
+	return len(newHashes), nil
+}
+
+// HashAndVerifyAllowed hashes the binary at path and reports whether the
+// resulting hash is in the broker's current selfHashes allowlist. Used by
+// dev-update handlers to verify that a freshly-installed binary will be
+// accepted at the next helper-spawn IPC handshake. Returns the computed hash
+// for diagnostic logging.
+func (b *Broker) HashAndVerifyAllowed(path string) (string, bool, error) {
+	sum, err := hashFileSHA256(path)
+	if err != nil {
+		return "", false, fmt.Errorf("hash %s: %w", path, err)
+	}
+	b.mu.RLock()
+	_, ok := b.selfHashes[sum]
+	b.mu.RUnlock()
+	return sum, ok, nil
 }
 
 func (b *Broker) computeAllowedHashes() map[string]struct{} {

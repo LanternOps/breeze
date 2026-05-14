@@ -11,6 +11,9 @@
 <?ifndef WatchdogExePath?>
 <?define WatchdogExePath=..\breeze-watchdog-windows-amd64.exe?>
 <?endif?>
+<?ifndef UserHelperExePath?>
+<?define UserHelperExePath=..\breeze-user-helper-windows-amd64.exe?>
+<?endif?>
 <?ifndef UserTaskXmlPath?>
 <?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
 <?endif?>
@@ -76,7 +79,7 @@
     <CustomAction
       Id="KillBreezeProcesses"
       Property="BREEZE_KILL_CMD"
-      ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
+      ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
       Execute="immediate"
       Return="ignore" />
 
@@ -114,6 +117,15 @@
         <Component Id="cmpBreezeBackupExe" Guid="*">
           <File Id="filBreezeBackupExe" Name="breeze-backup.exe"
                 Source="$(var.BackupExePath)" KeyPath="yes" />
+        </Component>
+
+        <Component Id="cmpBreezeUserHelperExe" Guid="*">
+          <!-- GUI-subsystem sibling of breeze-agent.exe (same Go source, -H windowsgui).
+               Launched by the AgentUserHelper scheduled task at user logon and by the
+               SYSTEM-context sessionbroker spawn paths. GUI subsystem prevents the
+               Windows kernel from allocating a console window for the helper. -->
+          <File Id="filBreezeUserHelperExe" Name="breeze-user-helper.exe"
+                Source="$(var.UserHelperExePath)" KeyPath="yes" />
         </Component>
 
         <Component Id="cmpBreezeWatchdogExe" Guid="*">
@@ -231,8 +243,19 @@
       <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR Installed" />
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
       <Custom Action="HardenProgramDataAcl" After="CreateFolders" Condition="NOT REMOVE" />
+      <!-- Rollback rolls back the FIRST-install case only; on upgrade or
+           repair the existing task is valid prior state and shouldn't be
+           wiped by a rolled-back inner install. -->
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
-      <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
+      <!-- RegisterUserHelperTask runs on EVERY install path that isn't
+           uninstall: first install, major upgrade, and `msiexec /fa` repair.
+           The PS script's Register-ScheduledTask -Force is idempotent, so
+           re-registering on repair just refreshes the action to the current
+           XML (the binary path may have changed across versions) — which is
+           the entire point. The previous `NOT Installed AND NOT REMOVE`
+           gate skipped repair, leaving repaired installs with stale task
+           pointers. -->
+      <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT REMOVE" />
       <!-- Enrollment runs after file copy but before InstallServices.
 
            Return="check" on the EnrollAgent CA means a non-zero exit
@@ -262,6 +285,7 @@
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
       <ComponentRef Id="cmpBreezeBackupExe" />
+      <ComponentRef Id="cmpBreezeUserHelperExe" />
       <ComponentRef Id="cmpBreezeWatchdogExe" />
       <ComponentRef Id="cmpSafeBootNetworkReg" />
       <ComponentRef Id="cmpUserTaskXml" />

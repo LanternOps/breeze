@@ -36,7 +36,7 @@
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>"C:\Program Files\Breeze\breeze-agent.exe"</Command>
+      <Command>"C:\Program Files\Breeze\breeze-user-helper.exe"</Command>
       <Arguments>user-helper --role user</Arguments>
     </Exec>
   </Actions>

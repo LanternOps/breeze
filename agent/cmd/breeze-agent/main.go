@@ -1057,6 +1057,19 @@ func desktopHelperRole() string {
 }
 
 func runHelperProcess(name, role, context, binaryKind string) {
+	// Detach any inherited console immediately. This runs at the top of
+	// every helper role — user-helper, desktop-helper, and any future
+	// helper subcommand routed through runHelperProcess — because all of
+	// them risk inheriting a console window when the parent path uses the
+	// legacy console-subsystem breeze-agent.exe (e.g. operators running
+	// the helper manually from cmd.exe, or partially-upgraded installs
+	// where the new MSI hasn't repointed the scheduled task at
+	// breeze-user-helper.exe yet). The GUI-subsystem sibling built per
+	// agent/Makefile build-windows-user-helper has no console to free, so
+	// the call is a documented no-op there. Cross-platform stub on
+	// macOS/Linux.
+	detachHelperConsole()
+
 	// Log to file in the same logs folder as the main agent
 	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
 	os.MkdirAll(logDir, 0700)
