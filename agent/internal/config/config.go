@@ -406,35 +406,18 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		}
 	}
 
-	// Write config to a temp file with correct permissions from the start,
-	// then rename to the final path. This avoids a TOCTOU window where the
-	// file exists with default permissions before Chmod is called.
-	// Temp file must keep the .yaml extension so viper can infer the type.
-	ext := filepath.Ext(cfgPath)
-	tmpPath := cfgPath[:len(cfgPath)-len(ext)] + ".tmp" + ext
-	if err := viper.WriteConfigAs(tmpPath); err != nil {
-		return err
-	}
-	// Open with correct permissions atomically (no TOCTOU gap).
-	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0640)
+	// Serialize via viper (same encoder as WriteConfigAs), strip secrets, then
+	// write atomically: tmp file in the same directory → fsync → rename. The
+	// fsync + rename pair guards against power-loss leaving agent.yaml
+	// zero-length or partially written between O_TRUNC and the final flush.
+	cfgYAML, err := yaml.Marshal(viper.AllSettings())
 	if err != nil {
-		os.Remove(tmpPath)
 		return err
 	}
-	tmpData, err := os.ReadFile(tmpPath)
-	if err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+	cfgYAML = stripSecretsFromAgentConfig(cfgYAML)
+	if err := atomicWriteFile(cfgPath, cfgYAML, 0640); err != nil {
 		return err
 	}
-	tmpData = stripSecretsFromAgentConfig(tmpData)
-	if _, err := f.Write(tmpData); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	f.Close()
-	os.Remove(tmpPath)
 
 	// Defense-in-depth: ensure permissions are correct even if umask interfered.
 	if err := enforceConfigDirPermissions(filepath.Dir(cfgPath)); err != nil {
@@ -463,30 +446,14 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
 	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)
 
-	// Write secrets via temp file, then copy to final path opened with 0600.
-	sExt := filepath.Ext(secretsPath)
-	secretsTmp := secretsPath[:len(secretsPath)-len(sExt)] + ".tmp" + sExt
-	if err := sv.WriteConfigAs(secretsTmp); err != nil {
+	// Same atomic-write pattern for the secrets file (0600).
+	secretsYAML, err := yaml.Marshal(sv.AllSettings())
+	if err != nil {
+		return fmt.Errorf("marshaling secrets file: %w", err)
+	}
+	if err := atomicWriteFile(secretsPath, secretsYAML, 0600); err != nil {
 		return fmt.Errorf("writing secrets file: %w", err)
 	}
-	sf, err := os.OpenFile(secretsPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		os.Remove(secretsTmp)
-		return fmt.Errorf("creating secrets file: %w", err)
-	}
-	secretsData, err := os.ReadFile(secretsTmp)
-	if err != nil {
-		sf.Close()
-		os.Remove(secretsTmp)
-		return fmt.Errorf("reading secrets temp file: %w", err)
-	}
-	if _, err := sf.Write(secretsData); err != nil {
-		sf.Close()
-		os.Remove(secretsTmp)
-		return fmt.Errorf("writing secrets file data: %w", err)
-	}
-	sf.Close()
-	os.Remove(secretsTmp)
 
 	// Defense-in-depth: ensure secrets permissions are correct.
 	if err := enforceSecretFilePermissions(secretsPath); err != nil {
@@ -515,6 +482,51 @@ func stripSecretsFromAgentConfig(data []byte) []byte {
 		return data
 	}
 	return out
+}
+
+// atomicWriteFile writes data to path durably: it creates path+".partial" in
+// the same directory with perm set at open time, writes data, fsyncs the file
+// before close, then renames into place. Best-effort fsync on the directory
+// inode follows the rename so the rename itself survives power loss on POSIX.
+//
+// The fsync is what guards against agent.yaml ending up zero-length or
+// partially written after an unclean shutdown — kernel write-back can delay a
+// dirty page for tens of seconds on default ext4/APFS mount options. Issue #642.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmpPath := path + ".partial"
+	// A prior crash mid-write may have left an old tmp behind; remove it so
+	// the O_EXCL open below doesn't fail spuriously.
+	_ = os.Remove(tmpPath)
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	// Best-effort directory fsync — durable on POSIX, may no-op or error on
+	// Windows; either way the rename has already returned successfully so
+	// failures here are not fatal.
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 func isSecretConfigKey(key string) bool {

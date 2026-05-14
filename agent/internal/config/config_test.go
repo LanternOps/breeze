@@ -170,3 +170,101 @@ log_level: info
 		}
 	}
 }
+
+// TestSaveToWritesAtomicallyWithoutLeftoverTempFiles guards #642: SaveTo must
+// not leave .partial scratch files behind on success, and the on-disk files
+// must contain the full serialized config (not zero-length or truncated).
+func TestSaveToWritesAtomicallyWithoutLeftoverTempFiles(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	const agentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg := Default()
+	cfg.AgentID = agentID
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent_atomic"
+	cfg.WatchdogAuthToken = "brz_watchdog_atomic"
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".partial") || strings.Contains(e.Name(), ".tmp") {
+			t.Fatalf("SaveTo left scratch file %q behind", e.Name())
+		}
+	}
+
+	agentInfo, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat agent.yaml: %v", err)
+	}
+	if agentInfo.Size() == 0 {
+		t.Fatalf("agent.yaml is zero-length after SaveTo")
+	}
+	secretsInfo, err := os.Stat(filepath.Join(dir, "secrets.yaml"))
+	if err != nil {
+		t.Fatalf("stat secrets.yaml: %v", err)
+	}
+	if secretsInfo.Size() == 0 {
+		t.Fatalf("secrets.yaml is zero-length after SaveTo")
+	}
+
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.AgentID != agentID || loaded.AuthToken != "brz_agent_atomic" || loaded.WatchdogAuthToken != "brz_watchdog_atomic" {
+		t.Fatalf("Load returned incomplete config: %+v", loaded)
+	}
+}
+
+// TestAtomicWriteFileOverwritesExistingFile verifies the helper correctly
+// replaces an existing file (the common case — every SaveTo after enrollment).
+func TestAtomicWriteFileOverwritesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(path, []byte("old: value\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := atomicWriteFile(path, []byte("new: value\n"), 0o640); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "new: value\n" {
+		t.Fatalf("content = %q, want %q", got, "new: value\n")
+	}
+	// No .partial leftover.
+	if _, err := os.Stat(path + ".partial"); !os.IsNotExist(err) {
+		t.Fatalf("expected .partial removed, got err=%v", err)
+	}
+}
+
+// TestAtomicWriteFileRecoversFromStaleTemp guards the case where a previous
+// crash left a .partial behind. The next write must succeed, not fail with
+// O_EXCL EEXIST.
+func TestAtomicWriteFileRecoversFromStaleTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(path+".partial", []byte("stale"), 0o600); err != nil {
+		t.Fatalf("seed stale: %v", err)
+	}
+	if err := atomicWriteFile(path, []byte("fresh\n"), 0o640); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "fresh\n" {
+		t.Fatalf("content = %q, want fresh", got)
+	}
+}
