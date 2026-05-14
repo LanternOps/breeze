@@ -412,11 +412,11 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	// zero-length or partially written between O_TRUNC and the final flush.
 	cfgYAML, err := yaml.Marshal(viper.AllSettings())
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling agent config: %w", err)
 	}
 	cfgYAML = stripSecretsFromAgentConfig(cfgYAML)
 	if err := atomicWriteFile(cfgPath, cfgYAML, 0640); err != nil {
-		return err
+		return fmt.Errorf("writing agent config: %w", err)
 	}
 
 	// Defense-in-depth: ensure permissions are correct even if umask interfered.
@@ -485,13 +485,22 @@ func stripSecretsFromAgentConfig(data []byte) []byte {
 }
 
 // atomicWriteFile writes data to path durably: it creates path+".partial" in
-// the same directory with perm set at open time, writes data, fsyncs the file
-// before close, then renames into place. Best-effort fsync on the directory
-// inode follows the rename so the rename itself survives power loss on POSIX.
+// the same directory with perm requested at open time (still subject to umask
+// on POSIX — defense-in-depth Chmod happens at the call site), writes data,
+// fsyncs the file before close, then renames into place. Best-effort fsync
+// on the directory inode follows the rename so the rename itself survives
+// power loss on POSIX.
 //
 // The fsync is what guards against agent.yaml ending up zero-length or
-// partially written after an unclean shutdown — kernel write-back can delay a
-// dirty page for tens of seconds on default ext4/APFS mount options. Issue #642.
+// partially written after an unclean shutdown — kernel write-back can delay
+// a dirty page well past when the in-place O_TRUNC write would have returned.
+// Issue #642.
+//
+// Tradeoff vs the previous in-place write: on Windows, MoveFileEx fails with
+// ERROR_ACCESS_DENIED if another process holds the destination open without
+// FILE_SHARE_DELETE. SaveTo callers may now fail where the old O_TRUNC write
+// would have succeeded — but failing loudly is preferable to silent power-loss
+// corruption, and the next heartbeat retries.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	tmpPath := path + ".partial"
 	// A prior crash mid-write may have left an old tmp behind; remove it so
@@ -519,12 +528,18 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	// Best-effort directory fsync — durable on POSIX, may no-op or error on
-	// Windows; either way the rename has already returned successfully so
-	// failures here are not fatal.
-	if d, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = d.Sync()
+	// Best-effort directory fsync — durable on POSIX, no-ops or errors on
+	// Windows. Log failures so a FS that's lost the ability to fsync metadata
+	// (e.g. went read-only, ENOSPC on the inode table) doesn't silently
+	// degrade durability across every SaveTo.
+	dir := filepath.Dir(path)
+	if d, err := os.Open(dir); err == nil {
+		if err := d.Sync(); err != nil && runtime.GOOS != "windows" {
+			log.Warn("config dir fsync failed", "dir", dir, "error", err.Error())
+		}
 		d.Close()
+	} else if runtime.GOOS != "windows" {
+		log.Warn("config dir open for fsync failed", "dir", dir, "error", err.Error())
 	}
 	return nil
 }

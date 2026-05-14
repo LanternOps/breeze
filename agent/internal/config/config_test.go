@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -222,6 +223,18 @@ func TestSaveToWritesAtomicallyWithoutLeftoverTempFiles(t *testing.T) {
 	if loaded.AgentID != agentID || loaded.AuthToken != "brz_agent_atomic" || loaded.WatchdogAuthToken != "brz_watchdog_atomic" {
 		t.Fatalf("Load returned incomplete config: %+v", loaded)
 	}
+
+	// On POSIX, the perm set at OpenFile time must survive — preserving the
+	// TOCTOU-permission property the previous code's comment called out.
+	// Skip on Windows where POSIX mode bits don't map directly.
+	if runtime.GOOS != "windows" {
+		if mode := agentInfo.Mode().Perm(); mode != 0o640 {
+			t.Errorf("agent.yaml mode = %o, want 0640", mode)
+		}
+		if mode := secretsInfo.Mode().Perm(); mode != 0o600 {
+			t.Errorf("secrets.yaml mode = %o, want 0600", mode)
+		}
+	}
 }
 
 // TestAtomicWriteFileOverwritesExistingFile verifies the helper correctly
@@ -250,11 +263,13 @@ func TestAtomicWriteFileOverwritesExistingFile(t *testing.T) {
 
 // TestAtomicWriteFileRecoversFromStaleTemp guards the case where a previous
 // crash left a .partial behind. The next write must succeed, not fail with
-// O_EXCL EEXIST.
+// O_EXCL EEXIST. Asserts both the new file is correct and the stale .partial
+// was cleaned up — together these pin the pre-Remove + O_EXCL contract.
 func TestAtomicWriteFileRecoversFromStaleTemp(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.yaml")
-	if err := os.WriteFile(path+".partial", []byte("stale"), 0o600); err != nil {
+	stalePartial := path + ".partial"
+	if err := os.WriteFile(stalePartial, []byte("stale-contents-from-prior-crash"), 0o600); err != nil {
 		t.Fatalf("seed stale: %v", err)
 	}
 	if err := atomicWriteFile(path, []byte("fresh\n"), 0o640); err != nil {
@@ -266,5 +281,28 @@ func TestAtomicWriteFileRecoversFromStaleTemp(t *testing.T) {
 	}
 	if string(got) != "fresh\n" {
 		t.Fatalf("content = %q, want fresh", got)
+	}
+	// The stale .partial must be gone (consumed by the rename), not just
+	// overwritten with the fresh content — otherwise we'd be silently
+	// leaking scratch files on every crash recovery.
+	if _, err := os.Stat(stalePartial); !os.IsNotExist(err) {
+		t.Fatalf("stale .partial still present after recovery, stat err=%v", err)
+	}
+}
+
+// TestAtomicWriteFileCleansUpOnOpenFailure verifies that when the initial
+// OpenFile fails (here: parent dir does not exist), no .partial is left
+// behind. Pins the no-leftover invariant against future refactors that
+// might drop the os.Remove calls in the error paths.
+func TestAtomicWriteFileCleansUpOnOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	// path under a non-existent subdir → OpenFile fails with ENOENT.
+	path := filepath.Join(dir, "does-not-exist", "agent.yaml")
+	err := atomicWriteFile(path, []byte("data"), 0o640)
+	if err == nil {
+		t.Fatalf("expected error from atomicWriteFile, got nil")
+	}
+	if _, statErr := os.Stat(path + ".partial"); !os.IsNotExist(statErr) {
+		t.Fatalf(".partial should not exist after failed open, stat err=%v", statErr)
 	}
 }
