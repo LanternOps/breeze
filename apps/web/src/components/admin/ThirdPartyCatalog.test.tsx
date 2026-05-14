@@ -28,9 +28,9 @@ const sampleItems = [
     category: 'application',
     defaultSeverity: 'important',
     breezeTested: true,
-    lastTestedAt: null,
-    lastTestedVersion: null,
-    lastTestedResult: null,
+    lastTestedAt: '2026-05-13T12:00:00Z',
+    lastTestedVersion: '121.0',
+    lastTestedResult: 'pass',
     notes: null,
     homepageUrl: 'https://www.mozilla.org/firefox/',
   },
@@ -191,6 +191,41 @@ describe('ThirdPartyCatalog', () => {
       );
       expect(patchCall).toBeDefined();
     });
+  });
+
+  it('renders last_tested_result chip for breeze-tested entries', async () => {
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+    const chip = screen.getByTestId('catalog-row-1-test-status');
+    expect(chip.textContent).toMatch(/pass/i);
+  });
+
+  it('POSTs to /test endpoint when re-test clicked', async () => {
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('121.0');
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (method === 'POST' && url === '/third-party-catalog/1/test') {
+        return makeJsonResponse({ testId: 'rt-new', alreadyExisted: false });
+      }
+      return makeJsonResponse({ items: sampleItems, total: sampleItems.length });
+    });
+
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    fireEvent.click(screen.getByTestId('catalog-row-1-retest'));
+
+    await waitFor(() => {
+      const testCall = fetchMock.mock.calls.find(([url, init]) =>
+        String(url) === '/third-party-catalog/1/test' &&
+        (init as RequestInit | undefined)?.method === 'POST'
+      );
+      expect(testCall).toBeDefined();
+      const body = JSON.parse(String((testCall![1] as RequestInit).body));
+      expect(body.version).toBe('121.0');
+    });
+    promptSpy.mockRestore();
   });
 
   it('DELETEs entry after confirmation', async () => {

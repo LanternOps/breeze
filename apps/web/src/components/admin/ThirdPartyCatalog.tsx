@@ -1,7 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2, Play } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import ThirdPartyCatalogEditor, { type CatalogEditorInitial } from './ThirdPartyCatalogEditor';
+
+const testResultStyles: Record<string, string> = {
+  pass: 'bg-green-100 text-green-800',
+  fail: 'bg-red-100 text-red-800',
+  inconclusive: 'bg-yellow-100 text-yellow-800',
+  skipped: 'bg-gray-100 text-gray-700',
+};
 
 type CatalogEntry = {
   id: string;
@@ -41,6 +48,7 @@ export default function ThirdPartyCatalog() {
   const [showOnlyTested, setShowOnlyTested] = useState(false);
   const [editor, setEditor] = useState<EditorState>({ kind: 'closed' });
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [retestingId, setRetestingId] = useState<string | null>(null);
 
   const fetchCatalog = useCallback(async () => {
     try {
@@ -66,6 +74,31 @@ export default function ThirdPartyCatalog() {
     const timer = setTimeout(fetchCatalog, search ? 250 : 0);
     return () => clearTimeout(timer);
   }, [fetchCatalog, search]);
+
+  const handleRetest = async (entry: CatalogEntry) => {
+    const version = window.prompt(
+      `Run smoke test for ${entry.friendlyName} at which version?`,
+      entry.lastTestedVersion ?? ''
+    );
+    if (!version || !version.trim()) return;
+    setRetestingId(entry.id);
+    setError(undefined);
+    try {
+      const response = await fetchWithAuth(`/third-party-catalog/${entry.id}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: version.trim() }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err?.error ?? `Failed to queue test (${response.status})`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to queue test');
+    } finally {
+      setRetestingId(null);
+    }
+  };
 
   const handleDelete = async (entry: CatalogEntry) => {
     if (!window.confirm(`Delete "${entry.friendlyName}" from the catalog?`)) return;
@@ -173,6 +206,7 @@ export default function ThirdPartyCatalog() {
                 <th className="px-4 py-2 font-medium">Winget ID</th>
                 <th className="px-4 py-2 font-medium">Severity</th>
                 <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium">Last test</th>
                 <th className="px-4 py-2 font-medium text-right">Actions</th>
               </tr>
             </thead>
@@ -220,8 +254,35 @@ export default function ThirdPartyCatalog() {
                       </span>
                     )}
                   </td>
+                  <td className="px-4 py-2">
+                    {entry.lastTestedResult ? (
+                      <span
+                        data-testid={`catalog-row-${entry.id}-test-status`}
+                        className={`inline-block px-2 py-0.5 rounded text-xs ${
+                          testResultStyles[entry.lastTestedResult] ?? testResultStyles.skipped
+                        }`}
+                        title={entry.lastTestedVersion ? `v${entry.lastTestedVersion}` : undefined}
+                      >
+                        {entry.lastTestedResult}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
+                      {entry.breezeTested && (
+                        <button
+                          data-testid={`catalog-row-${entry.id}-retest`}
+                          onClick={() => handleRetest(entry)}
+                          disabled={retestingId === entry.id}
+                          className="p-1 rounded hover:bg-gray-200 disabled:opacity-50"
+                          aria-label="Re-test"
+                          title="Run smoke test"
+                        >
+                          <Play className="w-4 h-4 text-blue-600" />
+                        </button>
+                      )}
                       <button
                         data-testid={`catalog-row-${entry.id}-edit`}
                         onClick={() => setEditor({ kind: 'edit', entry })}
