@@ -1,8 +1,5 @@
 /**
- * Winget Release Test Worker (stub)
- *
- * Records status transitions for a queued release test. The actual
- * AI-driven test orchestration is implemented in T28.
+ * Winget Release Test Worker
  *
  * Idempotency: enqueueWingetReleaseTest uses ON CONFLICT DO NOTHING so
  * duplicate enqueues for the same (catalog_id, version) are no-ops.
@@ -11,6 +8,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { thirdPartyReleaseTests, thirdPartyPackageCatalog } from '../db/schema';
+import { runWingetReleaseTest } from '../services/aiPatchTestRunner';
 
 export interface EnqueueArgs {
   catalogId: string;
@@ -63,24 +61,56 @@ export async function enqueueWingetReleaseTest({ catalogId, version }: EnqueueAr
   return { testId: existing?.id ?? null, alreadyExisted: true };
 }
 
-/**
- * Stub worker - to be replaced in T28 by the real AI runner.
- * Marks a queued test as running -> completed (skipped).
- */
 export async function executeWingetReleaseTest({ testId }: { testId: string }): Promise<void> {
+  const [row] = await db
+    .select({
+      id: thirdPartyReleaseTests.id,
+      catalogId: thirdPartyReleaseTests.catalogId,
+      version: thirdPartyReleaseTests.version,
+      packageId: thirdPartyPackageCatalog.packageId,
+    })
+    .from(thirdPartyReleaseTests)
+    .innerJoin(
+      thirdPartyPackageCatalog,
+      eq(thirdPartyReleaseTests.catalogId, thirdPartyPackageCatalog.id)
+    )
+    .where(eq(thirdPartyReleaseTests.id, testId))
+    .limit(1);
+
+  if (!row) return;
+
   await db
     .update(thirdPartyReleaseTests)
     .set({ status: 'running', startedAt: new Date() })
     .where(eq(thirdPartyReleaseTests.id, testId));
 
-  // PHASE 9 NEXT TASK (T28): dispatch to AI test runner here.
+  let runResult: { result: 'pass' | 'fail' | 'inconclusive'; notes: string; log: string };
+  try {
+    runResult = await runWingetReleaseTest({ packageId: row.packageId, version: row.version });
+  } catch (err) {
+    runResult = {
+      result: 'inconclusive',
+      notes: err instanceof Error ? err.message : 'unknown error',
+      log: '',
+    };
+  }
+
   await db
     .update(thirdPartyReleaseTests)
     .set({
       status: 'completed',
-      result: 'skipped',
-      log: 'AI runner not yet implemented',
+      result: runResult.result,
+      log: `${runResult.notes ? runResult.notes + '\n\n' : ''}${runResult.log}`,
       completedAt: new Date(),
     })
     .where(eq(thirdPartyReleaseTests.id, testId));
+
+  await db
+    .update(thirdPartyPackageCatalog)
+    .set({
+      lastTestedAt: new Date(),
+      lastTestedVersion: row.version,
+      lastTestedResult: runResult.result,
+    })
+    .where(eq(thirdPartyPackageCatalog.id, row.catalogId));
 }

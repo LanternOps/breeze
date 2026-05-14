@@ -1,5 +1,45 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const mocks = vi.hoisted(() => {
+  const state = {
+    insertReturning: [] as Array<{ id: string }>,
+    selectRows: [] as unknown[][],
+    updateSetCalls: [] as Array<{ table: unknown; value: Record<string, unknown> }>,
+    runResult: { result: 'pass' as const, notes: 'ok', log: 'demo log' },
+  };
+  const catalogRow = { id: 'cat-1', breezeTested: true };
+  const dbMock = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockImplementation(() => Promise.resolve(state.selectRows.shift() ?? [])),
+        })),
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockImplementation(() => Promise.resolve(state.selectRows.shift() ?? [])),
+          })),
+        })),
+      })),
+    })),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue(state.insertReturning),
+        })),
+      })),
+    })),
+    update: vi.fn((table: unknown) => ({
+      set: vi.fn((value: Record<string, unknown>) => {
+        state.updateSetCalls.push({ table, value });
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    })),
+  };
+  const runWingetReleaseTest = vi.fn(() => Promise.resolve(state.runResult));
+
+  return { catalogRow, dbMock, runWingetReleaseTest, state };
+});
+
 vi.mock('drizzle-orm', () => ({
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
@@ -19,49 +59,27 @@ vi.mock('../db/schema', () => ({
   },
   thirdPartyPackageCatalog: {
     id: 'cat.id',
+    packageId: 'cat.packageId',
     breezeTested: 'cat.breezeTested',
+    lastTestedAt: 'cat.lastTestedAt',
+    lastTestedVersion: 'cat.lastTestedVersion',
+    lastTestedResult: 'cat.lastTestedResult',
   },
 }));
 
-const mocks = vi.hoisted(() => {
-  const state = {
-    insertReturning: [] as Array<{ id: string }>,
-  };
-  const catalogRow = { id: 'cat-1', breezeTested: true };
-  const updateChain = {
-    set: vi.fn(() => ({
-      where: vi.fn().mockResolvedValue(undefined),
-    })),
-  };
-  const dbMock = {
-    select: vi.fn(),
-    insert: vi.fn(() => ({
-      values: vi.fn(() => ({
-        onConflictDoNothing: vi.fn(() => ({
-          returning: vi.fn().mockResolvedValue(state.insertReturning),
-        })),
-      })),
-    })),
-    update: vi.fn(() => updateChain),
-  };
-
-  return { catalogRow, dbMock, state, updateChain };
-});
-
 vi.mock('../db', () => ({ db: mocks.dbMock }));
+vi.mock('../services/aiPatchTestRunner', () => ({
+  runWingetReleaseTest: mocks.runWingetReleaseTest,
+}));
 
 import { enqueueWingetReleaseTest, executeWingetReleaseTest } from './wingetReleaseTestWorker';
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.state.insertReturning = [];
-  mocks.dbMock.select.mockImplementation(() => ({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue([mocks.catalogRow]),
-      })),
-    })),
-  }));
+  mocks.state.selectRows = [[mocks.catalogRow]];
+  mocks.state.updateSetCalls = [];
+  mocks.state.runResult = { result: 'pass', notes: 'ok', log: 'demo log' };
 });
 
 describe('enqueueWingetReleaseTest', () => {
@@ -73,59 +91,59 @@ describe('enqueueWingetReleaseTest', () => {
 
   it('returns alreadyExisted when conflict triggers no insert', async () => {
     mocks.state.insertReturning = []; // ON CONFLICT DO NOTHING returns 0 rows
-    mocks.dbMock.select
-      .mockImplementationOnce(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([mocks.catalogRow]) })),
-        })),
-      }))
-      .mockImplementationOnce(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ id: 'rt-existing' }]) })),
-        })),
-      }));
+    mocks.state.selectRows = [[mocks.catalogRow], [{ id: 'rt-existing' }]];
 
     const result = await enqueueWingetReleaseTest({ catalogId: 'cat-1', version: '1.0.0' });
     expect(result).toEqual({ testId: 'rt-existing', alreadyExisted: true });
   });
 
   it('returns null when catalog entry is not breeze-tested', async () => {
-    mocks.dbMock.select.mockImplementation(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue([{ id: 'cat-1', breezeTested: false }]),
-        })),
-      })),
-    }));
+    mocks.state.selectRows = [[{ id: 'cat-1', breezeTested: false }]];
 
     const result = await enqueueWingetReleaseTest({ catalogId: 'cat-1', version: '1.0.0' });
     expect(result).toEqual({ testId: null, alreadyExisted: false });
   });
 
   it('returns null when catalog entry not found', async () => {
-    mocks.dbMock.select.mockImplementation(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue([]),
-        })),
-      })),
-    }));
+    mocks.state.selectRows = [[]];
     const result = await enqueueWingetReleaseTest({ catalogId: 'missing', version: '1.0.0' });
     expect(result).toEqual({ testId: null, alreadyExisted: false });
   });
 });
 
-describe('executeWingetReleaseTest stub', () => {
-  it('transitions status running -> completed (skipped)', async () => {
+describe('executeWingetReleaseTest', () => {
+  it('runs the AI test and persists release test plus catalog verdict fields', async () => {
+    mocks.state.selectRows = [[{
+      id: 'rt-1',
+      catalogId: 'cat-1',
+      version: '121.0',
+      packageId: 'Mozilla.Firefox',
+    }]];
+
     await executeWingetReleaseTest({ testId: 'rt-1' });
-    expect(mocks.dbMock.update).toHaveBeenCalledTimes(2);
-    expect(mocks.updateChain.set).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ status: 'running' })
+
+    expect(mocks.runWingetReleaseTest).toHaveBeenCalledWith({
+      packageId: 'Mozilla.Firefox',
+      version: '121.0',
+    });
+    expect(mocks.dbMock.update).toHaveBeenCalledTimes(3);
+    expect(mocks.state.updateSetCalls[0].value).toEqual(
+      expect.objectContaining({ status: 'running', startedAt: expect.any(Date) })
     );
-    expect(mocks.updateChain.set).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ status: 'completed', result: 'skipped' })
+    expect(mocks.state.updateSetCalls[1].value).toEqual(
+      expect.objectContaining({
+        status: 'completed',
+        result: 'pass',
+        log: 'ok\n\ndemo log',
+        completedAt: expect.any(Date),
+      })
+    );
+    expect(mocks.state.updateSetCalls[2].value).toEqual(
+      expect.objectContaining({
+        lastTestedAt: expect.any(Date),
+        lastTestedVersion: '121.0',
+        lastTestedResult: 'pass',
+      })
     );
   });
 });
