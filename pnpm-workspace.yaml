@@ -2,12 +2,6 @@ packages:
   - 'apps/*'
   - 'packages/*'
 
-# pnpm 10 changed `pnpm deploy` to require injected dependencies by default.
-# The Docker build pipeline uses `pnpm --filter <pkg> deploy --prod /deployed`
-# against workspace deps that aren't configured as injected, so opt back into
-# the pre-10 behavior.
-force-legacy-deploy: true
-
 # pnpm 11+ refuses to run install scripts unless they're in this allowlist.
 # Add packages here only after confirming what their install script does:
 #   - esbuild downloads its native binary on install (required for tsup, vitest, etc.)

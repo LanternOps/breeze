@@ -22,7 +22,7 @@ ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
 ENV PUBLIC_ENABLE_REGISTRATION=${PUBLIC_ENABLE_REGISTRATION}
 RUN pnpm --filter @breeze/web build
 # Create a self-contained deployment (resolves pnpm symlinks)
-RUN pnpm --filter @breeze/web deploy --prod /deployed
+RUN pnpm --filter @breeze/web deploy --legacy --prod /deployed
 
 FROM base AS runner
 WORKDIR /app

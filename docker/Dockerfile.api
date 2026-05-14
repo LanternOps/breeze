@@ -16,7 +16,7 @@ COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_module
 COPY . .
 RUN pnpm --filter @breeze/api build
 # Create a self-contained deployment (resolves pnpm symlinks)
-RUN pnpm --filter @breeze/api deploy --prod /deployed
+RUN pnpm --filter @breeze/api deploy --legacy --prod /deployed
 
 FROM base AS runner
 WORKDIR /app
