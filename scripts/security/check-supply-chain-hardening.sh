@@ -82,10 +82,10 @@ require_grep 'verifyFileSHA256' agent/cmd/breeze-agent/watchdog_bootstrap.go \
 require_grep 'checksum mismatch' agent/cmd/breeze-agent/watchdog_bootstrap_test.go \
   "watchdog bootstrap tests must cover checksum mismatch"
 
-require_grep '"packageManager": "pnpm@9\.15\.7"' package.json \
+require_grep '"packageManager": "pnpm@10\.33\.4"' package.json \
   "package.json must pin pnpm to an audit-endpoint-compatible version"
-require_grep "PNPM_VERSION: '9\.15\.7'" .github/workflows/security.yml \
-  "security workflow must use pnpm 9.15.7+ for blocking audit"
+require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/security.yml \
+  "security workflow must use pnpm 10.33.4+ for blocking audit"
 require_grep '^  security-audit:' .github/workflows/ci.yml \
   "CI must include a blocking security-audit job"
 require_grep 'SECURITY_AUDIT_RESULT' .github/workflows/ci.yml \

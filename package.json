@@ -21,7 +21,7 @@
     "turbo": "^2.8.7",
     "typescript": "^5.7.2"
   },
-  "packageManager": "pnpm@9.15.7",
+  "packageManager": "pnpm@10.33.4",
   "engines": {
     "node": ">=22.12.0"
   },
@@ -46,6 +46,8 @@
       "picomatch@4.0.3": "4.0.4",
       "protobufjs@<8.0.2": ">=8.0.2",
       "fast-xml-builder@<1.1.7": ">=1.1.7",
+      "glob@>=10.0.0 <10.5.0": ">=10.5.0",
+      "tar@<7.5.11": ">=7.5.11",
       "micromatch@4.0.8>picomatch": "4.0.4",
       "qs@>=6.7.0 <=6.14.1": ">=6.14.2",
       "smol-toml@<1.6.1": ">=1.6.1",
