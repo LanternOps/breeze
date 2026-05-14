@@ -47,12 +47,16 @@ function buildSelectChain<T>(rows: () => T[]) {
 let nextSelectRows: any[] = [];
 let nextUpdateReturning: any[] = [];
 let nextInsertReturning: any[] = [];
+let lastUpdateSet: Record<string, unknown> | undefined;
 
 vi.mock('../db', () => {
   const mockDb: any = {
     select: vi.fn(() => buildSelectChain(() => nextSelectRows)),
     update: vi.fn(() => ({
-      set: vi.fn(function (this: any) { return this; }),
+      set: vi.fn(function (this: any, payload: Record<string, unknown>) {
+        lastUpdateSet = payload;
+        return this;
+      }),
       where: vi.fn(function (this: any) { return this; }),
       returning: vi.fn(async () => nextUpdateReturning),
     })),
@@ -147,6 +151,7 @@ beforeEach(() => {
   nextSelectRows = [];
   nextUpdateReturning = [];
   nextInsertReturning = [];
+  lastUpdateSet = undefined;
   mockAuth = {
     scope: 'organization',
     partnerId: 'p-1',
@@ -242,6 +247,13 @@ describe('POST /me/mobile-devices/:id/block', () => {
     );
 
     expect(res.status).toBe(204);
+    // Push tokens MUST be cleared so a stolen phone can't keep receiving
+    // approval pushes after the block. (Issue #696 review finding.)
+    expect(lastUpdateSet).toMatchObject({
+      status: 'blocked',
+      fcmToken: null,
+      apnsToken: null,
+    });
   });
 
   it('refuses to block the current device with 409 + self_revoke_blocked', async () => {
