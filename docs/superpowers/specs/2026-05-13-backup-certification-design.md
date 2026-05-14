@@ -481,7 +481,7 @@ Hyper-V, MSSQL, C2C/M365, BMR, DR plan execution, GFS retention pruning, SLA das
 
 ### 13.4 Definition of done for slice 1
 
-- Running `pnpm cert:run file-windows-s3` on a fresh checkout (with Proxmox + AWS env vars set) produces an Evidence Bundle, uploads it to S3 with Object Lock, signs and commits a Cert Manifest, and exits 0.
+- Running `pnpm cert:run file-windows-s3` on a clean clone of the repo by an engineer with the documented infra credentials configured (Proxmox API token, AWS access key for the cert buckets, Ed25519 signing key from 1Password) produces an Evidence Bundle, uploads it to S3 with Object Lock, signs and commits a Cert Manifest, and exits 0.
 - A trivial modification to `agent/internal/backup/backup.go` (e.g., a one-line comment) causes the next `pnpm cert:verify` to fail with `BACKUP_CRITICAL_HASH_MISMATCH: agent/internal/backup/backup.go`.
 - A PR touching any backup-critical path is automatically labeled `backup-recert-required` by CI; the `backup-cert-gate` status check is required for merge to `main` and stays red until a fresh manifest signed for `HEAD` is committed.
 - A reviewer auditing a Cert Manifest can: verify the signature locally, fetch the bundle from S3, replay the YAML, and reach the same byte-exact result.
