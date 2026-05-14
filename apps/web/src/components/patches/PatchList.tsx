@@ -29,6 +29,7 @@ export type Patch = {
   approvalStatus: PatchApprovalStatus;
   description?: string;
   vendor?: string | null;
+  cveIds?: string[];
 };
 
 type PatchListProps = {
@@ -423,6 +424,27 @@ export default function PatchList({
                             </span>
                           )}
                         </div>
+                        {patch.cveIds && patch.cveIds.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {patch.cveIds.slice(0, 3).map((cve) => (
+                              <a
+                                key={cve}
+                                data-testid={`patch-row-${patch.id}-cve-${cve}`}
+                                href={`https://nvd.nist.gov/vuln/detail/${cve}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-100 text-red-700 hover:bg-red-200"
+                              >
+                                {cve}
+                              </a>
+                            ))}
+                            {patch.cveIds.length > 3 && (
+                              <span className="text-[10px] text-muted-foreground">
+                                +{patch.cveIds.length - 3} more
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {patch.description && (
                           <div className="text-xs text-muted-foreground">{patch.description}</div>
                         )}

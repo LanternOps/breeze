@@ -64,6 +64,10 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
   const releaseDate = raw.releaseDate ?? raw.releasedAt ?? raw.release_date ?? raw.createdAt ?? '';
   const approvalStatus = raw.approvalStatus ?? raw.approval_status ?? raw.status;
   const vendor = raw.vendor ?? null;
+  const cveIdsRaw = raw.cveIds ?? raw.cve_ids;
+  const cveIds = Array.isArray(cveIdsRaw)
+    ? cveIdsRaw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : undefined;
 
   return {
     id: String(id),
@@ -75,6 +79,7 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
     approvalStatus: normalizeApprovalStatus(approvalStatus ? String(approvalStatus) : undefined),
     description: raw.description ? String(raw.description) : undefined,
     vendor: typeof vendor === 'string' && vendor.trim() ? vendor : null,
+    cveIds,
   };
 }
 
