@@ -9,6 +9,7 @@ import PatchComplianceView from './PatchComplianceView';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
+import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { normalizePatch, normalizeRing } from './patchHelpers';
@@ -56,6 +57,8 @@ export default function PatchesPage() {
   const [patches, setPatches] = useState<Patch[]>([]);
   const [patchesLoading, setPatchesLoading] = useState(true);
   const [patchesError, setPatchesError] = useState<string>();
+  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string>();
   const [scanSuccess, setScanSuccess] = useState<string>();
@@ -126,6 +129,11 @@ export default function PatchesPage() {
         ? patchData.map((patch: Record<string, unknown>, index: number) => normalizePatch(patch, index))
         : [];
       setPatches(normalized);
+      if (data && typeof data.counts === 'object' && data.counts !== null) {
+        setSourceCounts(data.counts as Record<string, number>);
+      } else {
+        setSourceCounts({});
+      }
     } catch (err) {
       setPatchesError(err instanceof Error ? err.message : 'Failed to fetch patches');
     } finally {
@@ -439,15 +447,22 @@ export default function PatchesPage() {
 
       {/* Patches tab */}
       {activeTab === 'patches' && (
-        <PatchList
-          patches={patches}
-          loading={patchesLoading}
-          error={patchesError}
-          onRetry={fetchPatches}
-          onReview={handleReview}
-          onBulkApprove={handleBulkApprove}
-          onBulkDecline={handleBulkDecline}
-        />
+        <>
+          <SourceFilterChips
+            counts={sourceCounts}
+            value={sourceFilter}
+            onChange={setSourceFilter}
+          />
+          <PatchList
+            patches={sourceFilter === 'all' ? patches : patches.filter((p) => p.source === sourceFilter)}
+            loading={patchesLoading}
+            error={patchesError}
+            onRetry={fetchPatches}
+            onReview={handleReview}
+            onBulkApprove={handleBulkApprove}
+            onBulkDecline={handleBulkDecline}
+          />
+        </>
       )}
 
       {/* Compliance tab — merged device view with summary */}

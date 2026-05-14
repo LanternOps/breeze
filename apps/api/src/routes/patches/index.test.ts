@@ -189,6 +189,16 @@ function selectPatchListResult(rows: unknown[]) {
   };
 }
 
+function selectSourceCountsResult(rows: Array<{ source: string; count: number }> = []) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  };
+}
+
 describe('patch routes', () => {
   let app: Hono;
 
@@ -271,7 +281,8 @@ describe('patch routes', () => {
           createdAt: new Date('2026-02-07T00:00:00.000Z')
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any);
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
 
     const res = await app.request('/patches', {
       method: 'GET',
@@ -302,7 +313,8 @@ describe('patch routes', () => {
           createdAt: new Date('2026-02-07T00:00:00.000Z')
         }
       ]) as any)
-      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any);
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
 
     const res = await app.request('/patches', {
       method: 'GET',

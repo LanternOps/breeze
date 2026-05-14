@@ -74,6 +74,24 @@ listRoutes.get(
       .from(patches)
       .where(whereClause);
 
+    // Per-source counts (ignores the source filter so the chips reflect
+    // the full breakdown of all visible patches).
+    const sourceConditions = conditions.filter((c) => c !== conditions[0] || !query.source);
+    const sourceWhereClause = sourceConditions.length > 0 ? and(...sourceConditions) : undefined;
+    const sourceCounts = await db
+      .select({ source: patches.source, count: sql<number>`count(*)::int` })
+      .from(patches)
+      .where(sourceWhereClause)
+      .groupBy(patches.source);
+    const counts: Record<string, number> = {
+      microsoft: 0,
+      apple: 0,
+      linux: 0,
+      third_party: 0,
+      custom: 0,
+    };
+    for (const row of sourceCounts) counts[row.source] = Number(row.count);
+
     // If org specified, get approval statuses (optionally ring-scoped)
     let approvalStatuses: Record<string, string> = {};
     if (query.orgId) {
@@ -103,6 +121,7 @@ listRoutes.get(
 
     return c.json({
       data,
+      counts,
       pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
     });
   }
