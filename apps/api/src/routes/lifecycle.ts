@@ -21,6 +21,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { revokeGrant, revokeJti } from '../oauth/revocationCache';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { ACCESS_TOKEN_TTL_SECONDS } from '../oauth/provider';
+import { captureException } from '../services/sentry';
 import { resolveUserAuditOrgId } from './auth/helpers';
 import { PERMISSIONS } from '../services/permissions';
 
@@ -308,44 +309,90 @@ lifecycleRoutes.get('/me/oauth-clients', async (c) => {
   });
 });
 
+interface RevokeUserOauthClientResult {
+  grantsRevoked: number;
+  refreshTokensRevoked: number;
+  /**
+   * Number of Redis revocation-cache writes that failed after the DB
+   * transaction committed. >0 means the DB state is fully correct but
+   * some active JWTs may survive until natural TTL (≤ ACCESS_TOKEN_TTL).
+   * Callers that need to alert on this should propagate to the response
+   * and audit details.
+   */
+  cacheFailures: number;
+}
+
 async function revokeUserOauthClient(
   userId: string,
   clientId: string,
   revokedByUserId: string,
   reason: string | null
-): Promise<{ grantsRevoked: number; refreshTokensRevoked: number }> {
+): Promise<RevokeUserOauthClientResult> {
   return asSystem(async () => {
     const now = new Date();
 
-    // Mark grants revoked (per-user-per-client lifecycle).
-    const updatedGrants = await db
-      .update(oauthGrants)
-      .set({ revokedAt: now, revokedByUserId, revokedReason: reason })
-      .where(
-        and(
-          eq(oauthGrants.accountId, userId),
-          eq(oauthGrants.clientId, clientId),
-          isNull(oauthGrants.revokedAt)
+    // Atomic DB phase. Grants UPDATE + refresh-tokens SELECT/UPDATE must
+    // succeed or fail together; a Redis failure during cache invalidation
+    // (handled after commit) must not be able to leave grants revoked
+    // while refresh tokens stay active in the DB.
+    const { updatedGrants, tokens } = await db.transaction(async (tx) => {
+      const updatedGrants = await tx
+        .update(oauthGrants)
+        .set({ revokedAt: now, revokedByUserId, revokedReason: reason })
+        .where(
+          and(
+            eq(oauthGrants.accountId, userId),
+            eq(oauthGrants.clientId, clientId),
+            isNull(oauthGrants.revokedAt)
+          )
         )
-      )
-      .returning({ id: oauthGrants.id });
+        .returning({ id: oauthGrants.id });
 
-    // Stamp + cache-revoke every active refresh token for the (user, client)
-    // pair so sibling JWTs are killed before natural expiry.
-    const tokens = await db
-      .select({
-        id: oauthRefreshTokens.id,
-        payload: oauthRefreshTokens.payload,
-        expiresAt: oauthRefreshTokens.expiresAt,
-      })
-      .from(oauthRefreshTokens)
-      .where(
-        and(
-          eq(oauthRefreshTokens.userId, userId),
-          eq(oauthRefreshTokens.clientId, clientId),
-          isNull(oauthRefreshTokens.revokedAt)
-        )
-      );
+      const tokens = await tx
+        .select({
+          id: oauthRefreshTokens.id,
+          payload: oauthRefreshTokens.payload,
+          expiresAt: oauthRefreshTokens.expiresAt,
+        })
+        .from(oauthRefreshTokens)
+        .where(
+          and(
+            eq(oauthRefreshTokens.userId, userId),
+            eq(oauthRefreshTokens.clientId, clientId),
+            isNull(oauthRefreshTokens.revokedAt)
+          )
+        );
+
+      if (tokens.length > 0) {
+        await tx
+          .update(oauthRefreshTokens)
+          .set({ revokedAt: now })
+          .where(inArray(oauthRefreshTokens.id, tokens.map((t) => t.id)));
+      }
+
+      return { updatedGrants, tokens };
+    });
+
+    // Cache-revoke every active jti + grant so sibling JWTs are killed
+    // before natural expiry. Best-effort: failures here are logged + sent
+    // to Sentry, surfaced via cacheFailures, and DO NOT throw. The DB
+    // state above is already correct; throwing here would tell the caller
+    // "revoke failed" when in fact only the cache write failed.
+    let cacheFailures = 0;
+    const onCacheFailure = (
+      err: unknown,
+      message: string,
+      context: Record<string, unknown>
+    ): void => {
+      cacheFailures++;
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+        message,
+        err,
+        context: { ...context, clientId, userId },
+      });
+      captureException(err);
+    };
 
     const seenGrants = new Set<string>();
     for (const tok of tokens) {
@@ -355,13 +402,9 @@ async function revokeUserOauthClient(
         try {
           await revokeJti(payload.jti, Math.max(ttl, 1));
         } catch (err) {
-          logOauthError({
-            errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-            message: 'self-service jti revocation cache write failed',
-            err,
-            context: { jti: payload.jti, clientId, userId },
+          onCacheFailure(err, 'self-service jti revocation cache write failed', {
+            jti: payload.jti,
           });
-          throw err;
         }
       }
       if (payload?.grantId && !seenGrants.has(payload.grantId)) {
@@ -369,13 +412,9 @@ async function revokeUserOauthClient(
         try {
           await revokeGrant(payload.grantId, ACCESS_TOKEN_TTL_SECONDS);
         } catch (err) {
-          logOauthError({
-            errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-            message: 'self-service grant revocation cache write failed',
-            err,
-            context: { grantId: payload.grantId, clientId, userId },
+          onCacheFailure(err, 'self-service grant revocation cache write failed', {
+            grantId: payload.grantId,
           });
-          throw err;
         }
       }
     }
@@ -388,26 +427,16 @@ async function revokeUserOauthClient(
       try {
         await revokeGrant(grant.id, ACCESS_TOKEN_TTL_SECONDS);
       } catch (err) {
-        logOauthError({
-          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'self-service grant-only revocation cache write failed',
-          err,
-          context: { grantId: grant.id, clientId, userId },
+        onCacheFailure(err, 'self-service grant-only revocation cache write failed', {
+          grantId: grant.id,
         });
-        throw err;
       }
-    }
-
-    if (tokens.length > 0) {
-      await db
-        .update(oauthRefreshTokens)
-        .set({ revokedAt: now })
-        .where(inArray(oauthRefreshTokens.id, tokens.map((t) => t.id)));
     }
 
     return {
       grantsRevoked: updatedGrants.length,
       refreshTokensRevoked: tokens.length,
+      cacheFailures,
     };
   });
 }
@@ -452,8 +481,23 @@ lifecycleRoutes.post(
         reason: body.reason ?? null,
         grantsRevoked: result.grantsRevoked,
         refreshTokensRevoked: result.refreshTokensRevoked,
+        cacheFailures: result.cacheFailures,
       },
     });
+
+    // DB state is committed regardless. Cache miss means active JWTs may
+    // survive up to ACCESS_TOKEN_TTL; signal that to the client so its UI
+    // can warn rather than show "session ended" prematurely.
+    if (result.cacheFailures > 0) {
+      return c.json(
+        {
+          revoked: true,
+          cacheFailures: result.cacheFailures,
+          warning: 'session-cache invalidation partially failed; active tokens may survive up to access-token TTL',
+        },
+        200
+      );
+    }
 
     return c.body(null, 204);
   }
@@ -681,13 +725,25 @@ lifecycleAdminRoutes.post(
         .where(eq(organizationUsers.orgId, orgId))
     );
     let tokensRevoked = 0;
+    let cacheFailures = 0;
+    const failedUserIds: string[] = [];
     for (const { userId } of userIdsInOrg) {
       try {
         const r = await revokeUserOauthClient(userId, clientId, auth.user.id, body.reason);
         tokensRevoked += r.refreshTokensRevoked;
+        cacheFailures += r.cacheFailures;
       } catch (err) {
-        // Surface but don't block — org-wide block row is already in place.
-        console.error('[lifecycle] org-block revoke failed for user', userId, err);
+        // Org-wide block row is already in place; DB state for this user
+        // was rolled back by the transaction. Track the user so callers
+        // can decide whether to retry, and surface to Sentry.
+        failedUserIds.push(userId);
+        logOauthError({
+          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+          message: 'org-block per-user revoke failed; user keeps active tokens until natural expiry',
+          err,
+          context: { userId, clientId, orgId },
+        });
+        captureException(err);
       }
     }
 
@@ -700,6 +756,8 @@ lifecycleAdminRoutes.post(
         reason: body.reason,
         blockedUntil: blockedUntil?.toISOString() ?? null,
         tokensRevoked,
+        cacheFailures,
+        failedUserIds,
       },
     });
 
@@ -710,6 +768,8 @@ lifecycleAdminRoutes.post(
         blockedAt: row.blockedAt.toISOString(),
         blockedUntil: row.blockedUntil?.toISOString() ?? null,
         tokensRevoked,
+        cacheFailures,
+        failedUserIds,
       },
       201
     );
