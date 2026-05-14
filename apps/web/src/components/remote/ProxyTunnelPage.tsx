@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { ArrowLeft, Copy, Check, X, Globe, Network } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 interface Props {
   tunnelId: string;
@@ -31,7 +32,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
         const data = await res.json();
         setStatus(data.status);
         if (data.status === 'failed') {
-          setError(data.errorMessage || 'Tunnel failed');
+          setError(extractApiError(data, 'Tunnel failed'));
         }
       }
     } catch { /* ignore */ }

@@ -9,6 +9,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import AlphaBadge from '../shared/AlphaBadge';
@@ -57,7 +58,10 @@ export default function EncryptionKeyList() {
     try {
       setError(undefined);
       const response = await fetchWithAuth('/backup/encryption/keys');
-      if (!response.ok) throw new Error('Failed to fetch encryption keys');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to fetch encryption keys'));
+      }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
       setKeys(Array.isArray(data) ? data : []);
@@ -87,8 +91,8 @@ export default function EncryptionKeyList() {
         body: JSON.stringify({ name: newName, keyType: newKeyType }),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to create key');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to create key'));
       }
       const payload = await response.json();
       const created = payload?.data ?? payload ?? {};
@@ -114,7 +118,10 @@ export default function EncryptionKeyList() {
       const response = await fetchWithAuth(`/backup/encryption/keys/${rotatingKeyId}/rotate`, {
         method: 'POST',
       });
-      if (!response.ok) throw new Error('Failed to rotate key');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to rotate key'));
+      }
       rotateDialogRef.current?.close();
       await fetchKeys();
     } catch (err) {
@@ -131,7 +138,10 @@ export default function EncryptionKeyList() {
         method: 'PATCH',
         body: JSON.stringify({ status: 'deactivated' }),
       });
-      if (!response.ok) throw new Error('Failed to deactivate key');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to deactivate key'));
+      }
       await fetchKeys();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to deactivate key');

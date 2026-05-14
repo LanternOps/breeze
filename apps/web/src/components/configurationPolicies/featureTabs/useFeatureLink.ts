@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import type { FeatureType, FeatureLink } from './types';
 
 type SavePayload = {
@@ -38,8 +39,8 @@ export function useFeatureLink(policyId: string) {
         });
 
         if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.error || `Failed to ${existingLinkId ? 'update' : 'create'} feature link`);
+          const data = await response.json().catch(() => null);
+          throw new Error(extractApiError(data, `Failed to ${existingLinkId ? 'update' : 'create'} feature link`));
         }
 
         const result = await response.json();
@@ -63,7 +64,10 @@ export function useFeatureLink(policyId: string) {
           `/configuration-policies/${policyId}/features/${linkId}`,
           { method: 'DELETE' }
         );
-        if (!response.ok) throw new Error('Failed to remove feature link');
+        if (!response.ok) {
+          const data = await response.json().catch(() => null);
+          throw new Error(extractApiError(data, 'Failed to remove feature link'));
+        }
         return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');

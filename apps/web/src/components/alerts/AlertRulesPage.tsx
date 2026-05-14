@@ -5,6 +5,7 @@ import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { extractApiError } from '@/lib/apiError';
 
 type ModalMode = 'closed' | 'delete' | 'test';
 
@@ -27,7 +28,8 @@ export default function AlertRulesPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch alert rules');
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, 'Failed to fetch alert rules'));
       }
       const data = await response.json();
       setRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
@@ -67,7 +69,8 @@ export default function AlertRulesPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to test rule');
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, 'Failed to test rule'));
       }
 
       const data = await response.json();
@@ -97,7 +100,8 @@ export default function AlertRulesPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(`Failed to ${enabled ? 'enable' : 'disable'} rule`);
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, `Failed to ${enabled ? 'enable' : 'disable'} rule`));
       }
 
       setRules(prev =>
@@ -144,7 +148,8 @@ export default function AlertRulesPage() {
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error('Failed to delete rule');
+          const errData = await response.json().catch(() => null);
+          throw new Error(extractApiError(errData, 'Failed to delete rule'));
         }
 
         showToast({ type: 'success', message: `"${ruleToDelete.name}" deleted` });

@@ -10,6 +10,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VMRestoreSpecsStep from './VMRestoreSpecsStep';
@@ -171,8 +172,8 @@ export default function VMRestoreWizard() {
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to start restore');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to start restore'));
       }
 
       setRestoreSuccess(

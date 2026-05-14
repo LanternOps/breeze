@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus, Save, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import type { AlertSeverity } from './AlertList';
 import { fetchWithAuth } from '../../stores/auth';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -425,7 +426,8 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       setError(undefined);
       const response = await fetchWithAuth(`/alert-templates/templates/${templateId}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch alert template.');
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, 'Failed to fetch alert template.'));
       }
       const data = await response.json();
       const template = (data.data ?? data.template ?? data) as AlertTemplateResponse;
@@ -709,8 +711,8 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save alert template.');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to save alert template.'));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred.');

@@ -51,5 +51,13 @@ export function extractApiError(data: unknown, fallback: string): string {
     parts.push(body.message);
   }
 
+  // Some legacy endpoints (remote/proxy tunnel) emit `errorMessage` instead.
+  if (parts.length === 0) {
+    const errorMessage = (data as { errorMessage?: unknown }).errorMessage;
+    if (typeof errorMessage === 'string' && errorMessage.length > 0) {
+      parts.push(errorMessage);
+    }
+  }
+
   return parts.length > 0 ? parts.join(': ') : fallback;
 }

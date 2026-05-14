@@ -3,6 +3,7 @@ import { Monitor, MonitorOff, ExternalLink, X, Globe } from 'lucide-react';
 import type { RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
+import { extractApiError } from '@/lib/apiError';
 
 interface Props {
   deviceId: string;
@@ -105,7 +106,7 @@ export default function ConnectVncButton({
               return;
             }
             if (data.status === 'failed') {
-              throw new Error(data.errorMessage || 'Tunnel failed to open');
+              throw new Error(extractApiError(data, 'Tunnel failed to open'));
             }
           }
         } catch (e) {

@@ -86,4 +86,12 @@ describe('extractApiError', () => {
   it('returns fallback for object with no recognized fields', () => {
     expect(extractApiError({ foo: 'bar', baz: 42 }, FALLBACK)).toBe(FALLBACK);
   });
+
+  it('handles legacy errorMessage field (remote/proxy tunnel endpoints)', () => {
+    expect(extractApiError({ errorMessage: 'Tunnel timed out' }, FALLBACK)).toBe('Tunnel timed out');
+  });
+
+  it('prefers error over errorMessage when both exist', () => {
+    expect(extractApiError({ error: 'real', errorMessage: 'legacy' }, FALLBACK)).toBe('real');
+  });
 });

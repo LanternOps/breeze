@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -87,8 +88,8 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save baseline');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to save baseline'));
       }
 
       onSaved();

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { OverflowTabs } from '../shared/OverflowTabs';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
@@ -117,7 +118,10 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth(`/configuration-policies/${policyId}`);
-      if (!response.ok) throw new Error('Failed to fetch policy');
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(extractApiError(errBody, 'Failed to fetch policy'));
+      }
       const data = await response.json();
       setPolicy(data);
       setEditName(data.name);
@@ -135,7 +139,10 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
     if (!policyId) return;
     try {
       const response = await fetchWithAuth(`/configuration-policies/${policyId}/features`);
-      if (!response.ok) throw new Error('Failed to fetch features');
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(extractApiError(errBody, 'Failed to fetch features'));
+      }
       const data = await response.json();
       setFeatureLinks(Array.isArray(data.data) ? data.data : []);
     } catch {
@@ -189,8 +196,8 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
         }),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to update policy');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to update policy'));
       }
       const updated = await response.json();
       setPolicy(updated);

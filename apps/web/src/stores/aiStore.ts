@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiPageContext, AiStreamEvent, AiApprovalMode } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { extractApiError } from '@/lib/apiError';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -110,8 +111,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ pageContext: pageContext ?? undefined })
       });
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to create session');
+        const data = await res.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
       set({ sessionId: data.id, messages: [], isLoading: false, isFlagged: false, flagReason: null });
@@ -212,17 +213,17 @@ export const useAiStore = create<AiState>()(
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to send message' }));
+        const data = await res.json().catch(() => null);
 
         if (res.status === 409) {
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
-            error: data.error || 'Another response is still in progress for this conversation.'
+            error: extractApiError(data, 'Another response is still in progress for this conversation.')
           }));
           return;
         }
 
-        throw new Error(data.error || 'Failed to send message');
+        throw new Error(extractApiError(data, 'Failed to send message'));
       }
 
       const reader = res.body?.getReader();
@@ -277,8 +278,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ approved })
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to process approval. It may have timed out.' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
         return;
       }
       set({ pendingApproval: null });
@@ -298,8 +299,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ approved })
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to process plan approval' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to process plan approval') });
         return;
       }
       if (approved) {
@@ -333,8 +334,8 @@ export const useAiStore = create<AiState>()(
         method: 'POST'
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to abort plan' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to abort plan') });
         return;
       }
       set({ activePlan: null });
@@ -354,8 +355,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ paused })
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to pause AI' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to pause AI') });
         return;
       }
       set({ isPaused: paused });
@@ -415,8 +416,8 @@ export const useAiStore = create<AiState>()(
         const data = await res.json();
         set({ searchResults: data.data || [], isSearching: false });
       } else {
-        const data = await res.json().catch(() => ({ error: 'Search failed' }));
-        set({ isSearching: false, error: data.error || 'Search failed' });
+        const data = await res.json().catch(() => null);
+        set({ isSearching: false, error: extractApiError(data, 'Search failed') });
       }
     } catch (err) {
       console.error('[AI] Search failed:', err);
@@ -457,8 +458,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ reason }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to flag session' }));
-        set({ error: data.error || 'Failed to flag session' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to flag session') });
         return;
       }
       set({ isFlagged: true, flagReason: reason ?? null });
@@ -474,8 +475,8 @@ export const useAiStore = create<AiState>()(
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, { method: 'DELETE' });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to unflag session' }));
-        set({ error: data.error || 'Failed to unflag session' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to unflag session') });
         return;
       }
       set({ isFlagged: false, flagReason: null });

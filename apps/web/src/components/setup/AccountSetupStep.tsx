@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { fetchWithAuth, apiLogin, useAuthStore } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 interface AccountSetupStepProps {
   onNext: () => void;
@@ -43,9 +44,8 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           body: JSON.stringify({ email })
         });
         if (!emailRes.ok) {
-          let msg = 'Failed to update email';
-          try { const data = await emailRes.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
-          setError(msg);
+          const data = await emailRes.json().catch(() => null);
+          setError(extractApiError(data, 'Failed to update email'));
           setLoading(false);
           return;
         }
@@ -60,9 +60,8 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           body: JSON.stringify({ currentPassword, newPassword })
         });
         if (!pwRes.ok) {
-          let msg = 'Failed to change password';
-          try { const data = await pwRes.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
-          setError(msg);
+          const data = await pwRes.json().catch(() => null);
+          setError(extractApiError(data, 'Failed to change password'));
           setLoading(false);
           return;
         }

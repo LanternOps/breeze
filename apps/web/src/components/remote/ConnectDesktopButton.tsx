@@ -4,6 +4,7 @@ import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
+import { extractApiError } from '@/lib/apiError';
 
 interface Props {
   deviceId: string;
@@ -176,7 +177,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                 return;
               }
               if (data.status === 'failed') {
-                setError(data.errorMessage || 'VNC tunnel failed to open');
+                setError(extractApiError(data, 'VNC tunnel failed to open'));
                 setStatus('idle');
                 return;
               }

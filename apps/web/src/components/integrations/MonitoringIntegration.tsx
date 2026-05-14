@@ -13,6 +13,7 @@ import {
   Webhook
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type WebhookEndpoint = {
   id: string;
@@ -225,7 +226,8 @@ export default function MonitoringIntegration() {
       setLoadError(undefined);
       const response = await fetchWithAuth('/integrations/monitoring');
       if (!response.ok) {
-        throw new Error('Failed to load monitoring settings');
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, 'Failed to load monitoring settings'));
       }
       const data = await response.json();
       setSettings(normalizeSettings(data.data ?? data));
@@ -321,8 +323,8 @@ export default function MonitoringIntegration() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to save monitoring settings');
+        const errorData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errorData, 'Failed to save monitoring settings'));
       }
 
       setSaveState({ status: 'saved', message: 'Monitoring settings saved.' });
@@ -362,10 +364,10 @@ export default function MonitoringIntegration() {
         method: 'POST',
         body: JSON.stringify(payload)
       });
-      const data = await response.json().catch(() => ({}));
+      const data = (await response.json().catch(() => ({}))) as { message?: string };
 
       if (!response.ok) {
-        throw new Error(data.error || data.message || 'Connection test failed');
+        throw new Error(extractApiError(data, 'Connection test failed'));
       }
 
       updateTestResult(testKey, {

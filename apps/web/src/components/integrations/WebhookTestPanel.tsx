@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Send } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type TestHistoryItem = {
   id: string;
@@ -120,7 +121,7 @@ export default function WebhookTestPanel({ webhookId, timezone }: WebhookTestPan
       const data = await apiResponse.json().catch(() => ({}));
 
       if (!apiResponse.ok) {
-        throw new Error(data.error || 'Test failed');
+        throw new Error(extractApiError(data, 'Test failed'));
       }
 
       setResponse({

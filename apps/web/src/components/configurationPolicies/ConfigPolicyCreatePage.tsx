@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import PolicyLinkSelector from './featureTabs/PolicyLinkSelector';
 import { navigateTo } from '@/lib/navigation';
+import { extractApiError } from '@/lib/apiError';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
 const createPolicySchema = z.object({
@@ -46,8 +47,8 @@ export default function ConfigPolicyCreatePage() {
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to create policy');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to create policy'));
       }
 
       const policy = await response.json();

@@ -3,6 +3,7 @@ import { X, Loader2, MapPin } from 'lucide-react';
 import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type Site = {
   id: string;
@@ -70,7 +71,7 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to change site');
+        throw new Error(extractApiError(data, 'Failed to change site'));
       }
 
       onSaved();

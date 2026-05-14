@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Plus, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type ExceptionRule = {
   vendor: string;
@@ -88,7 +89,7 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save policy');
+        throw new Error(extractApiError(data, 'Failed to save policy'));
       }
       onClose(true);
     } catch (err) {

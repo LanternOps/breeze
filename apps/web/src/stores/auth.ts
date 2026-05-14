@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { extractApiError } from '@/lib/apiError';
 
 export interface UserPreferences {
   theme?: 'light' | 'dark' | 'system';
@@ -376,7 +377,7 @@ export async function apiLogin(email: string, password: string): Promise<{
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Login failed' };
+      return { success: false, error: extractApiError(data, 'Login failed') };
     }
 
     if (data.mfaRequired) {
@@ -420,7 +421,7 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'MFA verification failed' };
+      return { success: false, error: extractApiError(data, 'MFA verification failed') };
     }
 
     const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
@@ -464,7 +465,7 @@ export async function apiRegister(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Registration failed' };
+      return { success: false, error: extractApiError(data, 'Registration failed') };
     }
 
     return {
@@ -502,7 +503,7 @@ export async function apiRegisterPartner(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Registration failed' };
+      return { success: false, error: extractApiError(data, 'Registration failed') };
     }
 
     return {
@@ -590,10 +591,10 @@ export async function apiForgotPassword(email: string): Promise<{
       body: JSON.stringify({ email })
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
-      return { success: false, error: data.error };
+      return { success: false, error: extractApiError(data, 'Failed to send reset email') };
     }
 
     return { success: true };
@@ -615,10 +616,10 @@ export async function apiResetPassword(token: string, password: string): Promise
       body: JSON.stringify({ token, password })
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
-      return { success: false, error: data.error };
+      return { success: false, error: extractApiError(data, 'Failed to reset password') };
     }
 
     return { success: true };
@@ -663,9 +664,9 @@ export async function apiResendVerification(): Promise<{ success: boolean; error
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
-    const data = await response.json().catch(() => ({}));
+    const data = await response.json().catch(() => null);
     if (!response.ok) {
-      return { success: false, error: data?.error ?? 'Failed to resend verification email' };
+      return { success: false, error: extractApiError(data, 'Failed to resend verification email') };
     }
     return { success: true };
   } catch {
@@ -687,7 +688,7 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to send SMS code' };
+      return { success: false, error: extractApiError(data, 'Failed to send SMS code') };
     }
 
     return { success: true };
@@ -709,7 +710,7 @@ export async function apiVerifyPhone(phoneNumber: string, currentPassword: strin
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to send verification code' };
+      return { success: false, error: extractApiError(data, 'Failed to send verification code') };
     }
 
     return { success: true };
@@ -731,7 +732,7 @@ export async function apiConfirmPhone(phoneNumber: string, code: string, current
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to verify phone' };
+      return { success: false, error: extractApiError(data, 'Failed to verify phone') };
     }
 
     return { success: true };
@@ -754,7 +755,7 @@ export async function apiEnableSmsMfa(currentPassword: string): Promise<{
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to enable SMS MFA' };
+      return { success: false, error: extractApiError(data, 'Failed to enable SMS MFA') };
     }
 
     return { success: true, recoveryCodes: data.recoveryCodes };
@@ -815,7 +816,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to accept invite' };
+      return { success: false, error: extractApiError(data, 'Failed to accept invite') };
     }
 
     return { success: true, user: data.user, tokens: data.tokens };

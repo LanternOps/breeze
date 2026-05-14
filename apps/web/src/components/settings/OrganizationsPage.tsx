@@ -5,6 +5,7 @@ import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
@@ -349,7 +350,7 @@ export default function OrganizationsPage() {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || `Failed to save site (${response.status})`);
+        throw new Error(extractApiError(data, `Failed to save site (${response.status})`));
       }
 
       await fetchSites(selectedOrg.id);

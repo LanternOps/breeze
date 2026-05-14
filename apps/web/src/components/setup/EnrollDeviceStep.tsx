@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Check, Copy, Loader2, Download, Link, ArrowLeft, Info } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { showToast } from '../shared/Toast';
 
@@ -66,9 +67,8 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     try {
       const res = await fetchWithAuth('/devices/onboarding-token', { method: 'POST' });
       if (!res.ok) {
-        let msg = 'Failed to generate installation token';
-        try { const data = await res.json(); msg = data.error || data.message || msg; } catch { /* ignore */ }
-        setTokenError(msg);
+        const data = await res.json().catch(() => null);
+        setTokenError(extractApiError(data, 'Failed to generate installation token'));
         return;
       }
       const data = await res.json();

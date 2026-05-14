@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, Trash2, Search, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { DEVICE_ROLES, getDeviceRoleLabel } from '@/lib/deviceRoles';
 import HelpTooltip from '../shared/HelpTooltip';
@@ -66,7 +67,10 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
     try {
       setAssignmentsLoading(true);
       const response = await fetchWithAuth(`/configuration-policies/${policyId}/assignments`);
-      if (!response.ok) throw new Error('Failed to fetch assignments');
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(extractApiError(errBody, 'Failed to fetch assignments'));
+      }
       const data = await response.json();
       setAssignments(Array.isArray(data.data) ? data.data : []);
     } catch (err) {
@@ -95,7 +99,10 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
       const url = endpointMap[level];
       if (!url) return;
       const res = await fetchWithAuth(url);
-      if (!res.ok) throw new Error(`Failed to load targets (HTTP ${res.status})`);
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(extractApiError(errBody, `Failed to load targets (HTTP ${res.status})`));
+      }
       const data = await res.json();
       const items = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
       const options: TargetOption[] = items.map((item: any) => ({
@@ -197,8 +204,8 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
         }),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to add assignment');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to add assignment'));
       }
       setNewTargetId('');
       setNewPriority('0');
@@ -219,7 +226,10 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
         `/configuration-policies/${policyId}/assignments/${aid}`,
         { method: 'DELETE' }
       );
-      if (!response.ok) throw new Error('Failed to remove assignment');
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(extractApiError(errBody, 'Failed to remove assignment'));
+      }
       await fetchAssignments();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');

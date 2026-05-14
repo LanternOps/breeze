@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type HeaderRow = { id: string; key: string; value: string };
 
@@ -110,8 +111,8 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
         });
 
         if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.error || 'Failed to save webhook');
+          const data = await response.json().catch(() => null);
+          throw new Error(extractApiError(data, 'Failed to save webhook'));
         }
 
         setSuccess('Webhook saved successfully.');
@@ -139,7 +140,7 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
 
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
-          throw new Error(data.error || 'Test failed');
+          throw new Error(extractApiError(data, 'Test failed'));
         }
 
         setSuccess('Test webhook sent successfully.');

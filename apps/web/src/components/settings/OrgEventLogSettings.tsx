@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Database, Save, Key, Link, ScrollText, Info } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 
@@ -108,7 +109,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save log forwarding settings');
+        throw new Error(extractApiError(data, 'Failed to save log forwarding settings'));
       }
 
       showToast({ message: 'Log forwarding settings saved', type: 'success' });

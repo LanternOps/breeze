@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type PsaProvider = 'connectwise' | 'autotask' | 'halo';
 type ConnectionStatus = 'connected' | 'needs-auth' | 'disconnected' | 'testing';
@@ -131,7 +132,8 @@ export default function PSAIntegration() {
           return;
         }
         if (!response.ok) {
-          throw new Error('Failed to load PSA configuration');
+          const errData = await response.json().catch(() => null);
+          throw new Error(extractApiError(errData, 'Failed to load PSA configuration'));
         }
         const payload = await response.json().catch(() => ({}));
         if (!isMounted) return;
@@ -239,7 +241,7 @@ export default function PSAIntegration() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to save configuration');
+        throw new Error(extractApiError(data, 'Failed to save configuration'));
       }
 
       setHasConfig(true);
@@ -279,7 +281,7 @@ export default function PSAIntegration() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok || data.success === false) {
-        throw new Error(data.error || 'Connection test failed');
+        throw new Error(extractApiError(data, 'Connection test failed'));
       }
 
       setTestResult({
