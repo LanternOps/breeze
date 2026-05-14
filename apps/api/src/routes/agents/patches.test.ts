@@ -119,7 +119,7 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     vi.mocked(enrichmentModule.enrichFromCatalog).mockImplementation(async (input) => ({
       title: input.title,
       vendor: input.vendor,
-      severity: input.severity,
+      severity: (input.severity as 'critical' | 'important' | 'moderate' | 'low' | 'unknown' | null) ?? null,
       category: input.category ?? null,
       matchedCatalogId: null,
     }));
@@ -178,7 +178,7 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
         })),
       };
 
-      return fn(tx);
+      return fn(tx as unknown as Parameters<typeof fn>[0]);
     });
   });
 
@@ -328,7 +328,7 @@ describe('PUT /agents/:id/patches - ENABLE_AI_PATCH_TESTING gating', () => {
           })),
         })),
       };
-      return fn(tx);
+      return fn(tx as unknown as Parameters<typeof fn>[0]);
     });
   });
 

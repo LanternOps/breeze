@@ -34,6 +34,9 @@ vi.mock('../db/schema', () => ({
     category: 'cat.category',
     defaultSeverity: 'cat.defaultSeverity',
   },
+  patchSeverityEnum: {
+    enumValues: ['critical', 'important', 'moderate', 'low', 'unknown'] as const,
+  },
 }));
 
 import { enrichFromCatalog, primeCatalogCache } from './thirdPartyEnrichment';

@@ -79,7 +79,7 @@ export async function runCveEnrichmentBatch(
       if (osv.cveIds.length === 0) continue;
 
       const currentRank = SEVERITY_RANK[row.currentSeverity ?? 'unknown'] ?? 0;
-      const osvRank = osv.maxSeverity ? SEVERITY_RANK[osv.maxSeverity] : 0;
+      const osvRank = osv.maxSeverity ? (SEVERITY_RANK[osv.maxSeverity] ?? 0) : 0;
       const nextSeverity = osvRank > currentRank ? osv.maxSeverity : row.currentSeverity;
 
       await db

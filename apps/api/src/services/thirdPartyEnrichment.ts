@@ -1,5 +1,7 @@
 import { db } from '../db';
-import { thirdPartyPackageCatalog } from '../db/schema';
+import { thirdPartyPackageCatalog, patchSeverityEnum } from '../db/schema';
+
+export type PatchSeverity = (typeof patchSeverityEnum.enumValues)[number];
 
 type CatalogEntry = Pick<
   typeof thirdPartyPackageCatalog.$inferSelect,
@@ -58,6 +60,13 @@ async function getCache(): Promise<Map<string, CatalogEntry>> {
   return cache!;
 }
 
+function narrowSeverity(value: string | null | undefined): PatchSeverity | null {
+  if (!value) return null;
+  return (patchSeverityEnum.enumValues as readonly string[]).includes(value)
+    ? (value as PatchSeverity)
+    : null;
+}
+
 export interface EnrichmentInput {
   source: string;
   packageId: string | null;
@@ -70,17 +79,18 @@ export interface EnrichmentInput {
 export interface EnrichmentOutput {
   title: string;
   vendor: string | null;
-  severity: string | null;
+  severity: PatchSeverity | null;
   category: string | null;
   matchedCatalogId: string | null;
 }
 
 export async function enrichFromCatalog(input: EnrichmentInput): Promise<EnrichmentOutput> {
+  const inputSeverity = narrowSeverity(input.severity);
   if (input.source !== 'third_party' || !input.packageId) {
     return {
       title: input.title,
       vendor: input.vendor,
-      severity: input.severity,
+      severity: inputSeverity,
       category: input.category ?? null,
       matchedCatalogId: null,
     };
@@ -92,7 +102,7 @@ export async function enrichFromCatalog(input: EnrichmentInput): Promise<Enrichm
     return {
       title: input.title,
       vendor: input.vendor,
-      severity: input.severity,
+      severity: inputSeverity,
       category: input.category ?? null,
       matchedCatalogId: null,
     };
@@ -101,7 +111,7 @@ export async function enrichFromCatalog(input: EnrichmentInput): Promise<Enrichm
   return {
     title: hit.friendlyName,
     vendor: hit.vendor,
-    severity: input.severity && input.severity !== 'unknown' ? input.severity : hit.defaultSeverity,
+    severity: inputSeverity && inputSeverity !== 'unknown' ? inputSeverity : hit.defaultSeverity,
     category: hit.category,
     matchedCatalogId: hit.id,
   };

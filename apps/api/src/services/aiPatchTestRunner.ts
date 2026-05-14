@@ -159,10 +159,8 @@ export async function runWingetReleaseTest(args: RunArgs): Promise<RunResult> {
     };
   }
 
-  const commands = [
-    `winget upgrade --id ${args.packageId} --silent --accept-package-agreements --accept-source-agreements --disable-interactivity`,
-  ];
-  const outcome = await runOnVm(env.target, env.sshKey, commands[0]);
+  const command = `winget upgrade --id ${args.packageId} --silent --accept-package-agreements --accept-source-agreements --disable-interactivity`;
+  const outcome = await runOnVm(env.target, env.sshKey, command);
 
   if (outcome.kind === 'ssh_error') {
     return {
@@ -187,7 +185,7 @@ export async function runWingetReleaseTest(args: RunArgs): Promise<RunResult> {
     verdict = await analyzeWithClaude({
       packageId: args.packageId,
       version: args.version,
-      commands,
+      commands: [command],
       output: log,
     });
   } catch (err) {

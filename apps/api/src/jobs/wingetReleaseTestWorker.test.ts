@@ -127,10 +127,10 @@ describe('executeWingetReleaseTest', () => {
       version: '121.0',
     });
     expect(mocks.dbMock.update).toHaveBeenCalledTimes(3);
-    expect(mocks.state.updateSetCalls[0].value).toEqual(
+    expect(mocks.state.updateSetCalls[0]!.value).toEqual(
       expect.objectContaining({ status: 'running', startedAt: expect.any(Date) })
     );
-    expect(mocks.state.updateSetCalls[1].value).toEqual(
+    expect(mocks.state.updateSetCalls[1]!.value).toEqual(
       expect.objectContaining({
         status: 'completed',
         result: 'pass',
@@ -138,7 +138,7 @@ describe('executeWingetReleaseTest', () => {
         completedAt: expect.any(Date),
       })
     );
-    expect(mocks.state.updateSetCalls[2].value).toEqual(
+    expect(mocks.state.updateSetCalls[2]!.value).toEqual(
       expect.objectContaining({
         lastTestedAt: expect.any(Date),
         lastTestedVersion: '121.0',
