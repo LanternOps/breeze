@@ -1568,6 +1568,7 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 			"source":          h.mapPatchProviderSource(p.Provider),
 			"externalId":      externalId,
 			"packageId":       p.ID,
+			"vendor":          extractVendor(p.Provider, p.ID),
 			"kbNumber":        p.KBNumber,
 			"size":            p.Size,
 			"requiresRestart": p.RebootRequired,
@@ -1595,6 +1596,7 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 			"source":     h.mapPatchProviderSource(p.Provider),
 			"externalId": externalId,
 			"packageId":  p.ID,
+			"vendor":     extractVendor(p.Provider, p.ID),
 		}
 		if p.KBNumber != "" {
 			m["kbNumber"] = p.KBNumber
@@ -1701,6 +1703,19 @@ func (h *Heartbeat) mapPatchProviderCategory(provider string) string {
 	default:
 		return "application"
 	}
+}
+
+// extractVendor returns the publisher segment of a winget-style package ID
+// (e.g. "Mozilla.Firefox" -> "Mozilla"). Returns "" if provider is not winget
+// or the ID has no dot.
+func extractVendor(provider, packageID string) string {
+	if provider != "winget" {
+		return ""
+	}
+	if i := strings.Index(packageID, "."); i > 0 {
+		return packageID[:i]
+	}
+	return ""
 }
 
 func (h *Heartbeat) mapPatchSeverity(severity string) string {
