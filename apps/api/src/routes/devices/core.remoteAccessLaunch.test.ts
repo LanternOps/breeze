@@ -85,6 +85,15 @@ import { coreRoutes } from './core';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
+import { requirePermission, requireMfa } from '../../middleware/auth';
+
+// Snapshot mock.calls captured at module-load time (i.e. when core.ts ran its
+// route registrations). beforeEach() clears mock state, so we cannot read these
+// records inside a test body — they must be frozen here, before any test runs.
+const requirePermissionCallsAtImport = vi
+  .mocked(requirePermission)
+  .mock.calls.map((c) => [...c]);
+const requireMfaCallCountAtImport = vi.mocked(requireMfa).mock.calls.length;
 
 const deviceId = '22222222-2222-2222-2222-222222222222';
 
@@ -100,6 +109,17 @@ describe('POST /devices/:id/remote-access-launch', () => {
     mockPartnerSettings = {};
     app = new Hono();
     app.route('/devices', coreRoutes);
+  });
+
+  // Registration-time gate test. The launcher POST issues URLs that may carry
+  // substituted provider credentials, so it must share the gate used by the
+  // WebRTC initiate flow (apps/api/src/routes/remote/index.ts:12):
+  // requirePermission('remote', 'access') + requireMfa().
+  it('is gated by remote:access permission and requireMfa at registration time', () => {
+    expect(
+      requirePermissionCallsAtImport.some((c) => c[0] === 'remote' && c[1] === 'access'),
+    ).toBe(true);
+    expect(requireMfaCallCountAtImport).toBeGreaterThan(0);
   });
 
   it('returns 404 when device does not exist', async () => {

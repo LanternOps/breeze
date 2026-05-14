@@ -495,7 +495,6 @@ coreRoutes.get(
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     try {
       const launcher = await resolveRemoteAccessLauncherForDevice(
-        deviceId,
         device.orgId,
         device.customFields as Record<string, unknown> | null,
       );
@@ -537,7 +536,6 @@ coreRoutes.get(
  * uses systemAuth for the same reason.
  */
 async function resolveRemoteAccessLauncherForDevice(
-  _deviceId: string,
   orgId: string,
   customFields: Record<string, unknown> | null,
 ): Promise<RemoteAccessLaunchResult> {
@@ -566,6 +564,11 @@ async function resolveRemoteAccessLauncherForDevice(
 coreRoutes.post(
   '/:id/remote-access-launch',
   requireScope('organization', 'partner', 'system'),
+  // Same gate as the WebRTC initiate flow (apps/api/src/routes/remote/index.ts:12).
+  // This endpoint issues URLs containing substituted provider credentials, so it
+  // needs to match (not loosen) the existing remote-desktop session gate.
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -578,7 +581,6 @@ coreRoutes.post(
     let launcher: RemoteAccessLaunchResult;
     try {
       launcher = await resolveRemoteAccessLauncherForDevice(
-        deviceId,
         device.orgId,
         device.customFields as Record<string, unknown> | null,
       );

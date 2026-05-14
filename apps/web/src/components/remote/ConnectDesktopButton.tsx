@@ -198,8 +198,23 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           setStatus('idle');
           return;
         }
-        // Non-OK, non-422 (e.g., 404 stale UI, 500). Fall through to the
-        // built-in WebRTC flow so the device is still reachable.
+        // Non-OK, non-422. Fail loudly to match the 422 path's "config
+        // visibility over network-blip tolerance" framing. A 500 most
+        // likely indicates a partner DB lookup error the admin needs to
+        // see; a 404 means the device record changed since this UI
+        // loaded and the user should refresh. In both cases, falling
+        // through to WebRTC would mask the real failure mode.
+        Sentry.captureMessage(
+          'Remote-access launcher POST failed unexpectedly',
+          { level: 'warning', extra: { deviceId, status: launchRes.status } },
+        );
+        const friendly = launchRes.status === 404
+          ? 'Remote launch failed: device record changed. Please refresh and try again.'
+          : 'Remote launch failed: server error. Please contact your administrator.';
+        showToast({ type: 'error', message: friendly });
+        setError(`Remote launch failed (HTTP ${launchRes.status})`);
+        setStatus('idle');
+        return;
       }
 
       // Auto-detect: fall back to VNC when the WebRTC path can't work but VNC relay is enabled.
