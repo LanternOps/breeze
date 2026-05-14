@@ -12,17 +12,18 @@ vi.mock('../../db', () => ({
   }
 }));
 
-vi.mock('../../db/schema', () => ({
-  deviceCommands: {
-    id: 'id',
-    deviceId: 'deviceId',
-    type: 'type',
-    payload: 'payload',
-    result: 'result',
-    createdAt: 'createdAt'
-  },
-  devices: { id: 'id' }
-}));
+// Wake-on-LAN brings a long transitive import chain through the API surface
+// (commands.ts -> wakeOnLan.ts -> agentWs.ts -> remoteAccessPolicy.ts ->
+// configurationPolicy.ts -> the full config-policy schema set; and
+// agentWs.ts -> discoveryWorker.ts -> networkBaseline.ts -> the enum surface).
+// Stubbing every table by name turns into a moving target — partial-mock via
+// importOriginal so the real schema satisfies the transitive imports, while
+// the assertions in this file continue to use the in-test mock infrastructure
+// that doesn't read these tables at all.
+vi.mock('../../db/schema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../db/schema')>();
+  return { ...actual };
+});
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {

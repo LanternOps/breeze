@@ -21,7 +21,7 @@ var allCommandTypes = []string{
 	tools.CmdRegistryKeys, tools.CmdRegistryValues, tools.CmdRegistryGet,
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
-	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode,
+	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdWakeOnLan,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,

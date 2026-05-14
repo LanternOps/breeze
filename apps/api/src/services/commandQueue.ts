@@ -126,6 +126,8 @@ export const CommandTypes = {
 
   // Safe mode reboot (Windows only)
   REBOOT_SAFE_MODE: 'reboot_safe_mode',
+  // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
+  WAKE_ON_LAN: 'wake_on_lan',
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
   // Backup
@@ -258,6 +260,10 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.PERIPHERAL_POLICY_SYNC,
   // Safe mode reboot
   CommandTypes.REBOOT_SAFE_MODE,
+  // (Wake-on-LAN audit is written by the wakeOnLan service against the target device,
+  // not by the auto-audit path. The deviceCommands row is addressed to the relay agent
+  // so the result handler in agentWs matches, but the user-visible action belongs to
+  // the target. See apps/api/src/services/wakeOnLan.ts.)
   // Self-uninstall (remote wipe)
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.BACKUP_RUN,

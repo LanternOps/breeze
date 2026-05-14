@@ -47,6 +47,7 @@ const (
 	CmdShutdown       = "shutdown"
 	CmdLock           = "lock"
 	CmdRebootSafeMode = "reboot_safe_mode"
+	CmdWakeOnLan      = "wake_on_lan"
 
 	// Software inventory
 	CmdCollectSoftware   = "collect_software"

@@ -54,6 +54,7 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdShutdown:       handleShutdown,
 	tools.CmdLock:           handleLock,
 	tools.CmdRebootSafeMode: handleRebootSafeMode,
+	tools.CmdWakeOnLan:      handleWakeOnLan,
 
 	// Software inventory
 	tools.CmdCollectSoftware:   handleCollectSoftware,
@@ -223,6 +224,10 @@ func handleShutdown(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleLock(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.Lock(cmd.Payload)
+}
+
+func handleWakeOnLan(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.WakeOnLan(cmd.Payload)
 }
 
 func handleRebootSafeMode(h *Heartbeat, cmd Command) tools.CommandResult {

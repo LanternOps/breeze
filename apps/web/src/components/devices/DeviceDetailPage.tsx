@@ -8,7 +8,7 @@ import ChangeSiteModal from './ChangeSiteModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice, sendWakeCommand, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -147,6 +147,24 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           await sendDeviceCommand(device.id, action);
           const label = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
           showToast({ type: 'success', message: `${label} command sent to ${device.hostname}` });
+          break;
+        }
+
+        case 'wake': {
+          try {
+            const wake = await sendWakeCommand(device.id);
+            showToast({
+              type: 'success',
+              message: `Wake packet sent to ${device.hostname} via ${wake.relay.hostname} (${wake.broadcast}). Wait up to 5 min for it to come online.`,
+            });
+          } catch (err) {
+            if (err instanceof WakeCommandError) {
+              const friendly = wakeFriendlyErrorMessage(err.code) ?? err.message;
+              showToast({ type: 'error', message: `${device.hostname}: ${friendly}` });
+            } else {
+              throw err;
+            }
+          }
           break;
         }
 

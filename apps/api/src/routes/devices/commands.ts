@@ -10,6 +10,8 @@ import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
+import { dispatchWake } from '../../services/wakeOnLan';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 export const commandsRoutes = new Hono();
 
@@ -120,6 +122,29 @@ commandsRoutes.post(
     // Don't allow commands to decommissioned devices
     if (device.status === 'decommissioned') {
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+
+    // Wake-on-LAN takes a separate path: the command row must be addressed to
+    // an online relay agent on the target's LAN, not the offline target.
+    if (data.type === 'wake') {
+      const wake = await dispatchWake(deviceId, auth.user.id, {
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header('user-agent'),
+      });
+      if (!wake.ok) {
+        return c.json({ error: wake.message, code: wake.code }, 412);
+      }
+      return c.json({
+        id: wake.commandId,
+        deviceId,
+        type: 'wake_on_lan',
+        status: 'sent',
+        wakeAttemptId: wake.wakeAttemptId,
+        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
+        network: wake.network,
+        broadcast: wake.broadcast,
+        macs: wake.macs,
+      }, 202);
     }
 
     const [command] = await db

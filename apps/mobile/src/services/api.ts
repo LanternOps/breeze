@@ -476,6 +476,41 @@ export async function sendDeviceAction(
   };
 }
 
+export type WakeFailureCode =
+  | 'TARGET_NOT_FOUND'
+  | 'NO_MACS'
+  | 'NO_SUBNET'
+  | 'IPV6_ONLY'
+  | 'NO_RELAY'
+  | 'RELAY_OVERRIDE_INVALID'
+  | 'WS_SEND_FAILED';
+
+export interface WakeMobileResponse {
+  id: string;
+  deviceId: string;
+  type: 'wake_on_lan';
+  status: string;
+  wakeAttemptId: string;
+  relay: { deviceId: string; hostname: string };
+  network: string;
+  broadcast: string;
+  macs: string[];
+}
+
+// Throws an ApiError on non-2xx — the caller can read err.code for the
+// pre-flight failure reason (NO_MACS, NO_RELAY, etc.) and surface a friendly
+// message. requestWithPrefix already preserves both code and statusCode.
+export async function sendWakeAction(deviceId: string): Promise<WakeMobileResponse> {
+  return requestWithPrefix<WakeMobileResponse>(
+    `/devices/${deviceId}/commands`,
+    API_CORE_PREFIX,
+    {
+      method: 'POST',
+      body: JSON.stringify({ type: 'wake' }),
+    },
+  );
+}
+
 // Push notification registration
 export async function registerPushToken(token: string, platform: 'ios' | 'android'): Promise<void> {
   await request('/notifications/register', {

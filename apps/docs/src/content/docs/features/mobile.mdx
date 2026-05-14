@@ -71,10 +71,25 @@ The device detail screen exposes quick-action buttons that dispatch commands to 
 | Action | Description | Availability |
 |--------|-------------|-------------|
 | `reboot` | Sends a reboot command to the device agent | Online devices only |
-| `wake` | Sends a Wake-on-LAN packet | Available for all devices |
+| `wake` | Sends a Wake-on-LAN packet via an online peer agent on the target's LAN | Offline devices only; requires another online agent at the same site and subnet |
 | `run_script` | Executes a script on the device | Online devices only; requires `scriptId` |
 
 Actions are submitted via the mobile actions endpoint `POST /mobile/devices/:id/actions`, which supports `reboot`, `wake`, and `run_script`. For `run_script`, the API validates that the script exists, the user has organization access to it, and the script's supported OS types include the target device's OS. A `scriptExecution` record is created with `triggerType: 'manual'` and the script content, language, timeout, and `runAs` settings are included in the command payload.
+
+#### Wake-on-LAN pre-flight
+
+The offline target can't execute its own wake, so the API selects an online peer agent at the same `site_id` whose most recent active IPv4 subnet matches the target's, and dispatches the magic packet from that relay. The dashboard mobile UI hits the core `POST /devices/:id/commands` endpoint with `{ "type": "wake" }`; the API translates it to a `wake_on_lan` command addressed to the relay. On success the response is 202 with the relay hostname, computed broadcast address, target MACs, and a `wakeAttemptId`. Pre-flight failures return 412 with one of these codes so the UI can surface a specific reason:
+
+| Code | Meaning |
+|------|---------|
+| `NO_MACS` | Target has never reported a MAC address to the platform. |
+| `NO_SUBNET` | Target has no IPv4 record with a subnet mask in history. |
+| `IPV6_ONLY` | Target has only IPv6 history (Wake-on-LAN is IPv4-only). |
+| `NO_RELAY` | No online peer agent at the same site and subnet is available to relay. |
+| `RELAY_OVERRIDE_INVALID` | Caller-supplied relay isn't online or isn't at the target's site/subnet. |
+| `WS_SEND_FAILED` | Relay dropped its WebSocket between selection and dispatch — retry. |
+
+The agent's WoL handler sends three rounds of magic packets to UDP ports 7 and 9 spaced 500 ms apart, one per known MAC. Success measurement is left to the UI — wait for the target's next heartbeat to confirm the wake worked (typical resume time: 30 s to 5 min).
 
 <Aside type="caution">
   The `shutdown` and `lock` actions visible in the mobile UI are dispatched through the core commands endpoint (`POST /devices/:id/commands`) rather than the mobile actions endpoint, as the mobile actions schema does not currently accept those command types.

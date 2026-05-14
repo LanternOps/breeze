@@ -4,8 +4,10 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'rea
 import {
   getDeviceMetrics,
   sendDeviceAction,
+  sendWakeAction,
   type Device,
   type DeviceAction,
+  type WakeFailureCode,
 } from '../../services/api';
 import {
   useApprovalTheme,
@@ -182,13 +184,45 @@ export function DeviceDetailScreen({ route }: Props) {
   async function handleAction(action: DeviceAction) {
     try {
       setActionLoading(action);
-      await sendDeviceAction(device.id, action);
-      Alert.alert('Sent', `${action} command sent.`);
+      if (action === 'wake') {
+        const wake = await sendWakeAction(device.id);
+        Alert.alert(
+          'Wake sent',
+          `Magic packet sent to ${wake.broadcast} via ${wake.relay.hostname}. Wait up to 5 min for the device to come online.`,
+        );
+      } else {
+        await sendDeviceAction(device.id, action);
+        Alert.alert('Sent', `${action} command sent.`);
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Could not send command.';
+      const apiErr = err as { message?: string; code?: WakeFailureCode | string };
+      const msg = (action === 'wake' ? wakeFriendlyMessage(apiErr.code) : null)
+        || apiErr?.message
+        || 'Could not send command.';
       Alert.alert('Failed', msg);
     } finally {
       setActionLoading(null);
+    }
+  }
+
+  function wakeFriendlyMessage(code: WakeFailureCode | string | undefined): string | null {
+    switch (code) {
+      case 'NO_MACS':
+        return 'No MAC address on file. The agent must check in at least once before Wake-on-LAN is available.';
+      case 'NO_SUBNET':
+        return 'No IPv4 record with a subnet mask is in this device\'s history.';
+      case 'IPV6_ONLY':
+        return 'Device only has IPv6 history. Wake-on-LAN requires IPv4.';
+      case 'NO_RELAY':
+        return 'No online peer agent at the same site and subnet to relay the packet.';
+      case 'RELAY_OVERRIDE_INVALID':
+        return 'Selected relay is not eligible (must be online and at the target site and subnet).';
+      case 'WS_SEND_FAILED':
+        return 'Relay agent dropped connection during dispatch. Try again.';
+      case 'TARGET_NOT_FOUND':
+        return 'Device not found.';
+      default:
+        return null;
     }
   }
 

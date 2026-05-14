@@ -41,7 +41,10 @@ export const softwareQuerySchema = z.object({
 });
 
 export const createCommandSchema = z.object({
-  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment']),
+  // 'wake' is the user-facing wake action. Internally it dispatches via the
+  // wakeOnLan service and writes a deviceCommands row of type 'wake_on_lan'
+  // addressed to a relay agent. See apps/api/src/services/wakeOnLan.ts.
+  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake']),
   payload: z.any().optional()
 });
 

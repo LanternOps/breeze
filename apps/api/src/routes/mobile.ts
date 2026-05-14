@@ -22,6 +22,8 @@ import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCool
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { PERMISSIONS } from '../services/permissions';
+import { dispatchWake } from '../services/wakeOnLan';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -875,6 +877,28 @@ mobileRoutes.post(
         executionId: execution.id,
         commandId: command.id
       }, 201);
+    }
+
+    // Wake-on-LAN: dispatch via the relay-aware service. Audit row is written
+    // by the service against the target device; no route-level audit here to
+    // avoid duplication.
+    if (data.action === 'wake') {
+      const wake = await dispatchWake(device.id, auth.user.id, {
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header('user-agent'),
+      });
+      if (!wake.ok) {
+        return c.json({ error: wake.message, code: wake.code }, 412);
+      }
+      return c.json({
+        action: 'wake',
+        commandId: wake.commandId,
+        wakeAttemptId: wake.wakeAttemptId,
+        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
+        network: wake.network,
+        broadcast: wake.broadcast,
+        macs: wake.macs,
+      }, 202);
     }
 
     const cmdResult = await db

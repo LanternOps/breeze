@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap } from 'lucide-react';
 import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -813,6 +813,20 @@ export default function DeviceList({
                               <RotateCcw className="h-4 w-4" />
                               Reboot
                             </button>
+                            {device.status === 'offline' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onAction?.('wake', device);
+                                  setRowMenuOpenId(null);
+                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                                title="Send a Wake-on-LAN packet via an online peer agent on the device's LAN"
+                              >
+                                <Zap className="h-4 w-4" />
+                                Wake
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {

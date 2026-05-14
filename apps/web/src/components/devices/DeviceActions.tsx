@@ -13,7 +13,8 @@ import {
   Trash2,
   XCircle,
   Package,
-  MapPin
+  MapPin,
+  Zap
 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -107,6 +108,16 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <RotateCcw className="h-4 w-4" />
                 Reboot
               </button>
+              {device.status === 'offline' && (
+                <button
+                  type="button"
+                  onClick={() => handleAction('wake')}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <Zap className="h-4 w-4" />
+                  Wake
+                </button>
+              )}
               {device.os === 'windows' && (
                 <button
                   type="button"
@@ -210,6 +221,18 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <RotateCcw className="h-4 w-4" />
           Reboot
         </button>
+        {device.status === 'offline' && (
+          <button
+            type="button"
+            onClick={() => handleAction('wake')}
+            disabled={loading}
+            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            title="Send a Wake-on-LAN packet via an online peer agent on the device's LAN"
+          >
+            <Zap className="h-4 w-4" />
+            Wake
+          </button>
+        )}
 
         <div className="relative">
           <button
