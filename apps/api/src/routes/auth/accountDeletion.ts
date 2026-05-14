@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, ne } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, ne } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import {
   accountDeletionRequests,
@@ -454,15 +454,11 @@ async function resolveReachableUserIds(auth: AdminAuth): Promise<string[] | null
 
     const orgIds = (auth.accessibleOrgIds ?? []).filter((id): id is string => !!id);
     if (orgIds.length > 0) {
-      // Drizzle `inArray` on org_id — but to keep imports small we run a single
-      // query per org id only when necessary. For typical admin scopes this
-      // is at most a handful of ids; we filter with a single SQL `IN` instead.
       const orgRows = await db
-        .select({ userId: organizationUsers.userId, orgId: organizationUsers.orgId })
-        .from(organizationUsers);
-      for (const r of orgRows) {
-        if (r.orgId && orgIds.includes(r.orgId)) ids.add(r.userId);
-      }
+        .select({ userId: organizationUsers.userId })
+        .from(organizationUsers)
+        .where(inArray(organizationUsers.orgId, orgIds));
+      for (const r of orgRows) ids.add(r.userId);
     }
 
     return Array.from(ids);
@@ -523,8 +519,24 @@ accountDeletionAdminRoutes.get(
 
     const reachable = await resolveReachableUserIds(auth);
 
-    const rows = await runWithSystemDbAccess(async () => {
-      const query = db
+    // Non-system admins outside any tenant get an empty page without
+    // round-tripping to the DB.
+    if (auth.scope !== 'system' && (!reachable || reachable.length === 0)) {
+      return c.json({ requests: [], limit, offset });
+    }
+
+    // Push tenant scoping into the SQL WHERE. Previously the limit/offset
+    // ran first and then JS filtered out unreachable rows — which produced
+    // partial pages for non-system admins.
+    const reachabilityFilter = reachable
+      ? inArray(accountDeletionRequests.userId, reachable)
+      : undefined;
+    const whereClause = reachabilityFilter
+      ? and(eq(accountDeletionRequests.status, status), reachabilityFilter)
+      : eq(accountDeletionRequests.status, status);
+
+    const rows = await runWithSystemDbAccess(async () =>
+      db
         .select({
           request: accountDeletionRequests,
           user: {
@@ -536,16 +548,14 @@ accountDeletionAdminRoutes.get(
         })
         .from(accountDeletionRequests)
         .leftJoin(users, eq(users.id, accountDeletionRequests.userId))
-        .where(eq(accountDeletionRequests.status, status))
+        .where(whereClause)
         .orderBy(desc(accountDeletionRequests.requestedAt))
         .limit(limit)
-        .offset(offset);
-      return query;
-    });
+        .offset(offset)
+    );
 
-    const filtered = rows.filter((r) => adminCanReach(auth, reachable, r.request.userId));
     return c.json({
-      requests: filtered.map(serializeAdminRow),
+      requests: rows.map(serializeAdminRow),
       limit,
       offset,
     });
@@ -565,15 +575,21 @@ accountDeletionAdminRoutes.get(
       return c.json({ count: 0 });
     }
 
-    const rows = await runWithSystemDbAccess(async () =>
+    const reachabilityFilter = reachable
+      ? inArray(accountDeletionRequests.userId, reachable)
+      : undefined;
+    const whereClause = reachabilityFilter
+      ? and(eq(accountDeletionRequests.status, 'pending'), reachabilityFilter)
+      : eq(accountDeletionRequests.status, 'pending');
+
+    const [row] = await runWithSystemDbAccess(async () =>
       db
-        .select({ userId: accountDeletionRequests.userId })
+        .select({ total: count() })
         .from(accountDeletionRequests)
-        .where(eq(accountDeletionRequests.status, 'pending'))
+        .where(whereClause)
     );
 
-    const total = rows.filter((r) => adminCanReach(auth, reachable, r.userId)).length;
-    return c.json({ count: total });
+    return c.json({ count: row?.total ?? 0 });
   }
 );
 

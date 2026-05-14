@@ -468,7 +468,7 @@ describe('POST /me/oauth-clients/:clientId/revoke (transactional revoke)', () =>
     const { db } = await import('../db');
     vi.mocked(db.select).mockImplementation(() => {
       selectCallCount++;
-      return buildSelectChain(() =>
+      return buildSelectChain<any>(() =>
         selectCallCount === 1
           ? [{ id: 'grant-1', revokedAt: null }]
           : [
@@ -505,7 +505,7 @@ describe('POST /me/oauth-clients/:clientId/revoke (transactional revoke)', () =>
     const { db } = await import('../db');
     vi.mocked(db.select).mockImplementation(() => {
       selectCallCount++;
-      return buildSelectChain(() =>
+      return buildSelectChain<any>(() =>
         selectCallCount === 1 ? [{ id: 'grant-1', revokedAt: null }] : []
       ) as any;
     });
@@ -527,7 +527,7 @@ describe('POST /me/oauth-clients/:clientId/revoke (transactional revoke)', () =>
     const { db } = await import('../db');
     vi.mocked(db.select).mockImplementation(() => {
       selectCallCount++;
-      return buildSelectChain(() =>
+      return buildSelectChain<any>(() =>
         selectCallCount === 1 ? [{ id: 'grant-1', revokedAt: null }] : []
       ) as any;
     });
