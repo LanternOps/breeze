@@ -451,10 +451,17 @@ channelsRoutes.post(
           break;
 
         default:
-          testResult = {
-            success: false,
-            message: `Unknown channel type: ${channel.type}`
-          };
+          // Channel type is in the DB enum but the test endpoint has no
+          // handler for it. This is a server-side gap, not a user error —
+          // surface it as 501 so the UI's error handler fires (200 with
+          // success:false was silently swallowed by the dashboard).
+          return c.json(
+            {
+              success: false,
+              error: `Test endpoint does not support channel type: ${channel.type}`
+            },
+            501
+          );
       }
     } catch (error) {
       testResult = {
