@@ -130,17 +130,45 @@ async function getUpdateManifestPublicKeys(): Promise<Buffer[]> {
   return Object.assign(result, { dbLoadFailed });
 }
 
-async function verifyEd25519ManifestSignature(
+/**
+ * Verify an Ed25519 signature over `manifest` against the active trust roots
+ * (env-pinned + DB-provisioned deployment signing keys).
+ *
+ * Default is **fail-closed** when no keys are configured. Callers that want
+ * the hosted-SaaS "no trust roots = trust everything" bootstrap behavior
+ * (e.g. fresh deploy before any deployment signing key is provisioned and no
+ * env-pinned trust root has been added) must explicitly pass
+ * `allowEmptyKeysetSoftPass: true`.
+ *
+ * When the DB lookup fails outright (`dbLoadFailed`), we always return false
+ * regardless of the opt-in — never soft-pass on a transient DB outage
+ * (#625 review-CRIT-1).
+ *
+ * Exported so unit tests can exercise the empty-keyset behavior directly.
+ */
+export async function verifyEd25519ManifestSignature(
   manifest: string,
   signature: string,
+  options: { allowEmptyKeysetSoftPass?: boolean } = {},
 ): Promise<boolean> {
   const keys = await getUpdateManifestPublicKeys();
   if (keys.length === 0) {
-    // Empty by intent (no env + no DB rows on a fresh hosted deploy) is a
-    // soft-pass. Empty *because the DB lookup threw* must fail closed —
-    // this used to be a silent verification bypass on transient DB outages
-    // for self-host (#625 review-CRIT-1).
-    return !(keys as { dbLoadFailed?: boolean }).dbLoadFailed;
+    const dbLoadFailed = !!(keys as { dbLoadFailed?: boolean }).dbLoadFailed;
+    if (dbLoadFailed) {
+      // DB lookup actually failed — never soft-pass, even if the caller
+      // opted in. Transient outages must not bypass signature verification.
+      return false;
+    }
+    if (options.allowEmptyKeysetSoftPass) {
+      // Caller opted into the legacy hosted-SaaS bootstrap behavior. Empty
+      // keyset by intent (no env + no DB rows on a fresh hosted deploy) is
+      // treated as "trust everything" until the first key is provisioned.
+      return true;
+    }
+    console.error(
+      "[agentVersions] verifyEd25519ManifestSignature: no trust roots configured and allowEmptyKeysetSoftPass not set — failing closed",
+    );
+    return false;
   }
 
   let signatureBytes: Buffer;
@@ -285,7 +313,11 @@ export async function validateReleaseManifest(args: {
   // specific `release_manifest_metadata_mismatch` reason to a caller whose
   // signature was forged, we let attackers probe which DB-row field would
   // have mismatched without ever holding a valid signing key (#641).
-  if (!(await verifyEd25519ManifestSignature(args.manifest, args.signature))) {
+  if (
+    !(await verifyEd25519ManifestSignature(args.manifest, args.signature, {
+      allowEmptyKeysetSoftPass: true,
+    }))
+  ) {
     return { ok: false, reason: "invalid_release_manifest_signature" };
   }
 

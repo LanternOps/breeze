@@ -35,7 +35,11 @@ vi.mock("../middleware/auth", () => ({
   requireMfa: () => vi.fn(async (_c: any, next: any) => next()),
 }));
 
-import { agentVersionRoutes, validateReleaseManifest } from "./agentVersions";
+import {
+  agentVersionRoutes,
+  validateReleaseManifest,
+  verifyEd25519ManifestSignature,
+} from "./agentVersions";
 import { db } from "../db";
 import * as manifestSigning from "../services/manifestSigning";
 
@@ -705,5 +709,43 @@ describe("validateReleaseManifest — fail-closed behaviour (#625 C3)", () => {
     });
 
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
+    vi.spyOn(manifestSigning, "getActivePublicKeys").mockResolvedValue([]);
+  });
+
+  it("fails closed by default when no trust roots are configured", async () => {
+    const result = await verifyEd25519ManifestSignature(
+      "{\"foo\":1}",
+      "A".repeat(88),
+    );
+    expect(result).toBe(false);
+  });
+
+  it("returns true when caller explicitly opts into the empty-keyset soft-pass", async () => {
+    const result = await verifyEd25519ManifestSignature(
+      "{\"foo\":1}",
+      "A".repeat(88),
+      { allowEmptyKeysetSoftPass: true },
+    );
+    expect(result).toBe(true);
+  });
+
+  it("still fails closed on DB load failure even when caller opts in", async () => {
+    vi.spyOn(manifestSigning, "getActivePublicKeys").mockRejectedValue(
+      new Error("connection refused"),
+    );
+    const result = await verifyEd25519ManifestSignature(
+      "{\"foo\":1}",
+      "A".repeat(88),
+      { allowEmptyKeysetSoftPass: true },
+    );
+    expect(result).toBe(false);
   });
 });
