@@ -89,6 +89,9 @@ var allCommandTypes = []string{
 	// handlers.go — log shipping
 	tools.CmdSetLogLevel,
 
+	// handlers_autoupdate.go
+	tools.CmdSetAutoUpdate,
+
 	// handlers_devupdate.go init()
 	tools.CmdDevUpdate,
 

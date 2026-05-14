@@ -90,6 +90,9 @@ var handlerRegistry = map[string]CommandHandler{
 
 	// Log shipping
 	tools.CmdSetLogLevel: handleSetLogLevel,
+
+	// Auto-update management
+	tools.CmdSetAutoUpdate: handleSetAutoUpdate,
 }
 
 // dispatchCommand looks up the handler for a command type and executes it,

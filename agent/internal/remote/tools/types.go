@@ -168,6 +168,9 @@ const (
 	CmdSetLogLevel = "set_log_level"
 
 	// Dev push (fast dev binary update)
+	// Auto-update management
+	CmdSetAutoUpdate = "set_auto_update"
+
 	CmdDevUpdate = "dev_update"
 
 	// Screenshot (AI Vision)
