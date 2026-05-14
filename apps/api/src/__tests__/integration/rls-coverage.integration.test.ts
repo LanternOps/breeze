@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, users } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
+import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -810,4 +811,138 @@ describe('approval_requests RLS — cross-user forge enforcement (Shape 6)', () 
       /new row violates row-level security policy for table "approval_requests"/
     );
   });
+});
+
+// ===========================================================================
+// manifest_signing_keys RLS lockout (#639)
+//
+// The catalog test above only proves `manifest_signing_keys` is in
+// INTENTIONAL_UNSCOPED as documentation. It does NOT prove Postgres rejects
+// a tenant-scoped (non-system) caller's INSERT/SELECT. This block forges
+// both as `breeze_app` running under a normal tenant context and asserts
+// the table is locked down by FORCE ROW LEVEL SECURITY with no permissive
+// policies; the system-scope branch confirms the write path that
+// ensureActiveSigningKey relies on still works.
+// ===========================================================================
+describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const insertedKeyIds: string[] = [];
+
+  // Build a tenant-scoped DbAccessContext that grants no orgs / no partners.
+  // Under this context, breeze_app should be unable to touch
+  // manifest_signing_keys — the table has ENABLE + FORCE RLS and no
+  // permissive policies, so only the system context branch (which bypasses
+  // RLS via runOutsideDbContext + withSystemDbAccessContext) can read/write.
+  const tenantCtx = {
+    scope: 'organization' as const,
+    orgId: null,
+    accessibleOrgIds: [],
+    accessiblePartnerIds: [],
+    userId: null,
+  };
+
+  afterAll(async () => {
+    if (insertedKeyIds.length === 0) return;
+    await withSystemDbAccessContext(async () => {
+      for (const keyId of insertedKeyIds) {
+        await db
+          .delete(manifestSigningKeys)
+          .where(eq(manifestSigningKeys.keyId, keyId));
+      }
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'INSERT as breeze_app under a tenant context is rejected by RLS',
+    async () => {
+      let caught: unknown;
+      try {
+        await withDbAccessContext(tenantCtx, async () =>
+          db.insert(manifestSigningKeys).values({
+            keyId: `rls-forge-deny-${runSuffix}`,
+            publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+            privateKeyEnc: 'enc:v1:forge',
+            status: 'active',
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      const cause = caught as
+        | { cause?: { message?: string }; message?: string }
+        | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      // Two acceptable rejection surfaces: a row-level-security policy
+      // denial (USING/WITH CHECK on a permissive policy) or a permission
+      // denied on the relation (no policy = no access by default once
+      // FORCE RLS is on for the table's owner-equivalents too).
+      expect(message).toMatch(
+        /row-level security|permission denied|new row violates row-level security/i,
+      );
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'SELECT as breeze_app under a tenant context returns zero rows',
+    async () => {
+      // Seed a row via system context so there's something to fail to see.
+      const seededKeyId = `rls-forge-seed-${runSuffix}`;
+      await withSystemDbAccessContext(async () => {
+        await db.insert(manifestSigningKeys).values({
+          keyId: seededKeyId,
+          publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+          privateKeyEnc: 'enc:v1:forge',
+          status: 'active',
+        });
+      });
+      insertedKeyIds.push(seededKeyId);
+
+      // Now read under a tenant context. RLS with no permissive policy
+      // means the SELECT returns 0 rows OR Postgres throws permission
+      // denied — assert either outcome explicitly.
+      let rows: unknown[] = [];
+      let err: unknown = null;
+      try {
+        rows = await withDbAccessContext(tenantCtx, async () =>
+          db
+            .select({ keyId: manifestSigningKeys.keyId })
+            .from(manifestSigningKeys),
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      if (err) {
+        const cause = err as
+          | { cause?: { message?: string }; message?: string };
+        const message = cause?.cause?.message ?? cause?.message ?? '';
+        expect(message).toMatch(/permission denied|row-level security/i);
+      } else {
+        expect(rows).toEqual([]);
+      }
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'INSERT under system context succeeds',
+    async () => {
+      const keyId = `rls-forge-system-${runSuffix}`;
+      const result = await withSystemDbAccessContext(async () => {
+        return db
+          .insert(manifestSigningKeys)
+          .values({
+            keyId,
+            publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+            privateKeyEnc: 'enc:v1:forge',
+            status: 'retired',
+          })
+          .returning({ keyId: manifestSigningKeys.keyId });
+      });
+      expect(result).toHaveLength(1);
+      expect(result[0]!.keyId).toBe(keyId);
+      insertedKeyIds.push(keyId);
+    },
+  );
 });
