@@ -16,6 +16,17 @@ vi.mock('../middleware/mobileDeviceBlocked', () => ({
   mobileDeviceBlockedMiddleware: vi.fn((_c: any, next: any) => next()),
 }));
 
+const { revokeUserOauthClientMock } = vi.hoisted(() => ({
+  revokeUserOauthClientMock: vi.fn(),
+}));
+vi.mock('../services/oauthRevocation', () => ({
+  revokeUserOauthClient: revokeUserOauthClientMock,
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 vi.mock('../services/expoPush', () => ({
   sendExpoPush: vi.fn(async () => [{ status: 'ok', id: 'tk' }]),
   getUserPushTokens: vi.fn(async () => ['ExponentPushToken[abc]']),
@@ -397,7 +408,11 @@ describe('POST /approvals/:id/report-suspicious', () => {
     createdAt: new Date(),
   };
 
-  function wireRevocationStubs(opts: { existing: typeof baseRow | null }) {
+  function wireRevocationStubs(opts: {
+    existing: typeof baseRow | null;
+    revokeResult?: { grantsRevoked: number; refreshTokensRevoked: number; cacheFailures: number };
+    revokeThrows?: Error;
+  }) {
     // 1) initial select to find approval
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
@@ -409,44 +424,65 @@ describe('POST /approvals/:id/report-suspicious', () => {
     const approvalUpdateSet = vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
     });
-    // 3) update oauth_refresh_tokens
-    const tokenUpdateSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: 'rt-1' }]),
-      }),
-    });
-    vi.mocked(db.update)
-      .mockReturnValueOnce({ set: approvalUpdateSet } as any)
-      .mockReturnValueOnce({ set: tokenUpdateSet } as any);
-
-    // delete oauth_grants
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: 'grant-1' }]),
-      }),
-    } as any);
+    vi.mocked(db.update).mockReturnValueOnce({ set: approvalUpdateSet } as any);
 
     // insert audit log
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     } as any);
 
-    return { approvalUpdateSet, tokenUpdateSet };
+    revokeUserOauthClientMock.mockReset();
+    if (opts.revokeThrows) {
+      revokeUserOauthClientMock.mockRejectedValueOnce(opts.revokeThrows);
+    } else {
+      revokeUserOauthClientMock.mockResolvedValueOnce(
+        opts.revokeResult ?? { grantsRevoked: 1, refreshTokensRevoked: 1, cacheFailures: 0 },
+      );
+    }
+
+    return { approvalUpdateSet };
   }
 
-  it('happy path: 204, denies row, revokes grant + tokens, writes audit', async () => {
-    const { approvalUpdateSet, tokenUpdateSet } = wireRevocationStubs({ existing: baseRow });
+  it('happy path: 204, marks row reported, calls revokeUserOauthClient, writes audit', async () => {
+    const { approvalUpdateSet } = wireRevocationStubs({ existing: baseRow });
 
     const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
     expect(res.status).toBe(204);
     expect(approvalUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'reported' }),
     );
-    expect(tokenUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ revokedAt: expect.any(Date) }),
+    expect(revokeUserOauthClientMock).toHaveBeenCalledWith(
+      TEST_USER.id,
+      baseRow.requestingClientId,
+      TEST_USER.id,
+      expect.any(String),
     );
-    expect(db.delete).toHaveBeenCalled();
     expect(db.insert).toHaveBeenCalled();
+  });
+
+  it('returns 200 + warning when revocation throws (session not revoked)', async () => {
+    wireRevocationStubs({ existing: baseRow, revokeThrows: new Error('db down') });
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.reported).toBe(true);
+    expect(body.revoked).toBe(false);
+    expect(body.warning).toMatch(/revoke this app manually/i);
+  });
+
+  it('returns 200 + warning when revocation succeeds but cacheFailures > 0', async () => {
+    wireRevocationStubs({
+      existing: baseRow,
+      revokeResult: { grantsRevoked: 1, refreshTokensRevoked: 1, cacheFailures: 2 },
+    });
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.reported).toBe(true);
+    expect(body.revoked).toBe(true);
+    expect(body.cacheFailures).toBe(2);
   });
 
   it('returns 404 when the approval does not exist for this user', async () => {
