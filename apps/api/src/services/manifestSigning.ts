@@ -125,14 +125,38 @@ export async function ensureActiveSigningKey(): Promise<ActiveSigningKey> {
   // collision-avoidance for same-day generation.
   const keyId = `deploy-${new Date().toISOString().slice(0, 10)}-${randomBytes(4).toString('hex')}`;
 
-  await withSystemDbAccessContext(async () => {
-    await db.insert(manifestSigningKeys).values({
-      keyId,
-      publicKeyB64,
-      privateKeyEnc: encryptedPriv,
-      status: 'active',
-    });
+  // Race-safe insert: two concurrent callers (e.g. binarySync starting on
+  // two API workers at the same time) can both see loadActive()=null and
+  // both try to INSERT. The partial unique index uq_manifest_signing_keys_active
+  // would make the loser throw. Use onConflictDoNothing + RETURNING — if 0 rows
+  // come back, we lost the race; re-read the winner's row and use it. (#640)
+  const inserted = await withSystemDbAccessContext(async () => {
+    return db
+      .insert(manifestSigningKeys)
+      .values({
+        keyId,
+        publicKeyB64,
+        privateKeyEnc: encryptedPriv,
+        status: 'active',
+      })
+      .onConflictDoNothing()
+      .returning({ keyId: manifestSigningKeys.keyId });
   });
+
+  if (inserted.length === 0) {
+    // Another concurrent caller inserted the active key first. Reload and
+    // return whichever key won the race.
+    const winner = await loadActive();
+    if (!winner) {
+      throw new Error(
+        'ensureActiveSigningKey: insert conflict but no active row found on reload',
+      );
+    }
+    console.log(
+      `[manifestSigning] Lost race for active signing key, using ${winner.keyId}`,
+    );
+    return { keyId: winner.keyId, publicKeyB64: winner.publicKeyB64 };
+  }
 
   console.log(`[manifestSigning] Generated new deployment signing key ${keyId}`);
   return { keyId, publicKeyB64 };
