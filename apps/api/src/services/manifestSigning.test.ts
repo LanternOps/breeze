@@ -154,7 +154,7 @@ describe('manifestSigning', () => {
     const { db } = await import('../db');
     let loadCount = 0;
     const realSelect = db.select;
-    (db as { select: () => unknown }).select = () => ({
+    (db as unknown as { select: (...args: unknown[]) => unknown }).select = () => ({
       from: () => ({
         where: () => {
           loadCount += 1;
@@ -170,7 +170,7 @@ describe('manifestSigning', () => {
 
     // Force insert path to report a conflict regardless of dbState.
     const realInsert = db.insert;
-    (db as { insert: () => unknown }).insert = () => ({
+    (db as unknown as { insert: (...args: unknown[]) => unknown }).insert = () => ({
       values: () => ({
         onConflictDoNothing: () => ({
           returning: async () => [],
@@ -183,8 +183,8 @@ describe('manifestSigning', () => {
       expect(result.keyId).toBe(winnerRow.keyId);
       expect(result.publicKeyB64).toBe(winnerRow.publicKeyB64);
     } finally {
-      (db as { select: typeof realSelect }).select = realSelect;
-      (db as { insert: typeof realInsert }).insert = realInsert;
+      (db as unknown as { select: typeof realSelect }).select = realSelect;
+      (db as unknown as { insert: typeof realInsert }).insert = realInsert;
     }
   });
 
