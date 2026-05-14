@@ -8,6 +8,23 @@ import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
+// API errors can arrive as plain strings, zod issue objects from zValidator,
+// or a {details} field. Extract a renderable message rather than letting
+// `new Error(obj)` produce `[object Object]`.
+function extractApiError(data: unknown, fallback: string): string {
+  if (!data || typeof data !== 'object') return fallback;
+  const body = data as { error?: unknown; details?: unknown };
+  if (typeof body.error === 'string') return body.error;
+  if (body.error && typeof body.error === 'object') {
+    const zodIssues = (body.error as { issues?: Array<{ message?: string }> }).issues;
+    if (Array.isArray(zodIssues) && zodIssues.length > 0) {
+      return zodIssues.map((i) => i.message).filter(Boolean).join('; ') || fallback;
+    }
+  }
+  if (typeof body.details === 'string') return body.details;
+  return fallback;
+}
+
 type RoutingRule = {
   id: string;
   name: string;
@@ -96,7 +113,8 @@ export default function NotificationChannelsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Test failed');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Test failed'));
       }
 
       // Refresh to update test status
@@ -263,8 +281,8 @@ export default function NotificationChannelsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save channel');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to save channel'));
       }
 
       await fetchChannels();
@@ -318,8 +336,8 @@ export default function NotificationChannelsPage() {
         }),
       });
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save routing rule');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to save routing rule'));
       }
       await fetchRoutingRules();
       setShowRuleForm(false);
