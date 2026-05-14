@@ -10,6 +10,28 @@ import {
 import { cn } from '@/lib/utils';
 import { useOrgStore, type Organization, type Site } from '@/stores/orgStore';
 
+/**
+ * When switching organizations, certain detail-view routes show data scoped to
+ * the previous org and would render blank or 404 under the new org. For those
+ * routes we navigate up to the list view in the destination org instead of
+ * reloading the now-inaccessible URL.
+ *
+ * Returns the destination URL when redirection is needed, otherwise null
+ * (meaning the caller should keep the current path and just reload).
+ */
+export function getOrgSwitchRedirect(pathname: string): string | null {
+  // /devices/:id -> /devices (but not /devices, /devices/compare, /devices/groups, etc.)
+  const deviceDetail = pathname.match(/^\/devices\/([^/]+)\/?$/);
+  if (deviceDetail) {
+    const segment = deviceDetail[1];
+    // Preserve sibling routes that share the prefix.
+    if (segment !== 'compare' && segment !== 'groups') {
+      return '/devices';
+    }
+  }
+  return null;
+}
+
 const statusColors: Record<string, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
   trial: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
@@ -231,7 +253,12 @@ export default function OrgSwitcher() {
                   onSelect={() => {
                     if (org.id !== currentOrgId) {
                       setOrganization(org.id);
-                      window.location.reload();
+                      const redirect = getOrgSwitchRedirect(window.location.pathname);
+                      if (redirect) {
+                        window.location.href = redirect;
+                      } else {
+                        window.location.reload();
+                      }
                     }
                   }}
                   sites={sites}
