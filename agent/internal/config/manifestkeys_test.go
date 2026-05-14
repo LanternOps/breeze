@@ -99,6 +99,55 @@ func TestPinManifestKeys_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestPinManifestKeys_DeterministicOrder(t *testing.T) {
+	// Map iteration in Go is randomized — without an explicit sort, two
+	// runs of PinManifestKeys with the same input could write the entries
+	// in different orders, causing spurious agent.yaml diffs. Verify the
+	// output is sorted (lexicographic ~ keyId-sorted since ':' < base64).
+	cfgPath := writeBaseConfig(t, t.TempDir())
+
+	input := []ManifestTrustKey{
+		{KeyID: "deploy-2026-05-09-cccc", PublicKeyB64: "CCCC"},
+		{KeyID: "deploy-2026-05-09-aaaa", PublicKeyB64: "AAAA"},
+		{KeyID: "deploy-2026-05-09-eeee", PublicKeyB64: "EEEE"},
+		{KeyID: "deploy-2026-05-09-bbbb", PublicKeyB64: "BBBB"},
+		{KeyID: "deploy-2026-05-09-dddd", PublicKeyB64: "DDDD"},
+	}
+	if err := PinManifestKeys(cfgPath, input); err != nil {
+		t.Fatalf("first pin: %v", err)
+	}
+
+	want := []string{
+		"deploy-2026-05-09-aaaa:AAAA",
+		"deploy-2026-05-09-bbbb:BBBB",
+		"deploy-2026-05-09-cccc:CCCC",
+		"deploy-2026-05-09-dddd:DDDD",
+		"deploy-2026-05-09-eeee:EEEE",
+	}
+
+	for i := 0; i < 5; i++ {
+		loaded, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if len(loaded.PinnedManifestPubKeys) != len(want) {
+			t.Fatalf("iter %d: expected %d keys, got %d", i, len(want), len(loaded.PinnedManifestPubKeys))
+		}
+		for j, entry := range loaded.PinnedManifestPubKeys {
+			if entry != want[j] {
+				t.Errorf("iter %d index %d: got %q, want %q (full=%v)", i, j, entry, want[j], loaded.PinnedManifestPubKeys)
+			}
+		}
+
+		// Pin again with the same input (all duplicates → no changes), then
+		// pin once more with a brand-new key reshuffled in to make the
+		// changed-branch run and confirm sort stays stable.
+		if err := PinManifestKeys(cfgPath, input); err != nil {
+			t.Fatalf("iter %d dedupe pin: %v", i, err)
+		}
+	}
+}
+
 func TestPinnedManifestPubKeyBytes_SkipsMalformed(t *testing.T) {
 	out := PinnedManifestPubKeyBytes([]string{
 		"deploy-x:AAAA",

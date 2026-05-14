@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -78,6 +79,13 @@ func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
 	for id, pub := range existing {
 		pinned = append(pinned, id+":"+pub)
 	}
+	// Sort by keyId for deterministic on-disk ordering across runs. Map
+	// iteration order is randomized, so without this two consecutive calls
+	// with the same input would shuffle the file and cause spurious diffs.
+	// Each entry is "<keyId>:<base64>" — since ':' (0x3A) < every base64
+	// alphabet character, a plain lexicographic sort on the full entry is
+	// equivalent to sorting by keyId. (#644)
+	sort.Strings(pinned)
 	cfg.PinnedManifestPubKeys = pinned
 
 	return SaveTo(cfg, cfgPath)
