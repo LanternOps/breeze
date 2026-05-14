@@ -138,7 +138,7 @@ export const oauthGrants = pgTable('oauth_grants', {
 // oauth_client_blocks: org-wide block of an OAuth client (e.g. "no Cursor
 // over MCP for the next 30 days for everyone in Acme Corp"). Token
 // validation consults this table after the user-level oauthGrants check.
-// Shape 1 (org-tenant) RLS — see migration 2026-05-07-mobile-device-and-
+// Shape 1 (org-tenant) RLS — see migration 2026-05-07-c-mobile-device-and-
 // oauth-lifecycle.sql for policies.
 export const oauthClientBlocks = pgTable('oauth_client_blocks', {
   id: uuid('id').primaryKey().defaultRandom(),

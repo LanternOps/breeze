@@ -1,4 +1,4 @@
--- 2026-05-07-mobile-device-and-oauth-lifecycle.sql
+-- 2026-05-07-c-mobile-device-and-oauth-lifecycle.sql
 -- Device + OAuth client lifecycle management. Adds:
 --   1. Block columns on `mobile_devices` (status, blocked_at, blocked_by_user_id, blocked_reason)
 --   2. Revocation columns on `oauth_grants` (revoked_at, revoked_by_user_id, revoked_reason)

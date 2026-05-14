@@ -22,7 +22,7 @@ export const mobileDevices = pgTable('mobile_devices', {
   lastActiveAt: timestamp('last_active_at'),
   // Lifecycle: a device can be soft-blocked (lost-phone revocation, admin
   // takeover). Blocked rows stay for audit; re-pairing creates a fresh row
-  // with a new deviceId. See migration 2026-05-07-mobile-device-and-oauth-
+  // with a new deviceId. See migration 2026-05-07-c-mobile-device-and-oauth-
   // lifecycle.sql for the schema rationale.
   status: mobileDeviceStatusEnum('status').notNull().default('active'),
   blockedAt: timestamp('blocked_at', { withTimezone: true }),
