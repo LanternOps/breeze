@@ -309,10 +309,9 @@ export async function syncBinaries(): Promise<void> {
       await syncFromGitHub();
       return;
     } catch (err) {
-      // Compound failure: the binaries volume is stale AND we couldn't fall
-      // back to GitHub. Agents will be served the wrong binary. Surface this
-      // as an error so it shows up in Sentry / log alerting; the prior
-      // console.warn was easy to miss in noisy startup logs (#644).
+      // Compound failure — stale binaries volume AND GitHub fallback failed.
+      // Agents will be served the wrong binary; surface as error so Sentry
+      // and log alerting catch it (#644).
       console.error(
         `[binarySync] Stale binaries volume + GitHub sync FAILED — agents will be served the wrong version: ${err instanceof Error ? err.message : err}`,
       );
@@ -601,8 +600,7 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
   } catch (err) {
     // ensureCurrentVersionRegistered is the safety net for the agent_versions
     // table — if it fails, agents trying to download the currently-running
-    // version will 404. Surface as error so Sentry / log alerting catches
-    // it (#644).
+    // version 404. Surface as error so Sentry and log alerting catch it (#644).
     console.error(
       `[binarySync] Failed to auto-sync version ${currentVersion} from GitHub:`,
       err instanceof Error ? err.message : err,
