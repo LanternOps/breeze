@@ -27,8 +27,11 @@ func TestHandleSetAutoUpdateChangeToTrue(t *testing.T) {
 		t.Fatal("expected h.config.AutoUpdate to be true after setting enabled=true")
 	}
 
-	// Status may be "completed" (if config persists) or "failed" (test environment)
-	// but the in-memory state should be updated
+	// Status may be "completed" (if config persists successfully) or "failed" (test environment).
+	// In test environments, config.SetAndPersist() may fail due to missing valid config file on disk.
+	// The critical invariant is the in-memory config state change (verified above).
+	// We accept both status values to keep tests reliable while still verifying the handler logic.
+	// Integration tests would verify actual disk persistence in a real environment.
 	if result.Status != "completed" && result.Status != "failed" {
 		t.Fatalf("unexpected result status: %s", result.Status)
 	}
@@ -53,6 +56,11 @@ func TestHandleSetAutoUpdateChangeToFalse(t *testing.T) {
 		t.Fatal("expected h.config.AutoUpdate to be false after setting enabled=false")
 	}
 
+	// Status may be "completed" (if config persists successfully) or "failed" (test environment).
+	// In test environments, config.SetAndPersist() may fail due to missing valid config file on disk.
+	// The critical invariant is the in-memory config state change (verified above).
+	// We accept both status values to keep tests reliable while still verifying the handler logic.
+	// Integration tests would verify actual disk persistence in a real environment.
 	if result.Status != "completed" && result.Status != "failed" {
 		t.Fatalf("unexpected result status: %s", result.Status)
 	}

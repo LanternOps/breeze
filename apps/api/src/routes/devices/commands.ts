@@ -15,6 +15,8 @@ export const commandsRoutes = new Hono();
 
 commandsRoutes.use('*', authMiddleware);
 
+const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
+
 function canAccessDeviceSite(device: { siteId?: string | null }, userPerms: UserPermissions | undefined): boolean {
   if (!userPerms?.allowedSiteIds) return true;
   return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
@@ -228,11 +230,15 @@ commandsRoutes.post(
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
     }
 
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     const [command] = await db
       .insert(deviceCommands)
       .values({
         deviceId,
-        type: 'set_auto_update',
+        type: COMMAND_SET_AUTO_UPDATE,
         payload: { enabled: data.enabled },
         status: 'pending',
         createdBy: auth.user.id
