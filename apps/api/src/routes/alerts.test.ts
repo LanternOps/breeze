@@ -85,7 +85,8 @@ vi.mock('../db/schema', () => ({
   escalationPolicies: {},
   alertNotifications: {},
   devices: {},
-  organizations: {}
+  organizations: {},
+  partners: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -584,6 +585,116 @@ describe('alert routes', () => {
     });
   });
 
+  describe('notification channel pushover inheritance', () => {
+    it('runs partner lookup under system scope when testing a pushover channel with blank tokens', async () => {
+      const dbModule = await import('../db');
+      const withSystemSpy = vi.mocked(dbModule.withSystemDbAccessContext);
+      const runOutsideSpy = vi.mocked(dbModule.runOutsideDbContext);
+      withSystemSpy.mockClear();
+      runOutsideSpy.mockClear();
+
+      const channelId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      // 1) Channel lookup (request scope, returns the saved channel with blank token/user)
+      // 2) Org lookup (under system scope, returns partnerId)
+      // 3) Partner lookup (under system scope, returns notifications settings)
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: channelId,
+                orgId,
+                name: 'Pushover',
+                type: 'pushover',
+                config: { token: '', user: '' }
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                settings: {
+                  notifications: {
+                    pushoverAppToken: 'inherited-app-token',
+                    pushoverDefaultUser: 'inherited-user-key'
+                  }
+                }
+              }])
+            })
+          })
+        } as any);
+
+      const sendersModule = await import('../services/notificationSenders');
+      const sendPushoverMock = vi.spyOn(sendersModule, 'sendPushoverNotification')
+        .mockResolvedValue({ success: true, statusCode: 200, request: 'req-1' } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+      // Partner lookup must have escaped the request DB context and used system scope.
+      expect(runOutsideSpy).toHaveBeenCalled();
+      expect(withSystemSpy).toHaveBeenCalled();
+      // Inherited token + user reached the sender (would have been blank without
+      // the system-scope lookup for an org-tier caller without partner-read RLS).
+      expect(sendPushoverMock).toHaveBeenCalledWith(
+        expect.objectContaining({ token: 'inherited-app-token', user: 'inherited-user-key' }),
+        expect.anything()
+      );
+
+      sendPushoverMock.mockRestore();
+    });
+
+    it('rejects creating a pushover channel when both channel and partner have no token', async () => {
+      // partner lookup returns no notifications config
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: { notifications: {} } }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Blank Pushover',
+          type: 'pushover',
+          config: { token: '', user: '' },
+          enabled: true
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid pushover channel configuration');
+      expect(body.details.join(' ')).toMatch(/pushoverAppToken|no token/);
+    });
+  });
+
   describe('notification channel sms behavior', () => {
     it('rejects creating an sms channel with invalid phone numbers', async () => {
       const res = await app.request('/alerts/channels', {
@@ -649,7 +760,7 @@ describe('alert routes', () => {
               orgId: '11111111-1111-1111-1111-111111111111',
               name: 'Future channel type',
               // Cast through unknown: this value isn't in the TS enum on purpose.
-              type: 'pushover' as unknown as 'email',
+              type: 'discord' as unknown as 'email',
               config: {}
             }])
           })
@@ -665,7 +776,7 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.success).toBe(false);
       expect(typeof body.error).toBe('string');
-      expect(body.error).toContain('pushover');
+      expect(body.error).toContain('discord');
     });
   });
 });

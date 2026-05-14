@@ -3,6 +3,7 @@ import { CheckCircle, Settings2 } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
+import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth } from '../../stores/auth';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -317,6 +318,7 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-5">
+      <AlertsTabStrip />
       <div>
         <h1 className="text-xl font-bold tracking-tight">Alerts</h1>
         <p className="text-sm text-muted-foreground mt-1">

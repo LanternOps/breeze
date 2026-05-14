@@ -1,18 +1,21 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import type { NotificationChannelType } from '@breeze/shared';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   alertRules,
   alertTemplates,
   alerts,
   notificationChannels,
   escalationPolicies,
+  organizations,
+  partners,
 } from '../../db/schema';
 import {
   validateEmailConfig,
   validateWebhookConfig,
   validateSmsConfig,
   validatePagerDutyConfig,
+  validatePushoverConfig,
 } from '../../services/notificationSenders';
 
 export type AlertRuleRow = typeof alertRules.$inferSelect;
@@ -203,7 +206,77 @@ export function validateNotificationChannelConfig(
     return validatePagerDutyConfig(config).errors;
   }
 
+  if (type === 'pushover') {
+    // Per-org channel may leave token AND/OR user blank to inherit from
+    // partner.settings.notifications.{pushoverAppToken,pushoverDefaultUser}.
+    // Substitute placeholders so the rest of the shape (priority, device,
+    // etc.) still gets checked. Partner inheritance is verified separately
+    // by validatePushoverChannelInheritance at write time.
+    const cfg = config as { token?: unknown; user?: unknown };
+    const tokenForCheck = typeof cfg.token === 'string' && cfg.token.trim().length > 0
+      ? cfg.token
+      : 'x'.repeat(30);
+    const userForCheck = typeof cfg.user === 'string' && cfg.user.trim().length > 0
+      ? cfg.user
+      : 'x'.repeat(30);
+    return validatePushoverConfig({ ...config, token: tokenForCheck, user: userForCheck }).errors;
+  }
+
   return [];
+}
+
+/**
+ * Returns null when the pushover channel config is satisfiable (either the
+ * channel itself supplies token + user, or the org's partner supplies the
+ * missing fields via partner.settings.notifications). Returns an error
+ * message describing the missing inheritance when the channel would be
+ * structurally guaranteed to fail at first-alert time.
+ *
+ * The partner lookup runs under system DB scope because org-tier callers
+ * lack partner-read RLS. Without it the partner row would silently filter
+ * out, the channel would save with no token, and alerts would drop silently.
+ */
+export async function validatePushoverChannelInheritance(
+  orgId: string,
+  config: unknown
+): Promise<string | null> {
+  if (!isRecord(config)) {
+    return null;
+  }
+  const cfg = config as { token?: unknown; user?: unknown };
+  const tokenBlank = typeof cfg.token !== 'string' || cfg.token.trim().length === 0;
+  const userBlank = typeof cfg.user !== 'string' || cfg.user.trim().length === 0;
+  if (!tokenBlank && !userBlank) {
+    return null;
+  }
+
+  const inherited = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [orgRow] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    if (!orgRow?.partnerId) {
+      return null;
+    }
+    const [partner] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, orgRow.partnerId))
+      .limit(1);
+    return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
+  }));
+
+  const partnerToken = typeof inherited?.pushoverAppToken === 'string' && inherited.pushoverAppToken.trim().length > 0;
+  const partnerUser = typeof inherited?.pushoverDefaultUser === 'string' && inherited.pushoverDefaultUser.trim().length > 0;
+
+  if (tokenBlank && !partnerToken) {
+    return 'Pushover channel has no token and the partner has no pushoverAppToken configured for inheritance';
+  }
+  if (userBlank && !partnerUser) {
+    return 'Pushover channel has no user key and the partner has no pushoverDefaultUser configured for inheritance';
+  }
+  return null;
 }
 
 export async function validateAlertRuleNotificationBindings(

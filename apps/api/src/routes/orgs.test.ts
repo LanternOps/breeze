@@ -4,6 +4,11 @@ import { orgRoutes } from './orgs';
 
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+  isSentryEnabled: vi.fn().mockReturnValue(false)
+}));
+
 vi.mock('../services/tenantLifecycle', () => ({
   revokePartnerTenantAccess: vi.fn().mockResolvedValue({
     apiKeysRevoked: 0,
@@ -86,6 +91,7 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
+import { captureException } from '../services/sentry';
 
 describe('org routes', () => {
   let app: Hono;
@@ -1296,5 +1302,222 @@ describe('org routes', () => {
       expect(res.status).toBe(403);
     });
 
+  });
+
+  describe('PATCH /orgs/organizations/order', () => {
+    const id1 = '00000000-0000-0000-0000-000000000001';
+    const id2 = '00000000-0000-0000-0000-000000000002';
+    const id3 = '00000000-0000-0000-0000-000000000003';
+
+    // The handler issues two `db.select` calls in order:
+    //   1) list of partner orgs (sanitization allowlist)   — chain: from→where (awaited)
+    //   2) read current partner settings (read-modify-write) — chain: from→where→limit (awaited)
+    // Mock them in that order.
+    function mockReorderHandler(opts: {
+      partnerOrgIds: string[];
+      currentSettings: Record<string, unknown>;
+    }) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(opts.partnerOrgIds.map((id) => ({ id })))
+        })
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ settings: opts.currentSettings }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme' }])
+          })
+        })
+      } as any);
+    }
+
+    it('persists a sanitized order and returns 200', async () => {
+      setAuthContext({ scope: 'partner', accessibleOrgIds: [id1, id2, id3] });
+      mockReorderHandler({ partnerOrgIds: [id1, id2, id3], currentSettings: {} });
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: [id3, id1, id2] })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.organizationOrder).toEqual([id3, id1, id2]);
+    });
+
+    it('drops IDs that do not belong to the partner', async () => {
+      const stranger = '99999999-9999-9999-9999-999999999999';
+      setAuthContext({ scope: 'partner', accessibleOrgIds: [id1, id2] });
+      // Partner-level allowlist (from DB) is the source of truth: id1, id2.
+      mockReorderHandler({ partnerOrgIds: [id1, id2], currentSettings: {} });
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: [stranger, id2, id1] })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.organizationOrder).toEqual([id2, id1]);
+    });
+
+    // Regression test for the tenant-boundary fix: a partner admin whose JWT
+    // accessibleOrgIds is narrower than the partner's full org list must be
+    // able to persist an order that includes every partner org. Sanitization
+    // is done against the DB-resolved partner org list, NOT auth.accessibleOrgIds.
+    it('preserves partner orgs not present in caller accessibleOrgIds (tenant-boundary fix)', async () => {
+      // Caller can only "see" id1 via RBAC, but the partner owns id1, id2, id3.
+      setAuthContext({ scope: 'partner', accessibleOrgIds: [id1] });
+      mockReorderHandler({ partnerOrgIds: [id1, id2, id3], currentSettings: {} });
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: [id3, id1, id2] })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // All three partner orgs survive — id2 and id3 would have been dropped
+      // under the old auth.accessibleOrgIds-based sanitization.
+      expect(body.organizationOrder).toEqual([id3, id1, id2]);
+    });
+
+    it('preserves other partner settings when merging', async () => {
+      setAuthContext({ scope: 'partner', accessibleOrgIds: [id1, id2] });
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme' }])
+        })
+      });
+      // 1) Partner orgs allowlist
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: id1 }, { id: id2 }])
+        })
+      } as any);
+      // 2) Current partner settings
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              settings: { timezone: 'America/Chicago', branding: { theme: 'dark' } }
+            }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: [id2, id1] })
+      });
+
+      expect(res.status).toBe(200);
+      const writtenArg = setSpy.mock.calls[0]![0];
+      expect(writtenArg.settings.timezone).toBe('America/Chicago');
+      expect(writtenArg.settings.branding).toEqual({ theme: 'dark' });
+      expect(writtenArg.settings.organizationOrder).toEqual([id2, id1]);
+    });
+
+    it('rejects a system-scoped caller', async () => {
+      setAuthContext({ scope: 'system' });
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: [id1] })
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects an organization-scoped caller', async () => {
+      setAuthContext({ scope: 'organization' });
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: [id1] })
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects a non-uuid in the orderedIds array', async () => {
+      setAuthContext({ scope: 'partner', accessibleOrgIds: [id1] });
+
+      const res = await app.request('/orgs/organizations/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds: ['not-a-uuid'] })
+      });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // Regression test for the partner-settings load-failure observability fix:
+  // when the partner-settings read inside GET /organizations throws, the
+  // handler must still return the org list (soft-fail to createdAt order) AND
+  // surface the failure via console.error + captureException so on-call can
+  // see chronically broken settings reads.
+  describe('GET /orgs/organizations partner-settings soft-fail', () => {
+    it('logs and captures when the partner-settings read throws', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+
+      // 1) count query
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 1 }])
+        })
+      } as any);
+      // 2) main list query
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              offset: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org 1' }])
+              })
+            })
+          })
+        })
+      } as any);
+      // 3) partner-settings read — throws
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockRejectedValue(new Error('db blew up'))
+          })
+        })
+      } as any);
+
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const captureSpy = vi.mocked(captureException);
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('orgs.list.partnerSettings'),
+        expect.objectContaining({ partnerId: 'partner-123' })
+      );
+      expect(captureSpy).toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+    });
   });
 });

@@ -10,6 +10,8 @@ import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveS
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS } from '../services/permissions';
 import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
+import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
+import { captureException } from '../services/sentry';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -261,6 +263,10 @@ const partnerSettingsSchema = z.object({
     slackChannel: z.string().optional(),
     webhooks: z.array(z.string()).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
+    pushoverAppToken: z.string().max(30).optional(),
+    pushoverDefaultUser: z.string().max(30).optional(),
+    pushoverDefaultSound: z.string().max(40).optional(),
+    pushoverDefaultPriority: z.number().int().min(-2).max(2).optional(),
   }).optional(),
   eventLogs: z.object({
     enabled: z.boolean().optional(),
@@ -298,6 +304,7 @@ const partnerSettingsSchema = z.object({
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
   }).optional(),
+  organizationOrder: z.array(z.string().uuid()).max(10_000).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -522,11 +529,123 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     .offset(offset)
     .orderBy(organizations.createdAt);
 
+  // Apply the partner's preferred organization order, when one is set.
+  // - partner scope: load own partner settings.
+  // - system scope: only when a partnerId filter is in the query.
+  // - organization scope: list is at most one row, nothing to reorder.
+  let ordered = data;
+  let orderPartnerId: string | null = null;
+  if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
+  else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
+  if (orderPartnerId) {
+    try {
+      const settingsRow = await withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ settings: partners.settings })
+          .from(partners)
+          .where(and(eq(partners.id, orderPartnerId as string), isNull(partners.deletedAt)))
+          .limit(1);
+        return row;
+      });
+      const preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
+        ?.organizationOrder;
+      ordered = applyOrganizationOrder(data, preferredOrder);
+    } catch (err) {
+      // Soft-fail: if we can't load partner settings, fall back to createdAt
+      // order so the list still renders. Surface the failure to stderr and
+      // Sentry so a chronically broken partner_settings read is observable
+      // on-call rather than silently degrading every list response.
+      console.error('[orgs.list.partnerSettings] Failed to load partner settings for org ordering', {
+        partnerId: orderPartnerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c);
+    }
+  }
+
   return c.json({
-    data,
+    data: ordered,
     pagination: { page, limit, total: Number(count) }
   });
 });
+
+// PATCH /organizations/order — partner-level preferred order of org IDs.
+// Persists to partners.settings.organizationOrder. Idempotent; the request
+// body fully replaces the current order. Unknown IDs and IDs outside the
+// partner are silently dropped after server-side validation against the
+// partner's full org list.
+//
+// Path is a literal sub-segment (not /organizations/:id/...) so it must be
+// registered above the dynamic :id routes in this file; Hono matches in
+// registration order. Using `/order` rather than `/reorder` avoids any
+// literal-vs-param ambiguity with a future hypothetical `/:action`.
+const reorderOrganizationsSchema = z.object({
+  orderedIds: z.array(z.string().uuid()).max(10_000),
+});
+
+orgRoutes.patch(
+  '/organizations/order',
+  requireScope('partner'),
+  requirePartner,
+  requireOrgWrite,
+  zValidator('json', reorderOrganizationsSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { orderedIds } = c.req.valid('json');
+    const partnerId = auth.partnerId as string;
+
+    // Sanitize against the full set of non-deleted orgs that belong to this
+    // partner — NOT against auth.accessibleOrgIds. A partner-admin token with
+    // an RBAC-restricted org subset must still be able to persist an order
+    // that covers every partner org; otherwise legitimate orgs would be
+    // silently dropped from the saved order whenever the actor's scope is
+    // narrower than the partner's full org list.
+    //
+    // Use withSystemDbAccessContext to bypass RLS for this admin-level read;
+    // partner-scope authority has already been enforced by requireScope and
+    // requirePartner above.
+    const partnerOrgs = await withSystemDbAccessContext(async () =>
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, partnerId), isNull(organizations.deletedAt)))
+    );
+    const validOrgIds = partnerOrgs.map((o) => o.id);
+    const sanitized = sanitizeOrganizationOrder(orderedIds, validOrgIds);
+
+    const [current] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
+      .limit(1);
+    if (!current) {
+      return c.json({ error: 'Partner not found' }, 404);
+    }
+    const currentSettings = (current.settings as Record<string, unknown>) || {};
+    const newSettings = { ...currentSettings, organizationOrder: sanitized };
+
+    const [partner] = await db
+      .update(partners)
+      .set({ settings: newSettings, updatedAt: new Date() })
+      .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
+      .returning();
+    if (!partner) {
+      return c.json({ error: 'Partner not found' }, 404);
+    }
+
+    const auditOrgId = await resolveAuditOrgIdForPartner(partnerId);
+    writeRouteAudit(c, {
+      orgId: auditOrgId,
+      action: 'partner.organizationOrder.update',
+      resourceType: 'partner',
+      resourceId: partner.id,
+      resourceName: partner.name,
+      details: { count: sanitized.length },
+    });
+
+    return c.json({ organizationOrder: sanitized });
+  },
+);
 
 orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');

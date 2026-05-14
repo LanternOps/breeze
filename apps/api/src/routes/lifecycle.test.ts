@@ -428,3 +428,44 @@ describe('POST /admin/orgs/:orgId/oauth-clients/:clientId/unblock-globally', () 
     expect([403, 404]).toContain(res.status);
   });
 });
+
+// ============================================================
+// Regression: middleware does not leak onto sibling routes (#683)
+// ============================================================
+
+describe('lifecycle middleware scoping (#683)', () => {
+  it('does not run authMiddleware for sibling routes when mounted at /', async () => {
+    const { Hono } = await import('hono');
+    const { authMiddleware } = await import('../middleware/auth');
+    const spy = vi.mocked(authMiddleware);
+    spy.mockClear();
+
+    const sibling = new Hono();
+    sibling.get('/agent-versions/:version/download', (c) => c.json({ ok: true }));
+
+    const parent = new Hono();
+    parent.route('/', lifecycleRoutes);
+    parent.route('/', lifecycleAdminRoutes);
+    parent.route('/', sibling);
+
+    const res = await parent.request('/agent-versions/0.65.9/download?platform=linux&arch=amd64');
+    expect(res.status).toBe(200);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('still runs authMiddleware for /me/* paths', async () => {
+    const { Hono } = await import('hono');
+    const { authMiddleware } = await import('../middleware/auth');
+    const spy = vi.mocked(authMiddleware);
+    spy.mockClear();
+
+    const parent = new Hono();
+    parent.route('/', lifecycleRoutes);
+
+    nextSelectRows = [];
+    await parent.request('/me/mobile-devices', {
+      headers: { [MOBILE_DEVICE_ID_HEADER]: 'install-current' },
+    });
+    expect(spy).toHaveBeenCalled();
+  });
+});

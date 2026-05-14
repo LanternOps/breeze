@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import AlertRuleList, { type AlertRule } from './AlertRuleList';
+import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
@@ -182,6 +183,7 @@ export default function AlertRulesPage() {
 
   return (
     <div className="space-y-6">
+      <AlertsTabStrip />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Alert Rules</h1>

@@ -47,13 +47,22 @@ export {
   type SendResult as PagerDutySendResult
 } from './pagerDutySender';
 
+export {
+  sendPushoverNotification,
+  validatePushoverConfig,
+  type PushoverConfig,
+  type PushoverNotificationPayload,
+  type PushoverPriority,
+  type SendResult as PushoverSendResult
+} from './pushoverSender';
+
 // Re-export AlertSeverity for convenience
 export type { AlertSeverity } from '../email';
 
 /**
  * Channel type to sender mapping
  */
-export type NotificationChannelType = 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms' | 'in_app';
+export type NotificationChannelType = 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms' | 'pushover' | 'in_app';
 
 /**
  * Unified send result type

@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
-import { db } from '../../db';
-import { notificationChannels } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { notificationChannels, organizations, partners } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
@@ -14,11 +14,14 @@ import {
   getEmailRecipients,
   sendEmailNotification,
   sendPagerDutyNotification,
+  sendPushoverNotification,
   sendSmsNotification,
   sendWebhookNotification,
   testWebhook,
   type AlertSeverity,
   type PagerDutyConfig,
+  type PushoverConfig,
+  type PushoverPriority,
   type SmsChannelConfig,
   type WebhookConfig
 } from '../../services/notificationSenders';
@@ -28,6 +31,7 @@ import {
   ensureOrgAccess,
   getNotificationChannelWithOrgCheck,
   validateNotificationChannelConfig,
+  validatePushoverChannelInheritance,
 } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
 
@@ -150,6 +154,16 @@ channelsRoutes.post(
       }, 400);
     }
 
+    if (data.type === 'pushover') {
+      const inheritanceError = await validatePushoverChannelInheritance(orgId, data.config);
+      if (inheritanceError) {
+        return c.json({
+          error: `Invalid ${data.type} channel configuration`,
+          details: [inheritanceError]
+        }, 400);
+      }
+    }
+
     const [channel] = await db
       .insert(notificationChannels)
       .values({
@@ -212,6 +226,16 @@ channelsRoutes.put(
           error: `Invalid ${channel.type} channel configuration`,
           details: configErrors
         }, 400);
+      }
+
+      if (channel.type === 'pushover') {
+        const inheritanceError = await validatePushoverChannelInheritance(channel.orgId, configForValidation);
+        if (inheritanceError) {
+          return c.json({
+            error: `Invalid ${channel.type} channel configuration`,
+            details: [inheritanceError]
+          }, 400);
+        }
       }
     }
 
@@ -421,6 +445,76 @@ channelsRoutes.post(
             details: {
               statusCode: pagerDutyResult.statusCode,
               dedupKey: pagerDutyResult.dedupKey
+            }
+          };
+          break;
+        }
+
+        case 'pushover': {
+          const cfg = { ...(channelConfig as PushoverConfig) };
+          const tokenBlank = !cfg.token || cfg.token.trim().length === 0;
+          const userBlank = !cfg.user || cfg.user.trim().length === 0;
+
+          if (tokenBlank || userBlank) {
+            // Mirror dispatcher inheritance: pull defaults from the channel's
+            // partner.settings.notifications when blank. Org-tier callers do
+            // not have partner-read RLS, so we must escape the request DB
+            // context and run the lookup under system scope. Otherwise the
+            // partner row is silently filtered and inheritance fails open
+            // with a misleading "token required" error.
+            const inherited = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+              const [orgRow] = await db
+                .select({ partnerId: organizations.partnerId })
+                .from(organizations)
+                .where(eq(organizations.id, channel.orgId))
+                .limit(1);
+              if (!orgRow?.partnerId) {
+                return null;
+              }
+              const [partner] = await db
+                .select({ settings: partners.settings })
+                .from(partners)
+                .where(eq(partners.id, orgRow.partnerId))
+                .limit(1);
+              return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
+            }));
+
+            if (inherited) {
+              if (tokenBlank && typeof inherited.pushoverAppToken === 'string') {
+                cfg.token = inherited.pushoverAppToken;
+              }
+              if (userBlank && typeof inherited.pushoverDefaultUser === 'string') {
+                cfg.user = inherited.pushoverDefaultUser;
+              }
+              if (cfg.sound === undefined && typeof inherited.pushoverDefaultSound === 'string') {
+                cfg.sound = inherited.pushoverDefaultSound;
+              }
+              if (cfg.priority === undefined && typeof inherited.pushoverDefaultPriority === 'number') {
+                cfg.priority = inherited.pushoverDefaultPriority as PushoverPriority;
+              }
+            }
+          }
+
+          const pushoverResult = await sendPushoverNotification(cfg, {
+            alertId: `test-${channel.id}`,
+            alertName: testMessage.title,
+            severity: testMessage.severity as AlertSeverity,
+            summary: testMessage.message,
+            orgId: channel.orgId,
+            orgName: 'Breeze',
+            triggeredAt: new Date().toISOString(),
+            dashboardUrl
+          });
+
+          testResult = {
+            success: pushoverResult.success,
+            message: pushoverResult.success
+              ? 'Test Pushover notification sent successfully'
+              : (pushoverResult.error || 'Failed to send test Pushover notification'),
+            details: {
+              statusCode: pushoverResult.statusCode,
+              request: pushoverResult.request,
+              receipt: pushoverResult.receipt
             }
           };
           break;
