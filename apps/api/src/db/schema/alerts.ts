@@ -11,13 +11,14 @@ import {
   index,
   numeric
 } from 'drizzle-orm/pg-core';
+import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
 export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', 'medium', 'low', 'info']);
 export const alertStatusEnum = pgEnum('alert_status', ['active', 'acknowledged', 'resolved', 'suppressed']);
-export const notificationChannelTypeEnum = pgEnum('notification_channel_type', ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms']);
+export const notificationChannelTypeEnum = pgEnum('notification_channel_type', NOTIFICATION_CHANNEL_TYPES);
 
 export const alertTemplates = pgTable('alert_templates', {
   id: uuid('id').primaryKey().defaultRandom(),

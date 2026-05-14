@@ -3,6 +3,7 @@ import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Mail, MessageSquare, Bell, Webhook, Phone } from 'lucide-react';
+import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import type { NotificationChannelType } from './NotificationChannelList';
 
@@ -45,7 +46,7 @@ const smsConfigSchema = z.object({
 
 const notificationChannelSchema = z.object({
   name: z.string().min(1, 'Channel name is required'),
-  type: z.enum(['email', 'slack', 'teams', 'pagerduty', 'webhook', 'sms']),
+  type: z.enum(NOTIFICATION_CHANNEL_TYPES),
   enabled: z.boolean(),
   // Config fields (validated conditionally based on type)
   emailRecipients: z.array(z.object({ value: z.string() })).optional(),

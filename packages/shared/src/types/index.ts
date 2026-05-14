@@ -371,9 +371,11 @@ export interface Policy {
 // Alert Types
 // ============================================
 
+import { NOTIFICATION_CHANNEL_TYPES } from '../constants';
+
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
-export type NotificationChannelType = 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms';
+export type NotificationChannelType = (typeof NOTIFICATION_CHANNEL_TYPES)[number];
 
 export interface AlertRule {
   id: string;
