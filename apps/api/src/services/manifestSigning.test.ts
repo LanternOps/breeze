@@ -37,8 +37,35 @@ vi.mock('../db', () => {
         }),
       }),
       insert: () => ({
-        values: async (v: Omit<FakeRow, 'createdAt'>) => {
-          dbState.rows.push({ ...v, createdAt: new Date() });
+        values: (v: Omit<FakeRow, 'createdAt'>) => {
+          // Mimic the partial unique index on (status) WHERE status='active':
+          // if an active row already exists, onConflictDoNothing returns []
+          // and the row is not inserted. Otherwise the insert lands.
+          const hadActive = filterActive().length > 0;
+          if (!hadActive) {
+            dbState.rows.push({ ...v, createdAt: new Date() });
+          }
+          const inserted = hadActive ? [] : [{ keyId: v.keyId }];
+          const builder = {
+            onConflictDoNothing: () => ({
+              returning: async () => inserted,
+            }),
+            // Legacy callers that don't chain onConflictDoNothing still get
+            // the un-conflicted insert path; if the row already existed,
+            // simulate the throw that the real partial unique index would
+            // emit. (Keeps coverage honest for any future regression.)
+            then: (resolve: (v: void) => unknown) => {
+              if (hadActive) {
+                return Promise.reject(
+                  new Error(
+                    'duplicate key value violates unique constraint "uq_manifest_signing_keys_active"',
+                  ),
+                ).then(resolve as never);
+              }
+              return Promise.resolve().then(resolve);
+            },
+          };
+          return builder;
         },
       }),
     },
@@ -107,6 +134,58 @@ describe('manifestSigning', () => {
     await expect(signManifest('{}')).rejects.toThrow(
       /no active manifest signing key/,
     );
+  });
+
+  it('returns the existing active key when an insert conflict fires (race) (#640)', async () => {
+    // Simulate: loadActive() returns null first (so we enter the generate
+    // branch), then a concurrent caller inserts an active row before our
+    // own INSERT lands, so onConflictDoNothing returns []. We must reload
+    // and return the winner's row rather than throw.
+    const winnerRow: FakeRow = {
+      keyId: 'deploy-2026-05-14-aaaaaaaa',
+      publicKeyB64: 'd2lubmVy', // 'winner' base64-ish
+      privateKeyEnc: 'enc:v1:d2lubmVy',
+      status: 'active',
+      createdAt: new Date('2026-05-14T00:00:00Z'),
+    };
+
+    // Track loadActive calls — first must be null (so we generate), second
+    // (after the conflict) must be the winner row.
+    const { db } = await import('../db');
+    let loadCount = 0;
+    const realSelect = db.select;
+    (db as unknown as { select: (...args: unknown[]) => unknown }).select = () => ({
+      from: () => ({
+        where: () => {
+          loadCount += 1;
+          const rows = loadCount === 1 ? [] : [winnerRow];
+          return {
+            limit: async () => rows,
+            then: (resolve: (rows: FakeRow[]) => unknown) =>
+              Promise.resolve(rows).then(resolve),
+          };
+        },
+      }),
+    });
+
+    // Force insert path to report a conflict regardless of dbState.
+    const realInsert = db.insert;
+    (db as unknown as { insert: (...args: unknown[]) => unknown }).insert = () => ({
+      values: () => ({
+        onConflictDoNothing: () => ({
+          returning: async () => [],
+        }),
+      }),
+    });
+
+    try {
+      const result = await ensureActiveSigningKey();
+      expect(result.keyId).toBe(winnerRow.keyId);
+      expect(result.publicKeyB64).toBe(winnerRow.publicKeyB64);
+    } finally {
+      (db as unknown as { select: typeof realSelect }).select = realSelect;
+      (db as unknown as { insert: typeof realInsert }).insert = realInsert;
+    }
   });
 
   it('getActiveTrustKeyset returns keyId + publicKeyB64 + ISO validFrom', async () => {

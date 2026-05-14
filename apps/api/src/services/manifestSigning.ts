@@ -17,7 +17,7 @@ import {
   sign,
   randomBytes,
 } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { manifestSigningKeys } from '../db/schema/manifestSigningKeys';
 import { encryptSecret, decryptSecret } from './secretCrypto';
@@ -125,14 +125,44 @@ export async function ensureActiveSigningKey(): Promise<ActiveSigningKey> {
   // collision-avoidance for same-day generation.
   const keyId = `deploy-${new Date().toISOString().slice(0, 10)}-${randomBytes(4).toString('hex')}`;
 
-  await withSystemDbAccessContext(async () => {
-    await db.insert(manifestSigningKeys).values({
-      keyId,
-      publicKeyB64,
-      privateKeyEnc: encryptedPriv,
-      status: 'active',
-    });
+  // Race-safe insert: two concurrent callers (e.g. binarySync starting on
+  // two API workers at the same time) can both see loadActive()=null and
+  // both try to INSERT. The partial unique index uq_manifest_signing_keys_active
+  // (on `status` WHERE status = 'active') makes the loser throw. Scope
+  // onConflictDoNothing to exactly that partial index so an unrelated
+  // constraint conflict (e.g. a future UNIQUE on key_id) still raises
+  // instead of being silently swallowed. (#640)
+  const inserted = await withSystemDbAccessContext(async () => {
+    return db
+      .insert(manifestSigningKeys)
+      .values({
+        keyId,
+        publicKeyB64,
+        privateKeyEnc: encryptedPriv,
+        status: 'active',
+      })
+      .onConflictDoNothing({
+        target: manifestSigningKeys.status,
+        where: sql`status = 'active'`,
+      })
+      .returning({ keyId: manifestSigningKeys.keyId });
   });
+
+  if (inserted.length === 0) {
+    // Another concurrent caller inserted the active key first. Reload and
+    // return whichever key won the race. Log both keyIds so ops can trace
+    // two-worker startup races back to the losing worker.
+    const winner = await loadActive();
+    if (!winner) {
+      throw new Error(
+        'ensureActiveSigningKey: insert conflict but no active row found on reload',
+      );
+    }
+    console.log(
+      `[manifestSigning] Lost race for active signing key: generated ${keyId} locally, but ${winner.keyId} won — using winner`,
+    );
+    return { keyId: winner.keyId, publicKeyB64: winner.publicKeyB64 };
+  }
 
   console.log(`[manifestSigning] Generated new deployment signing key ${keyId}`);
   return { keyId, publicKeyB64 };

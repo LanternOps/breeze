@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -74,9 +75,21 @@ func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
 		return nil
 	}
 
-	pinned := make([]string, 0, len(existing))
+	// Sort by keyId for stable serialization — map iteration is
+	// nondeterministic, so without an explicit sort two consecutive calls
+	// with the same input would shuffle the on-disk file and cause spurious
+	// diffs. We sort by the keyId field explicitly (not the full "id:pub"
+	// string) so that the sort key is unambiguous regardless of which
+	// base64 characters appear in the pubkey. (#644)
+	type pinnedEntry struct{ id, pub string }
+	entries := make([]pinnedEntry, 0, len(existing))
 	for id, pub := range existing {
-		pinned = append(pinned, id+":"+pub)
+		entries = append(entries, pinnedEntry{id: id, pub: pub})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
+	pinned := make([]string, 0, len(entries))
+	for _, e := range entries {
+		pinned = append(pinned, e.id+":"+e.pub)
 	}
 	cfg.PinnedManifestPubKeys = pinned
 

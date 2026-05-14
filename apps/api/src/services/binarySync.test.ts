@@ -224,6 +224,53 @@ describe("binarySync", () => {
     }
   });
 
+  it("logs at console.error (not warn) when stale-volume detection + GitHub fallback both fail (#644)", async () => {
+    // Stale-volume path: BREEZE_VERSION != VERSION-file value.
+    // We force the GitHub fallback to throw by making fetch reject. The
+    // compound failure must surface as console.error so it's visible in
+    // Sentry / log alerting — not buried as console.warn.
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    process.env.BREEZE_VERSION = "0.99.0"; // expected != on-disk
+
+    fsMocks.readFile.mockResolvedValue("0.65.7" as any);
+
+    // GitHub fallback path will call fetch; make it reject so syncFromGitHub
+    // throws and the compound-failure catch fires.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED — simulated network failure");
+      }),
+    );
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await syncBinaries();
+
+    // The compound-failure escalation MUST use console.error.
+    const compoundFailureCalls = errorSpy.mock.calls.filter((args) =>
+      String(args[0] ?? "").includes(
+        "Stale binaries volume + GitHub sync FAILED",
+      ),
+    );
+    expect(compoundFailureCalls.length).toBeGreaterThan(0);
+
+    // The same compound-failure message must NOT have been emitted via warn
+    // (the prior bug — it was easy to miss).
+    const compoundFailureWarnCalls = warnSpy.mock.calls.filter((args) =>
+      String(args[0] ?? "").includes(
+        "Stale binaries volume + GitHub sync FAILED",
+      ),
+    );
+    expect(compoundFailureWarnCalls.length).toBe(0);
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
     // The agent_versions table has a UNIQUE constraint on
     // (version, platform, architecture, component). The local-binary path used

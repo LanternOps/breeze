@@ -26,6 +26,7 @@ import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../serv
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { getActiveTrustKeyset } from '../services/manifestSigning';
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -1835,10 +1836,42 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
               // Check for pending commands and send them
               const pendingCommands = await runWithAgentDbAccess(async () => getPendingCommands(agentId));
+
+              // Match the REST heartbeat: ship the active deployment trust
+              // keyset on every ack so WS-connected agents (re-)pin the same
+              // way REST-polling agents do. runOutsideDbContext is required
+              // because the WS handler runs inside a tenant-scoped DB
+              // context; the inner withSystemDbAccessContext in
+              // getActiveTrustKeyset would otherwise be short-circuited and
+              // RLS would return zero rows. Wrapped in try/catch so a
+              // transient trust-keyset failure never breaks the ack (#644).
+              //
+              // On failure we emit `manifestTrustKeys: []` to mirror the REST
+              // heartbeat handler in routes/agents/heartbeat.ts. The agent
+              // gates pin updates on `len(ManifestTrustKeys) > 0` (see
+              // agent/internal/heartbeat/heartbeat.go:2174), so empty and
+              // omission are equivalent on the wire — emitting `[]` keeps the
+              // two heartbeat paths byte-for-byte consistent and avoids
+              // wire-shape divergence between WS and REST.
+              let manifestTrustKeys: unknown[] = [];
+              try {
+                manifestTrustKeys = await runOutsideDbContext(() =>
+                  getActiveTrustKeyset(),
+                );
+              } catch (err) {
+                console.error(
+                  `[AgentWs] Failed to load manifest trust keyset for agentId=${agentId}:`,
+                  err,
+                );
+                captureException(err);
+                manifestTrustKeys = [];
+              }
+
               ws.send(JSON.stringify({
                 type: 'heartbeat_ack',
                 timestamp: Date.now(),
                 commands: pendingCommands,
+                manifestTrustKeys,
               }));
               break;
             }

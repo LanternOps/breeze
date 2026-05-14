@@ -7,10 +7,24 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     update: vi.fn(),
+    insert: vi.fn(),
+    transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../../services/manifestSigning', () => ({
+  getActiveTrustKeyset: vi.fn(async () => []),
+}));
+
+vi.mock('../../modules/mcpInvites/matchInviteOnEnrollment', () => ({
+  matchDeploymentInviteOnEnrollment: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -68,7 +82,7 @@ vi.mock('./helpers', () => ({
 }));
 
 vi.mock('../../services/warrantyWorker', () => ({
-  queueWarrantySyncForDevice: vi.fn(),
+  queueWarrantySyncForDevice: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/partnerHooks', () => ({
@@ -79,6 +93,7 @@ vi.mock('../../services/partnerHooks', () => ({
 
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import * as manifestSigning from '../../services/manifestSigning';
 import { enrollmentRoutes } from './enrollment';
 
 function buildApp(): Hono {
@@ -524,5 +539,98 @@ describe('POST /agents/enroll — ENROLLMENT_SECRET_ENFORCEMENT_MODE', () => {
         details: expect.objectContaining({ reason: 'no_enrollment_secret_configured' }),
       })
     );
+  });
+});
+
+describe('POST /agents/enroll — manifestTrustKeys delivery (#639)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('includes manifestTrustKeys in the 201 response from getActiveTrustKeyset()', async () => {
+    const trustKeys = [
+      {
+        keyId: 'deploy-2026-05-14-aaaaaaaa',
+        publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        validFrom: '2026-05-14T00:00:00.000Z',
+      },
+    ];
+    vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue(
+      trustKeys,
+    );
+
+    // Step 1: enrollment-key lookup returns a usable row
+    mockKeyLookup({
+      id: 'key-happy',
+      orgId: 'org-happy',
+      siteId: 'site-happy',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    // Step 2: db.update for the claim → returning the claimed key
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([
+            { id: 'key-happy', orgId: 'org-happy', siteId: 'site-happy' },
+          ]),
+        })),
+      })),
+    } as any);
+
+    // Step 3: org lookup → no partner constraint
+    mockSelectRows([{ partnerId: 'partner-happy' }]);
+    // Step 4: partner.maxDevices lookup
+    mockSelectRows([{ maxDevices: null }]);
+    // Step 5: existing-device lookup → empty (fresh enrollment)
+    mockSelectRows([]);
+
+    // Step 6: db.transaction returns the inserted device row directly.
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi
+              .fn()
+              .mockResolvedValue([
+                {
+                  id: 'device-happy',
+                  orgId: 'org-happy',
+                  siteId: 'site-happy',
+                  hostname: 'host-1',
+                },
+              ]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-happy');
+    expect(Array.isArray(body.manifestTrustKeys)).toBe(true);
+    expect(body.manifestTrustKeys).toEqual(trustKeys);
+    expect(manifestSigning.getActiveTrustKeyset).toHaveBeenCalled();
   });
 });
