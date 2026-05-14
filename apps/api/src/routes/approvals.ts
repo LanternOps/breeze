@@ -319,10 +319,12 @@ async function decideHandler(
         .set({ status: aiStatus, approvedBy: userId, approvedAt: new Date() })
         .where(eq(aiToolExecutions.id, updated.executionId));
     } catch (err) {
+      captureException(err);
       console.error('[approvals] Failed to mirror status to ai_tool_executions:', err);
       // Non-fatal: the approval_request row is the source of truth for the
       // mobile UI. The SDK poll will time out at the 5-min ceiling if the
       // mirror fails — better than failing the user-facing decide call.
+      // Captured to Sentry so a sustained mirror failure pages ops.
     }
   }
 

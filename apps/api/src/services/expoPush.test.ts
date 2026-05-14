@@ -30,6 +30,13 @@ vi.mock('../db/schema/mobile', () => ({
   },
 }));
 
+const { captureExceptionMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+}));
+vi.mock('./sentry', () => ({
+  captureException: captureExceptionMock,
+}));
+
 import { sendExpoPush, buildApprovalPush } from './expoPush';
 import { db } from '../db';
 
@@ -144,7 +151,7 @@ describe('sendExpoPush', () => {
     expect(nullSets.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('logs but does not mark inactive on non-DeviceNotRegistered ticket errors', async () => {
+  it('logs but does not mark inactive on non-terminal ticket errors (rate-limit retry)', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
@@ -165,6 +172,63 @@ describe('sendExpoPush', () => {
 
     expect(tickets).toHaveLength(1);
     expect(errSpy).toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it.each([
+    ['InvalidCredentials', 'rotated APNs cert / Expo creds'],
+    ['MismatchSenderId', 'FCM project mismatch'],
+  ])(
+    'marks tokens inactive AND captures Sentry on terminal error %s',
+    async (code, _label) => {
+      captureExceptionMock.mockClear();
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              status: 'error',
+              message: code,
+              details: { error: code },
+            },
+          ],
+        }),
+      } as unknown as Response);
+
+      await sendExpoPush([
+        { to: 'ExponentPushToken[abc]', title: 't', body: 'b' },
+      ]);
+
+      expect(captureExceptionMock).toHaveBeenCalled();
+      expect(vi.mocked(db.update).mock.calls.length).toBeGreaterThanOrEqual(2);
+      errSpy.mockRestore();
+    },
+  );
+
+  it('captures Sentry alarm on MessageTooBig (config bug, no token clear)', async () => {
+    captureExceptionMock.mockClear();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            status: 'error',
+            message: 'too big',
+            details: { error: 'MessageTooBig' },
+          },
+        ],
+      }),
+    } as unknown as Response);
+
+    await sendExpoPush([
+      { to: 'ExponentPushToken[abc]', title: 't', body: 'b' },
+    ]);
+
+    expect(captureExceptionMock).toHaveBeenCalled();
+    // MessageTooBig is alarmable but not a token-death signal; token stays.
     expect(db.update).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });

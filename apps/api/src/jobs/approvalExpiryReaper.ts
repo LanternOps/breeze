@@ -175,7 +175,9 @@ export async function reapExpiredApprovals(): Promise<number> {
       });
     } catch (err) {
       // Audit is best-effort — never block a transition on the audit write.
+      // Capture to Sentry so a sustained audit failure (compliance gap) pages.
       console.error('[ApprovalExpiryReaper] Failed to write audit event:', err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -269,6 +271,7 @@ export async function shutdownApprovalExpiryReaper(): Promise<void> {
       await worker.close();
     } catch (err) {
       console.error('[ApprovalExpiryReaper] Error closing worker:', err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
   if (queue) {
@@ -276,6 +279,7 @@ export async function shutdownApprovalExpiryReaper(): Promise<void> {
       await queue.close();
     } catch (err) {
       console.error('[ApprovalExpiryReaper] Error closing queue:', err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 }

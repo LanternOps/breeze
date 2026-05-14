@@ -1,6 +1,7 @@
 import { db } from '../db';
 import { mobileDevices } from '../db/schema/mobile';
 import { and, eq } from 'drizzle-orm';
+import { captureException } from './sentry';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const MAX_LABEL_LEN = 60;
@@ -45,6 +46,25 @@ export async function sendExpoPush(
   return tickets;
 }
 
+// Codes that mean "this push token will never deliver again." Per Expo
+// docs these are all terminal: the token is bad, the cert/credentials
+// are wrong, or the device unregistered. In all cases we clear the
+// token row so subsequent pushes don't keep hitting the same dead end.
+const TERMINAL_TOKEN_ERROR_CODES = new Set([
+  'DeviceNotRegistered',
+  'InvalidCredentials',
+  'MismatchSenderId',
+]);
+
+// Codes that signal a config bug — not user-recoverable but worth paging
+// ops because every approval push will silently fail until the cert/key
+// is rotated.
+const ALARMABLE_ERROR_CODES = new Set([
+  'InvalidCredentials',
+  'MismatchSenderId',
+  'MessageTooBig',
+]);
+
 async function handleTicketErrors(
   messages: ExpoPushMessage[],
   tickets: ExpoPushTicket[]
@@ -63,13 +83,20 @@ async function handleTicketErrors(
       message: ticket.message,
       code,
     });
-    if (code === 'DeviceNotRegistered' && token) {
+    if (ALARMABLE_ERROR_CODES.has(code ?? '')) {
+      captureException(
+        new Error(`Expo push terminal error: ${code ?? 'unknown'} — ${ticket.message ?? ''}`),
+      );
+    }
+    if (code && TERMINAL_TOKEN_ERROR_CODES.has(code) && token) {
       deadTokens.push(token);
     }
   }
   if (deadTokens.length === 0) return;
-  try {
-    for (const token of deadTokens) {
+  // Clear each token in its own try block so one DB failure doesn't
+  // abandon the rest.
+  for (const token of deadTokens) {
+    try {
       await db
         .update(mobileDevices)
         .set({ apnsToken: null })
@@ -78,9 +105,10 @@ async function handleTicketErrors(
         .update(mobileDevices)
         .set({ fcmToken: null })
         .where(eq(mobileDevices.fcmToken, token));
+    } catch (err) {
+      captureException(err);
+      console.error('[expoPush] failed to clear dead token', { token, err });
     }
-  } catch (err) {
-    console.error('[expoPush] failed to clear dead tokens', err);
   }
 }
 

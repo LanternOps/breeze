@@ -23,6 +23,7 @@ import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './au
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from './expoPush';
+import { captureException } from './sentry';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -424,10 +425,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         );
         approvalRequestId = approvalRow?.id;
       } catch (err) {
+        captureException(err);
         console.error('[AI-SDK] Failed to create mobile approval_request row:', err);
         // Non-fatal: SSE approval flow still works for in-app web UI even
         // without the mobile-readable row. The approve/deny handler simply
-        // won't have an executionId to resolve back to.
+        // won't have an executionId to resolve back to. Captured to Sentry
+        // so a sustained insert failure pages ops — when this fails the
+        // mobile-only approval flow silently hangs for 5 min.
       }
 
       // Best-effort push notification to the user's mobile device(s).
@@ -455,7 +459,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             );
           }
         } catch (err) {
+          captureException(err);
           console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
+          // Push is best-effort; the in-app UI still works. But a sustained
+          // push failure means mobile-only approvals time out silently.
         }
       }
 
