@@ -1555,6 +1555,10 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 				category = "homebrew"
 			}
 		}
+		externalId := p.KBNumber
+		if externalId == "" {
+			externalId = p.ID
+		}
 		items[i] = map[string]any{
 			"name":            p.Title,
 			"version":         p.Version,
@@ -1562,7 +1566,8 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 			"severity":        severity,
 			"description":     p.Description,
 			"source":          h.mapPatchProviderSource(p.Provider),
-			"externalId":      p.KBNumber,
+			"externalId":      externalId,
+			"packageId":       p.ID,
 			"kbNumber":        p.KBNumber,
 			"size":            p.Size,
 			"requiresRestart": p.RebootRequired,
@@ -1579,12 +1584,17 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 		if category == "" {
 			category = h.mapPatchProviderCategory(p.Provider)
 		}
+		externalId := p.KBNumber
+		if externalId == "" {
+			externalId = p.ID
+		}
 		m := map[string]any{
 			"name":       p.Title,
 			"version":    p.Version,
 			"category":   category,
 			"source":     h.mapPatchProviderSource(p.Provider),
-			"externalId": p.KBNumber,
+			"externalId": externalId,
+			"packageId":  p.ID,
 		}
 		if p.KBNumber != "" {
 			m["kbNumber"] = p.KBNumber
