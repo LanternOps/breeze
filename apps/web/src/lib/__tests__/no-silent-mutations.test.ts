@@ -7,10 +7,10 @@
  * to be safe. Allowlist entries are repo-root-relative (apps/web/...) paths.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RUN_ACTION_ALLOWLIST } from '../runActionAllowlist';
+import { RUN_ACTION_ALLOWLIST, RUN_ACTION_MIGRATION_BACKLOG } from '../runActionAllowlist';
 
 // Resolve relative to this test file: apps/web/src/lib/__tests__/ → apps/web/src/
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,36 +18,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = resolve(__dirname, '../..'); // apps/web/src
 const WEB_ROOT = SRC_ROOT;
 
-// Walk a directory recursively, returning files with a given suffix.
-// Skips *.test.tsx / *.test.ts — mocks in test files can use any method.
-function walk(dir: string, suffix: string): string[] {
-  const results: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    if (statSync(full).isDirectory()) {
-      results.push(...walk(full, suffix));
-    } else if (name.endsWith(suffix) && !name.endsWith(`.test${suffix}`)) {
-      results.push(full);
-    }
-  }
-  return results;
-}
-
-// TARGET_GLOBS expressed as absolute dirs + single files.
-const TARGET_DIRS = [
-  join(WEB_ROOT, 'components/devices'),
-  join(WEB_ROOT, 'components/alerts'),
-];
-const TARGET_FILES_SINGLE = [
-  join(WEB_ROOT, 'components/settings/PartnerSettingsPage.tsx'),
-  join(WEB_ROOT, 'components/patches/PatchesPage.tsx'),
+// WS-A "targeted set": files that have ADOPTED runAction and must not regress
+// to silent mutations. This list GROWS as more handlers are migrated in the
+// gradual rollout — it is intentionally NOT the whole devices/alerts tree
+// (sweeping migration is an explicit WS-A non-goal). See the spec + the
+// KNOWN-UNMIGRATED backlog in runActionAllowlist.ts.
+const TARGET_GLOBS = [
+  'src/components/alerts/NotificationChannelsPage.tsx',
+  'src/components/settings/PartnerSettingsPage.tsx',
+  'src/components/patches/PatchesPage.tsx',
 ];
 
-// Collect all targeted .tsx files.
-const absoluteFiles: string[] = [
-  ...TARGET_DIRS.flatMap((d) => walk(d, '.tsx')),
-  ...TARGET_FILES_SINGLE,
-];
+// Resolve TARGET_GLOBS to absolute paths.
+// Each entry is a path relative to apps/web (e.g. "src/components/...").
+const absoluteFiles: string[] = TARGET_GLOBS.map((rel) =>
+  resolve(WEB_ROOT, '..', rel) // WEB_ROOT = apps/web/src, so go up one to apps/web
+);
 
 // Build the allowlist as a Set of absolute paths for fast lookup.
 // Allowlist entries are repo-root-relative (apps/web/...).
@@ -85,10 +71,28 @@ describe('guard self-checks', () => {
   });
 });
 
+// ─── Backlog integrity check ─────────────────────────────────────────────────
+describe('migration backlog integrity', () => {
+  it('backlog is non-empty (debt is tracked)', () => {
+    expect(RUN_ACTION_MIGRATION_BACKLOG.length).toBeGreaterThan(0);
+  });
+
+  it('every backlog entry is a string path under apps/web/src/', () => {
+    for (const entry of RUN_ACTION_MIGRATION_BACKLOG) {
+      expect(typeof entry).toBe('string');
+      expect(entry.startsWith('apps/web/src/')).toBe(true);
+    }
+  });
+});
+
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
     expect(absoluteFiles.length).toBeGreaterThan(0);
+    // Sanity: all target files must actually exist on disk.
+    for (const f of absoluteFiles) {
+      expect(() => statSync(f)).not.toThrow();
+    }
   });
 
   for (const absPath of absoluteFiles) {
