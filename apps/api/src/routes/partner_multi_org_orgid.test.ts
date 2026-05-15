@@ -46,6 +46,7 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePartner: async (_c: any, next: any) => next(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -373,5 +374,71 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
 
       await expectNotOrgIdRequired400(res);
     });
+  });
+});
+
+/**
+ * Regression: issue #723. The web client's fetchWithAuth auto-injects the
+ * ambient active-org `?orgId=` whenever the URL lacks the literal `orgId=`
+ * substring. The Sites management page requests `/orgs/sites?organizationId=
+ * <selected>`, which on the wire becomes `?organizationId=<selected>&orgId=
+ * <activeOrg>`. GET /orgs/sites resolved `orgId || organizationId`, so the
+ * ambient active org shadowed the explicitly-requested org — sites for a
+ * non-active org appeared to vanish and the wrong org's sites were shown.
+ * The explicit `organizationId` (the resource the user is acting on) must take
+ * precedence; access is still gated by ensureOrgAccess so this is not a
+ * tenant-isolation relaxation.
+ */
+describe('issue #723: GET /orgs/sites organizationId precedence', () => {
+  // Assertions key off the ensureOrgAccess boundary, which runs BEFORE any DB
+  // query — this isolates the precedence/authz logic (the actual fix surface)
+  // and is deterministic on both the buggy and fixed implementations.
+
+  it('does not 403 when the explicit organizationId is accessible but the auto-injected ambient orgId is not', async () => {
+    authState.accessibleOrgIds = [ORG_A];
+    const { orgRoutes } = await import('./orgs');
+    const app = new Hono().route('/orgs', orgRoutes);
+
+    // Simulates fetchWithAuth appending &orgId=<activeOrg=ORG_B> to a page
+    // request that explicitly asked for organizationId=ORG_A. Buggy precedence
+    // resolves the inaccessible ORG_B -> 403; correct precedence resolves the
+    // explicit, accessible ORG_A and proceeds (must not be denied).
+    const res = await app.request(`/orgs/sites?organizationId=${ORG_A}&orgId=${ORG_B}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).not.toBe(403);
+  });
+
+  it('honors the explicit organizationId over an accessible ambient orgId (precedence flipped, not fallthrough)', async () => {
+    authState.accessibleOrgIds = [ORG_A];
+    const { orgRoutes } = await import('./orgs');
+    const app = new Hono().route('/orgs', orgRoutes);
+
+    // Explicit organizationId points at the inaccessible ORG_B while the
+    // ambient orgId is the accessible ORG_A. The explicit value must win, so
+    // access must be denied. Buggy precedence resolves ORG_A and does NOT 403.
+    const res = await app.request(`/orgs/sites?organizationId=${ORG_B}&orgId=${ORG_A}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('still scopes by orgId when no organizationId is supplied (fallback unchanged)', async () => {
+    authState.accessibleOrgIds = [ORG_A];
+    const { orgRoutes } = await import('./orgs');
+    const app = new Hono().route('/orgs', orgRoutes);
+
+    // Only the ambient orgId is present and it is foreign -> must still be
+    // denied (guards that the orgId fallback is preserved by the fix).
+    const res = await app.request(`/orgs/sites?orgId=${FOREIGN_ORG}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
   });
 });
