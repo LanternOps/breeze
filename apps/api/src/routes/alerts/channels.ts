@@ -43,6 +43,8 @@ function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
   return {
     ...channel,
     config: redactNotificationChannelConfig(channel.type, channel.config),
+    lastTestedAt: channel.lastTestedAt ?? null,
+    lastTestStatus: channel.lastTestStatus ?? null,
   };
 }
 
@@ -583,6 +585,14 @@ channelsRoutes.post(
         message: `Failed to test channel: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
+
+    // Persist the test outcome so the UI can show last-tested status (#720).
+    await db.update(notificationChannels)
+      .set({
+        lastTestedAt: new Date(),
+        lastTestStatus: testResult.success ? 'success' : 'failed',
+      })
+      .where(eq(notificationChannels.id, channel.id));
 
     const response = {
       channelId: channel.id,

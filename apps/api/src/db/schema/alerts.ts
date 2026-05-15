@@ -97,6 +97,8 @@ export const notificationChannels = pgTable('notification_channels', {
   config: jsonb('config').notNull(),
   templates: jsonb('templates').default({}),
   enabled: boolean('enabled').notNull().default(true),
+  lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
+  lastTestStatus: varchar('last_test_status', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

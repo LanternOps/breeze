@@ -779,4 +779,140 @@ describe('alert routes', () => {
       expect(body.error).toContain('discord');
     });
   });
+
+  describe('notification channel test endpoint — persists last_tested_at/status (#720)', () => {
+    it('persists lastTestedAt and lastTestStatus after a successful test', async () => {
+      const channelId = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+
+      // Channel lookup via getNotificationChannelWithOrgCheck
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Email Test',
+              type: 'email',
+              config: { recipients: ['test@example.com'] }
+            }])
+          })
+        })
+      } as any);
+
+      // Capture what .set() receives so we can assert on it
+      let capturedSetPayload: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload: Record<string, unknown>) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn(() => Promise.resolve())
+          };
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+
+      // update() must have been called to persist the test outcome
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(capturedSetPayload).toBeDefined();
+      expect(capturedSetPayload!.lastTestedAt).toBeInstanceOf(Date);
+      expect(capturedSetPayload!.lastTestStatus).toBe('success');
+    });
+
+    it('persists lastTestStatus as "failed" when the test notification fails', async () => {
+      const channelId = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+
+      // Channel lookup — email channel with no recipients configured
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Empty Email',
+              type: 'email',
+              config: {}
+            }])
+          })
+        })
+      } as any);
+
+      let capturedSetPayload: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload: Record<string, unknown>) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn(() => Promise.resolve())
+          };
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(false);
+
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(capturedSetPayload).toBeDefined();
+      expect(capturedSetPayload!.lastTestedAt).toBeInstanceOf(Date);
+      expect(capturedSetPayload!.lastTestStatus).toBe('failed');
+    });
+
+    it('includes lastTestedAt and lastTestStatus in the channel list response', async () => {
+      const testedAt = new Date('2026-05-15T10:00:00.000Z');
+
+      // Count query
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([{
+                    id: 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3',
+                    orgId: '11111111-1111-1111-1111-111111111111',
+                    name: 'Email',
+                    type: 'email',
+                    config: { recipients: ['ops@example.com'] },
+                    enabled: true,
+                    lastTestedAt: testedAt,
+                    lastTestStatus: 'success',
+                    createdAt: testedAt,
+                    updatedAt: testedAt
+                  }])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts/channels', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      const ch = body.data[0];
+      expect(ch.lastTestedAt).toBe(testedAt.toISOString());
+      expect(ch.lastTestStatus).toBe('success');
+    });
+  });
 });
