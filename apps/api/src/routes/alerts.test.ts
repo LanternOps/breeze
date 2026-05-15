@@ -869,6 +869,43 @@ describe('alert routes', () => {
       expect(capturedSetPayload!.lastTestStatus).toBe('failed');
     });
 
+    it('does not surface a DB persist failure to the client — test result is still HTTP 200', async () => {
+      const channelId = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4';
+
+      // Channel lookup via getNotificationChannelWithOrgCheck
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Email Test',
+              type: 'email',
+              config: { recipients: ['test@example.com'] }
+            }])
+          })
+        })
+      } as any);
+
+      // Make the persist update throw a transient DB error
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn(() => ({
+          where: vi.fn(() => Promise.reject(new Error('connection timeout')))
+        }))
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      // The persist failure must not surface to the client — response is still 200
+      // with the correct testResult reflecting the successful send.
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+    });
+
     it('includes lastTestedAt and lastTestStatus in the channel list response', async () => {
       const testedAt = new Date('2026-05-15T10:00:00.000Z');
 
