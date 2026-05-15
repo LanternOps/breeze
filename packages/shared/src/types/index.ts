@@ -546,6 +546,36 @@ export interface InheritableAiBudgetSettings {
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
 }
 
+// A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).
+// The Connect Desktop button on the device detail page consults the partner's
+// configured providers and, when a default is set, builds a launch URL by
+// substituting `{id}` (device.custom_fields[customFieldKey]) and `{password}`
+// placeholders into urlTemplate. URL building happens server-side so the
+// password never ships to the browser unless the user is launching a session.
+//
+// Examples of urlTemplate:
+//   'rustdesk://{id}?password={password}'
+//     — custom protocol handler hand-off (RustDesk, TeamViewer desktop, AnyDesk)
+//   'https://acme.screenconnect.com/Host#Access///{id}/Join'
+//     — HTTPS launcher; the button opens it in a new browser tab
+//
+// The browser button auto-detects the launch mode by URL prefix: anything
+// starting with http(s):// opens in a new tab; anything else is handed to the
+// OS as a custom-scheme deep link.
+export interface RemoteAccessProvider {
+  id: string;
+  name: string;
+  urlTemplate: string;
+  customFieldKey: string;
+  password?: string;
+  enabled: boolean;
+}
+
+export interface InheritableRemoteAccessSettings {
+  providers?: RemoteAccessProvider[];
+  defaultProviderId?: string;
+}
+
 export interface EffectiveOrgSettings {
   security?: InheritableSecuritySettings;
   notifications?: InheritableNotificationSettings;
@@ -553,6 +583,7 @@ export interface EffectiveOrgSettings {
   defaults?: InheritableDefaultSettings;
   branding?: InheritableBrandingSettings;
   aiBudgets?: InheritableAiBudgetSettings;
+  remoteAccessProviders?: InheritableRemoteAccessSettings;
   locked: string[];
 }
 
@@ -590,6 +621,7 @@ export interface PartnerSettings {
   // returns matching orgs in this order; orgs not present in the array
   // (newly created or stale entries) are appended in createdAt order.
   organizationOrder?: string[];
+  remoteAccessProviders?: InheritableRemoteAccessSettings;
 }
 
 // ============================================

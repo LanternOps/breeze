@@ -16,6 +16,7 @@ import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
 import { showToast } from '../shared/Toast';
 import type {
@@ -29,11 +30,12 @@ import type {
   InheritableEventLogSettings,
   InheritableDefaultSettings,
   InheritableBrandingSettings,
-  InheritableAiBudgetSettings
+  InheritableAiBudgetSettings,
+  InheritableRemoteAccessSettings
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'remoteAccess';
 
 type Partner = {
   id: string;
@@ -54,6 +56,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'defaults', label: 'Defaults' },
   { key: 'branding', label: 'Branding' },
   { key: 'aiBudgets', label: 'AI Budgets' },
+  { key: 'remoteAccess', label: 'Remote' },
 ];
 
 const TIMEZONES = [
@@ -115,6 +118,7 @@ export default function PartnerSettingsPage() {
   const [defaultsData, setDefaultsData] = useState<InheritableDefaultSettings>({});
   const [brandingData, setBrandingData] = useState<InheritableBrandingSettings>({});
   const [aiBudgetsData, setAiBudgetsData] = useState<InheritableAiBudgetSettings>({});
+  const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
 
   const fetchPartner = useCallback(async () => {
     try {
@@ -151,6 +155,7 @@ export default function PartnerSettingsPage() {
       setDefaultsData(settings.defaults || {});
       setBrandingData(settings.branding || {});
       setAiBudgetsData(settings.aiBudgets || {});
+      setRemoteAccessData(settings.remoteAccessProviders || {});
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -213,6 +218,7 @@ export default function PartnerSettingsPage() {
       settings.defaults = defaultsData;
       settings.branding = brandingData;
       settings.aiBudgets = aiBudgetsData;
+      settings.remoteAccessProviders = remoteAccessData;
 
       const payload: Record<string, unknown> = { settings };
       const trimmedName = companyName.trim();
@@ -490,6 +496,12 @@ export default function PartnerSettingsPage() {
       {activeTab === 'aiBudgets' && (
         <section className="rounded-lg border bg-card p-6 shadow-sm">
           <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
+        </section>
+      )}
+
+      {activeTab === 'remoteAccess' && (
+        <section className="rounded-lg border bg-card p-6 shadow-sm">
+          <PartnerRemoteAccessTab data={remoteAccessData} onChange={setRemoteAccessData} />
         </section>
       )}
     </div>
