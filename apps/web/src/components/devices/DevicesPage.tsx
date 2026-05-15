@@ -157,7 +157,9 @@ export default function DevicesPage() {
           deviceRole: d.deviceRole as DeviceRole | undefined,
           deviceRoleSource: d.deviceRoleSource as string | undefined,
           mainAgentSilentSince: (d.mainAgentSilentSince ?? null) as string | null,
-          watchdogStatus: (d.watchdogStatus ?? null) as Device['watchdogStatus']
+          watchdogStatus: (d.watchdogStatus ?? null) as Device['watchdogStatus'],
+          lastUser: d.lastUser as string | undefined,
+          uptimeSeconds: typeof d.uptimeSeconds === 'number' ? d.uptimeSeconds : undefined,
         };
       });
 
