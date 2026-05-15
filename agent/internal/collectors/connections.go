@@ -19,3 +19,17 @@ type ConnectionsCollector struct{}
 func NewConnectionsCollector() *ConnectionsCollector {
 	return &ConnectionsCollector{}
 }
+
+// sanitizeConnectionInfo trims and length-bounds every string field so the
+// payload never carries values that would overflow the API's column widths
+// (state varchar(20), process_name varchar(255)). The server also clamps
+// defensively (see apps/api/src/routes/agents/connections.ts), but doing
+// it here saves bandwidth on chatty Linux containers. See #504.
+func sanitizeConnectionInfo(conn ConnectionInfo) ConnectionInfo {
+	conn.Protocol = truncateCollectorString(conn.Protocol)
+	conn.LocalAddr = truncateCollectorString(conn.LocalAddr)
+	conn.RemoteAddr = truncateCollectorString(conn.RemoteAddr)
+	conn.State = truncateCollectorString(conn.State)
+	conn.ProcessName = truncateCollectorString(conn.ProcessName)
+	return conn
+}
