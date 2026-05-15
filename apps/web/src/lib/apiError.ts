@@ -65,9 +65,6 @@ export function extractApiError(data: unknown, fallback: string): string {
     if (tr && typeof tr === 'object' && typeof tr.message === 'string' && tr.message.trim()) {
       return tr.message;
     }
-    if (d.success === false && typeof d.message === 'string' && d.message.trim()) {
-      return d.message;
-    }
   }
 
   return parts.length > 0 ? parts.join(': ') : fallback;
