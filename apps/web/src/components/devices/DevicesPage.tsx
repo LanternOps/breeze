@@ -119,7 +119,9 @@ export default function DevicesPage() {
           agentVersion: (d.agentVersion ?? '') as string,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
-          deviceRoleSource: d.deviceRoleSource as string | undefined
+          deviceRoleSource: d.deviceRoleSource as string | undefined,
+          lastUser: d.lastUser as string | undefined,
+          uptimeSeconds: typeof d.uptimeSeconds === 'number' ? d.uptimeSeconds : undefined,
         };
       });
 
