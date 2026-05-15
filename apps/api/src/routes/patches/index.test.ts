@@ -114,6 +114,11 @@ vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn()
 }));
 
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
+  writeAuditEvent: vi.fn()
+}));
+
 vi.mock('../../jobs/patchComplianceReportWorker', () => ({
   enqueuePatchComplianceReport: vi.fn(async () => ({ enqueued: true, jobId: 'patch-compliance-report:test' }))
 }));
@@ -154,8 +159,9 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { db } from '../../db';
-import { queueCommand, queueCommandForExecution } from '../../services/commandQueue';
+import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -535,6 +541,7 @@ describe('patch routes', () => {
   });
 
   it('queues rollback commands for accessible devices', async () => {
+    const insertValues = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereLimitResult([
         {
@@ -549,9 +556,14 @@ describe('patch routes', () => {
         { id: DEVICE_B, orgId: BLOCKED_ORG_ID }
       ]) as any);
 
-    vi.mocked(queueCommand).mockResolvedValue({ id: 'cmd-rollback-1' } as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: {
+        id: 'cmd-rollback-1',
+        status: 'sent'
+      }
+    } as any);
     vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn().mockResolvedValue(undefined)
+      values: insertValues
     } as any);
 
     const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
@@ -571,10 +583,13 @@ describe('patch routes', () => {
     expect(body.patchId).toBe(PATCH_ID);
     expect(body.deviceCount).toBe(1);
     expect(body.queuedCommandIds).toEqual(['cmd-rollback-1']);
+    expect(body.dispatchedCommandIds).toEqual(['cmd-rollback-1']);
+    expect(body.pendingCommandIds).toEqual([]);
+    expect(body.failedDeviceIds).toEqual([]);
     expect(body.skipped.inaccessibleDeviceIds).toEqual([DEVICE_B]);
     expect(body.skipped.missingDeviceIds).toEqual([DEVICE_D]);
 
-    expect(queueCommand).toHaveBeenCalledWith(
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
       DEVICE_A,
       'rollback_patches',
       {
@@ -589,7 +604,178 @@ describe('patch routes', () => {
         ],
         reason: 'Rollback validation'
       },
-      USER_ID
+      { userId: USER_ID, preferHeartbeat: false }
+    );
+    expect(insertValues).toHaveBeenCalledWith([
+      {
+        deviceId: DEVICE_A,
+        patchId: PATCH_ID,
+        reason: 'Rollback validation',
+        status: 'pending',
+        initiatedBy: USER_ID
+      }
+    ]);
+  });
+
+  it('reports offline rollback devices as failed without persisting rollback rows', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        {
+          id: PATCH_ID,
+          source: 'apple',
+          externalId: 'apple:example-patch',
+          title: 'Example Patch'
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID }
+      ]) as any);
+
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      error: 'Device is offline, cannot execute command'
+    } as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'Offline rollback',
+        scheduleType: 'immediate',
+        deviceIds: [DEVICE_A]
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.success).toBe(false);
+    expect(body.queuedCommandIds).toEqual([]);
+    expect(body.dispatchedCommandIds).toEqual([]);
+    expect(body.pendingCommandIds).toEqual([]);
+    expect(body.failedDeviceIds).toEqual([DEVICE_A]);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('reports mixed rollback dispatch results and persists only queued commands', async () => {
+    const insertValues = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        {
+          id: PATCH_ID,
+          source: 'apple',
+          externalId: 'apple:example-patch',
+          title: 'Example Patch'
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
+        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID },
+        { id: DEVICE_D, orgId: ACCESSIBLE_ORG_ID }
+      ]) as any);
+
+    vi.mocked(queueCommandForExecution).mockImplementation(async (deviceId: string) => {
+      if (deviceId === DEVICE_A) {
+        return { command: { id: 'cmd-sent', status: 'sent' } } as any;
+      }
+      if (deviceId === DEVICE_C) {
+        return { command: { id: 'cmd-pending', status: 'pending' } } as any;
+      }
+      throw new Error('queue failed');
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: insertValues
+    } as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'Mixed rollback',
+        scheduleType: 'immediate',
+        deviceIds: [DEVICE_A, DEVICE_C, DEVICE_D]
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.success).toBe(false);
+    expect(body.queuedCommandIds).toEqual(['cmd-sent', 'cmd-pending']);
+    expect(body.dispatchedCommandIds).toEqual(['cmd-sent']);
+    expect(body.pendingCommandIds).toEqual(['cmd-pending']);
+    expect(body.failedDeviceIds).toEqual([DEVICE_D]);
+    expect(insertValues).toHaveBeenCalledWith([
+      {
+        deviceId: DEVICE_A,
+        patchId: PATCH_ID,
+        reason: 'Mixed rollback',
+        status: 'pending',
+        initiatedBy: USER_ID
+      },
+      {
+        deviceId: DEVICE_C,
+        patchId: PATCH_ID,
+        reason: 'Mixed rollback',
+        status: 'pending',
+        initiatedBy: USER_ID
+      }
+    ]);
+  });
+
+  it('marks rollback audit failure when all rollback queue attempts fail', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereLimitResult([
+        {
+          id: PATCH_ID,
+          source: 'apple',
+          externalId: 'apple:example-patch',
+          title: 'Example Patch'
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: DEVICE_A, orgId: ACCESSIBLE_ORG_ID },
+        { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID }
+      ]) as any);
+
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      error: 'Device is offline, cannot execute command'
+    } as any);
+
+    const res = await app.request(`/patches/${PATCH_ID}/rollback`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: 'All failed rollback',
+        scheduleType: 'immediate',
+        deviceIds: [DEVICE_A, DEVICE_C]
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.success).toBe(false);
+    expect(body.queuedCommandIds).toEqual([]);
+    expect(body.dispatchedCommandIds).toEqual([]);
+    expect(body.pendingCommandIds).toEqual([]);
+    expect(body.failedDeviceIds).toEqual([DEVICE_A, DEVICE_C]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: ACCESSIBLE_ORG_ID,
+        action: 'patch.rollback',
+        resourceType: 'patch',
+        resourceId: PATCH_ID,
+        resourceName: 'Example Patch',
+        result: 'failure',
+        details: expect.objectContaining({
+          queuedCommandIds: [],
+          dispatchedCommandIds: [],
+          pendingCommandIds: [],
+          failedDeviceIds: [DEVICE_A, DEVICE_C]
+        })
+      })
     );
   });
 

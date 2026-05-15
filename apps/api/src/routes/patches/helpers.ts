@@ -47,6 +47,7 @@ export function writePatchAuditForOrgIds(
     resourceType: string;
     resourceId?: string;
     resourceName?: string;
+    result?: 'success' | 'failure' | 'denied';
     details?: Record<string, unknown>;
   }
 ): void {

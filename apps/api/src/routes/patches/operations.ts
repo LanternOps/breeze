@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
-import { queueCommand, queueCommandForExecution } from '../../services/commandQueue';
+import { queueCommandForExecution } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   patches,
@@ -235,7 +235,7 @@ operationsRoutes.post(
     const queueResults = await Promise.all(
       accessibleDevices.map(async (device) => {
         try {
-          const command = await queueCommand(
+          const queued = await queueCommandForExecution(
             device.id,
             'rollback_patches',
             {
@@ -243,17 +243,37 @@ operationsRoutes.post(
               patches: [patch],
               reason: data.reason ?? null
             },
-            auth.user.id
+            {
+              userId: auth.user.id,
+              preferHeartbeat: false
+            }
           );
 
-          return { ok: true as const, deviceId: device.id, commandId: command.id };
+          if (!queued.command) {
+            return { ok: false as const, deviceId: device.id };
+          }
+
+          return {
+            ok: true as const,
+            deviceId: device.id,
+            commandId: queued.command.id,
+            commandStatus: queued.command.status
+          };
         } catch {
           return { ok: false as const, deviceId: device.id };
         }
       })
     );
 
-    const queued = queueResults.filter((result): result is { ok: true; deviceId: string; commandId: string } => result.ok);
+    const queued = queueResults
+      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok);
+    const queuedCommandIds = queued.map((entry) => entry.commandId);
+    const dispatchedCommandIds = queueResults
+      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok && result.commandStatus === 'sent')
+      .map((result) => result.commandId);
+    const pendingCommandIds = queueResults
+      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok && result.commandStatus !== 'sent')
+      .map((result) => result.commandId);
     const failedDeviceIds = queueResults
       .filter((result): result is { ok: false; deviceId: string } => !result.ok)
       .map((result) => result.deviceId);
@@ -280,8 +300,11 @@ operationsRoutes.post(
         resourceType: 'patch',
         resourceId: id,
         resourceName: patch.title,
+        result: queued.length === 0 ? 'failure' : 'success',
         details: {
-          queuedCommandIds: queued.map((entry) => entry.commandId),
+          queuedCommandIds,
+          dispatchedCommandIds,
+          pendingCommandIds,
           deviceCount: accessibleDevices.length,
           failedDeviceIds,
           reason: data.reason ?? null
@@ -292,7 +315,9 @@ operationsRoutes.post(
     return c.json({
       success: failedDeviceIds.length === 0,
       patchId: id,
-      queuedCommandIds: queued.map((entry) => entry.commandId),
+      queuedCommandIds,
+      dispatchedCommandIds,
+      pendingCommandIds,
       deviceCount: accessibleDevices.length,
       failedDeviceIds,
       skipped: {
