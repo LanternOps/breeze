@@ -83,6 +83,18 @@ For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE
 - `packages/shared/src/validators/` - Zod schemas
 - `packages/shared/src/utils/` - Utility functions
 
+### Web Mutation Handlers — `runAction`
+
+**Mutation handlers must surface outcome via `runAction`.** Web action handlers that POST/PUT/PATCH/DELETE should wrap the request in `runAction` (`apps/web/src/lib/runAction.ts`) so success/failure is always shown to the user. `runAction` also treats HTTP-200 `{success:false}` / `{testResult:{success:false}}` response bodies as failures (not silent no-ops).
+
+Catch pattern for callers:
+```ts
+if (err instanceof ActionError && err.status === 401) return; // let auth redirect handle it
+if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401 ActionError already toasted by runAction
+```
+
+The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/2026-05-15-ws-a-action-feedback-design.md`.
+
 ---
 
 ## Testing Standards
