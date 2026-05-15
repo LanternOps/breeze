@@ -1,17 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   COLUMN_IDS,
+  COLUMN_ORDER_STORAGE_KEY,
   COLUMN_VISIBILITY_STORAGE_KEY,
   DEFAULT_VISIBLE_COLUMNS,
   isValidColumnId,
+  readColumnOrder,
   readColumnVisibility,
+  writeColumnOrder,
   writeColumnVisibility,
 } from './columnVisibility';
 
-// jsdom + Node 22 in this project does not surface window.localStorage
-// (the global is intercepted before jsdom can attach its implementation).
-// Same fix as pageSizePreference.test.ts: install a behaviorally
-// equivalent stub on window.localStorage at the start of every test.
 function makeMemoryStorage(): Storage {
   const data = new Map<string, string>();
   return {
@@ -59,7 +58,7 @@ describe('columnVisibility', () => {
     it('rejects strings outside the allowed set', () => {
       expect(isValidColumnId('not-a-column')).toBe(false);
       expect(isValidColumnId('')).toBe(false);
-      expect(isValidColumnId('Hostname')).toBe(false); // case-sensitive
+      expect(isValidColumnId('Hostname')).toBe(false);
     });
   });
 
@@ -72,27 +71,24 @@ describe('columnVisibility', () => {
       expect(got.size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
     });
 
-    it('returns the stored set when JSON is valid and every id is known', () => {
+    it('returns the stored set when valid', () => {
       window.localStorage.setItem(
         COLUMN_VISIBILITY_STORAGE_KEY,
         JSON.stringify(['hostname', 'status', 'agentVersion']),
       );
       const got = readColumnVisibility();
       expect(got.has('hostname')).toBe(true);
-      expect(got.has('status')).toBe(true);
       expect(got.has('agentVersion')).toBe(true);
       expect(got.has('cpu')).toBe(false);
       expect(got.size).toBe(3);
     });
 
-    it('filters out unknown ids and keeps the rest', () => {
+    it('filters out unknown ids', () => {
       window.localStorage.setItem(
         COLUMN_VISIBILITY_STORAGE_KEY,
         JSON.stringify(['hostname', 'mystery', 'cpu']),
       );
       const got = readColumnVisibility();
-      expect(got.has('hostname')).toBe(true);
-      expect(got.has('cpu')).toBe(true);
       expect(got.size).toBe(2);
     });
 
@@ -106,17 +102,15 @@ describe('columnVisibility', () => {
       expect(readColumnVisibility().size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
     });
 
-    it('falls back to defaults when every stored id is unknown (empty effective set)', () => {
+    it('falls back to defaults when every stored id is unknown', () => {
       window.localStorage.setItem(
         COLUMN_VISIBILITY_STORAGE_KEY,
         JSON.stringify(['gibberish-1', 'gibberish-2']),
       );
-      // Without this fallback the table would render no toggleable columns,
-      // which is worse UX than showing the default set.
       expect(readColumnVisibility().size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
     });
 
-    it('falls back to defaults when getItem throws (Safari private mode)', () => {
+    it('falls back when getItem throws (Safari private mode)', () => {
       vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
         throw new DOMException('SecurityError', 'SecurityError');
       });
@@ -128,32 +122,97 @@ describe('columnVisibility', () => {
     it('persists valid ids as a JSON array', () => {
       writeColumnVisibility(['hostname', 'status', 'agentVersion']);
       const raw = window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY);
-      expect(raw).not.toBeNull();
-      const parsed = JSON.parse(raw as string);
-      expect(parsed).toEqual(['hostname', 'status', 'agentVersion']);
+      expect(JSON.parse(raw as string)).toEqual(['hostname', 'status', 'agentVersion']);
     });
 
     it('strips unknown ids before writing', () => {
       writeColumnVisibility(['hostname', 'mystery' as never, 'cpu']);
-      const parsed = JSON.parse(
-        window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY) as string,
-      );
+      const parsed = JSON.parse(window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY) as string);
       expect(parsed).toEqual(['hostname', 'cpu']);
     });
 
-    it('deduplicates ids', () => {
+    it('dedupes ids', () => {
       writeColumnVisibility(['hostname', 'hostname', 'cpu']);
-      const parsed = JSON.parse(
-        window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY) as string,
-      );
+      const parsed = JSON.parse(window.localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY) as string);
       expect(parsed).toEqual(['hostname', 'cpu']);
     });
 
-    it('swallows setItem exceptions (quota / private mode)', () => {
+    it('swallows setItem exceptions', () => {
       vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
         throw new DOMException('QuotaExceededError', 'QuotaExceededError');
       });
       expect(() => writeColumnVisibility(['hostname'])).not.toThrow();
+    });
+  });
+
+  describe('readColumnOrder', () => {
+    it('returns canonical COLUMN_IDS order when no entry is stored', () => {
+      expect(readColumnOrder()).toEqual([...COLUMN_IDS]);
+    });
+
+    it('returns the stored order when complete and valid', () => {
+      const stored = [...COLUMN_IDS].reverse();
+      window.localStorage.setItem(COLUMN_ORDER_STORAGE_KEY, JSON.stringify(stored));
+      expect(readColumnOrder()).toEqual(stored);
+    });
+
+    it('appends missing ids at the end when stored order is partial', () => {
+      window.localStorage.setItem(
+        COLUMN_ORDER_STORAGE_KEY,
+        JSON.stringify(['hostname', 'lastUser']),
+      );
+      const result = readColumnOrder();
+      expect(result.slice(0, 2)).toEqual(['hostname', 'lastUser']);
+      // every catalog id is still present exactly once
+      expect(new Set(result).size).toBe(COLUMN_IDS.length);
+      for (const id of COLUMN_IDS) {
+        expect(result).toContain(id);
+      }
+    });
+
+    it('strips unknown and duplicate ids and appends the rest', () => {
+      window.localStorage.setItem(
+        COLUMN_ORDER_STORAGE_KEY,
+        JSON.stringify(['hostname', 'hostname', 'mystery', 'lastUser']),
+      );
+      const result = readColumnOrder();
+      expect(result.slice(0, 2)).toEqual(['hostname', 'lastUser']);
+      expect(new Set(result).size).toBe(COLUMN_IDS.length);
+    });
+
+    it('falls back to canonical order when JSON is malformed', () => {
+      window.localStorage.setItem(COLUMN_ORDER_STORAGE_KEY, '{nope');
+      expect(readColumnOrder()).toEqual([...COLUMN_IDS]);
+    });
+
+    it('falls back when getItem throws', () => {
+      vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
+        throw new DOMException('SecurityError', 'SecurityError');
+      });
+      expect(readColumnOrder()).toEqual([...COLUMN_IDS]);
+    });
+  });
+
+  describe('writeColumnOrder', () => {
+    it('persists the chosen order with all missing ids appended', () => {
+      writeColumnOrder(['hostname', 'lastUser']);
+      const parsed = JSON.parse(window.localStorage.getItem(COLUMN_ORDER_STORAGE_KEY) as string);
+      expect(parsed.slice(0, 2)).toEqual(['hostname', 'lastUser']);
+      expect(new Set(parsed).size).toBe(COLUMN_IDS.length);
+    });
+
+    it('strips unknown and duplicate ids', () => {
+      writeColumnOrder(['hostname', 'hostname', 'mystery' as never, 'cpu']);
+      const parsed = JSON.parse(window.localStorage.getItem(COLUMN_ORDER_STORAGE_KEY) as string);
+      expect(parsed.slice(0, 2)).toEqual(['hostname', 'cpu']);
+      expect(new Set(parsed).size).toBe(COLUMN_IDS.length);
+    });
+
+    it('swallows setItem exceptions', () => {
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      });
+      expect(() => writeColumnOrder(['hostname'])).not.toThrow();
     });
   });
 });

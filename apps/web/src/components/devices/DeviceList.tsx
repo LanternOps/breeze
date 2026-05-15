@@ -14,7 +14,9 @@ import {
 import {
   COLUMN_IDS,
   COLUMN_LABELS,
+  readColumnOrder,
   readColumnVisibility,
+  writeColumnOrder,
   writeColumnVisibility,
   type ColumnId,
 } from './columnVisibility';
@@ -28,6 +30,8 @@ export type Device = {
   hostname: string;
   os: OSType;
   osVersion: string;
+  osBuild?: string;
+  architecture?: string;
   status: DeviceStatus;
   cpuPercent: number;
   ramPercent: number;
@@ -40,12 +44,19 @@ export type Device = {
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
+  enrolledAt?: string;
   deviceRole?: DeviceRole;
   deviceRoleSource?: string;
   displayName?: string;
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
+  hardware?: {
+    cpuModel?: string;
+    cpuCores?: number;
+    ramTotalMb?: number;
+    diskTotalGb?: number;
+  };
 };
 
 type DeviceListProps = {
@@ -97,12 +108,6 @@ const statusFullLabels: Record<DeviceStatus, string> = {
   updating: 'Updating'
 };
 
-const osLabels: Record<OSType, string> = {
-  windows: 'Windows',
-  macos: 'macOS',
-  linux: 'Linux'
-};
-
 type SortField = 'hostname' | 'status' | 'cpuPercent' | 'ramPercent' | 'lastSeen' | null;
 type SortDirection = 'asc' | 'desc';
 
@@ -142,13 +147,16 @@ export default function DeviceList({
   const [effectivePageSize, setEffectivePageSize] = useState<number>(() =>
     readPageSizePreference(pageSize),
   );
-  // Column visibility — per-browser via localStorage. Two columns are
-  // non-togglable and always render: the row-select checkbox and the
-  // row-actions menu. The rest live in COLUMN_IDS and default to the
-  // pre-feature set so existing users see no surprise. Discussion #56.
+  // Column visibility AND user-controlled order, both persisted to
+  // localStorage. Two columns are non-togglable and always render: the
+  // row-select checkbox (always first) and the row-actions menu (always
+  // last). The rest live in COLUMN_IDS. visibleColumns defaults to the
+  // pre-feature set so existing users see no surprise; columnOrder
+  // defaults to the canonical COLUMN_IDS order. Discussion #56.
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
     () => new Set(readColumnVisibility()),
   );
+  const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => readColumnOrder());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -199,13 +207,37 @@ export default function DeviceList({
 
   // Toggle a single column's visibility, persisting to localStorage.
   // The togglable IDs come from COLUMN_IDS; checkbox + Actions render
-  // unconditionally and are not represented here.
+  // unconditionally and are not represented here. Hiding does not change
+  // the column's position in columnOrder, so showing it again restores
+  // the user's chosen slot.
   const toggleColumn = (id: ColumnId) => {
     setVisibleColumns(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       writeColumnVisibility(next);
+      return next;
+    });
+  };
+
+  // Move a visible column up/down in the user-chosen order. Operates on
+  // the position WITHIN the visible subset — hidden columns are skipped
+  // when computing the neighbor — so the user's mental model is "swap
+  // with the column I see immediately above/below this one".
+  const moveColumn = (id: ColumnId, direction: -1 | 1) => {
+    setColumnOrder(prev => {
+      const visibleIds = prev.filter(c => visibleColumns.has(c));
+      const visibleIdx = visibleIds.indexOf(id);
+      if (visibleIdx === -1) return prev;
+      const targetVisibleIdx = visibleIdx + direction;
+      if (targetVisibleIdx < 0 || targetVisibleIdx >= visibleIds.length) return prev;
+      const swapWith = visibleIds[targetVisibleIdx];
+      const a = prev.indexOf(id);
+      const b = prev.indexOf(swapWith);
+      const next = [...prev];
+      next[a] = swapWith;
+      next[b] = id;
+      writeColumnOrder(next);
       return next;
     });
   };
@@ -381,6 +413,275 @@ export default function DeviceList({
   const allSelected = paginatedDevices.length > 0 && paginatedDevices.every(d => selectedIds.has(d.id));
   const someSelected = paginatedDevices.some(d => selectedIds.has(d.id));
 
+  // Effective render sequence: user-chosen order, filtered to visible.
+  // Checkbox and Actions are rendered separately as the first/last cells.
+  const renderedColumns = columnOrder.filter(id => visibleColumns.has(id));
+
+  // sortHeader factors out the repeated header pattern for sortable
+  // columns to keep the column-defs table below readable.
+  const sortHeader = (id: ColumnId, label: string, sortKey: SortField, hint: string) => (
+    <th
+      key={id}
+      className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+      title={hint}
+      onClick={() => handleSort(sortKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {sortField === sortKey ? (
+          sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-30" />
+        )}
+      </span>
+    </th>
+  );
+
+  // metricBar renders the colored CPU/RAM percent bar with em-dash
+  // fallback for non-online devices. Extracted so the cpu and ram column
+  // cells stay small.
+  const metricBar = (percent: number, online: boolean) =>
+    online ? (
+      <div className="flex items-center gap-2">
+        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
+          <div
+            className={`h-full rounded-full ${percent > 80 ? 'bg-destructive' : percent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(percent)}`}
+          />
+        </div>
+        <span className="w-10 text-right tabular-nums">{percent}%</span>
+      </div>
+    ) : (
+      <span className="text-muted-foreground">&mdash;</span>
+    );
+
+  // Format helpers for hardware columns. RAM is reported in MB; convert
+  // to GB rounded to one decimal. Disk is already reported in GB.
+  const fmtRamGb = (mb: number | undefined) =>
+    typeof mb === 'number' ? `${(mb / 1024).toFixed(1)} GB` : null;
+  const fmtDiskGb = (gb: number | undefined) =>
+    typeof gb === 'number' ? `${gb} GB` : null;
+  const fmtDate = (iso: string | undefined) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+  };
+
+  // columnDefs is the single source of truth for each toggleable column's
+  // header and per-row cell. The thead and tbody iterate `renderedColumns`
+  // and pick from this table, so adding a new column means adding one
+  // entry here plus the corresponding id to COLUMN_IDS / COLUMN_LABELS.
+  const dash = <span className="text-muted-foreground">&mdash;</span>;
+  const columnDefs: Record<ColumnId, { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }> = {
+    hostname: {
+      header: () => sortHeader('hostname', 'Hostname', 'hostname', 'Sort by hostname'),
+      cell: (device) => (
+        <td key="hostname" className="max-w-[200px] px-3 py-3 text-sm font-medium">
+          <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
+        </td>
+      ),
+    },
+    organization: {
+      header: () => <th key="organization" className="px-3 py-3">Organization</th>,
+      cell: (device) => (
+        <td key="organization" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.orgName}>{device.orgName}</span>
+        </td>
+      ),
+    },
+    site: {
+      header: () => <th key="site" className="px-3 py-3">Site</th>,
+      cell: (device) => (
+        <td key="site" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.siteName}>{device.siteName}</span>
+        </td>
+      ),
+    },
+    os: {
+      header: () => <th key="os" className="px-3 py-3">OS</th>,
+      cell: (device) => (
+        <td key="os" className="px-3 py-3 text-sm">
+          <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
+        </td>
+      ),
+    },
+    osVersion: {
+      header: () => <th key="osVersion" className="px-3 py-3">OS Version</th>,
+      cell: (device) => (
+        <td key="osVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.osVersion || dash}
+        </td>
+      ),
+    },
+    osBuild: {
+      header: () => <th key="osBuild" className="px-3 py-3">OS Build</th>,
+      cell: (device) => (
+        <td key="osBuild" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.osBuild || dash}
+        </td>
+      ),
+    },
+    architecture: {
+      header: () => <th key="architecture" className="px-3 py-3">Arch</th>,
+      cell: (device) => (
+        <td key="architecture" className="px-3 py-3 text-sm text-muted-foreground">
+          {device.architecture || dash}
+        </td>
+      ),
+    },
+    role: {
+      header: () => <th key="role" className="px-3 py-3">Role</th>,
+      cell: (device) => {
+        const role = device.deviceRole ?? 'unknown';
+        const RoleIcon = getDeviceRoleIcon(role);
+        const roleLabel = getDeviceRoleLabel(role);
+        return (
+          <td key="role" className="px-3 py-3 text-sm">
+            <span
+              className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
+              title={roleLabel}
+              aria-label={roleLabel}
+            >
+              <RoleIcon className="h-3.5 w-3.5" />
+            </span>
+          </td>
+        );
+      },
+    },
+    isHeadless: {
+      header: () => <th key="isHeadless" className="px-3 py-3">Headless</th>,
+      cell: (device) => (
+        <td key="isHeadless" className="px-3 py-3 text-sm text-muted-foreground">
+          {typeof device.isHeadless === 'boolean' ? (device.isHeadless ? 'Yes' : 'No') : dash}
+        </td>
+      ),
+    },
+    status: {
+      header: () => sortHeader('status', 'Status', 'status', 'Sort by status'),
+      cell: (device) => (
+        <td key="status" className="px-3 py-3 text-sm">
+          <span
+            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
+            title={statusFullLabels[device.status]}
+          >
+            {statusLabels[device.status]}
+          </span>
+        </td>
+      ),
+    },
+    cpu: {
+      header: () => sortHeader('cpu', 'CPU %', 'cpuPercent', 'Sort by CPU usage'),
+      cell: (device) => (
+        <td key="cpu" className="px-3 py-3 text-sm">{metricBar(device.cpuPercent, device.status === 'online')}</td>
+      ),
+    },
+    ram: {
+      header: () => sortHeader('ram', 'RAM %', 'ramPercent', 'Sort by RAM usage'),
+      cell: (device) => (
+        <td key="ram" className="px-3 py-3 text-sm">{metricBar(device.ramPercent, device.status === 'online')}</td>
+      ),
+    },
+    cpuModel: {
+      header: () => <th key="cpuModel" className="px-3 py-3">CPU Model</th>,
+      cell: (device) => (
+        <td key="cpuModel" className="max-w-[220px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.hardware?.cpuModel ?? ''}>
+            {device.hardware?.cpuModel || dash}
+          </span>
+        </td>
+      ),
+    },
+    cores: {
+      header: () => <th key="cores" className="px-3 py-3 text-right">Cores</th>,
+      cell: (device) => (
+        <td key="cores" className="px-3 py-3 text-right text-sm tabular-nums">
+          {typeof device.hardware?.cpuCores === 'number' ? device.hardware.cpuCores : dash}
+        </td>
+      ),
+    },
+    ramTotal: {
+      header: () => <th key="ramTotal" className="px-3 py-3 text-right">RAM</th>,
+      cell: (device) => (
+        <td key="ramTotal" className="px-3 py-3 text-right text-sm tabular-nums">
+          {fmtRamGb(device.hardware?.ramTotalMb) ?? dash}
+        </td>
+      ),
+    },
+    diskTotal: {
+      header: () => <th key="diskTotal" className="px-3 py-3 text-right">Disk</th>,
+      cell: (device) => (
+        <td key="diskTotal" className="px-3 py-3 text-right text-sm tabular-nums">
+          {fmtDiskGb(device.hardware?.diskTotalGb) ?? dash}
+        </td>
+      ),
+    },
+    lastSeen: {
+      header: () => sortHeader('lastSeen', 'Last Seen', 'lastSeen', 'Sort by last seen time'),
+      cell: (device) => (
+        <td key="lastSeen" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {formatLastSeen(device.lastSeen, effectiveTimezone)}
+        </td>
+      ),
+    },
+    agentVersion: {
+      header: () => <th key="agentVersion" className="px-3 py-3">Agent Version</th>,
+      cell: (device) => (
+        <td key="agentVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.agentVersion || dash}
+        </td>
+      ),
+    },
+    tags: {
+      header: () => <th key="tags" className="px-3 py-3">Tags</th>,
+      cell: (device) => (
+        <td key="tags" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground">
+          {device.tags && device.tags.length > 0 ? (
+            <span className="block truncate" title={device.tags.join(', ')}>{device.tags.join(', ')}</span>
+          ) : dash}
+        </td>
+      ),
+    },
+    lastUser: {
+      header: () => <th key="lastUser" className="px-3 py-3">Last User</th>,
+      cell: (device) => (
+        <td key="lastUser" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.lastUser ?? ''}>{device.lastUser || dash}</span>
+        </td>
+      ),
+    },
+    uptime: {
+      header: () => <th key="uptime" className="px-3 py-3">Uptime</th>,
+      cell: (device) => (
+        <td key="uptime" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.status === 'online' && device.uptimeSeconds != null
+            ? formatUptime(device.uptimeSeconds)
+            : dash}
+        </td>
+      ),
+    },
+    enrolled: {
+      header: () => <th key="enrolled" className="px-3 py-3">Enrolled</th>,
+      cell: (device) => (
+        <td key="enrolled" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {fmtDate(device.enrolledAt) ?? dash}
+        </td>
+      ),
+    },
+    desktopAccess: {
+      header: () => <th key="desktopAccess" className="px-3 py-3">Desktop Access</th>,
+      cell: (device) => {
+        const da = device.desktopAccess;
+        if (!da) return <td key="desktopAccess" className="px-3 py-3 text-sm text-muted-foreground">{dash}</td>;
+        return (
+          <td key="desktopAccess" className="px-3 py-3 text-sm text-muted-foreground">
+            <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium" title={`mode=${da.mode}; loginUi=${da.loginUiReachable}; virtualDisplay=${da.virtualDisplayReady}`}>
+              {da.mode}
+            </span>
+          </td>
+        );
+      },
+    },
+  };
+
   return (
     <div>
       <div className="flex flex-col gap-3">
@@ -465,16 +766,58 @@ export default function DeviceList({
               {columnsMenuOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 z-20 mt-1 max-h-80 w-56 overflow-y-auto rounded-md border bg-card p-1 shadow-md"
+                  className="absolute right-0 z-20 mt-1 max-h-96 w-72 overflow-y-auto rounded-md border bg-card p-1 shadow-md"
                 >
-                  {COLUMN_IDS.map(id => (
-                    <label
+                  <p className="px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Visible (in order)
+                  </p>
+                  {columnOrder.filter(id => visibleColumns.has(id)).map((id, idx, arr) => (
+                    <div
                       key={id}
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                      className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
                     >
                       <input
                         type="checkbox"
-                        checked={visibleColumns.has(id)}
+                        checked
+                        onChange={() => toggleColumn(id)}
+                        className="h-4 w-4 rounded border-border"
+                        aria-label={`Hide ${COLUMN_LABELS[id]}`}
+                      />
+                      <span className="flex-1 cursor-default">{COLUMN_LABELS[id]}</span>
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => moveColumn(id, -1)}
+                        className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
+                        aria-label={`Move ${COLUMN_LABELS[id]} up`}
+                        title="Move up"
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === arr.length - 1}
+                        onClick={() => moveColumn(id, 1)}
+                        className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
+                        aria-label={`Move ${COLUMN_LABELS[id]} down`}
+                        title="Move down"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  <hr className="my-1" />
+                  <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Hidden
+                  </p>
+                  {columnOrder.filter(id => !visibleColumns.has(id)).map(id => (
+                    <label
+                      key={id}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={false}
                         onChange={() => toggleColumn(id)}
                         className="h-4 w-4 rounded border-border"
                       />
@@ -718,95 +1061,7 @@ export default function DeviceList({
                   className="h-4 w-4 rounded border-border"
                 />
               </th>
-              {visibleColumns.has('hostname') && (
-                <th
-                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                  title="Sort by hostname"
-                  onClick={() => handleSort('hostname')}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    Hostname
-                    {sortField === 'hostname' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ArrowUpDown className="h-3 w-3 opacity-30" />
-                    )}
-                  </span>
-                </th>
-              )}
-              {visibleColumns.has('organization') && <th className="px-3 py-3">Organization</th>}
-              {visibleColumns.has('site') && <th className="px-3 py-3">Site</th>}
-              {visibleColumns.has('os') && <th className="px-3 py-3">OS</th>}
-              {visibleColumns.has('osVersion') && <th className="px-3 py-3">OS Version</th>}
-              {visibleColumns.has('role') && <th className="px-3 py-3">Role</th>}
-              {visibleColumns.has('status') && (
-                <th
-                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                  title="Sort by status"
-                  onClick={() => handleSort('status')}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    Status
-                    {sortField === 'status' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ArrowUpDown className="h-3 w-3 opacity-30" />
-                    )}
-                  </span>
-                </th>
-              )}
-              {visibleColumns.has('cpu') && (
-                <th
-                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                  title="Sort by CPU usage"
-                  onClick={() => handleSort('cpuPercent')}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    CPU %
-                    {sortField === 'cpuPercent' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ArrowUpDown className="h-3 w-3 opacity-30" />
-                    )}
-                  </span>
-                </th>
-              )}
-              {visibleColumns.has('ram') && (
-                <th
-                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                  title="Sort by RAM usage"
-                  onClick={() => handleSort('ramPercent')}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    RAM %
-                    {sortField === 'ramPercent' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ArrowUpDown className="h-3 w-3 opacity-30" />
-                    )}
-                  </span>
-                </th>
-              )}
-              {visibleColumns.has('lastSeen') && (
-                <th
-                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                  title="Sort by last seen time"
-                  onClick={() => handleSort('lastSeen')}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    Last Seen
-                    {sortField === 'lastSeen' ? (
-                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ArrowUpDown className="h-3 w-3 opacity-30" />
-                    )}
-                  </span>
-                </th>
-              )}
-              {visibleColumns.has('agentVersion') && <th className="px-3 py-3">Agent Version</th>}
-              {visibleColumns.has('tags') && <th className="px-3 py-3">Tags</th>}
-              {visibleColumns.has('lastUser') && <th className="px-3 py-3">Last User</th>}
-              {visibleColumns.has('uptime') && <th className="px-3 py-3">Uptime</th>}
+              {renderedColumns.map(id => columnDefs[id].header())}
               <th className="px-3 py-3 text-right">Actions</th>
             </tr>
           </thead>
@@ -844,126 +1099,7 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  {visibleColumns.has('hostname') && (
-                    <td className="max-w-[200px] px-3 py-3 text-sm font-medium">
-                      <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
-                    </td>
-                  )}
-                  {visibleColumns.has('organization') && (
-                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                      <span className="block truncate" title={device.orgName}>{device.orgName}</span>
-                    </td>
-                  )}
-                  {visibleColumns.has('site') && (
-                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                      <span className="block truncate" title={device.siteName}>{device.siteName}</span>
-                    </td>
-                  )}
-                  {visibleColumns.has('os') && (
-                    <td className="px-3 py-3 text-sm">
-                      <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
-                    </td>
-                  )}
-                  {visibleColumns.has('osVersion') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {device.osVersion || <span className="text-muted-foreground">&mdash;</span>}
-                    </td>
-                  )}
-                  {visibleColumns.has('role') && (
-                    <td className="px-3 py-3 text-sm">
-                      {(() => {
-                        const role = device.deviceRole ?? 'unknown';
-                        const RoleIcon = getDeviceRoleIcon(role);
-                        const roleLabel = getDeviceRoleLabel(role);
-                        return (
-                          <span
-                            className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
-                            title={roleLabel}
-                            aria-label={roleLabel}
-                          >
-                            <RoleIcon className="h-3.5 w-3.5" />
-                          </span>
-                        );
-                      })()}
-                    </td>
-                  )}
-                  {visibleColumns.has('status') && (
-                    <td className="px-3 py-3 text-sm">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
-                        title={statusFullLabels[device.status]}
-                      >
-                        {statusLabels[device.status]}
-                      </span>
-                    </td>
-                  )}
-                  {visibleColumns.has('cpu') && (
-                    <td className="px-3 py-3 text-sm">
-                      {device.status === 'online' ? (
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-destructive' : device.cpuPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.cpuPercent)}`}
-                            />
-                          </div>
-                          <span className="w-10 text-right tabular-nums">{device.cpuPercent}%</span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </td>
-                  )}
-                  {visibleColumns.has('ram') && (
-                    <td className="px-3 py-3 text-sm">
-                      {device.status === 'online' ? (
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-destructive' : device.ramPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.ramPercent)}`}
-                            />
-                          </div>
-                          <span className="w-10 text-right tabular-nums">{device.ramPercent}%</span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </td>
-                  )}
-                  {visibleColumns.has('lastSeen') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {formatLastSeen(device.lastSeen, effectiveTimezone)}
-                    </td>
-                  )}
-                  {visibleColumns.has('agentVersion') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {device.agentVersion || <span className="text-muted-foreground">&mdash;</span>}
-                    </td>
-                  )}
-                  {visibleColumns.has('tags') && (
-                    <td className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground">
-                      {device.tags && device.tags.length > 0 ? (
-                        <span className="block truncate" title={device.tags.join(', ')}>
-                          {device.tags.join(', ')}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </td>
-                  )}
-                  {visibleColumns.has('lastUser') && (
-                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                      <span className="block truncate" title={device.lastUser ?? ''}>
-                        {device.lastUser || <span className="text-muted-foreground">&mdash;</span>}
-                      </span>
-                    </td>
-                  )}
-                  {visibleColumns.has('uptime') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {device.status === 'online' && device.uptimeSeconds != null
-                        ? formatUptime(device.uptimeSeconds)
-                        : <span className="text-muted-foreground">&mdash;</span>}
-                    </td>
-                  )}
+                  {renderedColumns.map(id => columnDefs[id].cell(device))}
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <ConnectDesktopButton
