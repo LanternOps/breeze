@@ -1,14 +1,6 @@
-// Inline SVG OS icons used by the Devices list when only the icon is
-// rendered (no text label). The macOS icon is sourced from lucide-react
-// (`Apple`); the Windows and Linux icons are tiny inline SVG paths
-// adapted from simple-icons (CC0). Kept inline rather than pulling in
-// another icon package because two glyphs do not justify a new
-// dependency. If upstream maintainers prefer neutral icons, swap the
-// `path` data for lucide's `Monitor` / `Terminal` and delete this file.
-//
-// All three components accept the same props as lucide-react icons so
-// they can be composed interchangeably (`className`, `aria-label`,
-// `title`, etc.).
+// Inline SVGs for Windows + Linux brand glyphs (paths adapted from
+// simple-icons CC0); macOS reuses lucide-react `Apple`. Two glyphs do
+// not justify a new icon-package dependency.
 
 import type { SVGProps } from 'react';
 import { Apple } from 'lucide-react';
@@ -41,11 +33,6 @@ export function MacOSIcon({ title = 'macOS', className, ...rest }: OSIconProps) 
   </Apple>;
 }
 
-// Wrapper around the same Apple icon but with the title slot set; the
-// macOS function above accepts arbitrary SVG props through lucide's
-// component, which forwards them. Kept as its own export so callers
-// can opt out of the Apple-brand glyph without touching consumers.
-
 export function LinuxIcon({ title = 'Linux', className, ...rest }: OSIconProps) {
   return (
     <svg
@@ -63,9 +50,6 @@ export function LinuxIcon({ title = 'Linux', className, ...rest }: OSIconProps) 
   );
 }
 
-// OSIcon picks the right icon component for a given OS string. Falls
-// back to the Monitor outline (rendered as a generic CRT) when the OS
-// type is not one of the three Breeze supports today.
 import { Monitor } from 'lucide-react';
 export function OSIcon({ os, className }: { os: 'windows' | 'macos' | 'linux'; className?: string }) {
   if (os === 'windows') return <WindowsIcon className={className} />;

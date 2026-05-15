@@ -1,14 +1,6 @@
-// Per-user column visibility and order for the Devices list. Persisted in
-// localStorage so the choices survive navigation and reloads on the same
-// browser. Two pieces stored under separate keys: visible-set (which
-// columns to show) and ordered-list (in what position). Splitting them
-// keeps visibility prefs portable when the column catalog grows over time
-// — a user who hid CPU stays with CPU hidden even when newer columns
-// arrive at the end of the canonical order.
-//
-// The row-select checkbox and the row-actions menu are non-togglable and
-// always render. They are not represented in this module — they live
-// unconditionally in DeviceList.tsx.
+// Per-user column visibility + order for the Devices list, persisted to
+// localStorage under two keys so adding a new column to COLUMN_IDS does
+// not flip its visibility for users who had hidden it under the old set.
 
 export const COLUMN_IDS = [
   'hostname',
@@ -64,9 +56,6 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   desktopAccess: 'Desktop Access',
 };
 
-// DEFAULT_VISIBLE_COLUMNS preserves the pre-feature behavior: the same nine
-// columns are shown by default. Every newly-exposed field starts OFF so
-// existing users see no surprise on first render. Discussion #56.
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [
   'hostname',
   'organization',
@@ -86,11 +75,9 @@ export function isValidColumnId(value: string): value is ColumnId {
   return (COLUMN_IDS as readonly string[]).includes(value);
 }
 
-// readColumnVisibility returns the stored set of visible column IDs if the
-// localStorage value parses cleanly and at least one entry is a known
-// ColumnId. Falls back to DEFAULT_VISIBLE_COLUMNS during SSR, when the
-// entry is missing, when JSON is malformed, or when no entry validates.
-// Throw-safe (Safari private mode raises SecurityError on getItem).
+// Empty stored set falls back to defaults — an empty table is worse UX
+// than the pre-feature view. Safari private mode raises SecurityError on
+// getItem, so the try/catch is load-bearing, not defensive coding.
 export function readColumnVisibility(): ReadonlySet<ColumnId> {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return new Set(DEFAULT_VISIBLE_COLUMNS);
@@ -113,10 +100,9 @@ export function readColumnVisibility(): ReadonlySet<ColumnId> {
   }
 }
 
-// writeColumnVisibility persists the chosen set. Silently swallows errors
-// (quota exceeded, Safari private mode) — the chosen set is still applied
-// in component state; only persistence across reload is lost. Filters to
-// known ColumnIds + dedupes before writing.
+// Quota / SecurityError are swallowed — only persistence is lost, the
+// in-memory state still applies. Filtering to known ColumnIds keeps the
+// stored value clean if a caller hands in something unexpected.
 export function writeColumnVisibility(visible: Iterable<ColumnId>): void {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
   const clean = Array.from(new Set(Array.from(visible).filter(isValidColumnId)));
@@ -127,11 +113,8 @@ export function writeColumnVisibility(visible: Iterable<ColumnId>): void {
   }
 }
 
-// readColumnOrder returns the canonical column order in the user's chosen
-// arrangement. Always returns every ColumnId exactly once. Missing IDs in
-// the stored order (e.g. new columns added to the catalog since the user
-// last saved) are appended at the end so they remain reachable.
-// Falls back to COLUMN_IDS order during SSR or on parse failure.
+// Always returns every ColumnId exactly once. Missing IDs are appended at
+// the end so a newly-added column remains reachable in the dropdown.
 export function readColumnOrder(): ColumnId[] {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return [...COLUMN_IDS];
@@ -159,9 +142,7 @@ export function readColumnOrder(): ColumnId[] {
   }
 }
 
-// writeColumnOrder persists the user's column arrangement. Filters to
-// known ColumnIds + dedupes + appends missing IDs so the stored value is
-// always a complete permutation of COLUMN_IDS.
+// Stored value is always a complete permutation of COLUMN_IDS.
 export function writeColumnOrder(order: Iterable<ColumnId>): void {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
   const seen = new Set<ColumnId>();

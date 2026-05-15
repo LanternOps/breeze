@@ -104,9 +104,7 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: 'bg-muted text-muted-foreground border-border'
 };
 
-// Compact status labels for the per-row status pill. Full names are kept
-// on the pill's `title` attribute so hovering reveals the long form for
-// any operator unsure of an abbreviation. Discussion #56.
+// Compact pill label; full name on the title attribute for hover.
 const statusLabels: Record<DeviceStatus, string> = {
   online: 'Up',
   offline: 'Down',
@@ -185,19 +183,13 @@ export default function DeviceList({
   const [groupDropdownOpen, setGroupDropdownOpen] = useState(false);
   const groupDropdownRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  // effectivePageSize is the live, user-controllable page size. Initialized
-  // from localStorage (per-user, this-browser persistence) and falls back
-  // to the pageSize prop default for callers that supply one. See
-  // pageSizePreference.ts for the storage contract and allowed-set guard.
+  // Live, user-controllable page size. Initialized from localStorage; the
+  // pageSize prop is just the fallback when no preference is stored.
   const [effectivePageSize, setEffectivePageSize] = useState<number>(() =>
     readPageSizePreference(pageSize),
   );
-  // Column visibility AND user-controlled order, both persisted to
-  // localStorage. Two columns are non-togglable and always render: the
-  // row-select checkbox (always first) and the row-actions menu (always
-  // last). The rest live in COLUMN_IDS. visibleColumns defaults to the
-  // pre-feature set so existing users see no surprise; columnOrder
-  // defaults to the canonical COLUMN_IDS order. Discussion #56.
+  // Checkbox + Actions are always-on first/last; the rest live in
+  // COLUMN_IDS and the order in columnOrder controls render sequence.
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
     () => new Set(readColumnVisibility()),
   );
@@ -255,11 +247,7 @@ export default function DeviceList({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [columnsMenuOpen]);
 
-  // Toggle a single column's visibility, persisting to localStorage.
-  // The togglable IDs come from COLUMN_IDS; checkbox + Actions render
-  // unconditionally and are not represented here. Hiding does not change
-  // the column's position in columnOrder, so showing it again restores
-  // the user's chosen slot.
+  // Hiding does not change columnOrder, so re-showing restores the slot.
   const toggleColumn = (id: ColumnId) => {
     setVisibleColumns(prev => {
       const next = new Set(prev);
@@ -270,10 +258,8 @@ export default function DeviceList({
     });
   };
 
-  // Move a visible column up/down in the user-chosen order. Operates on
-  // the position WITHIN the visible subset — hidden columns are skipped
-  // when computing the neighbor — so the user's mental model is "swap
-  // with the column I see immediately above/below this one".
+  // Neighbor is the visible column above/below; hidden columns in
+  // columnOrder are skipped so the swap matches what the user sees.
   const moveColumn = (id: ColumnId, direction: -1 | 1) => {
     setColumnOrder(prev => {
       const visibleIds = prev.filter(c => visibleColumns.has(c));
