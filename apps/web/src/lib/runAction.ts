@@ -30,6 +30,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
     throw new ActionError(opts.errorFallback, 0);
   }
 
+  // 401: session expired. Intentionally no error toast — onUnauthorized (a
+  // redirect to /login in the targeted callers) IS the feedback; a toast on
+  // top of a navigation is noise. Spec: 2026-05-15-ws-a-action-feedback-design.md
   if (response.status === 401) {
     if (opts.onUnauthorized) opts.onUnauthorized();
     throw new ActionError('Unauthorized', 401);
@@ -50,12 +53,21 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
     throw new ActionError(message, response.status, code);
   }
 
-  const result = (opts.parseSuccess ? opts.parseSuccess(data) : (data as T));
+  let result: T;
+  try {
+    result = (opts.parseSuccess ? opts.parseSuccess(data) : (data as T));
+  } catch {
+    showToast({ message: opts.errorFallback, type: 'error' });
+    throw new ActionError(opts.errorFallback, response.status);
+  }
   if (opts.successMessage) {
-    const msg = typeof opts.successMessage === 'function'
-      ? opts.successMessage(result)
-      : opts.successMessage;
-    showToast({ message: msg, type: 'success' });
+    let msg: string | undefined;
+    try {
+      msg = typeof opts.successMessage === 'function' ? opts.successMessage(result) : opts.successMessage;
+    } catch {
+      msg = undefined;
+    }
+    if (msg) showToast({ message: msg, type: 'success' });
   }
   return result;
 }

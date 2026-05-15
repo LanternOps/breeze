@@ -71,11 +71,12 @@ describe('runAction', () => {
     expect(onUnauthorized).toHaveBeenCalledOnce();
   });
 
-  it('non-JSON body -> fallback message', async () => {
+  it('non-JSON body -> fallback message and error toast', async () => {
     await expect(runAction({
       request: async () => new Response('<html>', { status: 500 }),
       errorFallback: 'Server error',
     })).rejects.toMatchObject({ message: 'Server error' });
+    expect(showToast).toHaveBeenCalledWith({ message: 'Server error', type: 'error' });
   });
 
   it('network reject -> fallback toast + ActionError status 0', async () => {
@@ -84,5 +85,45 @@ describe('runAction', () => {
       errorFallback: 'Network error',
     })).rejects.toMatchObject({ message: 'Network error', status: 0 });
     expect(showToast).toHaveBeenCalledWith({ message: 'Network error', type: 'error' });
+  });
+
+  it('successMessage as function receives result and toasts formatted string', async () => {
+    const out = await runAction<{ id: string }>({
+      request: async () => res({ id: '7' }),
+      successMessage: (d) => `Created ${d.id}`,
+      errorFallback: 'fb',
+    });
+    expect(out).toEqual({ id: '7' });
+    expect(showToast).toHaveBeenCalledWith({ message: 'Created 7', type: 'success' });
+  });
+
+  it('401 is silent (no toast) and calls onUnauthorized', async () => {
+    const onUnauthorized = vi.fn();
+    await expect(runAction({
+      request: async () => res({ error: 'unauth' }, 401),
+      errorFallback: 'fb',
+      onUnauthorized,
+    })).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('parseSuccess throws -> toasted failure with errorFallback', async () => {
+    await expect(runAction({
+      request: async () => res({ val: 1 }, 200),
+      errorFallback: 'Parse failed',
+      parseSuccess: () => { throw new Error('bad shape'); },
+    })).rejects.toMatchObject({ message: 'Parse failed', status: 200 });
+    expect(showToast).toHaveBeenCalledWith({ message: 'Parse failed', type: 'error' });
+  });
+
+  it('successMessage function throws -> no crash, no toast, value returned', async () => {
+    const out = await runAction<{ ok: number }>({
+      request: async () => res({ ok: 1 }),
+      successMessage: () => { throw new Error('x'); },
+      errorFallback: 'fb',
+    });
+    expect(out).toEqual({ ok: 1 });
+    expect(showToast).not.toHaveBeenCalled();
   });
 });
