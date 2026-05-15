@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractApiError } from './apiError';
+import { extractApiError, isApiFailure } from './apiError';
 
 describe('extractApiError', () => {
   const FALLBACK = 'Operation failed';
@@ -93,5 +93,39 @@ describe('extractApiError', () => {
 
   it('prefers error over errorMessage when both exist', () => {
     expect(extractApiError({ error: 'real', errorMessage: 'legacy' }, FALLBACK)).toBe('real');
+  });
+});
+
+describe('isApiFailure', () => {
+  it('true when http status >= 400', () => {
+    expect(isApiFailure({}, 400)).toBe(true);
+    expect(isApiFailure({}, 500)).toBe(true);
+  });
+  it('true when body.success === false even on 200', () => {
+    expect(isApiFailure({ success: false, message: 'nope' }, 200)).toBe(true);
+  });
+  it('true when testResult.success === false on 200', () => {
+    expect(isApiFailure({ testResult: { success: false, message: 'bad token' } }, 200)).toBe(true);
+  });
+  it('false for a normal 200 success body', () => {
+    expect(isApiFailure({ data: [1, 2] }, 200)).toBe(false);
+    expect(isApiFailure({ success: true }, 200)).toBe(false);
+    expect(isApiFailure(null, 200)).toBe(false);
+  });
+});
+
+describe('extractApiError — new shapes', () => {
+  it('reads {success:false, message}', () => {
+    expect(extractApiError({ success: false, message: 'Invalid token' }, 'fb')).toBe('Invalid token');
+  });
+  it('reads {testResult:{success:false, message}}', () => {
+    expect(extractApiError({ testResult: { success: false, message: 'application token is invalid' } }, 'fb'))
+      .toBe('application token is invalid');
+  });
+  it('still honors existing {error} shape (regression)', () => {
+    expect(extractApiError({ error: 'boom' }, 'fb')).toBe('boom');
+  });
+  it('falls back when nothing parses', () => {
+    expect(extractApiError({ weird: 1 }, 'fallback msg')).toBe('fallback msg');
   });
 });

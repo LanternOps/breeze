@@ -59,5 +59,27 @@ export function extractApiError(data: unknown, fallback: string): string {
     }
   }
 
+  if (parts.length === 0 && data && typeof data === 'object') {
+    const d = data as Record<string, unknown>;
+    const tr = d.testResult as { message?: unknown } | undefined;
+    if (tr && typeof tr === 'object' && typeof tr.message === 'string' && tr.message.trim()) {
+      return tr.message;
+    }
+    if (d.success === false && typeof d.message === 'string' && d.message.trim()) {
+      return d.message;
+    }
+  }
+
   return parts.length > 0 ? parts.join(': ') : fallback;
+}
+
+export function isApiFailure(data: unknown, httpStatus: number): boolean {
+  if (httpStatus >= 400) return true;
+  if (data && typeof data === 'object') {
+    const d = data as Record<string, unknown>;
+    if (d.success === false) return true;
+    const tr = d.testResult as { success?: unknown } | undefined;
+    if (tr && typeof tr === 'object' && tr.success === false) return true;
+  }
+  return false;
 }
