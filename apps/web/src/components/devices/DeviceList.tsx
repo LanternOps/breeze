@@ -53,6 +53,9 @@ type DeviceListProps = {
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
+  // Initial page size if the user has no stored preference for this browser.
+  // Once the component mounts, the live page size comes from localStorage
+  // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
   pageSize?: number;
   serverFilter?: FilterConditionGroup | null;
 };
@@ -277,6 +280,15 @@ export default function DeviceList({
   const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length + (groupFilter.length > 0 ? 1 : 0);
 
   const totalPages = Math.ceil(sortedDevices.length / effectivePageSize);
+
+  // Adjust currentPage during render when filters/search shrink the result
+  // set below it. Setting state during render is React's documented way to
+  // correct derived state without a flash of stale UI — React discards the
+  // in-progress render and re-runs with the corrected value.
+  if (totalPages > 0 && currentPage > totalPages) {
+    setCurrentPage(1);
+  }
+
   const startIndex = (currentPage - 1) * effectivePageSize;
   const paginatedDevices = sortedDevices.slice(startIndex, startIndex + effectivePageSize);
 
