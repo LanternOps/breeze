@@ -1,9 +1,9 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3 } from 'lucide-react';
 import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
-import { widthPercentClass } from '@/lib/utils';
+import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
 import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
 import {
@@ -11,6 +11,14 @@ import {
   readPageSizePreference,
   writePageSizePreference,
 } from './pageSizePreference';
+import {
+  COLUMN_IDS,
+  COLUMN_LABELS,
+  readColumnVisibility,
+  writeColumnVisibility,
+  type ColumnId,
+} from './columnVisibility';
+import { OSIcon } from './osIcons';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -85,7 +93,18 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: 'bg-muted text-muted-foreground border-border'
 };
 
+// Compact status labels for the per-row status pill. Full names are kept
+// on the pill's `title` attribute so hovering reveals the long form for
+// any operator unsure of an abbreviation. Discussion #56.
 const statusLabels: Record<DeviceStatus, string> = {
+  online: 'Up',
+  offline: 'Down',
+  maintenance: 'Maint',
+  decommissioned: 'Decom',
+  quarantined: 'Quar',
+  updating: 'Upd'
+};
+const statusFullLabels: Record<DeviceStatus, string> = {
   online: 'Online',
   offline: 'Offline',
   maintenance: 'Maintenance',
@@ -162,6 +181,15 @@ export default function DeviceList({
   const [effectivePageSize, setEffectivePageSize] = useState<number>(() =>
     readPageSizePreference(pageSize),
   );
+  // Column visibility — per-browser via localStorage. Two columns are
+  // non-togglable and always render: the row-select checkbox and the
+  // row-actions menu. The rest live in COLUMN_IDS and default to the
+  // pre-feature set so existing users see no surprise. Discussion #56.
+  const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
+    () => new Set(readColumnVisibility()),
+  );
+  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const columnsMenuRef = useRef<HTMLDivElement>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -200,6 +228,31 @@ export default function DeviceList({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [groupDropdownOpen]);
+
+  // Close columns visibility menu on outside click
+  useEffect(() => {
+    if (!columnsMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target as Node)) {
+        setColumnsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [columnsMenuOpen]);
+
+  // Toggle a single column's visibility, persisting to localStorage.
+  // The togglable IDs come from COLUMN_IDS; checkbox + Actions render
+  // unconditionally and are not represented here.
+  const toggleColumn = (id: ColumnId) => {
+    setVisibleColumns(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      writeColumnVisibility(next);
+      return next;
+    });
+  };
 
   // Auto-select a newly created group
   useEffect(() => {
@@ -442,6 +495,39 @@ export default function DeviceList({
                 </span>
               )}
             </button>
+            <div className="relative" ref={columnsMenuRef}>
+              <button
+                type="button"
+                onClick={() => setColumnsMenuOpen(o => !o)}
+                aria-haspopup="true"
+                aria-expanded={columnsMenuOpen}
+                className="h-10 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
+              >
+                <Columns3 className="h-3.5 w-3.5" />
+                Columns
+              </button>
+              {columnsMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 z-20 mt-1 max-h-80 w-56 overflow-y-auto rounded-md border bg-card p-1 shadow-md"
+                >
+                  {COLUMN_IDS.map(id => (
+                    <label
+                      key={id}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has(id)}
+                        onChange={() => toggleColumn(id)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                      <span>{COLUMN_LABELS[id]}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
             {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all' || groupFilter.length > 0) && (
               <button
                 type="button"
@@ -660,7 +746,7 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 rounded-md border">
+      <div className="mt-6 overflow-x-auto rounded-md border">
         <table className="w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -676,87 +762,105 @@ export default function DeviceList({
                   className="h-4 w-4 rounded border-border"
                 />
               </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by hostname"
-                onClick={() => handleSort('hostname')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  Hostname
-                  {sortField === 'hostname' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th className="px-3 py-3">Organization</th>
-              <th className="px-3 py-3">Site</th>
-              <th className="px-3 py-3">OS</th>
-              <th className="px-3 py-3">Role</th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by status"
-                onClick={() => handleSort('status')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  Status
-                  {sortField === 'status' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by CPU usage"
-                onClick={() => handleSort('cpuPercent')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  CPU %
-                  {sortField === 'cpuPercent' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by RAM usage"
-                onClick={() => handleSort('ramPercent')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  RAM %
-                  {sortField === 'ramPercent' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by last seen time"
-                onClick={() => handleSort('lastSeen')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  Last Seen
-                  {sortField === 'lastSeen' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
+              {visibleColumns.has('hostname') && (
+                <th
+                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+                  title="Sort by hostname"
+                  onClick={() => handleSort('hostname')}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Hostname
+                    {sortField === 'hostname' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    )}
+                  </span>
+                </th>
+              )}
+              {visibleColumns.has('organization') && <th className="px-3 py-3">Organization</th>}
+              {visibleColumns.has('site') && <th className="px-3 py-3">Site</th>}
+              {visibleColumns.has('os') && <th className="px-3 py-3">OS</th>}
+              {visibleColumns.has('osVersion') && <th className="px-3 py-3">OS Version</th>}
+              {visibleColumns.has('role') && <th className="px-3 py-3">Role</th>}
+              {visibleColumns.has('status') && (
+                <th
+                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+                  title="Sort by status"
+                  onClick={() => handleSort('status')}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Status
+                    {sortField === 'status' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    )}
+                  </span>
+                </th>
+              )}
+              {visibleColumns.has('cpu') && (
+                <th
+                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+                  title="Sort by CPU usage"
+                  onClick={() => handleSort('cpuPercent')}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    CPU %
+                    {sortField === 'cpuPercent' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    )}
+                  </span>
+                </th>
+              )}
+              {visibleColumns.has('ram') && (
+                <th
+                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+                  title="Sort by RAM usage"
+                  onClick={() => handleSort('ramPercent')}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    RAM %
+                    {sortField === 'ramPercent' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    )}
+                  </span>
+                </th>
+              )}
+              {visibleColumns.has('lastSeen') && (
+                <th
+                  className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+                  title="Sort by last seen time"
+                  onClick={() => handleSort('lastSeen')}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Last Seen
+                    {sortField === 'lastSeen' ? (
+                      sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    )}
+                  </span>
+                </th>
+              )}
+              {visibleColumns.has('agentVersion') && <th className="px-3 py-3">Agent Version</th>}
+              {visibleColumns.has('tags') && <th className="px-3 py-3">Tags</th>}
+              {visibleColumns.has('lastUser') && <th className="px-3 py-3">Last User</th>}
+              {visibleColumns.has('uptime') && <th className="px-3 py-3">Uptime</th>}
               <th className="px-3 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {paginatedDevices.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                <td
+                  colSpan={visibleColumns.size + 2 /* checkbox + Actions */}
+                  className="px-3 py-6 text-center text-sm text-muted-foreground"
+                >
                   No devices found. Try adjusting your search or filters.
                 </td>
               </tr>
@@ -784,75 +888,137 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  <td className="max-w-[200px] px-3 py-3 text-sm font-medium">
-                    <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
-                  </td>
-                  <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                    <span className="block truncate" title={device.orgName}>{device.orgName}</span>
-                  </td>
-                  <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                    <span className="block truncate" title={device.siteName}>{device.siteName}</span>
-                  </td>
-                  <td className="px-3 py-3 text-sm">{osLabels[device.os]}</td>
-                  <td className="px-3 py-3 text-sm">
-                    {(() => {
-                      const role = device.deviceRole ?? 'unknown';
-                      const RoleIcon = getDeviceRoleIcon(role);
-                      return (
-                        <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium">
-                          <RoleIcon className="h-3 w-3" />
-                          {getDeviceRoleLabel(role)}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-3 py-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
-                        {statusLabels[device.status]}
-                      </span>
-                      {shouldShowAgentSilentBadge(device) && (
+                  {visibleColumns.has('hostname') && (
+                    <td className="max-w-[200px] px-3 py-3 text-sm font-medium">
+                      <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
+                    </td>
+                  )}
+                  {visibleColumns.has('organization') && (
+                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+                      <span className="block truncate" title={device.orgName}>{device.orgName}</span>
+                    </td>
+                  )}
+                  {visibleColumns.has('site') && (
+                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+                      <span className="block truncate" title={device.siteName}>{device.siteName}</span>
+                    </td>
+                  )}
+                  {visibleColumns.has('os') && (
+                    <td className="px-3 py-3 text-sm">
+                      <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
+                    </td>
+                  )}
+                  {visibleColumns.has('osVersion') && (
+                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                      {device.osVersion || <span className="text-muted-foreground">&mdash;</span>}
+                    </td>
+                  )}
+                  {visibleColumns.has('role') && (
+                    <td className="px-3 py-3 text-sm">
+                      {(() => {
+                        const role = device.deviceRole ?? 'unknown';
+                        const RoleIcon = getDeviceRoleIcon(role);
+                        const roleLabel = getDeviceRoleLabel(role);
+                        return (
+                          <span
+                            className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
+                            title={roleLabel}
+                            aria-label={roleLabel}
+                          >
+                            <RoleIcon className="h-3.5 w-3.5" />
+                          </span>
+                        );
+                      })()}
+                    </td>
+                  )}
+                  {visibleColumns.has('status') && (
+                    <td className="px-3 py-3 text-sm">
+                      <div className="flex flex-wrap items-center gap-1">
                         <span
-                          data-testid={`device-${device.id}-agent-silent-badge`}
-                          title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
-                          className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
+                          title={statusFullLabels[device.status]}
                         >
-                          Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
+                          {statusLabels[device.status]}
                         </span>
+                        {shouldShowAgentSilentBadge(device) && (
+                          <span
+                            data-testid={`device-${device.id}-agent-silent-badge`}
+                            title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
+                            className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                          >
+                            Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  )}
+                  {visibleColumns.has('cpu') && (
+                    <td className="px-3 py-3 text-sm">
+                      {device.status === 'online' ? (
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-destructive' : device.cpuPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.cpuPercent)}`}
+                            />
+                          </div>
+                          <span className="w-10 text-right tabular-nums">{device.cpuPercent}%</span>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">&mdash;</span>
                       )}
-                    </div>
-                  </td>
-                  <td className="px-3 py-3 text-sm">
-                    {device.status === 'online' ? (
-                      <div className="flex items-center gap-2">
-                        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-destructive' : device.cpuPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.cpuPercent)}`}
-                          />
+                    </td>
+                  )}
+                  {visibleColumns.has('ram') && (
+                    <td className="px-3 py-3 text-sm">
+                      {device.status === 'online' ? (
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-destructive' : device.ramPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.ramPercent)}`}
+                            />
+                          </div>
+                          <span className="w-10 text-right tabular-nums">{device.ramPercent}%</span>
                         </div>
-                        <span className="w-10 text-right tabular-nums">{device.cpuPercent}%</span>
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">&mdash;</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 text-sm">
-                    {device.status === 'online' ? (
-                      <div className="flex items-center gap-2">
-                        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-destructive' : device.ramPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.ramPercent)}`}
-                          />
-                        </div>
-                        <span className="w-10 text-right tabular-nums">{device.ramPercent}%</span>
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">&mdash;</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                    {formatLastSeen(device.lastSeen, effectiveTimezone)}
-                  </td>
+                      ) : (
+                        <span className="text-muted-foreground">&mdash;</span>
+                      )}
+                    </td>
+                  )}
+                  {visibleColumns.has('lastSeen') && (
+                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                      {formatLastSeen(device.lastSeen, effectiveTimezone)}
+                    </td>
+                  )}
+                  {visibleColumns.has('agentVersion') && (
+                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                      {device.agentVersion || <span className="text-muted-foreground">&mdash;</span>}
+                    </td>
+                  )}
+                  {visibleColumns.has('tags') && (
+                    <td className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground">
+                      {device.tags && device.tags.length > 0 ? (
+                        <span className="block truncate" title={device.tags.join(', ')}>
+                          {device.tags.join(', ')}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">&mdash;</span>
+                      )}
+                    </td>
+                  )}
+                  {visibleColumns.has('lastUser') && (
+                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+                      <span className="block truncate" title={device.lastUser ?? ''}>
+                        {device.lastUser || <span className="text-muted-foreground">&mdash;</span>}
+                      </span>
+                    </td>
+                  )}
+                  {visibleColumns.has('uptime') && (
+                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                      {device.status === 'online' && device.uptimeSeconds != null
+                        ? formatUptime(device.uptimeSeconds)
+                        : <span className="text-muted-foreground">&mdash;</span>}
+                    </td>
+                  )}
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <ConnectDesktopButton
