@@ -151,6 +151,41 @@ describe('TenantInactive gate (assertActiveTenantContext)', () => {
       const body = await res.json();
       expect(body.ok).toBe(true);
     });
+
+    // Regression: PR #568 added assertActiveTenantContext to the partner
+    // session path, which started rejecting `pending` partners. That broke
+    // self-service signup — a pending partner (verified email, awaiting
+    // payment) could no longer authenticate, so they never reached the
+    // partnerGuard 403 PARTNER_INACTIVE → /account/inactive billing page.
+    // `pending` is a legitimate, session-allowed status; feature gating is
+    // done downstream by partnerGuard, NOT by the auth/token gate.
+    it('returns 200 when partner.status = pending (session-allowed; feature gating is downstream via partnerGuard)', async () => {
+      const partner = await createPartner({ status: 'pending' });
+      const token = await mintPartnerScopedToken(partner.id);
+      const app = buildAuthGatedApp();
+
+      const res = await app.request('/protected', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+    });
+
+    // Guard: relaxing the gate to admit `pending` must NOT admit `churned`.
+    // churned/suspended/soft-deleted remain security-dead — the #568 win.
+    it('returns 403 when partner.status = churned', async () => {
+      const partner = await createPartner({ status: 'churned' });
+      const token = await mintPartnerScopedToken(partner.id);
+      const app = buildAuthGatedApp();
+
+      const res = await app.request('/protected', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      expect(res.status).toBe(403);
+    });
   });
 
   describe('org-scoped tokens', () => {
