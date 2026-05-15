@@ -111,6 +111,16 @@ describe('runChannelDelete', () => {
 
     expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
+
+  it('calls onUnauthorized and does not show a toast on 401', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
+    const onUnauthorized = vi.fn();
+
+    await expect(runChannelDelete(CHANNEL, { onUnauthorized })).rejects.toThrow();
+
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('runRoutingRuleSave', () => {
@@ -184,11 +194,11 @@ describe('runRoutingRuleDelete', () => {
 });
 
 describe('runChannelTest', () => {
-  let fetchChannelsMock: ReturnType<typeof vi.fn>;
+  let fetchChannelsMock: () => Promise<void>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchChannelsMock = vi.fn().mockResolvedValue(undefined);
+    fetchChannelsMock = vi.fn(async () => {});
   });
 
   it('shows an ERROR toast with the testResult message when testResult.success is false', async () => {

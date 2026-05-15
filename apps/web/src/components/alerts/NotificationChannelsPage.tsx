@@ -36,9 +36,12 @@ export async function runChannelSave(
   opts: { url: string; method: string; payload: unknown; channelName: string; isCreate: boolean },
   deps: { onUnauthorized: () => void }
 ): Promise<void> {
+  const name = opts.channelName;
   await runAction({
     request: () => fetchWithAuth(opts.url, { method: opts.method, body: JSON.stringify(opts.payload) }),
-    successMessage: opts.isCreate ? 'Channel created' : 'Channel saved',
+    successMessage: opts.isCreate
+      ? (name ? `Channel "${name}" created` : 'Channel created')
+      : (name ? `Channel "${name}" saved` : 'Channel saved'),
     errorFallback: 'Failed to save channel',
     onUnauthorized: deps.onUnauthorized,
   });
