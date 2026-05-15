@@ -6,6 +6,11 @@ import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
 import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
+import {
+  PAGE_SIZE_OPTIONS,
+  readPageSizePreference,
+  writePageSizePreference,
+} from './pageSizePreference';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -48,6 +53,9 @@ type DeviceListProps = {
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
+  // Initial page size if the user has no stored preference for this browser.
+  // Once the component mounts, the live page size comes from localStorage
+  // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
   pageSize?: number;
   serverFilter?: FilterConditionGroup | null;
 };
@@ -108,6 +116,13 @@ export default function DeviceList({
   const [groupDropdownOpen, setGroupDropdownOpen] = useState(false);
   const groupDropdownRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  // effectivePageSize is the live, user-controllable page size. Initialized
+  // from localStorage (per-user, this-browser persistence) and falls back
+  // to the pageSize prop default for callers that supply one. See
+  // pageSizePreference.ts for the storage contract and allowed-set guard.
+  const [effectivePageSize, setEffectivePageSize] = useState<number>(() =>
+    readPageSizePreference(pageSize),
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -264,9 +279,26 @@ export default function DeviceList({
 
   const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length + (groupFilter.length > 0 ? 1 : 0);
 
-  const totalPages = Math.ceil(sortedDevices.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
-  const paginatedDevices = sortedDevices.slice(startIndex, startIndex + pageSize);
+  const totalPages = Math.ceil(sortedDevices.length / effectivePageSize);
+
+  // Adjust currentPage during render when filters/search shrink the result
+  // set below it. Setting state during render is React's documented way to
+  // correct derived state without a flash of stale UI — React discards the
+  // in-progress render and re-runs with the corrected value.
+  if (totalPages > 0 && currentPage > totalPages) {
+    setCurrentPage(1);
+  }
+
+  const startIndex = (currentPage - 1) * effectivePageSize;
+  const paginatedDevices = sortedDevices.slice(startIndex, startIndex + effectivePageSize);
+
+  const handlePageSizeChange = (newSize: number) => {
+    setEffectivePageSize(newSize);
+    writePageSizePreference(newSize);
+    // Reset to page 1 so the user doesn't land out-of-range when shrinking
+    // the page (and gets a coherent first-page view when growing it).
+    setCurrentPage(1);
+  };
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -876,32 +908,54 @@ export default function DeviceList({
         </table>
       </div>
 
-      {totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, sortedDevices.length)} of {sortedDevices.length}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="text-sm">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+      {sortedDevices.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-muted-foreground">
+              Showing {startIndex + 1} to {Math.min(startIndex + effectivePageSize, sortedDevices.length)} of {sortedDevices.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <label htmlFor="device-page-size" className="text-sm text-muted-foreground">
+                Per page
+              </label>
+              <select
+                id="device-page-size"
+                value={effectivePageSize}
+                aria-label="Devices per page"
+                onChange={event => handlePageSizeChange(Number(event.target.value))}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+              >
+                {PAGE_SIZE_OPTIONS.map(opt => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="text-sm">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
