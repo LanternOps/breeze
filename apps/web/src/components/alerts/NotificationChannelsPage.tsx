@@ -7,6 +7,26 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
+import { runAction } from '../../lib/runAction';
+
+// Exported for unit-testing without mounting the full component.
+export async function runChannelTest(
+  channel: { id: string; name: string },
+  deps: { fetchChannels: () => Promise<void>; onUnauthorized: () => void }
+): Promise<void> {
+  try {
+    await runAction<{ testResult?: { success: boolean; message?: string } }>({
+      request: () => fetchWithAuth(`/alerts/channels/${channel.id}/test`, { method: 'POST' }),
+      successMessage: `Test notification sent to "${channel.name}"`,
+      errorFallback: 'Channel test failed',
+      onUnauthorized: deps.onUnauthorized,
+    });
+  } catch {
+    // runAction already toasted; the card reflects last_tested_at after refetch
+  } finally {
+    await deps.fetchChannels();
+  }
+}
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -97,25 +117,10 @@ export default function NotificationChannelsPage() {
   };
 
   const handleTest = async (channel: NotificationChannel) => {
-    try {
-      const response = await fetchWithAuth(`/alerts/channels/${channel.id}/test`, {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Test failed'));
-      }
-
-      // Refresh to update test status
-      await fetchChannels();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Test failed');
-    }
+    await runChannelTest(channel, {
+      fetchChannels,
+      onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+    });
   };
 
   const handleCloseModal = () => {
