@@ -167,10 +167,123 @@ describe('PatchesPage', () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'success',
-          message: expect.stringContaining('3 device(s)'),
+          message: expect.stringContaining('3 devices'),
         })
       );
     });
+  });
+
+  it('uses singular "device" when exactly 1 device is queued for scan', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', hostname: 'Workstation-1' }],
+          pagination: { page: 1, limit: 100, total: 1 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        return makeJsonResponse({ queuedCommandIds: ['cmd-1'] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'success',
+          message: expect.stringContaining('1 device'),
+        })
+      );
+    });
+    // Must NOT say "1 devices"
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('1 devices'),
+      })
+    );
+  });
+
+  it('shows error toast and does NOT call scan POST when device-paging GET fails with HTTP 500', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({ error: 'internal server error' }, false, 500);
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('Failed to load devices'),
+        })
+      );
+    });
+    // Scan POST must NOT have been called
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/patches/scan',
+      expect.anything()
+    );
+  });
+
+  it('shows error toast and does NOT call scan POST when device list is empty', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [],
+          pagination: { page: 1, limit: 100, total: 0 },
+        });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('No devices available for scanning'),
+        })
+      );
+    });
+    // Scan POST must NOT have been called
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/patches/scan',
+      expect.anything()
+    );
   });
 
   it('surfaces an error toast (not a success toast) when the backend returns success:false', async () => {

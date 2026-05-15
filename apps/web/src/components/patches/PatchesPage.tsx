@@ -13,7 +13,8 @@ import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { normalizePatch, normalizeRing } from './patchHelpers';
-import { runAction } from '@/lib/runAction';
+import { runAction, ActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -255,14 +256,23 @@ export default function PatchesPage() {
         successMessage: (d) => {
           const queued = Array.isArray(d?.queuedCommandIds) ? d.queuedCommandIds.length : deviceIds.length;
           const dispatched = Array.isArray(d?.dispatchedCommandIds) ? d.dispatchedCommandIds.length : 0;
-          return `Patch scan queued for ${queued} device(s)${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`;
+          return `Patch scan queued for ${queued} ${queued === 1 ? 'device' : 'devices'}${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`;
         },
         errorFallback: 'Patch scan failed',
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
       await fetchPatches();
-    } catch {
-      // runAction already toasted the error; swallow to avoid double-reporting
+    } catch (err) {
+      // runAction failures are already surfaced by runAction (and a 401 shows
+      // none by design — onUnauthorized is redirecting). Pre-runAction errors
+      // (device-list fetch failure, no devices) never went through runAction,
+      // so surface them explicitly here; the ActionError guard avoids a double toast.
+      if (!(err instanceof ActionError)) {
+        showToast({
+          message: err instanceof Error ? err.message : 'Patch scan failed',
+          type: 'error',
+        });
+      }
     } finally {
       setScanLoading(false);
     }
