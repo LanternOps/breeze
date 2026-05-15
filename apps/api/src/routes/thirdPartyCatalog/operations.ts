@@ -32,6 +32,7 @@ operationsRoutes.post('/', zValidator('json', upsertCatalogSchema), async (c) =>
     breezeTested: data.breezeTested ?? false,
     notes: data.notes ?? null,
     homepageUrl: data.homepageUrl ?? null,
+    osvEcosystem: data.osvEcosystem ?? null,
   }).returning();
   invalidateCatalogCache();
   return c.json(row, 201);

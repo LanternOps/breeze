@@ -7,7 +7,7 @@ const { queryOsvForPackage, mockRows, updateSet } = vi.hoisted(() => ({
       patchId: 'p1',
       packageId: 'Mozilla.Firefox',
       currentSeverity: 'moderate',
-      ecosystem: 'npm',
+      ecosystem: 'test-ecosystem',
       version: '120.0',
     },
   ],
@@ -65,6 +65,18 @@ vi.mock('../db', () => ({
   },
 }));
 
+vi.mock('bullmq', () => ({
+  Queue: class {},
+  Worker: class {
+    on = vi.fn();
+    close = vi.fn();
+  },
+}));
+
+vi.mock('../services/redis', () => ({
+  getBullMQConnection: vi.fn(() => ({})),
+}));
+
 vi.mock('../services/osvClient', () => ({
   queryOsvForPackage: (...args: unknown[]) => queryOsvForPackage(...args),
   OsvRateLimitError: class OsvRateLimitError extends Error {},
@@ -88,6 +100,11 @@ describe('runCveEnrichmentBatch', () => {
     const summary = await runCveEnrichmentBatch();
 
     expect(summary).toEqual({ scanned: 1, updated: 1, errors: 0 });
+    expect(queryOsvForPackage).toHaveBeenCalledWith({
+      ecosystem: 'test-ecosystem',
+      name: 'Mozilla.Firefox',
+      version: '120.0',
+    });
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         cveIds: ['CVE-2024-1', 'CVE-2024-2'],

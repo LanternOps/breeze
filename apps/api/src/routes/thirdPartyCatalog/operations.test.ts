@@ -15,6 +15,7 @@ const mockCatalogTable = vi.hoisted(() => ({
   breezeTested: 'thirdPartyPackageCatalog.breezeTested',
   notes: 'thirdPartyPackageCatalog.notes',
   homepageUrl: 'thirdPartyPackageCatalog.homepageUrl',
+  osvEcosystem: 'thirdPartyPackageCatalog.osvEcosystem',
   createdAt: 'thirdPartyPackageCatalog.createdAt',
   updatedAt: 'thirdPartyPackageCatalog.updatedAt',
 }));
@@ -99,6 +100,7 @@ type CatalogRow = {
   breezeTested: boolean;
   notes: string | null;
   homepageUrl: string | null;
+  osvEcosystem: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -115,17 +117,10 @@ function catalogRow(overrides: Partial<CatalogRow>): CatalogRow {
     breezeTested: false,
     notes: null,
     homepageUrl: null,
+    osvEcosystem: null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,
-  };
-}
-
-function insertReturning(row: CatalogRow) {
-  return {
-    values: vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([row]),
-    }),
   };
 }
 
@@ -189,8 +184,12 @@ describe('third-party catalog operations routes', () => {
       packageId: 'Google.Chrome',
       vendor: 'Google',
       friendlyName: 'Google Chrome',
+      osvEcosystem: 'test-ecosystem',
     });
-    vi.mocked(db.insert).mockReturnValueOnce(insertReturning(row) as never);
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([row]),
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({ values } as never);
 
     const res = await app.request('/third-party-catalog', {
       method: 'POST',
@@ -199,6 +198,7 @@ describe('third-party catalog operations routes', () => {
         packageId: 'Google.Chrome',
         vendor: 'Google',
         friendlyName: 'Google Chrome',
+        osvEcosystem: 'test-ecosystem',
       }),
     });
 
@@ -209,6 +209,40 @@ describe('third-party catalog operations routes', () => {
       packageId: 'Google.Chrome',
       vendor: 'Google',
       friendlyName: 'Google Chrome',
+      osvEcosystem: 'test-ecosystem',
+    }));
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      osvEcosystem: 'test-ecosystem',
+    }));
+  });
+
+  it('updates catalog item osvEcosystem with platform admin access', async () => {
+    const row = catalogRow({
+      osvEcosystem: 'test-ecosystem',
+    });
+    const set = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([row]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValueOnce({ set } as never);
+
+    const res = await app.request('/third-party-catalog/22222222-2222-4222-8222-222222222222', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        osvEcosystem: 'test-ecosystem',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual(expect.objectContaining({
+      osvEcosystem: 'test-ecosystem',
+    }));
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      osvEcosystem: 'test-ecosystem',
+      updatedAt: expect.any(Date),
     }));
   });
 

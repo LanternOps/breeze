@@ -16,6 +16,7 @@ export const thirdPartyPackageCatalog = pgTable('third_party_package_catalog', {
   notes: text('notes'),
   homepageUrl: text('homepage_url'),
   lastCveCheckAt: timestamp('last_cve_check_at', { withTimezone: true }),
+  // Maintainers must set osv_ecosystem per package for CVE enrichment to match rows.
   osvEcosystem: varchar('osv_ecosystem', { length: 64 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

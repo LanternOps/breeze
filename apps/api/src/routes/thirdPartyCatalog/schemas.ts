@@ -27,4 +27,5 @@ export const upsertCatalogSchema = z.object({
   breezeTested: z.boolean().optional(),
   notes: z.string().max(2000).nullable().optional(),
   homepageUrl: httpUrl.nullable().optional(),
+  osvEcosystem: z.string().min(1).max(64).nullable().optional(),
 });

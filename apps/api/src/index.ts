@@ -141,6 +141,7 @@ import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/r
 import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
 import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
+import { initializeCveEnrichmentWorker, shutdownCveEnrichmentWorker } from './jobs/cveEnrichmentWorker';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
@@ -996,6 +997,7 @@ async function initializeWorkers(): Promise<void> {
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
+    ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
@@ -1121,6 +1123,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownIncidentTimelineEnricher,
     shutdownIncidentCorrelationWorker,
     shutdownPatchComplianceReportWorker,
+    shutdownCveEnrichmentWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,

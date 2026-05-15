@@ -1,11 +1,41 @@
+import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNotNull } from 'drizzle-orm';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { patches, thirdPartyPackageCatalog } from '../db/schema';
 import {
   queryOsvForPackage,
   OsvRateLimitError,
   OsvServerError,
 } from '../services/osvClient';
+import { getBullMQConnection } from '../services/redis';
+
+const { db } = dbModule;
+
+const QUEUE_NAME = 'cve-enrichment';
+const JOB_NAME = 'enrich';
+const DEFAULT_BATCH_LIMIT = 100;
+const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+type CveEnrichmentJobData = {
+  limit?: number;
+};
+
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
+
+let enrichmentQueue: Queue<CveEnrichmentJobData> | null = null;
+let enrichmentWorker: Worker<CveEnrichmentJobData> | null = null;
+
+export function getCveEnrichmentQueue(): Queue<CveEnrichmentJobData> {
+  if (!enrichmentQueue) {
+    enrichmentQueue = new Queue<CveEnrichmentJobData>(QUEUE_NAME, {
+      connection: getBullMQConnection(),
+    });
+  }
+  return enrichmentQueue;
+}
 
 const SEVERITY_RANK: Record<string, number> = {
   critical: 4,
@@ -119,3 +149,76 @@ export async function runCveEnrichmentBatch(
 
   return summary;
 }
+
+export function createCveEnrichmentWorker(): Worker<CveEnrichmentJobData> {
+  return new Worker<CveEnrichmentJobData>(
+    QUEUE_NAME,
+    async (job: Job<CveEnrichmentJobData>) => {
+      if (job.name !== JOB_NAME) {
+        console.warn(`[CveEnrichment] Ignoring unknown job name: ${job.name}`);
+        return { scanned: 0, updated: 0, errors: 0, skipped: true };
+      }
+
+      return runWithSystemDbAccess(() =>
+        runCveEnrichmentBatch({ limit: job.data.limit ?? DEFAULT_BATCH_LIMIT })
+      );
+    },
+    {
+      connection: getBullMQConnection(),
+      concurrency: 1,
+    }
+  );
+}
+
+export async function initializeCveEnrichmentWorker(): Promise<void> {
+  try {
+    enrichmentWorker = createCveEnrichmentWorker();
+
+    enrichmentWorker.on('error', (error) => {
+      console.error('[CveEnrichment] Worker error:', error);
+    });
+
+    enrichmentWorker.on('failed', (job, error) => {
+      console.error(`[CveEnrichment] Job ${job?.id} failed:`, error);
+    });
+
+    const queue = getCveEnrichmentQueue();
+    const existingJobs = await queue.getRepeatableJobs();
+    for (const job of existingJobs) {
+      await queue.removeRepeatableByKey(job.key);
+    }
+
+    await queue.add(
+      JOB_NAME,
+      { limit: DEFAULT_BATCH_LIMIT },
+      {
+        repeat: { every: DEFAULT_INTERVAL_MS },
+        removeOnComplete: { count: 5 },
+        removeOnFail: { count: 10 },
+      }
+    );
+
+    console.log('[CveEnrichment] Worker initialized');
+  } catch (error) {
+    console.error('[CveEnrichment] Failed to initialize:', error);
+    throw error;
+  }
+}
+
+export async function shutdownCveEnrichmentWorker(): Promise<void> {
+  if (enrichmentWorker) {
+    await enrichmentWorker.close();
+    enrichmentWorker = null;
+  }
+  if (enrichmentQueue) {
+    await enrichmentQueue.close();
+    enrichmentQueue = null;
+  }
+}
+
+export const __testOnly = {
+  QUEUE_NAME,
+  JOB_NAME,
+  DEFAULT_BATCH_LIMIT,
+  DEFAULT_INTERVAL_MS,
+};
