@@ -18,13 +18,8 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
-vi.mock('@/lib/navigation', () => ({
-  navigateTo: vi.fn(),
-}));
-
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
-import { navigateTo } from '@/lib/navigation';
 import { runChannelTest } from './NotificationChannelsPage';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -57,7 +52,7 @@ describe('runChannelTest', () => {
 
     await runChannelTest(CHANNEL, {
       fetchChannels: fetchChannelsMock,
-      onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+      onUnauthorized: vi.fn(),
     });
 
     expect(showToastMock).toHaveBeenCalledWith(
@@ -76,7 +71,7 @@ describe('runChannelTest', () => {
 
     await runChannelTest(CHANNEL, {
       fetchChannels: fetchChannelsMock,
-      onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+      onUnauthorized: vi.fn(),
     });
 
     expect(showToastMock).toHaveBeenCalledWith(
@@ -85,7 +80,7 @@ describe('runChannelTest', () => {
     expect(fetchChannelsMock).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onUnauthorized and does not show a toast when the endpoint returns 401', async () => {
+  it('calls onUnauthorized and skips the refetch when the endpoint returns 401', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
 
     const onUnauthorized = vi.fn();
@@ -94,9 +89,9 @@ describe('runChannelTest', () => {
       onUnauthorized,
     });
 
-    expect(onUnauthorized).toHaveBeenCalled();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
     expect(showToastMock).not.toHaveBeenCalled();
-    // Still refetch after auth redirect attempt
-    expect(fetchChannelsMock).toHaveBeenCalledTimes(1);
+    // Page is being replaced by login redirect; do NOT refetch from a just-401'd session
+    expect(fetchChannelsMock).not.toHaveBeenCalled();
   });
 });

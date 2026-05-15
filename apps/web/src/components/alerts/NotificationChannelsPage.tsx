@@ -7,7 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
-import { runAction } from '../../lib/runAction';
+import { runAction, ActionError } from '../../lib/runAction';
 
 // Exported for unit-testing without mounting the full component.
 export async function runChannelTest(
@@ -15,17 +15,20 @@ export async function runChannelTest(
   deps: { fetchChannels: () => Promise<void>; onUnauthorized: () => void }
 ): Promise<void> {
   try {
+    // T shape only informs isApiFailure/extractApiError; return value is unused.
     await runAction<{ testResult?: { success: boolean; message?: string } }>({
       request: () => fetchWithAuth(`/alerts/channels/${channel.id}/test`, { method: 'POST' }),
       successMessage: `Test notification sent to "${channel.name}"`,
       errorFallback: 'Channel test failed',
       onUnauthorized: deps.onUnauthorized,
     });
-  } catch {
-    // runAction already toasted; the card reflects last_tested_at after refetch
-  } finally {
-    await deps.fetchChannels();
+  } catch (err) {
+    // runAction already surfaced the failure via toast. Skip the refetch on
+    // 401 — onUnauthorized is redirecting to /login and the page is being
+    // replaced; a second authenticated request would be noise.
+    if (err instanceof ActionError && err.status === 401) return;
   }
+  await deps.fetchChannels();
 }
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
