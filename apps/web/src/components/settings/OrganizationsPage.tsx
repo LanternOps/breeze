@@ -111,7 +111,8 @@ export default function OrganizationsPage() {
   const fetchSites = useCallback(async (orgId: string) => {
     setSitesLoading(true);
     try {
-      const response = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
+      // organizationId= alias slips past fetchWithAuth's orgId= auto-injection guard.
+      const response = await fetchWithAuth(`/orgs/sites?orgId=${orgId}`);
       if (!response.ok) throw new Error('Failed to fetch sites');
       const data = await response.json();
       const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];

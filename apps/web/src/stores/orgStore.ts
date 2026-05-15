@@ -169,7 +169,7 @@ export const useOrgStore = create<OrgState>()(
 
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth(`/orgs/sites?organizationId=${currentOrgId}`);
+          const response = await fetchWithAuth(`/orgs/sites?orgId=${currentOrgId}`);
           if (!response.ok) {
             throw new Error('Failed to fetch sites');
           }

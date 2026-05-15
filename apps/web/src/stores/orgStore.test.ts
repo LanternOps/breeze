@@ -65,7 +65,7 @@ describe('org store', () => {
     await flushAsync();
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations?partnerId=partner-1');
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?orgId=org-1');
     expect(useOrgStore.getState().currentOrgId).toBe('org-1');
     expect(useOrgStore.getState().sites).toHaveLength(1);
     expect(getCurrentOrganization()?.id).toBe('org-1');
@@ -113,7 +113,7 @@ describe('org store', () => {
 
     await useOrgStore.getState().fetchSites();
 
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?orgId=org-1');
     expect(getCurrentSite()?.id).toBe('site-1');
   });
 
