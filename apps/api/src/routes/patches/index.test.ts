@@ -54,6 +54,7 @@ vi.mock('../../db/schema', () => ({
     source: 'patches.source',
     externalId: 'patches.externalId',
     title: 'patches.title',
+    version: 'patches.version',
     severity: 'patches.severity',
     category: 'patches.category',
     osTypes: 'patches.osTypes',
@@ -295,7 +296,7 @@ describe('patch routes', () => {
     expect(body.data[0].os).toBe('macos');
   });
 
-  it('includes cveIds in the patch list response', async () => {
+  it('includes cveIds and version in the patch list response', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectPatchListResult([
         {
@@ -305,6 +306,7 @@ describe('patch routes', () => {
           source: 'third_party',
           severity: 'important',
           category: 'application',
+          version: '128.0.3',
           osTypes: ['windows'],
           inferredOs: null,
           cveIds: ['CVE-2024-1234'],
@@ -326,6 +328,7 @@ describe('patch routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.data[0].cveIds).toEqual(['CVE-2024-1234']);
+    expect(body.data[0].version).toBe('128.0.3');
   });
 
   it('infers patch os from associated device when source is third_party', async () => {

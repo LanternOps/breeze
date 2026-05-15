@@ -50,6 +50,7 @@ listRoutes.get(
         source: patches.source,
         vendor: patches.vendor,
         packageId: patches.packageId,
+        version: patches.version,
         cveIds: patches.cveIds,
         severity: patches.severity,
         category: patches.category,
