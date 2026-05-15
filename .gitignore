@@ -64,6 +64,8 @@ CLAUDE.md
 .claude/plans/
 .claude/skills/
 .claude/settings.example.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Internal docs (not for public repo). Use /internal/* (not /internal) so
 # selective re-inclusion below works — once a directory itself is ignored,
