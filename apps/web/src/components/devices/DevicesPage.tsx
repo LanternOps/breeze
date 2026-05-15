@@ -160,6 +160,17 @@ export default function DevicesPage() {
           watchdogStatus: (d.watchdogStatus ?? null) as Device['watchdogStatus'],
           lastUser: d.lastUser as string | undefined,
           uptimeSeconds: typeof d.uptimeSeconds === 'number' ? d.uptimeSeconds : undefined,
+          osBuild: d.osBuild as string | undefined,
+          architecture: d.architecture as string | undefined,
+          isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
+          enrolledAt: d.enrolledAt as string | undefined,
+          desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
+          hardware: hardware ? {
+            cpuModel: hardware.cpuModel as string | undefined,
+            cpuCores: typeof hardware.cpuCores === 'number' ? hardware.cpuCores : undefined,
+            ramTotalMb: typeof hardware.ramTotalMb === 'number' ? hardware.ramTotalMb : undefined,
+            diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
+          } : undefined,
         };
       });
 
