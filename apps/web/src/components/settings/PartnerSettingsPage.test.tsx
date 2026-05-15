@@ -2,9 +2,10 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import PartnerSettingsPage from './PartnerSettingsPage';
+import PartnerSettingsPage, { runPartnerSave } from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -14,8 +15,13 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: vi.fn()
 }));
 
+vi.mock('../shared/Toast', () => ({
+  showToast: vi.fn(),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
+const showToastMock = vi.mocked(showToast);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -24,6 +30,58 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     statusText: ok ? 'OK' : 'ERROR',
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
+
+describe('runPartnerSave', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const PAYLOAD = { name: 'Acme MSP', settings: { timezone: 'UTC' } };
+
+  it('shows a success toast and returns the updated partner on 200', async () => {
+    const updated = { id: 'p-1', name: 'Acme MSP', settings: {} };
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(updated));
+
+    const result = await runPartnerSave(PAYLOAD, { onUnauthorized: vi.fn() });
+
+    expect(result).toMatchObject({ id: 'p-1' });
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Partner settings saved' })
+    );
+  });
+
+  it('shows an error toast and throws ActionError on non-401 failure', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ error: 'validation failed' }, false, 422));
+
+    await expect(runPartnerSave(PAYLOAD, { onUnauthorized: vi.fn() })).rejects.toThrow();
+
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('calls onUnauthorized and does not show a toast on 401', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
+    const onUnauthorized = vi.fn();
+
+    await expect(runPartnerSave(PAYLOAD, { onUnauthorized })).rejects.toThrow();
+
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('sends PATCH to /orgs/partners/me with the provided payload', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ id: 'p-1', name: 'Acme', settings: {} }));
+
+    await runPartnerSave(PAYLOAD, { onUnauthorized: vi.fn() });
+
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      '/orgs/partners/me',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify(PAYLOAD),
+      })
+    );
+  });
+});
 
 describe('PartnerSettingsPage language control', () => {
   beforeEach(() => {

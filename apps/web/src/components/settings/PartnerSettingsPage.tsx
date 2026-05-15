@@ -18,7 +18,6 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
-import { showToast } from '../shared/Toast';
 import type {
   PartnerSettings,
   BusinessHoursPreset,
@@ -34,6 +33,7 @@ import type {
   InheritableRemoteAccessSettings
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, ActionError } from '@/lib/runAction';
 
 type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'remoteAccess';
 
@@ -88,6 +88,19 @@ const DEFAULT_BUSINESS_HOURS: Record<string, DaySchedule> = { mon: BH, tue: BH, 
 /** Returns true if at least one value in the object is not undefined */
 function hasAnyValue(obj: object): boolean {
   return Object.values(obj).some(v => v !== undefined);
+}
+
+// Exported for unit-testing without mounting the full component.
+export async function runPartnerSave(
+  payload: Record<string, unknown>,
+  deps: { onUnauthorized: () => void }
+): Promise<Partner> {
+  return runAction<Partner>({
+    request: () => fetchWithAuth('/orgs/partners/me', { method: 'PATCH', body: JSON.stringify(payload) }),
+    successMessage: 'Partner settings saved',
+    errorFallback: 'Failed to save settings',
+    onUnauthorized: deps.onUnauthorized,
+  });
 }
 
 export default function PartnerSettingsPage() {
@@ -185,57 +198,55 @@ export default function PartnerSettingsPage() {
   }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
 
   const handleSave = async () => {
+    setSaving(true);
+    setError(undefined);
+
+    const settings: Record<string, unknown> = {
+      timezone, dateFormat, timeFormat, language: 'en',
+      businessHours: {
+        preset: businessHoursPreset,
+        ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
+      },
+      contact: {
+        name: contactName || undefined,
+        email: contactEmail || undefined,
+        phone: contactPhone || undefined,
+        website: contactWebsite || undefined
+      },
+      address: {
+        street1: address.street1 || undefined,
+        street2: address.street2 || undefined,
+        city: address.city || undefined,
+        region: address.region || undefined,
+        postalCode: address.postalCode || undefined,
+        country: address.country || undefined,
+      }
+    };
+
+    // Always include all categories so clearing all fields removes locks
+    settings.security = securityData;
+    settings.notifications = notificationsData;
+    settings.eventLogs = eventLogsData;
+    settings.defaults = defaultsData;
+    settings.branding = brandingData;
+    settings.aiBudgets = aiBudgetsData;
+    settings.remoteAccessProviders = remoteAccessData;
+
+    const payload: Record<string, unknown> = { settings };
+    const trimmedName = companyName.trim();
+    if (trimmedName) payload.name = trimmedName;
+
     try {
-      setSaving(true);
-      setError(undefined);
-
-      const settings: Record<string, unknown> = {
-        timezone, dateFormat, timeFormat, language: 'en',
-        businessHours: {
-          preset: businessHoursPreset,
-          ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
-        },
-        contact: {
-          name: contactName || undefined,
-          email: contactEmail || undefined,
-          phone: contactPhone || undefined,
-          website: contactWebsite || undefined
-        },
-        address: {
-          street1: address.street1 || undefined,
-          street2: address.street2 || undefined,
-          city: address.city || undefined,
-          region: address.region || undefined,
-          postalCode: address.postalCode || undefined,
-          country: address.country || undefined,
-        }
-      };
-
-      // Always include all categories so clearing all fields removes locks
-      settings.security = securityData;
-      settings.notifications = notificationsData;
-      settings.eventLogs = eventLogsData;
-      settings.defaults = defaultsData;
-      settings.branding = brandingData;
-      settings.aiBudgets = aiBudgetsData;
-      settings.remoteAccessProviders = remoteAccessData;
-
-      const payload: Record<string, unknown> = { settings };
-      const trimmedName = companyName.trim();
-      if (trimmedName) payload.name = trimmedName;
-
-      const response = await fetchWithAuth('/orgs/partners/me', {
-        method: 'PATCH',
-        body: JSON.stringify(payload)
+      const updated = await runPartnerSave(payload, {
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
-
-      if (!response.ok) throw new Error('Failed to save settings');
-
-      const updated = await response.json();
       setPartner(updated);
-      showToast({ message: 'Partner settings saved', type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to save settings');
+      }
+      // ActionError non-401: runAction already toasted
     } finally {
       setSaving(false);
     }
