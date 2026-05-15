@@ -234,6 +234,62 @@ describe('connections routes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('truncates oversized state/processName/addr to column widths (#504)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, agentId: AGENT_ID, orgId: 'org-1' }]),
+          }),
+        }),
+      } as any);
+
+      let insertedValues: any;
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+        const tx = {
+          delete: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(undefined),
+          }),
+          insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockImplementation((rows: any) => {
+              insertedValues = rows;
+              return Promise.resolve(undefined);
+            }),
+          }),
+        };
+        return fn(tx);
+      });
+
+      const longProcessName = 'x'.repeat(500);
+      const longState = 'ESTABLISHED_WITH_LINGER_AND_EXTRAS';
+      const longAddr = 'fe80::1234:5678:9abc:def0%' + 'a'.repeat(200);
+
+      const res = await app.request(`/agents/${AGENT_ID}/connections`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          connections: [
+            {
+              protocol: 'tcp',
+              localAddr: longAddr,
+              localPort: 443,
+              remoteAddr: longAddr,
+              remotePort: 54321,
+              state: longState,
+              pid: 1234,
+              processName: longProcessName,
+            },
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(insertedValues).toHaveLength(1);
+      expect(insertedValues[0].state.length).toBeLessThanOrEqual(20);
+      expect(insertedValues[0].processName.length).toBeLessThanOrEqual(255);
+      expect(insertedValues[0].localAddr.length).toBeLessThanOrEqual(128);
+      expect(insertedValues[0].remoteAddr.length).toBeLessThanOrEqual(128);
+    });
+
     it('should accept all valid protocol types', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
