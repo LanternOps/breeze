@@ -1,4 +1,5 @@
 import { fetchWithAuth } from '@/stores/auth';
+import { extractApiError } from '../lib/apiError';
 
 export interface CommandResult {
   id: string;
@@ -16,7 +17,7 @@ export interface BulkCommandResponse {
 async function getErrorMessage(response: Response, fallback: string): Promise<string> {
   try {
     const data = await response.json();
-    return data?.error || data?.message || fallback;
+    return extractApiError(data, fallback);
   } catch {
     return fallback;
   }

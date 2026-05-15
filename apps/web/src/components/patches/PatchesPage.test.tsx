@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Mock showToast before importing PatchesPage so runAction uses the mock
+const showToast = vi.fn();
+vi.mock('../../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
+
 import PatchesPage from './PatchesPage';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -159,6 +163,98 @@ describe('PatchesPage', () => {
       );
     });
 
-    expect(await screen.findByText('Patch scan queued for 3 devices, 1 dispatched immediately.')).toBeTruthy();
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'success',
+          message: expect.stringContaining('3 device(s)'),
+        })
+      );
+    });
+  });
+
+  it('surfaces an error toast (not a success toast) when the backend returns success:false', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', hostname: 'Workstation-1' }],
+          pagination: { page: 1, limit: 100, total: 1 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        // Backend returns success:false (e.g. no eligible devices — #727/#734 fix)
+        return makeJsonResponse(
+          { success: false, error: 'no eligible devices' },
+          true, // HTTP 200 but body signals failure
+          200
+        );
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/scan',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' })
+      );
+    });
+    // Must NOT have emitted a success toast
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+  });
+
+  it('surfaces an error toast (not a success toast) when the scan POST fails with HTTP 500', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches') return makeJsonResponse({ data: [] });
+
+      if (url === '/devices?limit=100&page=1') {
+        return makeJsonResponse({
+          data: [{ id: 'device-1', hostname: 'Workstation-1' }],
+          pagination: { page: 1, limit: 100, total: 1 },
+        });
+      }
+
+      if (url === '/patches/scan') {
+        return makeJsonResponse({ error: 'internal server error' }, false, 500);
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findByText('No patches found. Try adjusting your search or filters.');
+    fireEvent.click(screen.getByRole('button', { name: 'Run Scan' }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' })
+      );
+    });
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
   });
 });

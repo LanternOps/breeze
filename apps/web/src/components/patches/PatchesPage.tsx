@@ -13,6 +13,7 @@ import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { normalizePatch, normalizeRing } from './patchHelpers';
+import { runAction } from '@/lib/runAction';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -60,8 +61,6 @@ export default function PatchesPage() {
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
   const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
-  const [scanError, setScanError] = useState<string>();
-  const [scanSuccess, setScanSuccess] = useState<string>();
 
   const tabs = useMemo(
     () => [
@@ -215,10 +214,8 @@ export default function PatchesPage() {
   };
 
   const handleScan = async () => {
+    setScanLoading(true);
     try {
-      setScanLoading(true);
-      setScanError(undefined);
-      setScanSuccess(undefined);
       const ids = new Set<string>();
       let page = 1;
       let totalPages = 1;
@@ -249,23 +246,23 @@ export default function PatchesPage() {
       const deviceIds = [...ids];
       if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
-      const response = await fetchWithAuth('/patches/scan', {
-        method: 'POST',
-        body: JSON.stringify({ deviceIds })
+      await runAction<{ queuedCommandIds?: string[]; dispatchedCommandIds?: string[] }>({
+        request: () =>
+          fetchWithAuth('/patches/scan', {
+            method: 'POST',
+            body: JSON.stringify({ deviceIds }),
+          }),
+        successMessage: (d) => {
+          const queued = Array.isArray(d?.queuedCommandIds) ? d.queuedCommandIds.length : deviceIds.length;
+          const dispatched = Array.isArray(d?.dispatchedCommandIds) ? d.dispatchedCommandIds.length : 0;
+          return `Patch scan queued for ${queued} device(s)${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`;
+        },
+        errorFallback: 'Patch scan failed',
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to start patch scan');
-      }
-      const body = await response.json().catch(() => ({}));
-      const dispatched = Array.isArray(body?.dispatchedCommandIds) ? body.dispatchedCommandIds.length : 0;
-      const queued = Array.isArray(body?.queuedCommandIds) ? body.queuedCommandIds.length : deviceIds.length;
-      setScanSuccess(
-        `Patch scan queued for ${queued} devices${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`
-      );
       await fetchPatches();
-    } catch (err) {
-      setScanError(err instanceof Error ? err.message : 'Failed to start patch scan');
+    } catch {
+      // runAction already toasted the error; swallow to avoid double-reporting
     } finally {
       setScanLoading(false);
     }
@@ -352,26 +349,6 @@ export default function PatchesPage() {
           )}
         </div>
       </div>
-
-      {scanError && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <span>{scanError}</span>
-            <button
-              type="button"
-              onClick={handleScan}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
-            >
-              Retry scan
-            </button>
-          </div>
-        </div>
-      )}
-      {scanSuccess && (
-        <div className="rounded-lg border border-success/40 bg-success/10 p-4 text-sm text-success">
-          {scanSuccess}
-        </div>
-      )}
 
       {/* Tabs */}
       <div className="border-b">
