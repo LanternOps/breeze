@@ -166,42 +166,56 @@ export default function PatchesPage() {
   };
 
   const handleBulkApprove = async (patchIds: string[]) => {
-    const response = await fetchWithAuth('/patches/bulk-approve', {
-      method: 'POST',
-      body: JSON.stringify({
-        patchIds,
-        ringId: selectedRingId ?? undefined
-      })
-    });
-    if (!response.ok) {
-      if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-      throw new Error('Failed to approve patches');
-    }
-    const body = await response.json().catch(() => ({})) as {
-      approved?: string[];
-      failed?: string[];
-    };
-    const approvedIds = Array.isArray(body.approved) ? body.approved : patchIds;
-    const failedIds = Array.isArray(body.failed) ? body.failed : [];
-    setPatches(prev =>
-      prev.map(patch =>
-        approvedIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
-      )
-    );
-    if (failedIds.length > 0) {
-      throw new Error(`Failed to approve ${failedIds.length} ${failedIds.length === 1 ? 'patch' : 'patches'}`);
+    try {
+      const body = await runAction<{ approved?: string[]; failed?: string[] }>({
+        request: () =>
+          fetchWithAuth('/patches/bulk-approve', {
+            method: 'POST',
+            body: JSON.stringify({
+              patchIds,
+              ringId: selectedRingId ?? undefined,
+            }),
+          }),
+        successMessage: 'Patches approved.',
+        errorFallback: 'Failed to approve patches',
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+      });
+      const approvedIds = Array.isArray(body?.approved) ? body.approved : patchIds;
+      const failedIds = Array.isArray(body?.failed) ? body.failed : [];
+      setPatches(prev =>
+        prev.map(patch =>
+          approvedIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
+        )
+      );
+      if (failedIds.length > 0) {
+        // Partial failure: re-throw so PatchList can surface it inline via bulkError.
+        throw new Error(`Failed to approve ${failedIds.length} ${failedIds.length === 1 ? 'patch' : 'patches'}`);
+      }
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      // non-401 ActionError: runAction already toasted; re-throw for PatchList inline display.
+      // Plain Error (partial failure): re-throw for PatchList inline display.
+      throw err;
     }
   };
 
   const handleBulkDecline = async (patchIds: string[]) => {
     const failed: string[] = [];
     for (const id of patchIds) {
-      const response = await fetchWithAuth(`/patches/${id}/decline`, {
-        method: 'POST',
-        body: JSON.stringify({ ringId: selectedRingId ?? undefined })
-      });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/patches/${id}/decline`, {
+              method: 'POST',
+              body: JSON.stringify({ ringId: selectedRingId ?? undefined }),
+            }),
+          errorFallback: 'Failed to decline patch',
+          onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+        });
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) return;
+        // non-401 ActionError: runAction already toasted.
+        // Record the per-patch failure and continue the loop.
         failed.push(id);
       }
     }
@@ -211,7 +225,10 @@ export default function PatchesPage() {
         declined.includes(patch.id) ? { ...patch, approvalStatus: 'declined' as PatchApprovalStatus } : patch
       )
     );
-    if (failed.length > 0) throw new Error(`Failed to decline ${failed.length} patches`);
+    if (failed.length > 0) {
+      // Re-throw so PatchList can surface it inline via bulkError.
+      throw new Error(`Failed to decline ${failed.length} ${failed.length === 1 ? 'patch' : 'patches'}`);
+    }
   };
 
   const handleScan = async () => {
@@ -283,27 +300,33 @@ export default function PatchesPage() {
     const isEditing = !!editingRing;
     try {
       const url = isEditing ? `/update-rings/${editingRing.id}` : '/update-rings';
-      const response = await fetchWithAuth(url, {
-        method: isEditing ? 'PATCH' : 'POST',
-        body: JSON.stringify({
-          name: values.name,
-          description: values.description,
-          ringOrder: values.ringOrder,
-          deferralDays: values.deferralDays,
-          deadlineDays: values.deadlineDays,
-          gracePeriodHours: values.gracePeriodHours,
-          categoryRules: values.categoryRules,
-        })
+      await runAction({
+        request: () =>
+          fetchWithAuth(url, {
+            method: isEditing ? 'PATCH' : 'POST',
+            body: JSON.stringify({
+              name: values.name,
+              description: values.description,
+              ringOrder: values.ringOrder,
+              deferralDays: values.deferralDays,
+              deadlineDays: values.deadlineDays,
+              gracePeriodHours: values.gracePeriodHours,
+              categoryRules: values.categoryRules,
+            }),
+          }),
+        successMessage: isEditing ? 'Update ring saved.' : 'Update ring created.',
+        errorFallback: isEditing ? 'Failed to update ring' : 'Failed to create update ring',
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error(isEditing ? 'Failed to update ring' : 'Failed to create update ring');
-      }
       await fetchRings();
       setRingModalOpen(false);
       setEditingRing(null);
     } catch (err) {
-      setRingsError(err instanceof Error ? err.message : (isEditing ? 'Failed to update ring' : 'Failed to create update ring'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ message: err instanceof Error ? err.message : (isEditing ? 'Failed to update ring' : 'Failed to create update ring'), type: 'error' });
+      }
+      // non-401 ActionError: runAction already toasted
     } finally {
       setRingSubmitting(false);
     }
@@ -311,14 +334,19 @@ export default function PatchesPage() {
 
   const handleRingDelete = async (ring: UpdateRingItem) => {
     try {
-      const response = await fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to delete ring');
-      }
+      await runAction({
+        request: () => fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' }),
+        successMessage: 'Update ring deleted.',
+        errorFallback: 'Failed to delete ring',
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+      });
       await fetchRings();
     } catch (err) {
-      setRingsError(err instanceof Error ? err.message : 'Failed to delete ring');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ message: err instanceof Error ? err.message : 'Failed to delete ring', type: 'error' });
+      }
+      // non-401 ActionError: runAction already toasted
     }
   };
 

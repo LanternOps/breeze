@@ -88,7 +88,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBeGreaterThan(0);
+    expect(absoluteFiles.length).toBe(3);
     // Sanity: all target files must actually exist on disk.
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
