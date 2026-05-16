@@ -79,7 +79,10 @@ export default function DevicesPage() {
 
       // Fetch devices, orgs, sites, and groups in parallel
       const [devicesResponse, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
-        fetchWithAuth('/devices?includeDecommissioned=true'),
+        // limit=500 matches the API-side cap for /devices; the list is
+        // paginated client-side after this fetch. Larger fleets need
+        // server-side sort/filter/page — tracked separately.
+        fetchWithAuth('/devices?includeDecommissioned=true&limit=500'),
         fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites'),
         fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
