@@ -7,7 +7,7 @@ import {
   OsvRateLimitError,
   OsvServerError,
 } from '../services/osvClient';
-import { getBullMQConnection } from '../services/redis';
+import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 
 const { db } = dbModule;
 
@@ -171,6 +171,11 @@ export function createCveEnrichmentWorker(): Worker<CveEnrichmentJobData> {
 }
 
 export async function initializeCveEnrichmentWorker(): Promise<void> {
+  if (!isRedisAvailable()) {
+    console.warn('[CveEnrichment] Redis unavailable; queue worker disabled (inline fallback enabled)');
+    return;
+  }
+
   try {
     enrichmentWorker = createCveEnrichmentWorker();
 
@@ -215,10 +220,3 @@ export async function shutdownCveEnrichmentWorker(): Promise<void> {
     enrichmentQueue = null;
   }
 }
-
-export const __testOnly = {
-  QUEUE_NAME,
-  JOB_NAME,
-  DEFAULT_BATCH_LIMIT,
-  DEFAULT_INTERVAL_MS,
-};
