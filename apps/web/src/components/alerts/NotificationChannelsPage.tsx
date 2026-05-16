@@ -8,6 +8,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 
 // Exported for unit-testing without mounting the full component.
 export async function runChannelTest(
@@ -23,10 +24,18 @@ export async function runChannelTest(
       onUnauthorized: deps.onUnauthorized,
     });
   } catch (err) {
-    // runAction already surfaced the failure via toast. Skip the refetch on
+    // runAction already surfaced an ActionError via toast. Skip the refetch on
     // 401 — onUnauthorized is redirecting to /login and the page is being
     // replaced; a second authenticated request would be noise.
     if (err instanceof ActionError && err.status === 401) return;
+    // A non-ActionError escaped runAction (e.g. onUnauthorized threw, or a bug
+    // in this wrapper). runAction never toasted it — surface it so the failure
+    // is not silent (the exact class WS-A exists to remove). Mirrors the
+    // catch pattern used by the sibling handlers in this file.
+    if (!(err instanceof ActionError)) {
+      showToast({ message: err instanceof Error ? err.message : 'Channel test failed', type: 'error' });
+    }
+    // ActionError non-401: already toasted by runAction — fall through to refetch.
   }
   await deps.fetchChannels();
 }

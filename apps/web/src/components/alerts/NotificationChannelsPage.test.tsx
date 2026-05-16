@@ -252,4 +252,24 @@ describe('runChannelTest', () => {
     // Page is being replaced by login redirect; do NOT refetch from a just-401'd session
     expect(fetchChannelsMock).not.toHaveBeenCalled();
   });
+
+  it('surfaces a non-ActionError that escapes runAction instead of swallowing it (M2)', async () => {
+    // A raw rejection that runAction re-throws as a network ActionError would be
+    // an ActionError; to exercise the *non*-ActionError path, make onUnauthorized
+    // (invoked by runAction on 401) throw — that error is not an ActionError and
+    // previously fell through silently with no toast.
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
+    const onUnauthorized = vi.fn(() => { throw new Error('redirect blew up'); });
+
+    await runChannelTest(CHANNEL, {
+      fetchChannels: fetchChannelsMock,
+      onUnauthorized,
+    });
+
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: 'redirect blew up' })
+    );
+    // Still refetches (the failure was surfaced, not swallowed).
+    expect(fetchChannelsMock).toHaveBeenCalledTimes(1);
+  });
 });

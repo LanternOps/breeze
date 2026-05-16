@@ -112,6 +112,26 @@ describe('isApiFailure', () => {
     expect(isApiFailure({ success: true }, 200)).toBe(false);
     expect(isApiFailure(null, 200)).toBe(false);
   });
+
+  // CONTRACT: isApiFailure is deliberately a SHALLOW, top-level-only check.
+  // It must NOT recurse into nested/batch bodies — a partial-success aggregate
+  // (top-level success:true with per-item success:false entries) is NOT a
+  // request failure. If a future change makes this recurse ("catch nested
+  // failures"), every partial-success/batch endpoint routed through runAction
+  // would start throwing false errors. These assertions pin that contract so
+  // such a regression fails loudly here.
+  it('does NOT recurse: nested/batch success:false under a 200 success body is not a failure', () => {
+    expect(isApiFailure({ success: true, results: [{ success: false }, { success: true }] }, 200)).toBe(false);
+    expect(isApiFailure({ data: { success: false } }, 200)).toBe(false);
+    expect(isApiFailure({ items: [{ ok: false }], success: true }, 200)).toBe(false);
+    // testResult is only inspected at the top level, not nested under data.
+    expect(isApiFailure({ data: { testResult: { success: false } } }, 200)).toBe(false);
+  });
+
+  it('still flags genuine top-level failure shapes (the only ones it should)', () => {
+    expect(isApiFailure({ success: false }, 200)).toBe(true);
+    expect(isApiFailure({ testResult: { success: false } }, 200)).toBe(true);
+  });
 });
 
 describe('extractApiError — new shapes', () => {

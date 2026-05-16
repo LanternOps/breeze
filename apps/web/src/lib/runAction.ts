@@ -33,6 +33,10 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   // 401: session expired. Intentionally no error toast — onUnauthorized (a
   // redirect to /login in the targeted callers) IS the feedback; a toast on
   // top of a navigation is noise. Spec: 2026-05-15-ws-a-action-feedback-design.md
+  // Caveat: this assumes 401 always means "your session expired". If an adopted
+  // endpoint ever proxies a *downstream* 401 (e.g. a third-party API the route
+  // calls returns 401), this branch would silently swallow it. No adopted route
+  // does that today; revisit (pass an explicit option) before adopting one that does.
   if (response.status === 401) {
     if (opts.onUnauthorized) opts.onUnauthorized();
     throw new ActionError('Unauthorized', 401);
@@ -64,8 +68,13 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
     let msg: string | undefined;
     try {
       msg = typeof opts.successMessage === 'function' ? opts.successMessage(result) : opts.successMessage;
-    } catch {
-      msg = undefined;
+    } catch (e) {
+      // The action genuinely succeeded — a bug in the message formatter must
+      // not turn that into total silence (the exact symptom WS-A targets).
+      // Fall back to a generic success toast so the user still gets feedback,
+      // and surface the formatter bug so it's debuggable rather than invisible.
+      console.error('[runAction] successMessage formatter threw; using generic success toast', e);
+      msg = 'Done';
     }
     if (msg) showToast({ message: msg, type: 'success' });
   }

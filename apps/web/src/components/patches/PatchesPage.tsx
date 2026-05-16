@@ -13,7 +13,7 @@ import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { normalizePatch, normalizeRing } from './patchHelpers';
-import { runAction, ActionError } from '@/lib/runAction';
+import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
@@ -170,6 +170,7 @@ export default function PatchesPage() {
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
   // See spec 2026-05-15-ws-a-action-feedback-design.md (targeted scope; sweeping migration is a non-goal).
   const handleBulkApprove = async (patchIds: string[]) => {
+    // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
       method: 'POST',
       body: JSON.stringify({
@@ -200,6 +201,7 @@ export default function PatchesPage() {
   const handleBulkDecline = async (patchIds: string[]) => {
     const failed: string[] = [];
     for (const id of patchIds) {
+      // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
       const response = await fetchWithAuth(`/patches/${id}/decline`, {
         method: 'POST',
         body: JSON.stringify({ ringId: selectedRingId ?? undefined })
@@ -251,32 +253,78 @@ export default function PatchesPage() {
       const deviceIds = [...ids];
       if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
-      await runAction<{ queuedCommandIds?: string[]; dispatchedCommandIds?: string[] }>({
-        request: () =>
-          fetchWithAuth('/patches/scan', {
-            method: 'POST',
-            body: JSON.stringify({ deviceIds }),
-          }),
-        successMessage: (d) => {
-          const queued = Array.isArray(d?.queuedCommandIds) ? d.queuedCommandIds.length : deviceIds.length;
-          const dispatched = Array.isArray(d?.dispatchedCommandIds) ? d.dispatchedCommandIds.length : 0;
-          return `Patch scan queued for ${queued} ${queued === 1 ? 'device' : 'devices'}${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`;
-        },
-        errorFallback: 'Patch scan failed',
-        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+      // /patches/scan is an AGGREGATE / partial-success endpoint: a body
+      // `success:false` can still mean "most devices were queued", and skipped
+      // (missing / inaccessible) devices do NOT flip `success` at all. runAction's
+      // binary failure gate would either hide skipped devices behind a clean
+      // success toast (false negative) or collapse a partial result into a
+      // generic "Patch scan failed". Handle the per-device breakdown explicitly
+      // so the user always sees the true outcome. Documented runAction exception
+      // — see runActionAllowlist.ts / no-silent-mutations.test.ts.
+      // runaction-exempt: aggregate/partial-success — explicit breakdown toast below
+      const scanRes = await fetchWithAuth('/patches/scan', {
+        method: 'POST',
+        body: JSON.stringify({ deviceIds }),
       });
-      await fetchPatches();
-    } catch (err) {
-      // runAction failures are already surfaced by runAction (and a 401 shows
-      // none by design — onUnauthorized is redirecting). Pre-runAction errors
-      // (device-list fetch failure, no devices) never went through runAction,
-      // so surface them explicitly here; the ActionError guard avoids a double toast.
-      if (!(err instanceof ActionError)) {
+      if (scanRes.status === 401) { void navigateTo('/login', { replace: true }); return; }
+
+      const scanBody = (await scanRes.json().catch(() => null)) as {
+        queuedCommandIds?: string[];
+        dispatchedCommandIds?: string[];
+        failedDeviceIds?: string[];
+        skipped?: { missingDeviceIds?: string[]; inaccessibleDeviceIds?: string[] };
+      } | null;
+
+      if (!scanRes.ok || !scanBody) {
+        showToast({ message: extractApiError(scanBody, 'Patch scan failed'), type: 'error' });
+        return;
+      }
+
+      const requested = deviceIds.length;
+      const queued = Array.isArray(scanBody.queuedCommandIds) ? scanBody.queuedCommandIds.length : 0;
+      const dispatched = Array.isArray(scanBody.dispatchedCommandIds) ? scanBody.dispatchedCommandIds.length : 0;
+      const failed = Array.isArray(scanBody.failedDeviceIds) ? scanBody.failedDeviceIds.length : 0;
+      const skipped =
+        (scanBody.skipped?.missingDeviceIds?.length ?? 0) +
+        (scanBody.skipped?.inaccessibleDeviceIds?.length ?? 0);
+      const noun = (n: number) => (n === 1 ? 'device' : 'devices');
+      const shortfall = [
+        failed > 0 ? `${failed} failed to queue` : null,
+        skipped > 0 ? `${skipped} skipped (no access / not found)` : null,
+      ].filter(Boolean).join(', ');
+
+      if (queued === 0) {
+        // Nothing was queued — a genuine failure even though HTTP is 200.
         showToast({
-          message: err instanceof Error ? err.message : 'Patch scan failed',
+          message: `Patch scan failed: 0 of ${requested} ${noun(requested)} queued${shortfall ? ` (${shortfall})` : ''}.`,
           type: 'error',
         });
+        return;
       }
+
+      if (shortfall) {
+        // Partial — be explicit about what did NOT happen. The toast component
+        // has no "warning" variant; use error styling so a partial run is not
+        // mistaken for a clean success.
+        showToast({
+          message: `Patch scan queued for ${queued} of ${requested} ${noun(requested)} — ${shortfall}.`,
+          type: 'error',
+        });
+      } else {
+        showToast({
+          message: `Patch scan queued for ${queued} ${noun(queued)}${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`,
+          type: 'success',
+        });
+      }
+      await fetchPatches();
+    } catch (err) {
+      // Pre-scan errors only (device-list fetch failure, no devices). The scan
+      // call above surfaces its own outcome and never throws; a 401 from the
+      // device-paging GET already redirected and returned before reaching here.
+      showToast({
+        message: err instanceof Error ? err.message : 'Patch scan failed',
+        type: 'error',
+      });
     } finally {
       setScanLoading(false);
     }
@@ -287,6 +335,7 @@ export default function PatchesPage() {
     const isEditing = !!editingRing;
     try {
       const url = isEditing ? `/update-rings/${editingRing.id}` : '/update-rings';
+      // runaction-exempt: inline ringsError UI (see NOTE above)
       const response = await fetchWithAuth(url, {
         method: isEditing ? 'PATCH' : 'POST',
         body: JSON.stringify({
@@ -315,6 +364,7 @@ export default function PatchesPage() {
 
   const handleRingDelete = async (ring: UpdateRingItem) => {
     try {
+      // runaction-exempt: inline ringsError UI (see NOTE above)
       const response = await fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }

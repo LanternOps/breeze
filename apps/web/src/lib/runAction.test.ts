@@ -117,13 +117,40 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Parse failed', type: 'error' });
   });
 
-  it('successMessage function throws -> no crash, no toast, value returned', async () => {
+  it('successMessage function throws -> generic success toast, value returned, error logged', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const out = await runAction<{ ok: number }>({
       request: async () => res({ ok: 1 }),
       successMessage: () => { throw new Error('x'); },
       errorFallback: 'fb',
     });
     expect(out).toEqual({ ok: 1 });
-    expect(showToast).not.toHaveBeenCalled();
+    // The action succeeded — a formatter bug must NOT silence feedback (M1).
+    expect(showToast).toHaveBeenCalledWith({ message: 'Done', type: 'success' });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('toasts exactly once on failure (no double-toast with caller catch pattern)', async () => {
+    // Mirrors the documented caller contract: runAction toasts the failure and
+    // throws ActionError; the caller's catch must NOT re-toast a non-401
+    // ActionError. Asserts runAction itself emits a single toast.
+    let caught: unknown;
+    try {
+      await runAction({
+        request: async () => res({ error: 'boom' }, 422),
+        errorFallback: 'fb',
+      });
+    } catch (err) {
+      caught = err;
+      // Documented caller pattern:
+      if (err instanceof ActionError && err.status === 401) { /* redirect */ }
+      else if (!(err instanceof ActionError)) showToast({ message: 'extra', type: 'error' });
+      // ActionError non-401 -> already toasted by runAction, caller stays silent
+    }
+    expect(caught).toBeInstanceOf(ActionError);
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith({ message: 'boom', type: 'error' });
   });
 });
