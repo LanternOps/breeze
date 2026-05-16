@@ -890,16 +890,14 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   const auth = c.get('auth') as AuthContext;
   const { orgId, organizationId, ...pagination } = c.req.valid('query');
 
-  // Support both orgId and organizationId parameter names. The explicit
-  // `organizationId` (set by the page for the resource it is managing) MUST
-  // take precedence over `orgId`: the web client's fetchWithAuth auto-injects
-  // the ambient active-org `?orgId=` whenever the URL lacks the literal
-  // `orgId=` substring, so a Sites request for `?organizationId=<selected>`
-  // arrives as `?organizationId=<selected>&orgId=<activeOrg>`. With the old
-  // `orgId || organizationId` precedence the ambient org shadowed the
-  // explicitly-requested one (issue #723 — sites for a non-active org appeared
-  // to vanish / wrong org's sites shown). Access is still gated by
-  // ensureOrgAccess below, so this is not a tenant-isolation relaxation.
+  // Precedence: the explicit `organizationId` (the resource the page is
+  // managing) MUST win over `orgId`. `orgId` may be an *ambient* value the web
+  // client's fetchWithAuth auto-injects rather than a user-chosen scope;
+  // letting it shadow an explicit `organizationId` surfaced the wrong org's
+  // sites (issue #723). Access is still gated by ensureOrgAccess below — this
+  // is a precedence fix, not a tenant-isolation relaxation. See the orgId
+  // auto-injection in fetchWithAuth (apps/web/src/stores/auth.ts) for the
+  // mechanism that makes the ambient orgId show up here.
   const effectiveOrgId = organizationId || orgId;
 
   const { page, limit, offset } = getPagination(pagination);
