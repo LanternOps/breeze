@@ -26,9 +26,20 @@ import {
 } from './helpers';
 
 const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+export const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem !== 'function') return fn();
+  // Escape any ambient request-scoped DB context BEFORE entering system
+  // scope. authMiddleware wraps the admin handler in withDbAccessContext
+  // (the admin's own partner/org scope); withSystemDbAccessContext
+  // short-circuits when a context already exists, so without
+  // runOutsideDbContext these "system" queries silently ran as the admin's
+  // own user and the deletion-request queue always came back empty. Mirror
+  // lifecycle.ts's asSystem. See PR #696 Critical #1.
+  const runOutside = dbModule.runOutsideDbContext;
+  return typeof runOutside === 'function'
+    ? runOutside(() => withSystem(fn))
+    : withSystem(fn);
 };
 
 export const accountDeletionRoutes = new Hono();
