@@ -21,7 +21,7 @@ import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { RiskBand } from './components/RiskBand';
 import { ApprovalButtons } from './components/ApprovalButtons';
-import { decisionTarget } from './decisionTarget';
+import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
 import { Toast } from '../../components/Toast';
 
@@ -106,7 +106,7 @@ export function ApprovalScreen() {
     transform: [{ translateX: denyShake.value }],
   }));
 
-  function handleApprove(id: string) {
+  function handleApprove(id: CapturedRequestId) {
     // Consent is bound to the request the user saw at press time. If focus
     // swapped during the biometric prompt, abort instead of approving a
     // different action. See PR #696 Critical #3 / decisionTarget.ts.
@@ -138,7 +138,7 @@ export function ApprovalScreen() {
       });
   }
 
-  function handleDeny(id: string, reason?: string) {
+  function handleDeny(id: CapturedRequestId, reason?: string) {
     const target = decisionTarget(id, focused);
     if (!target) {
       setToast({ kind: 'error', text: 'This request changed before you confirmed — review it again.' });
