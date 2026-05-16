@@ -21,6 +21,7 @@ import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { RiskBand } from './components/RiskBand';
 import { ApprovalButtons } from './components/ApprovalButtons';
+import { decisionTarget } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
 import { Toast } from '../../components/Toast';
 
@@ -105,14 +106,21 @@ export function ApprovalScreen() {
     transform: [{ translateX: denyShake.value }],
   }));
 
-  function handleApprove() {
-    if (!focused) return;
+  function handleApprove(id: string) {
+    // Consent is bound to the request the user saw at press time. If focus
+    // swapped during the biometric prompt, abort instead of approving a
+    // different action. See PR #696 Critical #3 / decisionTarget.ts.
+    const target = decisionTarget(id, focused);
+    if (!target) {
+      setToast({ kind: 'error', text: 'This request changed before you confirmed — review it again.' });
+      return;
+    }
     successWash.value = withSequence(
       withTiming(1, { duration: 200, easing: ease }),
       withTiming(0, { duration: 600, easing: ease })
     );
     haptic.approve();
-    const approvalSnap = focused;
+    const approvalSnap = target;
     const decideSeconds = secondsToDecide(approvalSnap.id);
     dispatch(approve(approvalSnap.id))
       .unwrap()
@@ -130,15 +138,19 @@ export function ApprovalScreen() {
       });
   }
 
-  function handleDeny(reason?: string) {
-    if (!focused) return;
+  function handleDeny(id: string, reason?: string) {
+    const target = decisionTarget(id, focused);
+    if (!target) {
+      setToast({ kind: 'error', text: 'This request changed before you confirmed — review it again.' });
+      return;
+    }
     denyShake.value = withSequence(
       withTiming(-4, { duration: 40 }),
       withTiming(4, { duration: 40 }),
       withTiming(0, { duration: 40 })
     );
     haptic.deny();
-    const approvalSnap = focused;
+    const approvalSnap = target;
     const decideSeconds = secondsToDecide(approvalSnap.id);
     dispatch(deny({ id: approvalSnap.id, reason }))
       .unwrap()
@@ -242,6 +254,7 @@ export function ApprovalScreen() {
 
         <View style={{ paddingBottom: insets.bottom + spacing[5] }}>
           <ApprovalButtons
+            requestId={focused.id}
             isRecursive={isRecursive}
             inFlight={inFlight}
             onApprove={handleApprove}

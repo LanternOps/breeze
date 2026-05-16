@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, text, uuid, jsonb, timestamp, index, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, uuid, jsonb, timestamp, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
 
@@ -150,5 +150,9 @@ export const oauthClientBlocks = pgTable('oauth_client_blocks', {
   blockedUntil: timestamp('blocked_until', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-  orgClientIdx: index('oauth_client_blocks_client_idx').on(table.clientId),
+  // Mirrors migration 2026-05-07-c-mobile-device-and-oauth-lifecycle.sql:
+  // one org-wide block per (org, client) — the lifecycle "refresh-or-insert"
+  // upsert relies on this uniqueness — plus a client_id lookup index.
+  orgClientUniq: uniqueIndex('oauth_client_blocks_org_client_uniq').on(table.orgId, table.clientId),
+  clientIdx: index('oauth_client_blocks_client_idx').on(table.clientId),
 }));

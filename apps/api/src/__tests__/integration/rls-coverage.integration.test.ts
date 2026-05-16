@@ -130,10 +130,15 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // System-scope bypass covers the adapter writes (runOutsideDbContext).
   'oauth_interactions',
   // approval_requests: MCP step-up approval records, scoped to the requesting
-  // user via breeze_current_user_id(). Shape 6 policy.
+  // user via breeze_current_user_id(). Shape 6 policy, plus an
+  // `OR breeze_current_scope() = 'system'` branch (migration
+  // 2026-05-16-approval-shape6-system-bypass.sql) so the BullMQ expiry
+  // reaper can transition rows under system scope.
   'approval_requests',
   // account_deletion_requests: user-initiated deletion queue records, scoped
-  // to the requesting user via breeze_current_user_id(). Shape 6 policy.
+  // to the requesting user via breeze_current_user_id(). Shape 6 policy with
+  // the same system-scope OR branch so the account-deletion admin queue
+  // (runWithSystemDbAccess) can read/process the queue.
   'account_deletion_requests',
 ]);
 
@@ -678,16 +683,13 @@ describe('approval_requests RLS — cross-user forge enforcement (Shape 6)', () 
   }
 
   afterAll(async () => {
-    // approval_requests policy has no system-scope OR branch, so system
-    // context cannot delete the row directly. Delete it as user A (the
-    // row's owner). Users/partners are dual-axis / partner-axis and DO
-    // accept system scope, so we tear those down via system context.
-    if (approvalAId && userAId) {
-      await withDbAccessContext(userContext(userAId), async () =>
-        db.delete(approvalRequests).where(eq(approvalRequests.id, approvalAId!))
-      );
-    }
+    // approval_requests now has a system-scope OR branch (migration
+    // 2026-05-16-approval-shape6-system-bypass.sql), so system context can
+    // tear the row down directly alongside the users/partners fixtures.
     await withSystemDbAccessContext(async () => {
+      if (approvalAId) {
+        await db.delete(approvalRequests).where(eq(approvalRequests.id, approvalAId!));
+      }
       if (userAId) await db.delete(users).where(eq(users.id, userAId));
       if (userBId) await db.delete(users).where(eq(users.id, userBId));
       if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
@@ -768,9 +770,10 @@ describe('approval_requests RLS — cross-user forge enforcement (Shape 6)', () 
     expect(updated).toEqual([]);
 
     // Read back as user A (the row's owner) to confirm it is genuinely
-    // untouched. We can't use system scope here: the approval_requests
-    // policy is `user_id = breeze_current_user_id()` with no system-scope
-    // OR branch, so system context has no read access either.
+    // untouched. Reading as the owner is a deliberately stronger assertion
+    // than a system-scope read: it proves the row is intact from the user
+    // whose tenancy axis governs it, not merely visible to the privileged
+    // system context (which the policy now also permits).
     const actual = await withDbAccessContext(userContext(userAId), async () =>
       db
         .select({ id: approvalRequests.id, status: approvalRequests.status })
