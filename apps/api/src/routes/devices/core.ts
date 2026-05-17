@@ -190,7 +190,14 @@ coreRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const { page, limit, offset } = getPagination(query);
+    // Devices list intentionally allows a higher cap than the default
+    // 100 — the web client paginates client-side over the returned set,
+    // so the cap is what gates how many devices a partner-scope user
+    // can see at once. 500 covers small MSP fleets in a single round
+    // trip while staying well under the ~1 MB JSON-payload mark.
+    // Longer-term, server-side sort/filter/page is needed for fleets
+    // beyond this range; tracked separately.
+    const { page, limit, offset } = getPagination(query, 500);
 
     // Build conditions array
     const conditions: ReturnType<typeof eq>[] = [];
