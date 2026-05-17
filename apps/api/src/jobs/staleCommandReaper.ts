@@ -20,7 +20,11 @@ import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/ba
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
-const MAX_REAP_PER_RUN = 200;
+// Per-run cap (env-tunable). Was a hardcoded 200 which silently truncated the
+// reaper above ~200 stale items per type — see scaling audit 2026-05-17. The
+// per-row update logic still runs sequentially inside JS to preserve metrics
+// and propagation side-effects; this just lets us cover more rows per cycle.
+const MAX_REAP_PER_RUN = Number(process.env.STALE_REAPER_MAX_PER_RUN ?? '5000');
 const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
 
 // Backup-related command types — used to guard backup-specific Prometheus metrics
