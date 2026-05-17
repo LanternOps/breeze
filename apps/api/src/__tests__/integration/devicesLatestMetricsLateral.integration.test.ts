@@ -34,7 +34,8 @@ import { getTestDb } from './setup';
 import { devices, deviceMetrics } from '../../db/schema';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
-interface LateralRow {
+// Index signature required so `db.execute<T>` accepts T as a Record<string, unknown>.
+interface LateralRow extends Record<string, unknown> {
   device_id: string;
   cpu_percent: number;
   ram_percent: number;
@@ -68,6 +69,7 @@ async function insertDevice(opts: {
       enrolledAt: new Date(),
     })
     .returning({ id: devices.id });
+  if (!row) throw new Error('insertDevice: insert returned no row');
   return row.id;
 }
 
@@ -189,8 +191,10 @@ describe('GET /devices latest-metrics LATERAL query (integration)', () => {
     // expected and benign — but the query itself must return ONLY the
     // device that has metrics.
     expect(rows).toHaveLength(1);
-    expect(rows[0].device_id).toBe(deviceWithMetrics);
-    expect(rows[0].cpu_percent).toBe(42);
+    const [onlyRow] = rows;
+    if (!onlyRow) throw new Error('expected exactly one row');
+    expect(onlyRow.device_id).toBe(deviceWithMetrics);
+    expect(onlyRow.cpu_percent).toBe(42);
   });
 
   it('uses the (device_id, timestamp) PK with backward index scan + LIMIT 1', async () => {
