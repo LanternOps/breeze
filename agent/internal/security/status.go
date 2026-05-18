@@ -1162,6 +1162,23 @@ func getFirewallStatusDarwin() (bool, error) {
 	return false, fmt.Errorf("unable to determine firewall state")
 }
 
+// firewallStatusFromCommand runs a probe command and returns its trimmed
+// stdout regardless of exit code. Many firewall query tools (firewall-cmd,
+// systemctl is-active) exit non-zero when the firewall is inactive while
+// still writing a useful state name to stdout — the regular runCommand
+// helper discards that output, so we use a dedicated path here.
+func firewallStatusFromCommand(timeout time.Duration, name string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, _ := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
 func getFirewallStatusLinux() (bool, error) {
 	if hasCommand("ufw") {
 		output, err := runCommand(5*time.Second, "ufw", "status")
@@ -1176,28 +1193,28 @@ func getFirewallStatusLinux() (bool, error) {
 	}
 
 	if hasCommand("firewall-cmd") {
-		output, err := runCommand(5*time.Second, "firewall-cmd", "--state")
-		if err == nil {
-			state := strings.TrimSpace(output)
-			if state == "running" {
-				return true, nil
-			}
-			if state == "not running" {
-				return false, nil
-			}
+		// firewall-cmd --state writes "not running" to stdout and exits
+		// non-zero when the daemon is stopped. Trust stdout when it matches
+		// a recognized state, regardless of exit code. runCommand discards
+		// stdout on non-zero exit, so call exec directly here.
+		switch firewallStatusFromCommand(5*time.Second, "firewall-cmd", "--state") {
+		case "running":
+			return true, nil
+		case "not running":
+			return false, nil
 		}
 	}
 
 	if hasCommand("systemctl") {
-		output, err := runCommand(5*time.Second, "systemctl", "is-active", "firewalld")
-		if err == nil {
-			state := strings.TrimSpace(output)
-			if state == "active" {
-				return true, nil
-			}
-			if state == "inactive" || state == "failed" {
-				return false, nil
-			}
+		// systemctl is-active exits 3 for "inactive" and 4 for "no such unit"
+		// (newer systemd) while still writing the state to stdout. Trust
+		// stdout when it matches a recognized state. runCommand discards
+		// stdout on non-zero exit, so call exec directly here.
+		switch firewallStatusFromCommand(5*time.Second, "systemctl", "is-active", "firewalld") {
+		case "active":
+			return true, nil
+		case "inactive", "failed":
+			return false, nil
 		}
 	}
 
