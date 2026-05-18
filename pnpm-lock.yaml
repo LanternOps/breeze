@@ -259,8 +259,8 @@ importers:
   apps/mobile:
     dependencies:
       '@react-native-async-storage/async-storage':
-        specifier: 2.2.0
-        version: 2.2.0(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))
+        specifier: 3.0.2
+        version: 3.0.2(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
       '@react-native-community/netinfo':
         specifier: ^12.0.1
         version: 12.0.1(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
@@ -314,7 +314,7 @@ importers:
         version: 55.0.4(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
       posthog-react-native:
         specifier: 4.44.3
-        version: 4.44.3(8a3e6e6f9e8938fab7ed346a3ed9dec2)
+        version: 4.44.3(bf60fcd1714696fbd596adc2568a12d7)
       react:
         specifier: 19.2.0
         version: 19.2.0
@@ -3015,10 +3015,11 @@ packages:
       react: ^18.2.0
       react-dom: ^18.2.0
 
-  '@react-native-async-storage/async-storage@2.2.0':
-    resolution: {integrity: sha512-gvRvjR5JAaUZF8tv2Kcq/Gbt3JHwbKFYfmb445rhOj6NUMx3qPLixmDx5pZAyb9at1bYvJ4/eTUipU5aki45xw==}
+  '@react-native-async-storage/async-storage@3.0.2':
+    resolution: {integrity: sha512-XP0zDIl+1XoeuQ7f878qXKdl77zLwzLALPpxvNRc7ZtDh9ew36WSvOdQOhFkexMySapFAWxEbZxS8K8J2DU4eg==}
     peerDependencies:
-      react-native: ^0.0.0-0 || >=0.65 <1.0
+      react: '*'
+      react-native: '*'
 
   '@react-native-community/cli-clean@12.1.1':
     resolution: {integrity: sha512-lbEQJ9xO8DmNbES7nFcGIQC0Q15e9q1zwKfkN2ty2eM93ZTFqYzOwsddlNoRN9FO7diakMWoWgielhcfcIeIrQ==}
@@ -5940,8 +5941,8 @@ packages:
   dompurify@3.4.0:
     resolution: {integrity: sha512-nolgK9JcaUXMSmW+j1yaSvaEaoXYHwWyGJlkoCTghc97KgGDDSnpoU/PlEnw63Ah+TGKFOyY+X5LnxaWbCSfXg==}
 
-  dompurify@3.4.2:
-    resolution: {integrity: sha512-lHeS9SA/IKeIFFyYciHBr2n0v1VMPlSj843HdLOwjb2OxNwdq9Xykxqhk+FE42MzAdHvInbAolSE4mhahPpjXA==}
+  dompurify@3.4.5:
+    resolution: {integrity: sha512-OrwIBKsdNSVEeubdJ1HBv/wNENRM9ytAVCv7YXt//A3vPdVMNuACRqK9mXCGCBW2ln7BT/A4X0jXHo2Gu89miA==}
 
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
@@ -6972,6 +6973,9 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
+  idb@8.0.3:
+    resolution: {integrity: sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==}
+
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
@@ -7126,10 +7130,6 @@ packages:
 
   is-path-inside@3.0.3:
     resolution: {integrity: sha512-Fd4gABb+ycGAmKou8eMftCupSir5lRxqf4aD/vd0cD2qc4HL07OjCeuHMr8Ro4CoMaeCKDB0/ECBOVWjTwUvPQ==}
-    engines: {node: '>=8'}
-
-  is-plain-obj@2.1.0:
-    resolution: {integrity: sha512-YWnfyRwxL/+SsrWYfOpUtz5b3YD+nyfkHvjbcanzk8zgyO4ASD67uVMRt8k5bM4lLMDnXfriRhOpemw+NfT1eA==}
     engines: {node: '>=8'}
 
   is-plain-obj@4.1.0:
@@ -7717,10 +7717,6 @@ packages:
 
   memoize-one@5.2.1:
     resolution: {integrity: sha512-zYiwtZUcYyXKo/np96AGZAckk+FWWsUdJ3cHGGmld7+AhvcWmQyGCYUh1hc4Q/pkOhb65dQR/pqCyK0cOaHz4Q==}
-
-  merge-options@3.0.4:
-    resolution: {integrity: sha512-2Sug1+knBjkaMsMgf1ctR1Ujx+Ayku4EdJN4Z+C2+JzoeF7A3OZ9KM2GY0CpQS51NR61LTurMJrRKPhSs3ZRTQ==}
-    engines: {node: '>=10'}
 
   merge-stream@2.0.0:
     resolution: {integrity: sha512-abv/qOcuPfk3URPfDzmZU1LKmuw8kT+0nIHvKrKgFrwifol/doWcdA4ZqsWQ8ENrFKkd67Mfpo/LovbIUsbt3w==}
@@ -13590,9 +13586,10 @@ snapshots:
       react-dom: 19.2.6(react@19.2.6)
       react-promise-suspense: 0.3.4
 
-  '@react-native-async-storage/async-storage@2.2.0(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))':
+  '@react-native-async-storage/async-storage@3.0.2(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)':
     dependencies:
-      merge-options: 3.0.4
+      idb: 8.0.3
+      react: 19.2.0
       react-native: 0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0)
 
   '@react-native-community/cli-clean@12.1.1':
@@ -17090,7 +17087,7 @@ snapshots:
       '@types/trusted-types': 2.0.7
     optional: true
 
-  dompurify@3.4.2:
+  dompurify@3.4.5:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
@@ -18422,6 +18419,8 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  idb@8.0.3: {}
+
   ieee754@1.2.1: {}
 
   ignore@5.3.2: {}
@@ -18559,8 +18558,6 @@ snapshots:
   is-number@7.0.0: {}
 
   is-path-inside@3.0.3: {}
-
-  is-plain-obj@2.1.0: {}
 
   is-plain-obj@4.1.0: {}
 
@@ -19319,10 +19316,6 @@ snapshots:
   media-typer@1.1.0: {}
 
   memoize-one@5.2.1: {}
-
-  merge-options@3.0.4:
-    dependencies:
-      is-plain-obj: 2.1.0
 
   merge-stream@2.0.0: {}
 
@@ -20186,7 +20179,7 @@ snapshots:
 
   monaco-editor@0.55.1:
     dependencies:
-      dompurify: 3.4.2
+      dompurify: 3.4.5
       marked: 14.0.0
 
   mrmime@2.0.1: {}
@@ -20687,12 +20680,12 @@ snapshots:
 
   postgres@3.4.9: {}
 
-  posthog-react-native@4.44.3(8a3e6e6f9e8938fab7ed346a3ed9dec2):
+  posthog-react-native@4.44.3(bf60fcd1714696fbd596adc2568a12d7):
     dependencies:
       '@posthog/core': 1.28.3
       '@posthog/types': 1.372.9
     optionalDependencies:
-      '@react-native-async-storage/async-storage': 2.2.0(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))
+      '@react-native-async-storage/async-storage': 3.0.2(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
       '@react-navigation/native': 7.2.2(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.8)(react@19.2.0))(react@19.2.0)
       expo-application: 55.0.10(expo@55.0.8)
       expo-device: 55.0.10(expo@55.0.8)
