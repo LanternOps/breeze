@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ToastContainer, { showToast, _resetToastQueueForTests } from './Toast';
@@ -91,6 +91,40 @@ describe('ToastContainer', () => {
       expect(screen.getByText('between-mounts-message')).toBeInTheDocument();
     });
     expect(screen.getByTestId('toast')).toHaveAttribute('role', 'alert');
+  });
+
+  it('with two mounted containers, a pre-mount queued toast lands in exactly one and the survivor keeps its registration after the other unmounts', async () => {
+    // Model the Astro island duplication / view-transition overlap case:
+    // a toast is queued before any container exists, then two containers
+    // mount, then the older one unmounts. The newer container's
+    // registration must survive.
+    showToast({ type: 'error', message: 'pre-mount-queued' });
+
+    const first = render(<ToastContainer />);
+    const second = render(<ToastContainer />);
+
+    // The pre-mount queued toast lands in exactly one container (the first
+    // to mount drains the shared queue via splice).
+    await waitFor(() => {
+      const allToasts = screen.getAllByTestId('toast');
+      expect(allToasts).toHaveLength(1);
+      expect(allToasts[0]).toHaveTextContent('pre-mount-queued');
+    });
+
+    // Unmount the older container. Under the old cleanup (unconditional
+    // null), this would clobber the second container's registration and
+    // subsequent showToast calls would silently queue instead of render.
+    first.unmount();
+
+    act(() => {
+      showToast({ type: 'success', message: 'after-first-unmount' });
+    });
+
+    await waitFor(() => {
+      expect(
+        within(second.container).getByText('after-first-unmount')
+      ).toBeInTheDocument();
+    });
   });
 
   it('auto-dismisses after the default 5000ms', async () => {

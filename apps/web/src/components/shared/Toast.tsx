@@ -39,13 +39,9 @@ export default function ToastContainer() {
 
   useEffect(() => {
     addToastFn = addToast;
-    // Flush any toasts queued before the container mounted (or between
-    // unmount/remount across an Astro view-transition).
-    while (pendingToasts.length > 0) {
-      const queued = pendingToasts.shift();
-      if (queued) addToast(queued);
-    }
-    return () => { addToastFn = null; };
+    const queued = pendingToasts.splice(0, pendingToasts.length); // snapshot+clear, no destructive drain mid-loop
+    queued.forEach(addToast);
+    return () => { if (addToastFn === addToast) addToastFn = null; }; // don't clobber a newer registration
   }, [addToast]);
 
   const dismiss = (id: string) => {
