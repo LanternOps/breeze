@@ -556,7 +556,7 @@ export const submitChangesSchema = z.object({
       (value) => !value || JSON.stringify(value).length <= 65535,
       { message: 'details too large (max 64KB)' }
     ),
-  })).max(1000).default([])
+  })).max(parseInt(process.env.CHANGE_INGEST_MAX_ITEMS || '50000', 10)).default([])
 });
 
 // ============================================
