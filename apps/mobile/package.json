@@ -24,7 +24,7 @@
     "expo-font": "~55.0.7",
     "expo-haptics": "~55.0.14",
     "expo-linking": "~55.0.15",
-    "expo-local-authentication": "~55.0.13",
+    "expo-local-authentication": "~55.0.14",
     "expo-notifications": "~55.0.13",
     "expo-secure-store": "~55.0.13",
     "expo-speech-recognition": "3.1.3",
