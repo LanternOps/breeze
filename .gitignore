@@ -2,6 +2,9 @@
 node_modules/
 .pnpm-store/
 
+# Local dev scripts (not for review)
+.devscripts/
+
 # Build outputs
 dist/
 .astro/
