@@ -92,13 +92,31 @@ const envSchema = z
     REDIS_URL: z.string().default('redis://localhost:6379'),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PARTNER_HOOKS_URL: z.string().url().optional(),
-PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
+    PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
+
+    // -- Alternative LLM backend (openai-compatible, e.g. vLLM) ---------------
+    // Off by default. Chat-only PoC; tool-calling is not supported on this path.
+    MCP_LLM_PROVIDER: z.enum(['anthropic', 'openai-compatible']).default('anthropic'),
+    MCP_LLM_BASE_URL: z.string().url().optional(),
+    MCP_LLM_API_KEY: z.string().optional(),
+    MCP_LLM_MODEL: z.string().optional(),
+    MCP_LLM_PRICE_INPUT_PER_M_USD: z.string().optional().transform((v) => (v ? parseFloat(v) : 0)).pipe(z.number().min(0)),
+    MCP_LLM_PRICE_OUTPUT_PER_M_USD: z.string().optional().transform((v) => (v ? parseFloat(v) : 0)).pipe(z.number().min(0)),
   })
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
 
     // --- Required secrets: reject insecure values in production only ---
+    // MCP_LLM_PROVIDER cross-field: base URL required when openai-compatible
+    if (data.MCP_LLM_PROVIDER === 'openai-compatible' && !data.MCP_LLM_BASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_LLM_BASE_URL'],
+        message: 'MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible.',
+      });
+    }
+
     if (isProduction) {
       // E2E_MODE must never be enabled in production
       if (data.E2E_MODE === '1' || data.E2E_MODE === 'true') {
@@ -274,7 +292,13 @@ export function validateConfig(): AppConfig {
     NODE_ENV: env.NODE_ENV,
     E2E_MODE: env.E2E_MODE,
     PARTNER_HOOKS_URL: env.PARTNER_HOOKS_URL,
-PARTNER_HOOKS_SECRET: env.PARTNER_HOOKS_SECRET,
+    PARTNER_HOOKS_SECRET: env.PARTNER_HOOKS_SECRET,
+    MCP_LLM_PROVIDER: env.MCP_LLM_PROVIDER,
+    MCP_LLM_BASE_URL: env.MCP_LLM_BASE_URL,
+    MCP_LLM_API_KEY: env.MCP_LLM_API_KEY,
+    MCP_LLM_MODEL: env.MCP_LLM_MODEL,
+    MCP_LLM_PRICE_INPUT_PER_M_USD: env.MCP_LLM_PRICE_INPUT_PER_M_USD,
+    MCP_LLM_PRICE_OUTPUT_PER_M_USD: env.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
   });
 
   if (!result.success) {
