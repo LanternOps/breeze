@@ -178,6 +178,12 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	// Set process group so children are killed on timeout
 	setProcessGroup(cmd)
 
+	// Suppress console window allocation on Windows (no-op elsewhere). The
+	// user-helper is built -H windowsgui, so a console-subsystem child like
+	// powershell.exe would otherwise pop a visible "black box" on the
+	// interactive user desktop every script run.
+	hideWindow(cmd)
+
 	// When the context is cancelled (timeout), kill the entire process group
 	// rather than only the shell leader. Otherwise long-running children like
 	// `sleep` keep the stdout/stderr pipes open and Wait() blocks forever.

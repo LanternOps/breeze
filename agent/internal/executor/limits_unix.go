@@ -27,3 +27,6 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	}
 	return syscall.Kill(-pgid, syscall.SIGKILL)
 }
+
+// hideWindow is a no-op on non-Windows platforms.
+func hideWindow(cmd *exec.Cmd) {}

@@ -28,3 +28,6 @@ func killProcessGroup(cmd *exec.Cmd) error {
 	}
 	return syscall.Kill(-pgid, syscall.SIGKILL)
 }
+
+// hideWindow is a no-op on Linux.
+func hideWindow(cmd *exec.Cmd) {}

@@ -566,6 +566,7 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 
 	cmd := osexec.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
+	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		log.Warn("failed to launch process", "binary", req.BinaryPath, "args", req.Args, "error", err.Error())
 		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
@@ -780,6 +781,7 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	var stdout, stderr bytes.Buffer
 	proc.Stdout = &stdout
 	proc.Stderr = &stderr
+	hideWindow(proc)
 
 	done := make(chan error, 1)
 	if err := proc.Start(); err != nil {
