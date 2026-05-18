@@ -13,6 +13,8 @@
 
 import type { LLMProvider, LLMStreamEvent, ChatMessage } from './types';
 
+const FETCH_TIMEOUT_MS = 6 * 60 * 1000; // 6 min, aligned with Anthropic turn timeout
+
 // OpenAI streaming chunk shape (minimal subset we care about)
 interface OAIChunk {
   choices?: Array<{
@@ -59,6 +61,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
       // Explicitly no `tools` or `tool_choice` field.
     });
 
+    // Combine caller's abort signal with a per-request timeout.
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT_MS);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, timeoutController.signal])
+      : timeoutController.signal;
+
     let response: Response;
     try {
       response = await fetch(url, {
@@ -68,15 +77,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
           'Authorization': `Bearer ${this.config.apiKey}`,
         },
         body,
-        signal: options.signal,
+        signal,
       });
     } catch (err) {
+      clearTimeout(timeoutId);
       const msg = err instanceof Error ? err.message : 'Network error calling LLM endpoint';
       yield { type: 'error', message: msg };
       return;
     }
 
     if (!response.ok) {
+      clearTimeout(timeoutId);
       let detail = `HTTP ${response.status}`;
       try {
         const text = await response.text();
@@ -87,6 +98,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
 
     if (!response.body) {
+      clearTimeout(timeoutId);
       yield { type: 'error', message: 'LLM endpoint returned empty body' };
       return;
     }
@@ -107,13 +119,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE lines are separated by \n\n; each line may be "data: <json>" or "data: [DONE]"
-        const parts = buffer.split('\n\n');
-        // Keep the last incomplete chunk in the buffer
+        // SSE events are separated by \r\n\r\n or \n\n (spec allows both;
+        // normalise so proxies that add \r\n don't break parsing).
+        const parts = buffer.split(/\r?\n\r?\n/);
+        // Keep the last potentially-incomplete event in the buffer.
         buffer = parts.pop() ?? '';
 
         for (const part of parts) {
-          for (const line of part.split('\n')) {
+          for (const line of part.split(/\r?\n/)) {
             const trimmed = line.trim();
             if (!trimmed.startsWith('data:')) continue;
 
@@ -136,8 +149,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
             const choice = chunk.choices?.[0];
             if (!choice) continue;
 
-            // Defensive: reject tool_calls even though we didn't request them
-            if (choice.delta?.tool_calls && choice.delta.tool_calls.length > 0) {
+            // Defensive: reject tool_calls even though we didn't request them.
+            // Check both delta.tool_calls and finish_reason since some backends
+            // signal tool use via finish_reason rather than (or in addition to) delta.
+            const hasToolCallDelta =
+              choice.delta?.tool_calls != null && (choice.delta.tool_calls as unknown[]).length > 0;
+            const hasToolCallFinishReason = choice.finish_reason === 'tool_calls';
+
+            if (hasToolCallDelta || hasToolCallFinishReason) {
               yield {
                 type: 'error',
                 message:
@@ -154,6 +173,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
         }
       }
     } finally {
+      clearTimeout(timeoutId);
+      // Cancel the stream so the underlying socket is released promptly,
+      // including on early break (e.g. session closing mid-stream).
+      try { await reader.cancel(); } catch { /* ignore */ }
       reader.releaseLock();
     }
 

@@ -48,8 +48,13 @@ let _openaiSessionManager: OpenAISessionManager | null = null;
 function getOpenAISessionManager(): OpenAISessionManager {
   if (!_openaiSessionManager) {
     const cfg = getConfig();
+    if (!cfg.MCP_LLM_BASE_URL) {
+      // Should be caught at startup by the superRefine cross-field validation,
+      // but guard here in case getConfig() is called before validateConfig().
+      throw new Error('MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible');
+    }
     const provider = new OpenAICompatibleProvider({
-      baseUrl: cfg.MCP_LLM_BASE_URL!,
+      baseUrl: cfg.MCP_LLM_BASE_URL,
       apiKey: cfg.MCP_LLM_API_KEY ?? '',
       priceInputPerMUsd: cfg.MCP_LLM_PRICE_INPUT_PER_M_USD,
       priceOutputPerMUsd: cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD,

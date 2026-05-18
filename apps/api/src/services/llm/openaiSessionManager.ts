@@ -6,6 +6,13 @@
  * Each turn is an independent HTTP call triggered by startTurn(); the session stays
  * in memory between turns purely for eventBus pub/sub and TTL eviction state.
  *
+ * Why no `finally { this.remove() }` like streamingSessionManager:
+ * The Anthropic `runBackgroundProcessor` finally removes the session because the SDK
+ * Query subprocess lifecycle == session lifecycle (one process per session, alive
+ * until close/abort/error). Here, each turn is an independent HTTP call; the session
+ * must survive between turns to serve follow-up messages. Removal happens only via
+ * TTL eviction or explicit `remove()`.
+ *
  * Constants are copied (not imported) from streamingSessionManager.ts intentionally
  * to avoid coupling. Any divergence would be a deliberate future decision.
  */
@@ -114,7 +121,9 @@ export class OpenAISessionManager {
     model: string,
     systemPrompt: string,
   ): void {
-    // Replace abort controller for this turn so it can be cancelled independently
+    // Abort any previous turn (defensive: covers the gap between
+    // tryTransitionToProcessing and startTurn) then assign a fresh controller.
+    try { session.abortController.abort(); } catch { /* ignore */ }
     session.abortController = new AbortController();
     void this.runTurn(session, model, systemPrompt);
   }
