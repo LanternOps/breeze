@@ -38,6 +38,26 @@ import {
 } from '@breeze/shared/validators/ai';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { getConfig } from '../config/validate';
+import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
+import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
+
+// Lazy singleton for the openai-compatible path.
+// Only constructed on first use when MCP_LLM_PROVIDER=openai-compatible.
+let _openaiSessionManager: OpenAISessionManager | null = null;
+function getOpenAISessionManager(): OpenAISessionManager {
+  if (!_openaiSessionManager) {
+    const cfg = getConfig();
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: cfg.MCP_LLM_BASE_URL!,
+      apiKey: cfg.MCP_LLM_API_KEY ?? '',
+      priceInputPerMUsd: cfg.MCP_LLM_PRICE_INPUT_PER_M_USD,
+      priceOutputPerMUsd: cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
+    });
+    _openaiSessionManager = new OpenAISessionManager(provider);
+  }
+  return _openaiSessionManager;
+}
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
@@ -310,6 +330,68 @@ aiRoutes.post(
     }
 
     const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
+
+    // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
+    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+      const openaiManager = getOpenAISessionManager();
+      const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
+
+      if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+        return c.json({ error: 'A message is already being processed for this session' }, 409);
+      }
+
+      writeRouteAudit(c, {
+        orgId: dbSession.orgId,
+        action: 'ai.message.send',
+        resourceType: 'ai_session',
+        resourceId: sessionId,
+        details: { contentLength: body.content.length },
+      });
+
+      try {
+        await db.insert(aiMessages).values({
+          sessionId,
+          role: 'user',
+          content: sanitizedContent,
+        });
+      } catch (err) {
+        console.error('[AI/OpenAI] Failed to save user message to DB:', err);
+        openaiSession.state = 'idle';
+        return c.json({ error: 'Failed to save message' }, 500);
+      }
+
+      if (!dbSession.title) {
+        const title = generateSessionTitle(sanitizedContent);
+        try {
+          await db.update(aiSessions).set({ title }).where(eq(aiSessions.id, sessionId));
+          openaiSession.eventBus.publish({ type: 'title_updated', title });
+        } catch (err) {
+          console.error('[AI/OpenAI] Failed to auto-set session title:', err);
+        }
+      }
+
+      openaiManager.startTurn(openaiSession, dbSession.model, systemPrompt);
+
+      const subscriptionId = crypto.randomUUID();
+      return streamSSE(c, async (stream) => {
+        const events = openaiSession.eventBus.subscribe(subscriptionId);
+        try {
+          for await (const event of events) {
+            await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+            if (event.type === 'done') break;
+          }
+        } catch (err) {
+          console.error('[AI/OpenAI] Stream error:', err);
+          await stream.writeSSE({
+            event: 'error',
+            data: JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : 'Stream failed' }),
+          });
+        } finally {
+          openaiSession.eventBus.unsubscribe(subscriptionId);
+        }
+      });
+    }
+    // ---- End OpenAI-compatible path ----
 
     // Get or create streaming session
     const activeSession = await streamingSessionManager.getOrCreate(
