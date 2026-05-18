@@ -108,13 +108,29 @@ const envSchema = z
     const isProduction = data.NODE_ENV === 'production';
 
     // --- Required secrets: reject insecure values in production only ---
-    // MCP_LLM_PROVIDER cross-field: base URL required when openai-compatible
-    if (data.MCP_LLM_PROVIDER === 'openai-compatible' && !data.MCP_LLM_BASE_URL) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['MCP_LLM_BASE_URL'],
-        message: 'MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible.',
-      });
+    // MCP_LLM_PROVIDER openai-compatible: vLLM endpoint + auth + model id required at boot
+    if (data.MCP_LLM_PROVIDER === 'openai-compatible') {
+      if (!data.MCP_LLM_BASE_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MCP_LLM_BASE_URL'],
+          message: 'MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible.',
+        });
+      }
+      if (!data.MCP_LLM_MODEL?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MCP_LLM_MODEL'],
+          message: 'MCP_LLM_MODEL is required when MCP_LLM_PROVIDER is openai-compatible.',
+        });
+      }
+      if (!data.MCP_LLM_API_KEY?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MCP_LLM_API_KEY'],
+          message: 'MCP_LLM_API_KEY is required when MCP_LLM_PROVIDER is openai-compatible.',
+        });
+      }
     }
 
     if (isProduction) {

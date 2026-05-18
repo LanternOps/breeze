@@ -28,6 +28,7 @@ import { OpenAICompatibleProvider } from './openaiCompatibleProvider';
 import { buildMessagesFromHistory, ToolUseInHistoryError } from './historyBuilder';
 import { recordOpenAIUsage } from '../aiCostTracker';
 import { sanitizeErrorForClient } from '../aiAgent';
+import { getConfig } from '../../config/validate';
 import type { OpenAISession } from './types';
 import type { RequestLike } from '../auditEvents';
 
@@ -118,19 +119,19 @@ export class OpenAISessionManager {
    */
   startTurn(
     session: OpenAISession,
-    model: string,
+    _model: string,
     systemPrompt: string,
   ): void {
     // Abort any previous turn (defensive: covers the gap between
     // tryTransitionToProcessing and startTurn) then assign a fresh controller.
     try { session.abortController.abort(); } catch { /* ignore */ }
     session.abortController = new AbortController();
-    void this.runTurn(session, model, systemPrompt);
+    void this.runTurn(session, _model, systemPrompt);
   }
 
   private async runTurn(
     session: OpenAISession,
-    model: string,
+    _model: string,
     systemPrompt: string,
   ): Promise<void> {
     const { breezeSessionId, orgId } = session;
@@ -168,9 +169,13 @@ export class OpenAISessionManager {
     let outputTokens = 0;
     let hadError = false;
 
+    // ai_sessions.model targets Anthropic defaults; on this path vLLM expects MCP_LLM_MODEL
+    // (validated at startup when MCP_LLM_PROVIDER=openai-compatible).
+    const providerModel = getConfig().MCP_LLM_MODEL!;
+
     try {
       for await (const event of this.provider.chatStream(messages, {
-        model,
+        model: providerModel,
         signal: session.abortController.signal,
       })) {
         if (session.state === 'closing' || session.state === 'closed') break;

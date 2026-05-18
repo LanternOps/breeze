@@ -247,4 +247,41 @@ describe('validateConfig', () => {
       }
     });
   });
+
+  const openAiCompatibleEnv = {
+    ...validEnv,
+    MCP_LLM_PROVIDER: 'openai-compatible',
+    MCP_LLM_BASE_URL: 'http://localhost:8000/v1',
+    MCP_LLM_MODEL: 'test-model',
+    MCP_LLM_API_KEY: 'sk-test',
+  };
+
+  it('requires MCP_LLM_MODEL when MCP_LLM_PROVIDER is openai-compatible', () => {
+    const { MCP_LLM_MODEL: _, ...rest } = openAiCompatibleEnv;
+    withEnv(rest as Record<string, string>, () => {
+      expect(() => validateConfig()).toThrow('MCP_LLM_MODEL');
+    });
+  });
+
+  it('requires non-empty MCP_LLM_MODEL when MCP_LLM_PROVIDER is openai-compatible', () => {
+    withEnv({ ...openAiCompatibleEnv, MCP_LLM_MODEL: '   ' }, () => {
+      expect(() => validateConfig()).toThrow('MCP_LLM_MODEL');
+    });
+  });
+
+  it('requires MCP_LLM_API_KEY when MCP_LLM_PROVIDER is openai-compatible', () => {
+    const { MCP_LLM_API_KEY: _, ...rest } = openAiCompatibleEnv;
+    withEnv(rest as Record<string, string>, () => {
+      expect(() => validateConfig()).toThrow('MCP_LLM_API_KEY');
+    });
+  });
+
+  it('accepts openai-compatible when base URL, model, and API key are set', () => {
+    withEnv(openAiCompatibleEnv, () => {
+      const config = validateConfig();
+      expect(config.MCP_LLM_PROVIDER).toBe('openai-compatible');
+      expect(config.MCP_LLM_MODEL).toBe('test-model');
+      expect(config.MCP_LLM_API_KEY).toBe('sk-test');
+    });
+  });
 });
