@@ -95,7 +95,7 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
       : `dev-${Math.floor(Date.now() / 1000)}`;
   const file = body.binary;
 
-  const allowedComponents = ['agent', 'desktop-helper'] as const;
+  const allowedComponents = ['agent', 'desktop-helper', 'user-helper'] as const;
   type Component = (typeof allowedComponents)[number];
   const rawComponent = typeof body.component === 'string' ? body.component : 'agent';
   if (!allowedComponents.includes(rawComponent as Component)) {
