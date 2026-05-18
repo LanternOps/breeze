@@ -56,7 +56,7 @@ KillMode=mixed
 # Security hardening
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin
+ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin -/run/ufw.lock
 PrivateTmp=true
 NoNewPrivileges=false
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
