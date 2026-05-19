@@ -328,6 +328,83 @@ describe('RLS coverage contract', () => {
     expect(rows[0]?.definition).toContain('REFERENCES organizations(id, partner_id)');
   });
 
+  // Issue #750: device-child tables denormalize devices.org_id for the
+  // RLS hot path. If that copy is not kept in sync on an org move, the
+  // stale child row fails the UPDATE policy's USING expression on the
+  // agent inventory upserts. The 2026-05-18 migration installs a
+  // SECURITY DEFINER cascade trigger on devices + a backfill. Guard both
+  // the structural invariant (trigger present, definer-rights, covers
+  // every device-child table) and the data invariant (zero drift).
+  it('device.org_id changes cascade to every device-child table (no stale org_id drift) [#750]', async () => {
+    const trigger = (await db.execute(sql`
+      SELECT
+        t.tgname,
+        t.tgenabled,
+        p.prosecdef,
+        pg_get_triggerdef(t.oid) AS def
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_proc p ON p.oid = t.tgfoid
+      WHERE n.nspname = 'public'
+        AND c.relname = 'devices'
+        AND t.tgname = 'breeze_cascade_device_org_id'
+        AND NOT t.tgisinternal;
+    `)) as unknown as Array<{
+      tgname: string;
+      tgenabled: string;
+      prosecdef: boolean;
+      def: string;
+    }>;
+
+    expect(
+      trigger,
+      'Missing breeze_cascade_device_org_id trigger on devices — org moves will leave stale org_id on device-child tables and break agent inventory upserts (#750). Re-apply migration 2026-05-18-device-child-orgid-cascade.sql.'
+    ).toHaveLength(1);
+    // SECURITY DEFINER: the cascade must run RLS-exempt or it cannot
+    // rewrite the stale child rows it exists to fix.
+    expect(trigger[0]?.prosecdef).toBe(true);
+    // Enabled in "origin/local" mode (fires on normal writes), not disabled.
+    expect(trigger[0]?.tgenabled).toBe('O');
+    expect(trigger[0]?.def).toContain('UPDATE OF org_id');
+    expect(trigger[0]?.def).toContain('FOR EACH ROW');
+
+    // The discovery helper must resolve every table that denormalizes a
+    // uuid org_id alongside a uuid device_id — that is exactly the set
+    // the cascade and backfill iterate. A new such table is auto-covered.
+    const discovered = (await db.execute(sql`
+      SELECT count(*)::int AS n FROM public.breeze_device_child_orgid_tables();
+    `)) as unknown as Array<{ n: number }>;
+    expect(discovered[0]?.n ?? 0).toBeGreaterThan(0);
+
+    // Data invariant: no device-child row may carry an org_id that
+    // disagrees with its device. Read under system scope so RLS doesn't
+    // hide cross-org rows from the audit.
+    const drift = await withSystemDbAccessContext(async () => {
+      const tables = (await db.execute(sql`
+        SELECT public.breeze_device_child_orgid_tables() AS t;
+      `)) as unknown as Array<{ t: string }>;
+
+      const offenders: Array<{ table_name: string; n: number }> = [];
+      for (const { t } of tables) {
+        const [row] = (await db.execute(sql`
+          SELECT count(*)::int AS n
+          FROM ${sql.identifier(t)} c
+          JOIN public.devices d ON d.id = c.device_id
+          WHERE c.org_id IS DISTINCT FROM d.org_id;
+        `)) as unknown as Array<{ n: number }>;
+        const n = row?.n ?? 0;
+        if (n > 0) offenders.push({ table_name: t, n });
+      }
+      return offenders;
+    });
+
+    expect(
+      drift,
+      `device-child tables with org_id drift vs devices.org_id (#750 regression — cascade trigger not keeping these in sync):\n${JSON.stringify(drift, null, 2)}`
+    ).toEqual([]);
+  });
+
   it('every org-tenant public table has RLS on and all four DML commands covered by breeze_has_org_access', async () => {
     const idKeyedList = Array.from(ORG_ID_KEYED_TENANT_TABLES);
 
