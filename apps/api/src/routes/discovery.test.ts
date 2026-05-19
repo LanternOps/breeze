@@ -416,4 +416,117 @@ describe('discovery routes', () => {
       expect(body.error).toContain('denied');
     });
   });
+
+  describe('POST /discovery/assets/bulk-approve — multi-org partner', () => {
+    const ORG_A = '11111111-1111-1111-1111-111111111111';
+    const ORG_B = '22222222-2222-2222-2222-222222222222';
+    const ASSET_ID = '44444444-4444-4444-4444-444444444444';
+    const accessibleOrgIds = [ORG_A, ORG_B];
+
+    const usePartnerAuth = () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds,
+          canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId)
+        });
+        return next();
+      });
+    };
+
+    it('scopes the bulk approve to the supplied orgId for a multi-org partner', async () => {
+      usePartnerAuth();
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: ASSET_ID }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/assets/bulk-approve?orgId=${ORG_A}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetIds: [ASSET_ID] })
+      });
+
+      const body = await res.json();
+      expect(body.error).not.toBe('orgId is required when partner has multiple organizations');
+      expect(res.status).toBe(200);
+      expect(body.approvedCount).toBe(1);
+    });
+
+    it('denies bulk approve against an org the partner cannot access', async () => {
+      usePartnerAuth();
+
+      const res = await app.request(
+        '/discovery/assets/bulk-approve?orgId=99999999-9999-9999-9999-999999999999',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ assetIds: [ASSET_ID] })
+        }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('denied');
+    });
+  });
+
+  describe('POST /discovery/jobs/:id/cancel — org-scoped user (no regression)', () => {
+    // The default mocked auth is scope:'organization', orgId 00000000-...-000000000000.
+    const OWN_ORG = '00000000-0000-0000-0000-000000000000';
+    const JOB_ID = '55555555-5555-5555-5555-555555555555';
+
+    it('still cancels the org user’s own job when no orgId query param is sent', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: JOB_ID, orgId: OWN_ORG, status: 'scheduled' }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: JOB_ID,
+              orgId: OWN_ORG,
+              status: 'cancelled',
+              createdAt: new Date('2026-05-19T00:00:00.000Z'),
+              scheduledAt: null,
+              startedAt: null,
+              completedAt: new Date('2026-05-19T00:01:00.000Z')
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/jobs/${JOB_ID}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('cancelled');
+    });
+
+    it('rejects an org user that forwards a mismatched orgId query param', async () => {
+      const res = await app.request(
+        `/discovery/jobs/${JOB_ID}/cancel?orgId=11111111-1111-1111-1111-111111111111`,
+        { method: 'POST', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('denied');
+    });
+  });
 });
