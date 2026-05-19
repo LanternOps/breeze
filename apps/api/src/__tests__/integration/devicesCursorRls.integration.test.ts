@@ -22,8 +22,9 @@
 import './setup';
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { sql, and, eq } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
+import { db, withDbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
 import { createPartner, createOrganization, createSite } from './db-utils';
 import {
@@ -64,17 +65,22 @@ async function insertDevice(opts: {
   return row.id;
 }
 
-/** Pin a partner-scope context for the next query on the same connection.
- *  Mirrors `withDbAccessContext({scope: 'organization', orgId: ...})` for
- *  a single org's row visibility under RLS, scoped to a transaction so
- *  the SET LOCAL is bounded. */
+/** Pin an organization-scope DB context using the same path production
+ *  request handlers use. Queries inside `fn` issued against the exported
+ *  `db` proxy resolve to the transaction with the GUCs set, running as
+ *  the unprivileged `breeze_app` role — i.e. RLS is genuinely enforced.
+ *  `getTestDb()` (superuser) is used for SETUP only. */
 async function withOrgScope<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
-  const db = getTestDb();
-  return db.transaction(async (tx: any) => {
-    await tx.execute(sql`SELECT set_config('breeze.scope', 'organization', true)`);
-    await tx.execute(sql`SELECT set_config('breeze.accessible_org_ids', ${orgId}, true)`);
-    return fn();
-  });
+  return withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: null,
+      userId: null,
+    },
+    fn,
+  );
 }
 
 describe('GET /devices cursor pagination — RLS isolation', () => {
@@ -130,7 +136,9 @@ describe('GET /devices cursor pagination — RLS isolation', () => {
       const result = await withOrgScope(allowedOrg, async () => {
         const orderBy = buildOrderBy('hostname', 'asc');
         const where = cursor ? buildKeysetPredicate(cursor) : undefined;
-        const rows = await getTestDb()
+        // `db` is the RLS-enforcing proxy; inside withDbAccessContext it
+        // routes queries to the tx with the GUCs set as breeze_app.
+        return db
           .select({
             id: devices.id,
             hostname: devices.hostname,
@@ -142,7 +150,6 @@ describe('GET /devices cursor pagination — RLS isolation', () => {
           .where(where)
           .orderBy(...orderBy)
           .limit(limit + 1);
-        return rows;
       });
 
       const page = result.slice(0, limit);
@@ -183,7 +190,7 @@ describe('GET /devices cursor pagination — RLS isolation', () => {
     await insertDevice({ orgId: foreignOrg, siteId: foreignSite, hostname: 'f4' });
 
     const total = await withOrgScope(allowedOrg, async () => {
-      const r = await getTestDb()
+      const r = await db
         .select({ count: sql<number>`count(*)` })
         .from(devices);
       return Number(r[0]?.count ?? 0);
@@ -223,7 +230,7 @@ describe('GET /devices cursor pagination — RLS isolation', () => {
 
     const rows = await withOrgScope(allowedOrg, async () => {
       const orderBy = buildOrderBy('hostname', 'asc');
-      return getTestDb()
+      return db
         .select({
           id: devices.id,
           orgId: devices.orgId,
@@ -237,7 +244,7 @@ describe('GET /devices cursor pagination — RLS isolation', () => {
 
     // Only the allowed row appears, not the foreign one whose id was
     // used in the cursor.
-    expect(rows.map((r: any) => r.id)).toEqual([allowedId]);
+    expect(rows.map((r) => r.id)).toEqual([allowedId]);
     expect(rows[0]?.orgId).toBe(allowedOrg);
   });
 });
