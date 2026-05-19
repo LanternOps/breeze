@@ -6,6 +6,7 @@ import { haptic } from '../../../lib/motion';
 import { HoldToConfirm } from './HoldToConfirm';
 import { DenyReasonSheet } from './DenyReasonSheet';
 import { captureRequestId, type CapturedRequestId } from '../decisionTarget';
+import { classifyAuthFailure } from '../authOutcome';
 
 interface Props {
   // The approval the user is looking at right now (live prop). We snapshot
@@ -21,8 +22,6 @@ interface Props {
   onDeny: (requestId: CapturedRequestId, reason?: string) => void;
 }
 
-const SILENT_CANCEL_CODES = new Set(['user_cancel', 'system_cancel', 'app_cancel']);
-const LOCKOUT_CODES = new Set(['lockout', 'lockout_permanent']);
 const PASSCODE_FALLBACK_CODES = new Set(['not_enrolled', 'passcode_not_set']);
 
 export function ApprovalButtons({ requestId, isRecursive, inFlight, onApprove, onDeny }: Props) {
@@ -59,41 +58,49 @@ export function ApprovalButtons({ requestId, isRecursive, inFlight, onApprove, o
       enrolled = false;
     }
 
-    if (!hasHw || !enrolled) {
-      const r = await authenticateWithPasscode();
+    // authenticateAsync / authenticateWithPasscode can REJECT (another
+    // auth already in progress, Android activity-not-found, native module
+    // error) — not just resolve {success:false}. Unguarded, that rejection
+    // escapes as an unhandled promise rejection: no onApprove, no message.
+    // The user taps Approve on a consent action and nothing happens with
+    // zero feedback (#746 Issue 1). Catch it and surface a failure.
+    try {
+      if (!hasHw || !enrolled) {
+        const r = await authenticateWithPasscode();
+        if (r.success) { onApprove(target); return; }
+        handleAuthFailure(r);
+        return;
+      }
+
+      const r = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Approve this request',
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
+      });
       if (r.success) { onApprove(target); return; }
+
+      const code = (r as { error?: string }).error;
+      if (code && PASSCODE_FALLBACK_CODES.has(code)) {
+        const fallback = await authenticateWithPasscode();
+        if (fallback.success) { onApprove(target); return; }
+        handleAuthFailure(fallback);
+        return;
+      }
       handleAuthFailure(r);
-      return;
+    } catch (err) {
+      console.warn('[ApprovalButtons] biometric auth threw', err);
+      setAuthMessage('Authentication failed. Try again.');
     }
-
-    const r = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Approve this request',
-      cancelLabel: 'Cancel',
-      disableDeviceFallback: false,
-    });
-    if (r.success) { onApprove(target); return; }
-
-    const code = (r as { error?: string }).error;
-    if (code && PASSCODE_FALLBACK_CODES.has(code)) {
-      const fallback = await authenticateWithPasscode();
-      if (fallback.success) { onApprove(target); return; }
-      handleAuthFailure(fallback);
-      return;
-    }
-    handleAuthFailure(r);
   }
 
   function handleAuthFailure(result: LocalAuthentication.LocalAuthenticationResult) {
-    const code = (result as { error?: string }).error;
-    if (code && SILENT_CANCEL_CODES.has(code)) {
-      setAuthMessage(null);
-      return;
-    }
-    if (code && LOCKOUT_CODES.has(code)) {
-      setAuthMessage('Biometrics locked. Use device passcode in Settings to unlock.');
-      return;
-    }
-    setAuthMessage('Authentication failed. Try again.');
+    // Only user_cancel is a justified silent no-op. system_cancel /
+    // app_cancel (OS/app interrupted the prompt — e.g. a second push
+    // mid-confirmation) now surface an actionable retry instead of being
+    // swallowed (#746 Issue 2). Classification is unit-tested in
+    // authOutcome.test.ts.
+    const { message } = classifyAuthFailure((result as { error?: string }).error);
+    setAuthMessage(message);
   }
 
   return (
