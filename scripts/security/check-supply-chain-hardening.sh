@@ -31,6 +31,16 @@ if [[ -e docker-compose.override.yml ]]; then
   fail "docker-compose.override.yml must not exist; Docker Compose auto-loads it and can weaken production defaults"
 fi
 
+# SR-007: workflows that build/publish artifacts must declare a top-level
+# (workflow-global) least-privilege `permissions:` block so build jobs don't
+# inherit the repo/org default GITHUB_TOKEN scopes. Jobs needing more (release
+# publish, GHCR push, OIDC signing) override per-job. A column-0 `permissions:`
+# is the workflow-global one; per-job blocks are indented.
+require_grep '^permissions:' .github/workflows/release.yml \
+  "release workflow must declare a top-level least-privilege permissions: block (SR-007)"
+require_grep '^permissions:' .github/workflows/ci.yml \
+  "CI workflow must declare a top-level least-privilege permissions: block (SR-007)"
+
 require_grep '^  release-integrity-gate:' .github/workflows/release.yml \
   "release workflow must include release-integrity-gate"
 require_grep 'needs: .*release-integrity-gate' .github/workflows/release.yml \

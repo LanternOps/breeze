@@ -5,6 +5,33 @@ import type { AuthContext } from '../../middleware/auth';
 
 export { getPagination } from '../../utils/pagination';
 
+/**
+ * SR-008 (systemic twin of the MCP breeze://devices/{id} leak): device-detail
+ * endpoints spread the full `devices` row to the client. These columns are
+ * credential verifiers / mTLS material and must never be serialized to any
+ * client. `getDeviceWithOrgCheck` still returns the full row so internal
+ * handler logic keeps working; strip only at the response boundary.
+ */
+const SENSITIVE_DEVICE_FIELDS = [
+  'agentTokenHash', 'tokenIssuedAt',
+  'previousTokenHash', 'previousTokenExpiresAt',
+  'watchdogTokenHash', 'watchdogTokenIssuedAt',
+  'previousWatchdogTokenHash', 'previousWatchdogTokenExpiresAt',
+  'helperTokenHash', 'helperTokenIssuedAt',
+  'previousHelperTokenHash', 'previousHelperTokenExpiresAt',
+  'mtlsCertSerialNumber', 'mtlsCertExpiresAt', 'mtlsCertIssuedAt', 'mtlsCertCfId',
+] as const;
+
+export function stripSensitiveDeviceFields<T extends Record<string, unknown>>(
+  device: T
+): Omit<T, (typeof SENSITIVE_DEVICE_FIELDS)[number]> {
+  const clone = { ...device };
+  for (const field of SENSITIVE_DEVICE_FIELDS) {
+    delete clone[field];
+  }
+  return clone;
+}
+
 export async function ensureOrgAccess(
   orgId: string,
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>

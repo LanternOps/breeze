@@ -37,6 +37,7 @@ import {
   userRequiresSetup
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
+import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -207,7 +208,11 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     orgId,
     partnerId,
     scope,
-    mfa: mfaSatisfied
+    mfa: mfaSatisfied,
+    // SR-001: bind the token to the mobile install id when the client sends
+    // it. Web/SSO clients don't send the header → mdid stays absent → no
+    // behaviour change for them.
+    mdid: readMobileDeviceId(c) ?? undefined
   });
 
   // Update last login
@@ -344,7 +349,11 @@ loginRoutes.post('/refresh', async (c) => {
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
-    mfa: ENABLE_2FA ? payload.mfa : false
+    mfa: ENABLE_2FA ? payload.mfa : false,
+    // SR-001: preserve the device binding from the prior (signed) refresh
+    // token. Deliberately NOT re-read from the header — a refresh must not be
+    // able to drop the binding by omitting it.
+    mdid: carryForwardBinding(payload)
   });
 
   try {

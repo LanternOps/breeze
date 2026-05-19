@@ -39,14 +39,23 @@ export async function partnerGuard(c: Context, next: Next) {
       .where(eq(partners.id, partnerId))
       .limit(1);
   } catch (err) {
+    // Fail closed: this guard is a security + billing-control boundary. A
+    // verified token already proved a partnerId; if we cannot resolve that
+    // partner's status we must not let the request through. SR-005.
     console.error(`[PartnerGuard] DB lookup failed for partner ${partnerId}:`, err instanceof Error ? err.message : String(err));
-    await next();
-    return;
+    return c.json({
+      error: 'Account status temporarily unavailable',
+      code: 'PARTNER_LOOKUP_UNAVAILABLE',
+    }, 503);
   }
 
   if (!partner) {
-    await next();
-    return;
+    // A signature-verified token references a partner that no longer exists
+    // (deleted/purged). Fail closed rather than treating it as anonymous. SR-005.
+    return c.json({
+      error: 'Account not found',
+      code: 'PARTNER_NOT_FOUND',
+    }, 403);
   }
 
   if (partner.status !== 'active') {

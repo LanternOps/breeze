@@ -275,7 +275,7 @@ services:
       --min-port=49152
       --max-port=65535
       --no-cli
-      --static-auth-secret=${TURN_SECRET:-}
+      --static-auth-secret=${TURN_SECRET:?TURN_SECRET must be set (openssl rand -hex 32) when the turn profile is enabled}
       --realm=${TURN_REALM:-breeze.local}
       --external-ip=${TURN_HOST:-}
 

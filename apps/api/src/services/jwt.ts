@@ -32,6 +32,11 @@ export interface TokenPayload {
   // Indicates whether this token was issued after completing MFA.
   // For legacy tokens that predate this claim, verification defaults this to false.
   mfa: boolean;
+  // Mobile device binding (SR-001). Set only on tokens minted for the mobile
+  // app, to the per-install device id. Absent on web/MCP/OAuth/agent tokens.
+  // The lost-phone block is enforced against this SIGNED value, never a
+  // client-supplied header (which is spoofable / omittable).
+  mdid?: string;
   iat?: number;
   jti?: string;
 }
@@ -88,6 +93,7 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       scope: payload.scope as 'system' | 'partner' | 'organization',
       type: payload.type as 'access' | 'refresh',
       mfa: payload.mfa === true,
+      mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };

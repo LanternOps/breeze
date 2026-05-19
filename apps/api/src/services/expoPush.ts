@@ -5,6 +5,19 @@ import { and, eq } from 'drizzle-orm';
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const MAX_LABEL_LEN = 60;
 
+/**
+ * Expo push tokens are bearer-like device addresses: anyone holding one can
+ * POST unsolicited notifications to that device via the unauthenticated Expo
+ * push API. Never log them in full. We keep only a short trailing suffix so a
+ * leaked log line still allows correlation with the DB row but is not a usable
+ * push address on its own. SR-004.
+ */
+export function redactPushToken(token: string | undefined): string {
+  if (!token) return '<none>';
+  if (token.length <= 4) return '****';
+  return `…${token.slice(-4)}`;
+}
+
 export interface ExpoPushMessage {
   to: string;
   title: string;
@@ -59,7 +72,7 @@ async function handleTicketErrors(
         ? (ticket.details as { error?: string }).error
         : undefined;
     console.error('[expoPush] ticket error', {
-      token,
+      token: redactPushToken(token),
       message: ticket.message,
       code,
     });

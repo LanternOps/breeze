@@ -16,6 +16,7 @@ import {
   getRedis
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
+import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema } from './schemas';
 import {
@@ -217,7 +218,9 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       orgId: mfaOrgId,
       partnerId: mfaPartnerId,
       scope: mfaScope,
-      mfa: true
+      mfa: true,
+      // SR-001: bind to the mobile install id when present (MFA login path).
+      mdid: readMobileDeviceId(c) ?? undefined
     });
 
     // Update last login

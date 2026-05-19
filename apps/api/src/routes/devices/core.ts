@@ -17,7 +17,7 @@ import {
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { getPagination, getDeviceWithOrgCheck } from './helpers';
+import { getPagination, getDeviceWithOrgCheck, stripSensitiveDeviceFields } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
@@ -524,7 +524,7 @@ coreRoutes.get(
     }
 
     return c.json({
-      ...device,
+      ...stripSensitiveDeviceFields(device),
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,

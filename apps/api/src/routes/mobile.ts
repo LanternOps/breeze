@@ -336,14 +336,28 @@ mobileRoutes.post(
     if (data.osVersion !== undefined) updateSet.osVersion = data.osVersion;
     if (data.appVersion !== undefined) updateSet.appVersion = data.appVersion;
 
-    // Same blocked-row protection as /notifications/register: if a row
-    // exists for this deviceId in `blocked` state, salt the id so the
-    // re-pair lands in a fresh row.
+    // `device_id` is globally unique. Without an ownership guard the conflict
+    // path below would happily reassign another user's row to the caller
+    // (and RLS permits it for same-tenant callers). Refuse up front if the
+    // id is registered to anyone else — never touch a row we don't own. SR-002.
     const [existing] = await db
-      .select({ status: mobileDevices.status })
+      .select({ status: mobileDevices.status, userId: mobileDevices.userId })
       .from(mobileDevices)
       .where(eq(mobileDevices.deviceId, data.deviceId))
       .limit(1);
+    if (existing && existing.userId !== auth.user.id) {
+      return c.json(
+        {
+          error: 'This device is already registered to another account.',
+          code: 'device_owned_by_other',
+        },
+        409
+      );
+    }
+
+    // Same blocked-row protection as /notifications/register: if our own row
+    // for this deviceId is `blocked`, salt the id so the re-pair lands in a
+    // fresh row instead of reactivating the blocked one.
     const insertDeviceId = existing?.status === 'blocked'
       ? `${data.deviceId}-${now.getTime()}`
       : data.deviceId;
@@ -365,9 +379,25 @@ mobileRoutes.post(
       .onConflictDoUpdate({
         target: mobileDevices.deviceId,
         set: updateSet,
-        setWhere: sql`${mobileDevices.status} = 'active'`
+        // Defense-in-depth against a race between the ownership check above
+        // and this upsert: the update can only ever touch an active row the
+        // caller already owns. A foreign/blocked row yields 0 updated rows.
+        setWhere: sql`${mobileDevices.status} = 'active' AND ${mobileDevices.userId} = ${auth.user.id}`
       })
       .returning();
+
+    if (!device) {
+      // Conflict fired but the owned-and-active guard matched no row — the id
+      // was taken by another user between the check and the upsert. Never
+      // fall through to a 201 with a null body.
+      return c.json(
+        {
+          error: 'This device is already registered to another account.',
+          code: 'device_owned_by_other',
+        },
+        409
+      );
+    }
 
     writeRouteAudit(c, {
       orgId: auth.orgId,

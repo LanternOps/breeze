@@ -53,10 +53,12 @@ const REVOKE_RATE_LIMIT = 10;
 const REVOKE_RATE_WINDOW_SECONDS = 60;
 
 // Header sent by the mobile app on every API call so we can identify which
-// paired device is making the call (and therefore detect "this device tried
-// to block itself" → 409 self-lockout protection, and "this device has been
-// blocked → 403 device_blocked").
-export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
+// paired device is making the call (used here only for self-lockout UX and
+// "is this the current device" hints — NOT a security boundary; see
+// services/mobileDeviceBinding.ts and SR-001). Re-exported from the canonical
+// low-dependency module so there is a single source of truth.
+import { MOBILE_DEVICE_ID_HEADER } from '../services/mobileDeviceBinding';
+export { MOBILE_DEVICE_ID_HEADER };
 
 const blockReasonSchema = z.object({
   reason: z.string().trim().max(500).optional(),
