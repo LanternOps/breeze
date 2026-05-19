@@ -393,7 +393,7 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
@@ -417,7 +417,7 @@ discoveryRoutes.patch(
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
     const updates = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     if (Object.keys(updates).length === 0) {
@@ -479,7 +479,7 @@ discoveryRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
@@ -729,7 +729,7 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryJobs.id, jobId)];
@@ -762,7 +762,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryJobs.id, jobId)];
@@ -911,7 +911,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { assetIds } = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
@@ -941,7 +941,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { assetIds } = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];

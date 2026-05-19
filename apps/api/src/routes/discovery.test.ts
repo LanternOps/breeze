@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 
@@ -341,6 +342,78 @@ describe('discovery routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /discovery/jobs/:id/cancel — multi-org partner', () => {
+    const ORG_A = '11111111-1111-1111-1111-111111111111';
+    const ORG_B = '22222222-2222-2222-2222-222222222222';
+    const JOB_ID = '33333333-3333-3333-3333-333333333333';
+    const accessibleOrgIds = [ORG_A, ORG_B];
+
+    const usePartnerAuth = () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds,
+          canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId)
+        });
+        return next();
+      });
+    };
+
+    it('cancels a scheduled job when the selected orgId is supplied as a query param', async () => {
+      usePartnerAuth();
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: JOB_ID, orgId: ORG_A, status: 'scheduled' }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: JOB_ID,
+              orgId: ORG_A,
+              status: 'cancelled',
+              createdAt: new Date('2026-05-18T00:00:00.000Z'),
+              scheduledAt: null,
+              startedAt: null,
+              completedAt: new Date('2026-05-18T00:01:00.000Z')
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/jobs/${JOB_ID}/cancel?orgId=${ORG_A}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await res.json();
+      expect(body.error).not.toBe('orgId is required when partner has multiple organizations');
+      expect(res.status).toBe(200);
+      expect(body.status).toBe('cancelled');
+    });
+
+    it('denies cancelling against an org the partner cannot access', async () => {
+      usePartnerAuth();
+
+      const res = await app.request(
+        `/discovery/jobs/${JOB_ID}/cancel?orgId=99999999-9999-9999-9999-999999999999`,
+        { method: 'POST', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('denied');
     });
   });
 });
