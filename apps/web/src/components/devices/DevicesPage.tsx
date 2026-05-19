@@ -12,6 +12,7 @@ import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllDevices } from '../../lib/devicesFetch';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
@@ -92,12 +93,15 @@ export default function DevicesPage() {
       setLoading(true);
       setError(null);
 
-      // Fetch devices, orgs, sites, and groups in parallel
-      const [devicesResponse, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
-        // limit=500 matches the API-side cap for /devices; the list is
-        // paginated client-side after this fetch. Larger fleets need
-        // server-side sort/filter/page — tracked separately.
-        fetchWithAuth('/devices?includeDecommissioned=true&limit=500'),
+      // Devices walk the cursor (Discussion #742 PR 3); orgs/sites/groups
+      // are bounded one-shot fetches. Run all four in parallel so the
+      // first paint isn't gated on the slowest one. fetchAllDevices is
+      // forward+backward compatible: against the cursor API it walks
+      // pages, against the legacy offset API it returns the first
+      // capped page and stops — same UX as before, no user-visible cap
+      // once the server-side cursor migration lands.
+      const [devicesResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+        fetchAllDevices({ includeDecommissioned: true }),
         fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites'),
         fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
@@ -106,12 +110,7 @@ export default function DevicesPage() {
         })
       ]);
 
-      if (!devicesResponse.ok) {
-        throw devicesResponse;
-      }
-
-      const devicesData = await devicesResponse.json();
-      const deviceList = devicesData.data ?? devicesData.devices ?? devicesData ?? [];
+      const deviceList = devicesResult.data;
 
       // Transform API response to match Device type
       const transformedDevices: Device[] = deviceList.map((d: Record<string, unknown>) => {
