@@ -398,6 +398,16 @@ Every `tools/call` request passes through the guardrail system before execution:
 
 If any check fails, the request is rejected with an appropriate error before the tool handler executes.
 
+### Step-up approval (out-of-band)
+
+Beyond scope and RBAC checks, a sensitive tool call can require an explicit **out-of-band approval** before it executes. When step-up is required, Breeze creates an approval request, pushes it to the user's trusted mobile device, and blocks the action until the user decides on their phone:
+
+- **Approved** — the tool call proceeds.
+- **Denied** or **expired** — the tool call fails with the recorded reason.
+- **Reported** — the user flagged the request as unrecognised; the requesting OAuth client's access is revoked immediately.
+
+This makes the mobile app a second factor for high-risk automation: even a valid API key cannot complete a step-up-gated action without a live approval from a trusted device. See [Approval Mode](/features/mobile/#approval-mode) for the full request lifecycle, risk tiers, and trusted-device management.
+
 ### Production allowlist for destructive tools
 
 In production, Tier 3+ (destructive) tools are blocked by default unless explicitly listed in the `MCP_EXECUTE_TOOL_ALLOWLIST` environment variable. This is a comma-separated list of tool names:

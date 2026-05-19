@@ -393,6 +393,140 @@
       "docs": [
         "backup/overview.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/wakeOnLan.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/remoteAccessLauncher.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/remoteAccessLauncherScheme.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/thirdPartyCatalog/**",
+      "docs": [
+        "features/patch-management.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/patches/**",
+      "docs": [
+        "features/patch-management.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/osvClient.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/thirdPartyEnrichment.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiPatchTestRunner.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/cveEnrichmentWorker.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/wingetReleaseTestWorker.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/notificationSenders/**",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/alerts/**",
+      "docs": [
+        "features/notifications.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/notificationChannelSecrets.ts",
+      "docs": [
+        "features/notifications.mdx",
+        "security/secrets.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/approvals.ts",
+      "docs": [
+        "features/mobile.mdx",
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/expoPush.ts",
+      "docs": [
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/mobile.ts",
+      "docs": [
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/approvals.ts",
+      "docs": [
+        "features/mobile.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/accountDeletion.ts",
+      "docs": [
+        "reference/account-deletion.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/accountDeletion.ts",
+      "docs": [
+        "reference/account-deletion.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/orgOrdering.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/commands.ts",
+      "docs": [
+        "agents/commands.mdx",
+        "reference/api.mdx"
+      ]
     }
   ]
 }

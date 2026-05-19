@@ -42,6 +42,8 @@ const docsMapping: DocsEntry[] = [
 
   // Admin / Partner
   { pattern: '/partner', docsPath: '/reference/partner-management/', label: 'Partner Management' },
+  { pattern: '/admin/third-party-catalog', docsPath: '/features/patch-management/', label: 'Third-Party Catalog' },
+  { pattern: '/admin/account-deletion-requests', docsPath: '/reference/account-deletion/', label: 'Account Deletion Requests' },
   { pattern: '/admin', docsPath: '/reference/partner-management/', label: 'Administration' },
 
   // Feature pages — specific sub-routes first
@@ -82,6 +84,12 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/logs', docsPath: '/features/log-shipping/', label: 'Log Shipping' },
   { pattern: '/fleet', docsPath: '/features/ai/', label: 'Fleet Orchestration' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
+
+  // Account
+  { pattern: '/account/delete', docsPath: '/reference/account-deletion/', label: 'Account Deletion' },
+  { pattern: '/account/devices', docsPath: '/features/mobile/', label: 'Trusted Devices' },
+  { pattern: '/account/test-approval', docsPath: '/features/mobile/', label: 'Approval Mode' },
+  { pattern: '/account/connected-apps', docsPath: '/features/mcp-server/', label: 'Connected Apps & MCP' },
 
   // Standalone pages
   { pattern: '/setup', docsPath: '/features/setup-wizard/', label: 'Setup Wizard' },

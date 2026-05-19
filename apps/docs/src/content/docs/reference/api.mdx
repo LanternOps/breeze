@@ -285,6 +285,21 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `POST` | `/patches/:id/defer` | Defer patch |
 | `GET` | `/patches/:id` | Get patch details |
 
+`GET /patches` accepts `?source=` (`microsoft`, `apple`, `linux`, `third_party`, `custom`) and returns `source` on every patch. Third-party patches also carry `version`, `vendor`, and a `cveIds` array populated by OSV.dev enrichment.
+
+### Third-Party Package Catalog
+
+Platform-admin scope. Backs the third-party application patching catalog and AI smoke tests — see [Patch Management](/features/patch-management/#third-party-application-patching).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/third-party-catalog` | List catalog entries (`?vendor=&breezeTested=&search=`) |
+| `POST` | `/third-party-catalog` | Create a catalog entry |
+| `GET` | `/third-party-catalog/:id` | Get a catalog entry |
+| `PATCH` | `/third-party-catalog/:id` | Update a catalog entry |
+| `DELETE` | `/third-party-catalog/:id` | Delete a catalog entry |
+| `POST` | `/third-party-catalog/:id/test` | Queue a smoke test (`{ "version": "..." }`) |
+
 ### Patch Policies
 
 | Method | Path | Description |
@@ -781,6 +796,8 @@ List endpoints support cursor-based pagination:
 ```bash
 curl "https://breeze.yourdomain.com/api/v1/devices?limit=50&cursor=eyJ..."
 ```
+
+`GET /devices` accepts a `limit` of up to **500** per page (default 50) so partners can pull large fleets in fewer round trips; other list endpoints keep the standard default of 100. The dashboard's devices list has its own per-page selector (10–200).
 
 Response:
 

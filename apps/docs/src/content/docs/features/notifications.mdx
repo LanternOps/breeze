@@ -1,11 +1,11 @@
 ---
 title: Notifications
-description: Configure notification channels and deliver alerts via email, Slack, Teams, PagerDuty, SMS, webhook, and in-app notifications.
+description: Configure notification channels and deliver alerts via email, Slack, Teams, PagerDuty, SMS, Pushover, webhook, and in-app notifications.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze RMM delivers notifications through multiple channels whenever alerts trigger, automations execute, or other platform events occur. Notification channels are configured per organization and dispatched asynchronously through a background job queue. Every alert automatically generates in-app notifications for all active users in the affected organization; additional channels (email, webhook, Slack, Teams, PagerDuty, SMS) are routed based on alert rule configuration or organization defaults.
+Breeze RMM delivers notifications through multiple channels whenever alerts trigger, automations execute, or other platform events occur. Notification channels are configured per organization and dispatched asynchronously through a background job queue. Every alert automatically generates in-app notifications for all active users in the affected organization; additional channels (email, webhook, Slack, Teams, PagerDuty, SMS, Pushover) are routed based on alert rule configuration or organization defaults.
 
 ---
 
@@ -41,6 +41,7 @@ Channels define where notifications are delivered. Each channel belongs to an or
 | `webhook` | Sends an HTTP request to any HTTPS endpoint | `url`, `method`, `headers`, `authType`, ... |
 | `pagerduty` | Creates an incident via PagerDuty Events API v2 | `routingKey` or `integrationKey` |
 | `sms` | Sends text messages via Twilio Programmable Messaging | `phoneNumbers`, `from`, `messagingServiceSid` |
+| `pushover` | Sends push notifications to mobile devices via the Pushover Messages API (emergency-priority capable) | `token`, `user` |
 
 ---
 
@@ -176,6 +177,26 @@ The SMS sender delivers text messages via Twilio Programmable Messaging.
 Messages are truncated to 1400 characters. Phone numbers must be in E.164 format (e.g., `+15551234567`). The SMS service must be configured via the Twilio integration; if not, the sender returns "SMS service not configured".
 
 The send result includes `sentCount` and `failedCount` for multi-recipient deliveries, along with per-recipient error details.
+
+### Pushover
+
+The Pushover sender delivers alert notifications to a user's phone via the [Pushover Messages API](https://pushover.net/api), including emergency-priority alerts that repeat until acknowledged.
+
+**Configuration fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `token` | string | Yes* | Pushover application API token (30 characters max). Leave blank to inherit the partner default. |
+| `user` | string | Yes* | Pushover user or group key (30 characters max). Leave blank to inherit the partner default. |
+| `device` | string | No | Target a specific device by name (25 characters max). |
+| `priority` | number | No | `-2` (lowest) to `2` (emergency). Defaults to a severity-based mapping when blank. |
+| `sound` | string | No | A Pushover built-in or custom sound name. |
+
+\* Either the channel config or the partner default must supply both `token` and `user`. Saving a channel with both blank and no partner default returns a validation error.
+
+**Partner-level inheritance:** MSPs can set default Pushover credentials once at the partner level (`pushoverAppToken` and `pushoverDefaultUser` under the partner's notification settings). Any organization channel that leaves `token` and/or `user` blank inherits the partner default, so customers don't each need their own Pushover application.
+
+**Security:** The `token` and `user` values are encrypted at rest, the same as PagerDuty credentials.
 
 ### In-App
 
@@ -470,6 +491,22 @@ Channel endpoints require `organization`, `partner`, or `system` scope.
       }'
     ```
   </TabItem>
+  <TabItem label="Pushover">
+    ```bash
+    curl -X POST /alerts/channels \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "On-Call Pushover",
+        "type": "pushover",
+        "config": {
+          "token": "your-pushover-app-token",
+          "user": "your-pushover-user-key",
+          "priority": 1
+        },
+        "enabled": true
+      }'
+    ```
+  </TabItem>
   <TabItem label="Teams">
     ```bash
     curl -X POST /alerts/channels \
@@ -538,6 +575,9 @@ Verify the `routingKey` or `integrationKey` is valid and belongs to an active Pa
 
 **SMS not delivered.**
 Confirm the Twilio integration is configured (Twilio credentials are set). All phone numbers must be in E.164 format (e.g., `+15551234567`). Check the send result for per-recipient error details. The SMS body is truncated at 1400 characters.
+
+**Pushover notifications not delivered.**
+Confirm `token` and `user` are correct, or — if relying on inheritance — that the partner's `pushoverAppToken` and `pushoverDefaultUser` defaults are set. Test the channel with `POST /alerts/channels/:id/test`; the response now returns a specific validation message (for example, a too-long key or a missing token) rather than a generic failure. Ensure the Pushover app is installed on the device and has notifications enabled.
 
 **Escalation notifications still firing after alert was acknowledged.**
 Escalation cancellation listens for `alert.acknowledged` and `alert.resolved` events on the event bus. If the event bus is not running or the events are not emitted, delayed escalation jobs will continue to fire. Verify that alert acknowledge/resolve operations emit the correct events.

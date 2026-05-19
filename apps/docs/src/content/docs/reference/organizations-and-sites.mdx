@@ -255,7 +255,7 @@ POST /api/v1/orgs/sites
 }
 ```
 
-Returns the created site object with a `201` status. If `timezone` is omitted, it defaults to `UTC`.
+Only `orgId` and `name` are required. `timezone`, `address`, `contact`, and `settings` are all optional and can be filled in or changed later via `PATCH`; the minimal valid payload is just `{ "orgId": "...", "name": "..." }`. Returns the created site object with a `201` status. If `timezone` is omitted, it defaults to `UTC`.
 
 ---
 
@@ -359,6 +359,7 @@ These endpoints allow partner-scoped users to view and update their own partner 
 | `GET` | `/orgs/organizations/:id` | `partner`, `system` | Get an organisation by ID. Partner-scoped users can only access their own organisations. |
 | `PATCH` | `/orgs/organizations/:id` | `partner`, `system` | Update an organisation. The `partnerId` cannot be changed. Returns `400` if no fields provided. |
 | `DELETE` | `/orgs/organizations/:id` | `partner`, `system` | Soft-delete an organisation. Sets `deletedAt`. Returns `{ success: true }`. |
+| `PATCH` | `/orgs/organizations/order` | `partner` | Set the partner's preferred organisation display order. Body `{ "organizationOrder": ["<org-uuid>", ...] }`; unknown or deleted IDs are dropped, omitted orgs are appended in registration order. Persisted to partner settings and reflected by the list endpoints. Returns the sanitised `{ organizationOrder }`. |
 
 <Aside type="note">
   There are two list endpoints for organisations. `GET /orgs/` is the simpler variant used by organisation-scoped users to retrieve their own organisation. `GET /orgs/organizations` is the paginated variant for partner and system users.

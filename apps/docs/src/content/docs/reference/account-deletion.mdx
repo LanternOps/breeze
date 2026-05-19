@@ -1,0 +1,112 @@
+---
+title: Account Deletion
+description: Self-service account deletion requests, the 30-day grace period, and the administrator review queue.
+sidebar:
+  order: 12
+  label: Account Deletion
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Account deletion in Breeze is a **request-and-review process with a 30-day grace period**, not an immediate erase. A user submits a deletion request; an administrator reviews it; a back-office process completes the deletion after approval. This gives organisations time to intervene and leaves a complete audit trail.
+
+---
+
+## Requesting deletion (user)
+
+A signed-in user requests deletion of their own account from the dashboard account settings.
+
+<Steps>
+
+1. Open **Account → Delete account**.
+
+2. Re-enter the account **password** and complete the **multi-factor challenge** (MFA is required for this action). Optionally provide a reason.
+
+3. Submit. Breeze creates a deletion request with status `pending` and a process-by date 30 days out, and emails the organisation's administrators a review link.
+
+</Steps>
+
+Password re-entry is rate limited (5 attempts per 5 minutes). Only **one pending request per user** is allowed at a time — submitting again while one is pending is rejected.
+
+After submission the user sees the process-by date and can cancel any time before it:
+
+- **Cancel:** open **Account → Delete account** again and cancel the pending request. The request moves to `cancelled` and the account stays active.
+
+<Aside type="note">
+Submitting a request does not disable the account. The user keeps full access for the entire grace period unless an administrator approves the request and the back-office deletion completes.
+</Aside>
+
+---
+
+## Reviewing requests (administrator)
+
+Administrators with the **`users:write`** permission review pending requests at **Admin → Account deletion requests**. Approving and rejecting both require the administrator to pass an **MFA challenge**.
+
+| Decision | Effect |
+|----------|--------|
+| **Approve** | Request moves to `processing`. A back-office process performs the actual deletion and moves it to `completed`. |
+| **Reject** | Request moves to `cancelled`. A note explaining the decision is **required** and is emailed to the user. The account stays active. |
+
+The queue can be filtered by status (`pending`, `processing`, `completed`, `cancelled`), and a pending-count endpoint backs the admin badge.
+
+---
+
+## Status lifecycle
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Submitted by the user, awaiting administrator review. Cancellable by the user. |
+| `processing` | Approved by an administrator; queued for back-office deletion. |
+| `completed` | Deletion finished. |
+| `cancelled` | Cancelled by the user, or rejected by an administrator (with a required note). |
+
+---
+
+## API reference
+
+### User endpoints
+
+Mounted under `/auth`. All require authentication; submission also requires MFA.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/auth/account-deletion-request` | Return the user's current pending request, if any |
+| `POST` | `/auth/account-deletion-request` | Submit a request. Body `{ "password": "...", "reason": "..."? }`. Re-verifies password; requires MFA |
+| `PATCH` | `/auth/account-deletion-request/:id` | Cancel a pending request. Body `{ "status": "cancelled" }` |
+
+### Administrator endpoints
+
+Mounted under `/admin`. Require the `users:write` permission; the process action also requires MFA.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/account-deletion-requests` | List requests (filter by `status`) |
+| `GET` | `/admin/account-deletion-requests/pending-count` | Count of pending requests |
+| `GET` | `/admin/account-deletion-requests/:id` | Get a single request |
+| `POST` | `/admin/account-deletion-requests/:id/process` | Decide a request. Body `{ "action": "approve" }` or `{ "action": "reject", "adminNote": "..." }` (note required when rejecting) |
+
+---
+
+## Audit trail
+
+Deletion activity is recorded in the [audit log](/reference/audit-logs/). User actions are logged as `user.account_deletion.requested` (including denied attempts, e.g. an invalid password) and `user.account_deletion.cancelled`. Administrator approve/reject decisions are recorded against the administrator who made them, along with the decision note.
+
+---
+
+## Schema: `account_deletion_requests`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | The requesting user (references `users.id`, cascade on user delete) |
+| `org_id` | `uuid` | Denormalised tenant attribution; null for partner-level staff |
+| `reason` | `text` | Optional user-supplied reason |
+| `status` | `enum` | `pending`, `processing`, `completed`, or `cancelled` |
+| `requested_at` | `timestamp` | When the request was submitted |
+| `process_by` | `timestamp` | Submission time + 30 days |
+| `processed_at` | `timestamp` | When an administrator decided |
+| `processed_by` | `uuid` | The deciding administrator (references `users.id`) |
+| `admin_note` | `text` | Administrator note (required on rejection) |
+| `created_at` / `updated_at` | `timestamp` | Row timestamps |
+
+A partial unique index enforces at most one `pending` request per user.

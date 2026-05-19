@@ -120,10 +120,17 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 | `siteId` | `uuid` | No | `null` | Pin enrolled agents to a specific site. The enrollment endpoint will reject keys without a `siteId`. |
 | `name` | `string` | Yes | -- | Human-readable label (1--255 characters). |
 | `maxUsage` | `integer` | No | `1` | Maximum enrollments allowed (1--100,000). |
-| `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 expiration. Defaults to current time plus `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 60). |
+| `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 absolute expiration. Mutually exclusive with `ttlMinutes`. |
+| `ttlMinutes` | `integer` | No | Now + TTL | Lifetime in minutes from creation (1 to 525600, i.e. up to 365 days). Mutually exclusive with `expiresAt`. |
+
+When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 60). Supplying both is rejected so the resolved expiry is unambiguous.
 
 <Aside>
   The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 60 minutes after creation.
+</Aside>
+
+<Aside type="tip">
+  In the dashboard, the **Add Device** modal has a **Link expires in** picker that sets the per-link lifetime (for example 1 hour, 24 hours, 7 days, up to 1 year) without changing the server's environment default. The picker sends `ttlMinutes`.
 </Aside>
 
 **Response (201):**

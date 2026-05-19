@@ -187,4 +187,39 @@ describe('getDocsForPath', () => {
       expect(withSlash).toEqual(withoutSlash);
     });
   });
+
+  describe('v0.65.16 mappings', () => {
+    it('/admin/third-party-catalog matches patch management, not generic Admin', () => {
+      const result = getDocsForPath('/admin/third-party-catalog');
+      expect(result.label).toBe('Third-Party Catalog');
+      expect(result.url).toContain('/features/patch-management/');
+    });
+
+    it('/admin/account-deletion-requests matches account deletion, not generic Admin', () => {
+      const result = getDocsForPath('/admin/account-deletion-requests');
+      expect(result.label).toBe('Account Deletion Requests');
+      expect(result.url).toContain('/reference/account-deletion/');
+    });
+
+    it('/admin still falls back to Administration', () => {
+      const result = getDocsForPath('/admin');
+      expect(result.label).toBe('Administration');
+    });
+
+    it('/account/delete maps to account deletion docs', () => {
+      const result = getDocsForPath('/account/delete');
+      expect(result.url).toContain('/reference/account-deletion/');
+    });
+
+    it('/account/devices maps to mobile docs (trusted devices)', () => {
+      const result = getDocsForPath('/account/devices');
+      expect(result.label).toBe('Trusted Devices');
+      expect(result.url).toContain('/features/mobile/');
+    });
+
+    it('/account/connected-apps maps to MCP server docs', () => {
+      const result = getDocsForPath('/account/connected-apps');
+      expect(result.url).toContain('/features/mcp-server/');
+    });
+  });
 });

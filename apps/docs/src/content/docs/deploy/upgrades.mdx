@@ -75,6 +75,26 @@ The binary source depends on your `BINARY_SOURCE` setting:
 
 See [Binary Distribution](/deploy/binaries/) for details.
 
+### Disabling Auto-Update on Specific Devices
+
+Some devices — production database servers, devices in a change-controlled window — should not self-update on the normal heartbeat cadence. Toggle auto-update per device without editing config on the machine:
+
+```bash
+# Disable auto-update for one device
+curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update" \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# Re-enable later
+curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update" \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+```
+
+The agent persists this setting across restarts. This is also the way to recover agents that were left with auto-update disabled by a manual or recovery update — see the [`set_auto_update`](/agents/commands/#set_auto_update) command.
+
 ## Migration Failure Recovery
 
 If the API container fails to start after an upgrade due to a migration error, follow these steps:
