@@ -117,4 +117,55 @@ describe('fetchAllDevices', () => {
     await fetchAllDevices({ fetcher, includeDecommissioned: false });
     expect(fetcher.mock.calls[0][0]).not.toContain('includeDecommissioned');
   });
+
+  describe('AbortSignal', () => {
+    it('throws AbortError immediately when signal is already aborted before invocation', async () => {
+      const fetcher = vi.fn();
+      const controller = new AbortController();
+      controller.abort();
+      await expect(fetchAllDevices({ fetcher, signal: controller.signal })).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it('stops walking when the signal aborts between pages', async () => {
+      const controller = new AbortController();
+      const fetcher = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          // Abort during page 0 — the walker should detect it before issuing page 1.
+          controller.abort();
+          return jsonResponse({
+            data: [{ id: '1' }, { id: '2' }],
+            pagination: { nextCursor: 'cur-p2', limit: 2, total: 10 },
+          });
+        })
+        .mockResolvedValueOnce(
+          jsonResponse({ data: [{ id: '3' }], pagination: { nextCursor: null } }),
+        );
+
+      await expect(
+        fetchAllDevices({ fetcher, pageLimit: 2, signal: controller.signal }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      // Page 0 was already in flight when the abort fired, so it completes;
+      // page 1 must NOT be issued because the inter-page check trips first.
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('completes normally when signal is provided but never aborts', async () => {
+      const controller = new AbortController();
+      const fetcher = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({
+            data: [{ id: 'a' }, { id: 'b' }],
+            pagination: { nextCursor: null, limit: 200, total: 2 },
+          }),
+        );
+      const result = await fetchAllDevices({ fetcher, signal: controller.signal });
+      expect(result.data).toEqual([{ id: 'a' }, { id: 'b' }]);
+      expect(result.pagesWalked).toBe(1);
+    });
+  });
 });

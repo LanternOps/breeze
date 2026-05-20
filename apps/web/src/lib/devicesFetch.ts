@@ -57,6 +57,13 @@ export interface FetchAllDevicesOptions {
   pageLimit?: number;
   /** Override fetcher for tests. Defaults to the auth-wrapped fetch. */
   fetcher?: typeof fetchWithAuth;
+  /** Optional cancellation signal. When the caller (e.g. the DevicesPage
+   *  on navigate-away) aborts, the walker stops between pages and rejects
+   *  with the standard `DOMException('Aborted', 'AbortError')`. Without
+   *  this, a multi-page walk can keep issuing up to MAX_PAGES requests
+   *  after the user has left the page — wasted bandwidth on slow links
+   *  and unnecessary API load. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -74,12 +81,28 @@ export async function fetchAllDevices(
   const includeDecommissioned = options.includeDecommissioned ?? true;
   const pageLimit = options.pageLimit ?? PAGE_LIMIT;
   const fetcher = options.fetcher ?? fetchWithAuth;
+  const signal = options.signal;
+
+  // Fast-path: if the caller already aborted before invocation, throw
+  // immediately rather than issuing page 0.
+  if (signal?.aborted) {
+    throw signalAbortError(signal);
+  }
 
   const accumulated: Record<string, unknown>[] = [];
   let cursor: string | null = null;
   let total: number | undefined;
 
   for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
+    // Check between pages so a navigate-away that lands mid-walk stops
+    // the next request before we issue it. Checking here (rather than
+    // inside the fetcher) means we still surface a single AbortError
+    // even when the underlying fetch implementation does not honor
+    // AbortSignal.
+    if (signal?.aborted) {
+      throw signalAbortError(signal);
+    }
+
     const params = new URLSearchParams();
     if (includeDecommissioned) params.set('includeDecommissioned', 'true');
     params.set('limit', String(pageLimit));
@@ -125,4 +148,17 @@ export async function fetchAllDevices(
       `Investigate server-side cursor loop.`,
   );
   return { data: accumulated, total: undefined, pagesWalked: MAX_PAGES };
+}
+
+/** Build the standard DOMException-shaped AbortError so callers can do
+ *  `catch (err) { if (err.name === 'AbortError') return; }` against any
+ *  abort source (DOM-native fetch, our walker, any other library). When
+ *  the signal carries a `reason`, prefer that; otherwise fall back to the
+ *  generic message. */
+function signalAbortError(signal: AbortSignal): Error {
+  // AbortSignal.reason was added in 17+/Chromium 100+; gracefully degrade
+  // if we're in an older environment.
+  const reason = (signal as { reason?: unknown }).reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException('Aborted', 'AbortError');
 }
