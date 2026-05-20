@@ -35,6 +35,19 @@ for file in docker/turnserver.conf docker-compose.yml deploy/docker-compose.prod
   require_grep 'no-multicast-peers|--no-multicast-peers' "$file" "$file must deny multicast TURN peers"
 done
 
+# SR-009: coturn must fail closed if TURN_SECRET is unset/empty. An empty
+# REST shared secret makes TURN credentials trivially forgeable (open relay).
+# Require the fail-closed `${TURN_SECRET:?...}` form and reject the silent
+# empty-default `${TURN_SECRET:-}` / bare `${TURN_SECRET}` forms.
+for file in docker-compose.yml deploy/docker-compose.prod.yml; do
+  reject_grep 'static-auth-secret=\$\{TURN_SECRET:-' "$file" \
+    "$file: TURN static-auth-secret must fail closed (\${TURN_SECRET:?...}), not default to empty (\${TURN_SECRET:-})"
+  reject_grep 'static-auth-secret=\$\{TURN_SECRET\}' "$file" \
+    "$file: TURN static-auth-secret must fail closed (\${TURN_SECRET:?...}), not use a bare \${TURN_SECRET}"
+  require_grep 'static-auth-secret=\$\{TURN_SECRET:\?' "$file" \
+    "$file: TURN static-auth-secret must use the fail-closed \${TURN_SECRET:?...} form"
+done
+
 reject_grep 'trusted_proxies[[:space:]]+static[[:space:]]+private_ranges' docker/Caddyfile.prod \
   "Caddy must not trust all private ranges as proxy hops"
 require_grep 'CADDY_TRUSTED_PROXIES' docker/Caddyfile.prod \

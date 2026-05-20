@@ -25,7 +25,7 @@ import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTool
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
-import { eq, and, asc, desc, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -1125,6 +1125,32 @@ function handleResourcesList(id: string | number): JsonRpcResponse {
 // ============================================
 
 /**
+ * SR-008: explicit ALLOW-LIST of `devices` columns safe to serialize into the
+ * `breeze://devices/{id}` MCP resource. An allow-list (not a deny-list) is
+ * deliberate — any column added to the schema in future is excluded by
+ * default, so a newly-introduced credential/secret column cannot silently
+ * leak to an AI/MCP client. Excludes: agent/watchdog/helper token hashes and
+ * their issued/expiry timestamps, mTLS certificate material/metadata, and the
+ * internal agentId.
+ */
+export const SAFE_DEVICE_RESOURCE_FIELDS = [
+  'id', 'orgId', 'siteId', 'hostname', 'displayName',
+  'osType', 'deviceRole', 'deviceRoleSource', 'osVersion', 'osBuild',
+  'architecture', 'agentVersion', 'status', 'lastSeenAt', 'enrolledAt',
+  'enrolledBy', 'tags', 'customFields', 'managementPosture', 'tccPermissions',
+  'desktopAccess', 'lastUser', 'uptimeSeconds', 'isHeadless', 'watchdogStatus',
+  'watchdogLastSeen', 'watchdogVersion', 'quarantinedAt', 'quarantinedReason',
+  'createdAt', 'updatedAt',
+] as const;
+
+export function buildSafeDeviceProjection() {
+  const cols = getTableColumns(devices);
+  return Object.fromEntries(
+    SAFE_DEVICE_RESOURCE_FIELDS.map((field) => [field, cols[field]])
+  ) as Pick<typeof cols, (typeof SAFE_DEVICE_RESOURCE_FIELDS)[number]>;
+}
+
+/**
  * Query a table with org-scoping and return a JSON-RPC resource result.
  */
 async function readOrgScopedResource(
@@ -1218,7 +1244,7 @@ async function handleResourcesRead(
       if (orgFilter) conditions.push(orgFilter);
 
       const [device] = await db
-        .select()
+        .select(buildSafeDeviceProjection())
         .from(devices)
         .where(and(...conditions))
         .limit(1);

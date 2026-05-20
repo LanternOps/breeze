@@ -144,6 +144,61 @@ describe('sendExpoPush', () => {
     expect(nullSets.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('does not log the full Expo push token on ticket error (SR-004)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const secretToken = 'ExponentPushToken[SUPERSECRETPUSHADDRESS12345]';
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            status: 'error',
+            message: 'too many',
+            details: { error: 'MessageRateExceeded' },
+          },
+        ],
+      }),
+    } as unknown as Response);
+
+    await sendExpoPush([{ to: secretToken, title: 't', body: 'b' }]);
+
+    expect(errSpy).toHaveBeenCalled();
+    const logged = JSON.stringify(errSpy.mock.calls);
+    // The raw, reusable push address must never appear in logs.
+    expect(logged).not.toContain(secretToken);
+    expect(logged).not.toContain('SUPERSECRETPUSHADDRESS12345');
+    // A redacted reference (last-4 suffix) is still useful for correlation.
+    expect(logged).toContain('345]');
+    errSpy.mockRestore();
+  });
+
+  it('still clears DeviceNotRegistered tokens using the full token despite redacted logging (SR-004)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const deadToken = 'ExponentPushToken[DEADTOKENFULLVALUE99999]';
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            status: 'error',
+            message: 'gone',
+            details: { error: 'DeviceNotRegistered' },
+          },
+        ],
+      }),
+    } as unknown as Response);
+
+    await sendExpoPush([{ to: deadToken, title: 't', body: 'b' }]);
+
+    // DB cleanup must still receive the FULL token (matching the stored column).
+    const fullTokenUsed = updateWhereCalls.length > 0;
+    expect(fullTokenUsed).toBe(true);
+    // But the log must not contain it.
+    const logged = JSON.stringify(errSpy.mock.calls);
+    expect(logged).not.toContain(deadToken);
+    errSpy.mockRestore();
+  });
+
   it('logs but does not mark inactive on non-DeviceNotRegistered ticket errors', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({

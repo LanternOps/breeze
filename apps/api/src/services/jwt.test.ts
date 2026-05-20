@@ -88,6 +88,25 @@ describe('jwt service', () => {
     });
   });
 
+  describe('mobile device binding claim (mdid) — SR-001', () => {
+    it('round-trips an mdid claim through an access token', async () => {
+      const token = await createAccessToken({ ...testPayload, mdid: 'install-abc-123' });
+      const decoded = await verifyToken(token);
+      expect(decoded?.mdid).toBe('install-abc-123');
+    });
+
+    it('round-trips an mdid claim through a refresh token', async () => {
+      const token = await createRefreshToken({ ...testPayload, mdid: 'install-abc-123' });
+      const decoded = await verifyToken(token);
+      expect(decoded?.mdid).toBe('install-abc-123');
+    });
+
+    it('leaves mdid undefined when not bound (web / MCP / OAuth tokens)', async () => {
+      const decoded = await verifyToken(await createAccessToken(testPayload));
+      expect(decoded?.mdid).toBeUndefined();
+    });
+  });
+
   describe('createTokenPair', () => {
     it('should create both access and refresh tokens', async () => {
       const result = await createTokenPair(testPayload);

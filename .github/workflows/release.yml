@@ -18,6 +18,13 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# SR-007: least-privilege default for every job. Build jobs only need to read
+# the repo + exchange artifacts. Jobs that publish override this with their
+# own per-job `permissions:` (create-release → contents: write; GHCR pushes →
+# packages: write; Tauri/MSI signing → id-token: write).
+permissions:
+  contents: read
+
 jobs:
   build-api:
     name: Build API

@@ -238,6 +238,81 @@ describe('mobile routes', () => {
 
       expect(res.status).toBe(400);
     });
+
+    it('returns 409 and does not upsert when deviceId belongs to another user (SR-002)', async () => {
+      // The auth mock authenticates user-123. An attacker in the same tenant
+      // POSTs the victim's deviceId. RLS lets the pre-check SELECT see the
+      // victim row; the handler must refuse rather than reassigning user_id.
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([{ status: 'active', userId: 'victim-user-999' }]) as any
+      );
+      vi.mocked(db.insert).mockReturnValue(
+        mockInsertOnConflictReturning([{ id: 'stolen', deviceId: 'victim-device', platform: 'android' }]) as any
+      );
+
+      const res = await app.request('/mobile/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'victim-device',
+          platform: 'android',
+          fcmToken: 'attacker-fcm'
+        })
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('device_owned_by_other');
+      // Critically: no insert/upsert was attempted against the victim row.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('still allows the owner to re-register their own existing device (SR-002 regression)', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([{ status: 'active', userId: 'user-123' }]) as any
+      );
+      vi.mocked(db.insert).mockReturnValue(
+        mockInsertOnConflictReturning([
+          { id: 'mobile-1', deviceId: 'device-123', platform: 'android', fcmToken: 'fcm-1' }
+        ]) as any
+      );
+
+      const res = await app.request('/mobile/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'device-123',
+          platform: 'android',
+          fcmToken: 'fcm-1'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.deviceId).toBe('device-123');
+    });
+
+    it('returns 409 when the conflict upsert matches no owned row (race defense, SR-002)', async () => {
+      // No row visible at pre-check time, but the conflicting row turns out
+      // not to be owned by the caller → setWhere matches 0 rows → empty
+      // returning(). Must surface as 409, never a silent 201 with null body.
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
+      vi.mocked(db.insert).mockReturnValue(mockInsertOnConflictReturning([]) as any);
+
+      const res = await app.request('/mobile/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: 'raced-device',
+          platform: 'android',
+          fcmToken: 'fcm-1'
+        })
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('device_owned_by_other');
+    });
   });
 
   describe('PATCH /mobile/devices/:id/settings', () => {
