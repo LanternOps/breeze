@@ -48,6 +48,11 @@ const (
 	CmdLock           = "lock"
 	CmdRebootSafeMode = "reboot_safe_mode"
 	CmdWakeOnLan      = "wake_on_lan"
+	// On-demand re-run of all inventory collectors. Triggers the same set of
+	// send*Inventory submissions the heartbeat fires periodically, so the API
+	// sees fresh hardware/software/network/etc. without waiting for the next
+	// scheduled cycle.
+	CmdRefreshInventory = "refresh_inventory"
 
 	// Software inventory
 	CmdCollectSoftware   = "collect_software"

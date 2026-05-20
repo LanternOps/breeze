@@ -361,6 +361,50 @@ describe('device commands routes', () => {
       expect(auditPayload).not.toContain('abc123');
     });
 
+    it('queues a refresh_inventory command as a pending row', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-refresh',
+            deviceId: 'device-a',
+            type: 'refresh_inventory',
+            status: 'pending',
+            createdAt: new Date()
+          }])
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'refresh_inventory' })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.type).toBe('refresh_inventory');
+      expect(body.status).toBe('pending');
+    });
+
+    it('rejects an unknown command type with 400', async () => {
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'definitely_not_a_command' })
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(getDeviceWithOrgCheck)).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('rejects generic script command requests with caller-controlled content', async () => {
       const res = await app.request('/devices/device-a/commands', {
         method: 'POST',

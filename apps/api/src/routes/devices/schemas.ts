@@ -44,7 +44,7 @@ export const createCommandSchema = z.object({
   // 'wake' is the user-facing wake action. Internally it dispatches via the
   // wakeOnLan service and writes a deviceCommands row of type 'wake_on_lan'
   // addressed to a relay agent. See apps/api/src/services/wakeOnLan.ts.
-  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake']),
+  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake', 'refresh_inventory']),
   payload: z.any().optional()
 });
 
@@ -59,7 +59,7 @@ export const BULK_COMMAND_MAX_DEVICES = 500;
 
 export const bulkCommandSchema = z.object({
   deviceIds: z.array(z.string().uuid()).min(1).max(BULK_COMMAND_MAX_DEVICES),
-  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake']),
+  type: z.enum(['script', 'reboot', 'reboot_safe_mode', 'shutdown', 'update', 'collect_evidence', 'execute_containment', 'wake', 'refresh_inventory']),
   payload: z.any().optional()
 });
 

@@ -56,6 +56,9 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdRebootSafeMode: handleRebootSafeMode,
 	tools.CmdWakeOnLan:      handleWakeOnLan,
 
+	// On-demand inventory refresh
+	tools.CmdRefreshInventory: handleRefreshInventory,
+
 	// Software inventory
 	tools.CmdCollectSoftware:   handleCollectSoftware,
 	tools.CmdSoftwareUninstall: handleSoftwareUninstall,
@@ -228,6 +231,37 @@ func handleLock(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleWakeOnLan(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.WakeOnLan(cmd.Payload)
+}
+
+// handleRefreshInventory triggers an immediate run of the full inventory cycle
+// (hardware, software, disk, network, configuration changes, sessions,
+// connections, patches, policy state, security status, Apple warranty). Each
+// collector is dispatched to its own goroutine via h.sendInventory(); the
+// returned result acknowledges the dispatch synchronously while data flows in
+// over the next 30s–2min as each collector completes.
+func handleRefreshInventory(h *Heartbeat, _ Command) tools.CommandResult {
+	start := time.Now()
+	if h.sendInventoryFn != nil {
+		h.sendInventoryFn()
+	} else {
+		h.sendInventory()
+	}
+	return tools.NewSuccessResult(map[string]any{
+		"dispatched": []string{
+			"hardware",
+			"software",
+			"disk",
+			"network",
+			"configuration_changes",
+			"session",
+			"connections",
+			"patch",
+			"policy_registry",
+			"policy_config",
+			"security_status",
+			"apple_warranty",
+		},
+	}, time.Since(start).Milliseconds())
 }
 
 func handleRebootSafeMode(h *Heartbeat, cmd Command) tools.CommandResult {

@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -22,6 +23,7 @@ var allCommandTypes = []string{
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
 	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdWakeOnLan,
+	tools.CmdRefreshInventory,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,
@@ -145,6 +147,34 @@ func TestDispatchUnknownCommandReturnsFalse(t *testing.T) {
 	})
 	if handled {
 		t.Fatal("dispatchCommand should return false for unknown command type")
+	}
+}
+
+func TestHandleRefreshInventoryDispatchesSendInventory(t *testing.T) {
+	var called int
+	h := &Heartbeat{
+		sendInventoryFn: func() { called++ },
+	}
+
+	result := handleRefreshInventory(h, Command{ID: "test-refresh-1", Type: tools.CmdRefreshInventory})
+
+	if called != 1 {
+		t.Fatalf("sendInventoryFn called %d times, want 1", called)
+	}
+	if result.Status != "completed" {
+		t.Errorf("result.Status = %q, want %q", result.Status, "completed")
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("result.ExitCode = %d, want 0", result.ExitCode)
+	}
+	var payload struct {
+		Dispatched []string `json:"dispatched"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, result.Stdout)
+	}
+	if len(payload.Dispatched) != 12 {
+		t.Errorf("dispatched len = %d, want 12 (one per send*Inventory collector)", len(payload.Dispatched))
 	}
 }
 

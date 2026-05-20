@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Play,
   RotateCcw,
+  RefreshCw,
   Monitor,
   Settings,
   Power,
@@ -98,6 +99,16 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               >
                 <Wrench className="h-4 w-4" />
                 Remote Tools
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction('refresh')}
+                disabled={device.status === 'offline'}
+                title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Refresh
               </button>
               <button
                 type="button"
@@ -211,6 +222,16 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
         >
           <Wrench className="h-4 w-4" />
           Remote Tools
+        </button>
+        <button
+          type="button"
+          onClick={() => handleAction('refresh')}
+          disabled={device.status === 'offline' || loading}
+          title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
+          className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <RefreshCw className="h-4 w-4" />
+          Refresh
         </button>
         <button
           type="button"
