@@ -174,6 +174,9 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
   const [editingRole, setEditingRole] = useState(false);
   const [selectedRole, setSelectedRole] = useState<string>('unknown');
   const [savingRole, setSavingRole] = useState(false);
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
+  const [savingDisplayName, setSavingDisplayName] = useState(false);
 
   const fetchInfo = useCallback(async () => {
     setLoading(true);
@@ -242,6 +245,36 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
       setSaveError('Network error. Please check your connection and try again.');
     } finally {
       setSavingRole(false);
+    }
+  };
+
+  const handleSaveDisplayName = async () => {
+    setSavingDisplayName(true);
+    setSaveError(null);
+    // Trim; an empty draft clears the display name (PATCH with null).
+    const trimmed = displayNameDraft.trim();
+    const payload: { displayName: string | null } = { displayName: trimmed === '' ? null : trimmed };
+    try {
+      const response = await fetchWithAuth(`/devices/${deviceId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        setInfo(prev => prev ? { ...prev, displayName: payload.displayName } : prev);
+        setEditingDisplayName(false);
+      } else {
+        let detail = `Failed to save (HTTP ${response.status})`;
+        try {
+          const body = await response.json();
+          if (body.error) detail = body.error;
+        } catch { /* non-JSON response */ }
+        setSaveError(detail);
+      }
+    } catch (err) {
+      console.error('Failed to save display name:', err);
+      setSaveError('Network error. Please check your connection and try again.');
+    } finally {
+      setSavingDisplayName(false);
     }
   };
 
@@ -393,7 +426,63 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
     <div className="grid gap-6 lg:grid-cols-2">
       <Section title="System" icon={<Monitor className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="Hostname" value={info?.hostname ?? '—'} />
-        <InfoRow label="Display Name" value={info?.displayName ?? 'Not set'} />
+        <div className="flex items-center justify-between py-2">
+          <dt className="text-sm text-muted-foreground">Display Name</dt>
+          <dd className="text-sm font-medium text-right flex items-center gap-2">
+            {editingDisplayName ? (
+              <>
+                <input
+                  type="text"
+                  value={displayNameDraft}
+                  onChange={e => setDisplayNameDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') void handleSaveDisplayName();
+                    if (e.key === 'Escape') setEditingDisplayName(false);
+                  }}
+                  maxLength={255}
+                  placeholder="Leave blank to clear"
+                  className="h-8 w-48 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveDisplayName}
+                  disabled={savingDisplayName}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-primary hover:bg-primary/10"
+                  title="Save"
+                >
+                  <Check className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingDisplayName(false)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+                  title="Cancel"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </>
+            ) : (
+              <>
+                <span className={info?.displayName ? '' : 'text-muted-foreground italic'}>
+                  {info?.displayName ?? 'Not set'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDisplayNameDraft(info?.displayName ?? '');
+                    setEditingDisplayName(true);
+                    setSaveError(null);
+                  }}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="Edit display name"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              </>
+            )}
+          </dd>
+        </div>
         <InfoRow label="Serial Number" value={hw?.serialNumber ?? '—'} />
         <InfoRow label="Manufacturer" value={hw?.manufacturer ?? '—'} />
         <InfoRow label="Model" value={hw?.model ?? '—'} />
