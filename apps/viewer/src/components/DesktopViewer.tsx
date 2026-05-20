@@ -180,7 +180,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // Frame rate tracking
   const frameCountRef = useRef(0);
-  const fpsIntervalRef = useRef<ReturnType<typeof setInterval>>();
+  // React 19 removed the no-arg useRef overload; explicit `undefined` init.
+  const fpsIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   // Remote screen size (actual pixels from agent)
   const remoteScreenRef = useRef({ width: 1920, height: 1080 });
