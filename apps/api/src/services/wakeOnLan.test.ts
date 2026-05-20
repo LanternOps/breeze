@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeBroadcast, intToIpv4, ipv4ToInt } from './wakeOnLan';
+import { computeBroadcast, intToIpv4, ipv4ToInt, isApipaIpv4 } from './wakeOnLan';
 
 describe('ipv4ToInt', () => {
   it('converts dotted-quad to 32-bit int', () => {
@@ -78,5 +78,31 @@ describe('computeBroadcast', () => {
     const out = computeBroadcast('192.168.1.42', '255.0.255.0');
     expect(out).not.toBeNull();
     expect(out!.network).toBe('192.0.1.0');
+  });
+});
+
+describe('isApipaIpv4', () => {
+  it('returns true for IPs in 169.254.0.0/16', () => {
+    expect(isApipaIpv4('169.254.0.0')).toBe(true);
+    expect(isApipaIpv4('169.254.1.1')).toBe(true);
+    expect(isApipaIpv4('169.254.148.52')).toBe(true);   // Trevor-Legion PdaNet
+    expect(isApipaIpv4('169.254.213.223')).toBe(true);  // Trevor-Legion Wi-Fi
+    expect(isApipaIpv4('169.254.255.255')).toBe(true);  // upper bound
+  });
+
+  it('returns false for adjacent ranges and real LAN IPs', () => {
+    // 169.253.0.0 and 169.255.0.0 are just outside the APIPA /16.
+    expect(isApipaIpv4('169.253.255.255')).toBe(false);
+    expect(isApipaIpv4('169.255.0.0')).toBe(false);
+    // Real LAN ranges must never be classified as APIPA.
+    expect(isApipaIpv4('10.10.10.50')).toBe(false);
+    expect(isApipaIpv4('192.168.1.1')).toBe(false);
+    expect(isApipaIpv4('172.19.64.1')).toBe(false);
+  });
+
+  it('returns false for invalid input', () => {
+    expect(isApipaIpv4('not-an-ip')).toBe(false);
+    expect(isApipaIpv4('')).toBe(false);
+    expect(isApipaIpv4('::1')).toBe(false);
   });
 });
