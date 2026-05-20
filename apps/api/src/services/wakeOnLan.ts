@@ -94,6 +94,23 @@ export function computeBroadcast(ip: string, mask: string): { network: string; b
   return { network: intToIpv4(networkN), broadcast: intToIpv4(broadcastN) };
 }
 
+/**
+ * True if `ip` is in the IPv4 link-local APIPA range (169.254.0.0/16). These
+ * are never a real LAN — they're the fallback Windows assigns when DHCP
+ * fails on an interface. A relay search against an APIPA /24 will never
+ * find a peer (everyone with APIPA picks a different random pair). They
+ * must be excluded from target-subnet candidates or dispatchWake will
+ * intermittently return NO_RELAY when a host has any APIPA-bound NIC
+ * (Bluetooth PAN, virtual switches with no DHCP, etc.) — even when the
+ * host's real Ethernet is sitting on a populated 10.x or 192.168.x.
+ */
+export function isApipaIpv4(ip: string): boolean {
+  const n = ipv4ToInt(ip);
+  if (n === null) return false;
+  // 169.254.0.0/16 — 0xa9fe0000 ... 0xa9feffff
+  return n >= 0xa9fe0000 && n <= 0xa9feffff;
+}
+
 async function resolveTargetMacs(targetDeviceId: string): Promise<string[]> {
   // Prefer device_network (live inventory), fall back to device_ip_history (historical).
   const fromNetwork = await db
@@ -131,58 +148,75 @@ async function resolveTargetMacs(targetDeviceId: string): Promise<string[]> {
   return macs;
 }
 
-async function resolveTargetSubnet(targetDeviceId: string): Promise<{ subnet: TargetSubnet | null; sawIpv6: boolean }> {
-  // Prefer the agent-reported mask. Most recent IPv4 with subnet_mask set.
-  const ipv4WithMask = await db
-    .select({ ip: deviceIpHistory.ipAddress, mask: deviceIpHistory.subnetMask })
+/**
+ * Build ALL plausible target subnets for a device, ordered by preference.
+ *
+ * A laptop typically has multiple active IPv4 rows at once — real LAN
+ * (Ethernet/Wi-Fi), virtual switches (Hyper-V vEthernet, Docker), and
+ * APIPA fallbacks on whichever NICs have no DHCP lease. Picking ONE row
+ * arbitrarily (the previous behavior of LIMIT 1) caused intermittent
+ * NO_RELAY: agent inventory inserts every interface at the same
+ * timestamp, so the `ORDER BY last_seen DESC LIMIT 1` tie-break was
+ * Postgres's planner choice — often a vSwitch or an APIPA address that
+ * has no peers anywhere.
+ *
+ * Returns the full ordered candidate set so the caller can iterate via
+ * `selectRelay` until it finds a subnet that has online peers. Order:
+ *   1. Agent-reported mask candidates (last_seen DESC).
+ *   2. Mask-null candidates, /24 fallback (last_seen DESC).
+ * APIPA (169.254.0.0/16) is excluded — a /24 in that range never has
+ * peers because every host with APIPA picks a different random pair.
+ */
+async function resolveTargetSubnetCandidates(
+  targetDeviceId: string,
+): Promise<{ candidates: TargetSubnet[]; sawIpv6: boolean }> {
+  const rows = await db
+    .select({
+      ip: deviceIpHistory.ipAddress,
+      mask: deviceIpHistory.subnetMask,
+      lastSeen: deviceIpHistory.lastSeen,
+    })
     .from(deviceIpHistory)
     .where(and(
       eq(deviceIpHistory.deviceId, targetDeviceId),
       eq(deviceIpHistory.ipType, 'ipv4'),
-      isNotNull(deviceIpHistory.subnetMask),
     ))
-    .orderBy(desc(deviceIpHistory.lastSeen))
-    .limit(1);
-  if (ipv4WithMask[0]?.ip && ipv4WithMask[0]?.mask) {
-    const computed = computeBroadcast(ipv4WithMask[0].ip, ipv4WithMask[0].mask);
-    if (computed) {
-      return {
-        subnet: { ip: ipv4WithMask[0].ip, mask: ipv4WithMask[0].mask, ...computed, maskSource: 'agent' },
-        sawIpv6: false,
-      };
-    }
+    .orderBy(desc(deviceIpHistory.lastSeen));
+
+  const withMask: TargetSubnet[] = [];
+  const withoutMask: TargetSubnet[] = [];
+  const seenNetworks = new Set<string>();
+
+  for (const row of rows) {
+    if (!row.ip || isApipaIpv4(row.ip)) continue;
+    const mask = row.mask || FALLBACK_MASK_24;
+    const computed = computeBroadcast(row.ip, mask);
+    if (!computed) continue;
+    // Dedupe by computed network — two interfaces in the same /24 (e.g.
+    // dual-homed NIC) would otherwise duplicate the work.
+    if (seenNetworks.has(computed.network)) continue;
+    seenNetworks.add(computed.network);
+    const candidate: TargetSubnet = {
+      ip: row.ip,
+      mask,
+      ...computed,
+      maskSource: row.mask ? 'agent' : 'fallback_24',
+    };
+    if (row.mask) withMask.push(candidate);
+    else withoutMask.push(candidate);
   }
 
-  // Fallback: most recent IPv4 *without* a mask. Pre-existing upstream gap —
-  // the agent's NetworkAdapterInfo doesn't populate SubnetMask yet, so we
-  // assume /24, which covers the vast majority of SMB LANs. Audit notes the
-  // fallback so this is visible in records.
-  const ipv4AnyMask = await db
-    .select({ ip: deviceIpHistory.ipAddress })
-    .from(deviceIpHistory)
-    .where(and(
-      eq(deviceIpHistory.deviceId, targetDeviceId),
-      eq(deviceIpHistory.ipType, 'ipv4'),
-    ))
-    .orderBy(desc(deviceIpHistory.lastSeen))
-    .limit(1);
-  if (ipv4AnyMask[0]?.ip) {
-    const computed = computeBroadcast(ipv4AnyMask[0].ip, FALLBACK_MASK_24);
-    if (computed) {
-      return {
-        subnet: { ip: ipv4AnyMask[0].ip, mask: FALLBACK_MASK_24, ...computed, maskSource: 'fallback_24' },
-        sawIpv6: false,
-      };
-    }
+  const candidates = [...withMask, ...withoutMask];
+  if (candidates.length > 0) {
+    return { candidates, sawIpv6: false };
   }
 
-  // No IPv4 — did we ever see IPv6? Used to return a more useful error.
   const ipv6 = await db
     .select({ id: deviceIpHistory.id })
     .from(deviceIpHistory)
     .where(and(eq(deviceIpHistory.deviceId, targetDeviceId), eq(deviceIpHistory.ipType, 'ipv6')))
     .limit(1);
-  return { subnet: null, sawIpv6: ipv6.length > 0 };
+  return { candidates: [], sawIpv6: ipv6.length > 0 };
 }
 
 async function selectRelay(
@@ -273,18 +307,20 @@ export async function dispatchWake(
     return { ok: false, code: 'NO_MACS', message: 'Target has no recorded MAC address. The agent must check in at least once before Wake-on-LAN is available.' };
   }
 
-  const { subnet, sawIpv6 } = await resolveTargetSubnet(target.id);
-  if (!subnet) {
+  const { candidates, sawIpv6 } = await resolveTargetSubnetCandidates(target.id);
+  if (candidates.length === 0) {
     return {
       ok: false,
       code: sawIpv6 ? 'IPV6_ONLY' : 'NO_SUBNET',
       message: sawIpv6
         ? 'Target has only IPv6 history. Wake-on-LAN requires an IPv4 record with subnet mask.'
-        : 'Target has no IPv4 record with a subnet mask in history.',
+        : 'Target has no usable IPv4 record (APIPA-only addresses don\'t count) — agent must check in at least once on a real LAN.',
     };
   }
 
-  let relay: RelayCandidate | null;
+  let relay: RelayCandidate | null = null;
+  let subnet: TargetSubnet | null = null;
+
   if (options.relayDeviceIdOverride) {
     const [override] = await db
       .select({
@@ -300,6 +336,12 @@ export async function dispatchWake(
     if (!override || override.siteId !== target.siteId || override.status !== 'online' || override.id === target.id || !isAgentConnected(override.agentId)) {
       return { ok: false, code: 'RELAY_OVERRIDE_INVALID', message: 'Override relay must be a different online device at the target\'s site with a live agent connection.' };
     }
+    // Override: use the first candidate subnet (best-guess broadcast).
+    // Operator opted into this path — they're picking the relay, not the
+    // network. If their override sits on a different subnet than the
+    // chosen broadcast, the packet still goes out but won't reach the
+    // target. Documented as a troubleshooting tool, not a normal path.
+    subnet = candidates[0]!;
     relay = {
       deviceId: override.id,
       agentId: override.agentId,
@@ -308,14 +350,28 @@ export async function dispatchWake(
       lastSeen: new Date(),
     };
   } else {
-    relay = await selectRelay(target.siteId, target.id, subnet.network);
+    // Try each candidate subnet in priority order. First match wins.
+    // This matters when a laptop has both a real LAN interface and a
+    // Hyper-V/Docker virtual switch — the virtual switch has no peer
+    // agents, so we must keep looking instead of bailing on the first
+    // failed match. Pre-fix, an arbitrary LIMIT 1 row pick produced
+    // intermittent NO_RELAY for any target with multiple active IPv4
+    // rows.
+    for (const candidate of candidates) {
+      const found = await selectRelay(target.siteId, target.id, candidate.network);
+      if (found) {
+        relay = found;
+        subnet = candidate;
+        break;
+      }
+    }
   }
 
-  if (!relay) {
+  if (!relay || !subnet) {
     return {
       ok: false,
       code: 'NO_RELAY',
-      message: 'No online peer agent is available at the target\'s site and subnet to relay the Wake-on-LAN packet.',
+      message: `No online peer agent at the target's site has a recorded IPv4 on any of the ${candidates.length} candidate subnet(s) for this target.`,
     };
   }
 
