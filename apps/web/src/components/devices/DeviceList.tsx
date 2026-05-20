@@ -595,12 +595,23 @@ export default function DeviceList({
       header: () => sortHeader('status', 'Status', 'status', 'Sort by status'),
       cell: (device) => (
         <td key="status" className="px-3 py-3 text-sm">
-          <span
-            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
-            title={statusFullLabels[device.status]}
-          >
-            {statusLabels[device.status]}
-          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
+              title={statusFullLabels[device.status]}
+            >
+              {statusLabels[device.status]}
+            </span>
+            {shouldShowAgentSilentBadge(device) && (
+              <span
+                data-testid={`device-${device.id}-agent-silent-badge`}
+                title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
+                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
+              </span>
+            )}
+          </div>
         </td>
       ),
     },
@@ -1135,141 +1146,7 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-<<<<<<< HEAD
-                  {visibleColumns.has('hostname') && (
-                    <td className="max-w-[200px] px-3 py-3 text-sm font-medium">
-                      <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
-                    </td>
-                  )}
-                  {visibleColumns.has('organization') && (
-                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                      <span className="block truncate" title={device.orgName}>{device.orgName}</span>
-                    </td>
-                  )}
-                  {visibleColumns.has('site') && (
-                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                      <span className="block truncate" title={device.siteName}>{device.siteName}</span>
-                    </td>
-                  )}
-                  {visibleColumns.has('os') && (
-                    <td className="px-3 py-3 text-sm">
-                      <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
-                    </td>
-                  )}
-                  {visibleColumns.has('osVersion') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {device.osVersion || <span className="text-muted-foreground">&mdash;</span>}
-                    </td>
-                  )}
-                  {visibleColumns.has('role') && (
-                    <td className="px-3 py-3 text-sm">
-                      {(() => {
-                        const role = device.deviceRole ?? 'unknown';
-                        const RoleIcon = getDeviceRoleIcon(role);
-                        const roleLabel = getDeviceRoleLabel(role);
-                        return (
-                          <span
-                            className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
-                            title={roleLabel}
-                            aria-label={roleLabel}
-                          >
-                            <RoleIcon className="h-3.5 w-3.5" />
-                          </span>
-                        );
-                      })()}
-                    </td>
-                  )}
-                  {visibleColumns.has('status') && (
-                    <td className="px-3 py-3 text-sm">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
-                          title={statusFullLabels[device.status]}
-                        >
-                          {statusLabels[device.status]}
-                        </span>
-                        {shouldShowAgentSilentBadge(device) && (
-                          <span
-                            data-testid={`device-${device.id}-agent-silent-badge`}
-                            title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
-                            className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-                          >
-                            Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                  )}
-                  {visibleColumns.has('cpu') && (
-                    <td className="px-3 py-3 text-sm">
-                      {device.status === 'online' ? (
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-destructive' : device.cpuPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.cpuPercent)}`}
-                            />
-                          </div>
-                          <span className="w-10 text-right tabular-nums">{device.cpuPercent}%</span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </td>
-                  )}
-                  {visibleColumns.has('ram') && (
-                    <td className="px-3 py-3 text-sm">
-                      {device.status === 'online' ? (
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-destructive' : device.ramPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.ramPercent)}`}
-                            />
-                          </div>
-                          <span className="w-10 text-right tabular-nums">{device.ramPercent}%</span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </td>
-                  )}
-                  {visibleColumns.has('lastSeen') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {formatLastSeen(device.lastSeen, effectiveTimezone)}
-                    </td>
-                  )}
-                  {visibleColumns.has('agentVersion') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {device.agentVersion || <span className="text-muted-foreground">&mdash;</span>}
-                    </td>
-                  )}
-                  {visibleColumns.has('tags') && (
-                    <td className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground">
-                      {device.tags && device.tags.length > 0 ? (
-                        <span className="block truncate" title={device.tags.join(', ')}>
-                          {device.tags.join(', ')}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </td>
-                  )}
-                  {visibleColumns.has('lastUser') && (
-                    <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                      <span className="block truncate" title={device.lastUser ?? ''}>
-                        {device.lastUser || <span className="text-muted-foreground">&mdash;</span>}
-                      </span>
-                    </td>
-                  )}
-                  {visibleColumns.has('uptime') && (
-                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                      {device.status === 'online' && device.uptimeSeconds != null
-                        ? formatUptime(device.uptimeSeconds)
-                        : <span className="text-muted-foreground">&mdash;</span>}
-                    </td>
-                  )}
-=======
                   {renderedColumns.map(id => columnDefs[id].cell(device))}
->>>>>>> 7beafb09 (feat(web): column reorder + 9 more togglable columns on Devices list)
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <ConnectDesktopButton
