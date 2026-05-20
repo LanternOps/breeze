@@ -1,3 +1,5 @@
+import type { ReactElement } from 'react';
+
 type Variant = 'success' | 'error' | 'pending';
 
 interface StatusIconProps {
@@ -15,7 +17,7 @@ const VARIANT_STYLES: Record<Variant, { ring: string; text: string }> = {
   pending: { ring: 'bg-primary/10', text: 'text-primary' },
 };
 
-const PATHS: Record<Variant, JSX.Element> = {
+const PATHS: Record<Variant, ReactElement> = {
   success: (
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
   ),
