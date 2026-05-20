@@ -1,14 +1,13 @@
 import { Context, Next } from 'hono';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
 import { verifyToken } from '../services/jwt';
 
 export async function partnerGuard(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
-    await next();
-    return;
+    return next();
   }
 
   const token = authHeader.slice(7);
@@ -19,25 +18,29 @@ export async function partnerGuard(c: Context, next: Next) {
     const payload = await verifyToken(token);
     partnerId = payload?.partnerId ?? null;
   } catch {
-    await next();
-    return;
+    return next();
   }
 
   if (!partnerId) {
-    await next();
-    return;
+    return next();
   }
 
   let partner;
   try {
-    [partner] = await db
-      .select({
-        status: partners.status,
-        settings: partners.settings,
-      })
-      .from(partners)
-      .where(eq(partners.id, partnerId))
-      .limit(1);
+    // Run under the system RLS context. This guard fires before authMiddleware
+    // has set a request-scoped context, so a bare `db` read of `partners`
+    // (which has partner-axis RLS) would return 0 rows under `breeze_app`
+    // and trigger PARTNER_NOT_FOUND for every authenticated request. SR-005.
+    [partner] = await withSystemDbAccessContext(() =>
+      db
+        .select({
+          status: partners.status,
+          settings: partners.settings,
+        })
+        .from(partners)
+        .where(eq(partners.id, partnerId!))
+        .limit(1),
+    );
   } catch (err) {
     // Fail closed: this guard is a security + billing-control boundary. A
     // verified token already proved a partnerId; if we cannot resolve that
@@ -70,5 +73,5 @@ export async function partnerGuard(c: Context, next: Next) {
     }, 403);
   }
 
-  await next();
+  return next();
 }

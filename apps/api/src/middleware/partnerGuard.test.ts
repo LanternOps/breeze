@@ -15,6 +15,10 @@ vi.mock('../db', () => ({
       }),
     }),
   },
+  // Passthrough — production wraps the partner lookup so that RLS doesn't
+  // shadow the row under `breeze_app` (the guard fires before authMiddleware
+  // sets a request-scoped context). The test exercises the same call shape.
+  withSystemDbAccessContext: <T>(fn: () => Promise<T>) => fn(),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -98,5 +102,67 @@ describe('partnerGuard — fail closed (SR-005)', () => {
       headers: { Authorization: 'Bearer partner-token' },
     });
     expect(res.status).toBe(200);
+  });
+});
+
+// Regression: the production wrapper in `index.ts` previously did
+// `await partnerGuard(c, next);` without returning, which silently discarded
+// any Response the guard produced — Hono then threw "Context is not
+// finalized" and the request collapsed to 500. This suite exercises the same
+// wrapper shape used in `index.ts` to ensure that pattern can't sneak back in.
+describe('partnerGuard — wrapper shape (regression for #781 wrapper-discards-Response)', () => {
+  function makeWrapperApp() {
+    const app = new Hono();
+    // Mirrors `api.use('*', async (c, next) => { ...exempt paths...; return partnerGuard(c, next); })`
+    // from `apps/api/src/index.ts`. The `return` is the bit under test.
+    app.use('*', (c, next) => partnerGuard(c, next));
+    app.get('/protected', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('propagates 403 PARTNER_NOT_FOUND through the wrapper instead of collapsing to 500', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-missing' } as never);
+    limitMock.mockResolvedValueOnce([]);
+    const res = await makeWrapperApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('PARTNER_NOT_FOUND');
+  });
+
+  it('propagates 503 PARTNER_LOOKUP_UNAVAILABLE through the wrapper', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockRejectedValueOnce(new Error('db down'));
+    const res = await makeWrapperApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('propagates 403 PARTNER_INACTIVE through the wrapper', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([{ status: 'suspended', settings: {} }]);
+    const res = await makeWrapperApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('PARTNER_INACTIVE');
+  });
+
+  it('lets through valid active-partner traffic and returns 200 from the downstream handler', async () => {
+    vi.mocked(verifyToken).mockResolvedValueOnce({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValueOnce([{ status: 'active', settings: {} }]);
+    const res = await makeWrapperApp().request('/protected', {
+      headers: { Authorization: 'Bearer partner-token' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean };
+    expect(body.ok).toBe(true);
   });
 });

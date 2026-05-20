@@ -617,15 +617,19 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
   return null;
 }
 
-// Generic partner status guard — blocks non-active partners
+// Generic partner status guard — blocks non-active partners.
+// IMPORTANT: every branch MUST `return` the next()/partnerGuard() promise so
+// any Response (403 PARTNER_INACTIVE, 403 PARTNER_NOT_FOUND, 503 PARTNER_LOOKUP_UNAVAILABLE)
+// propagates back through Hono's compose chain. Discarding the return causes
+// Hono to throw "Context is not finalized" and the request collapses to 500.
 api.use('*', async (c, next) => {
   const path = c.req.path;
-  if (path.startsWith('/api/v1/auth')) { await next(); return; }
-  if (path === '/api/v1/config' || path.startsWith('/api/v1/config/')) { await next(); return; }
-  if (path.startsWith('/api/v1/users/me')) { await next(); return; }
-  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) { await next(); return; }
-  if (path.startsWith('/api/v1/agents/')) { await next(); return; }
-  await partnerGuard(c, next);
+  if (path.startsWith('/api/v1/auth')) return next();
+  if (path === '/api/v1/config' || path.startsWith('/api/v1/config/')) return next();
+  if (path.startsWith('/api/v1/users/me')) return next();
+  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return next();
+  if (path.startsWith('/api/v1/agents/')) return next();
+  return partnerGuard(c, next);
 });
 
 api.use('*', async (c, next) => {
