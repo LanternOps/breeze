@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { auditLogs as auditLogsTable, users } from '../db/schema';
+import { auditLogs as auditLogsTable, users, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -155,11 +155,18 @@ function deriveCategory(action: string): string {
 type DbRow = {
   log: typeof auditLogsTable.$inferSelect;
   userName: string | null;
+  deviceHostname: string | null;
+  deviceDisplayName: string | null;
 };
 
 function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
   if (row.userName) {
     return row.userName;
+  }
+
+  if (row.log.actorType === 'agent') {
+    const deviceName = row.deviceDisplayName || row.deviceHostname;
+    if (deviceName) return deviceName;
   }
 
   if (row.log.actorEmail) {
@@ -298,9 +305,18 @@ function buildSearchCondition(q: string): SQL {
 
 async function queryRows(where: SQL | undefined, limit: number, offset: number): Promise<DbRow[]> {
   return db
-    .select({ log: auditLogsTable, userName: users.name })
+    .select({
+      log: auditLogsTable,
+      userName: users.name,
+      deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
+    })
     .from(auditLogsTable)
     .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+    .leftJoin(
+      devices,
+      sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
+    )
     .where(where)
     .orderBy(desc(auditLogsTable.timestamp))
     .limit(limit)
@@ -331,6 +347,8 @@ interface LateralAuditRow extends Record<string, unknown> {
   checksum: string | null;
   initiated_by: string | null;
   user_name: string | null;
+  device_hostname: string | null;
+  device_display_name: string | null;
 }
 
 async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow[]> {
@@ -341,7 +359,9 @@ async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow
       al.actor_email, al.action, al.resource_type, al.resource_id,
       al.resource_name, al.details, al.ip_address, al.user_agent,
       al.result, al.error_message, al.checksum, al.initiated_by,
-      u.name AS user_name
+      u.name AS user_name,
+      d.hostname AS device_hostname,
+      d.display_name AS device_display_name
     FROM unnest(ARRAY[${orgIdsSql}]::uuid[]) AS o(org_id)
     CROSS JOIN LATERAL (
       SELECT * FROM audit_logs
@@ -350,6 +370,9 @@ async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow
       LIMIT ${limit}
     ) al
     LEFT JOIN users u ON al.actor_id = u.id
+    LEFT JOIN devices d
+      ON al.actor_type = 'agent'
+      AND d.agent_id = al.details->>'rawActorId'
     ORDER BY al.timestamp DESC
     LIMIT ${limit}
   `);
@@ -374,6 +397,8 @@ async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow
       initiatedBy: r.initiated_by,
     } as DbRow['log'],
     userName: r.user_name ?? null,
+    deviceHostname: r.device_hostname ?? null,
+    deviceDisplayName: r.device_display_name ?? null,
   }));
 }
 
@@ -381,7 +406,6 @@ async function countRows(where: SQL | undefined): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(auditLogsTable)
-    .leftJoin(users, eq(auditLogsTable.actorId, users.id))
     .where(where);
   return row?.count ?? 0;
 }
@@ -561,9 +585,18 @@ auditLogRoutes.get(
     if (orgCond) conditions.push(orgCond);
 
     const [row] = await db
-      .select({ log: auditLogsTable, userName: users.name })
+      .select({
+        log: auditLogsTable,
+        userName: users.name,
+        deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
+      })
       .from(auditLogsTable)
       .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+      .leftJoin(
+        devices,
+        sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
+      )
       .where(and(...conditions));
 
     if (!row) {
