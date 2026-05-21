@@ -637,15 +637,19 @@ export function RoleFormModal({
     };
   }, [isOpen]);
 
-  // Reset form when modal opens with new role
-  useState(() => {
-    if (isOpen) {
-      setName(mode === 'clone' ? '' : role?.name || '');
-      setDescription(role?.description || '');
-      setPermissions(role?.permissions || []);
-      setParentRoleId(role?.parentRoleId || null);
-    }
-  });
+  // Reset form whenever the modal opens or the target role changes. Previously
+  // this used useState(() => {...}), whose initializer runs only on first mount,
+  // so opening Edit for a role after the page mounted left every field blank
+  // (issue #801 regression report). useEffect with [isOpen, role, mode] re-runs
+  // on each open, repopulating name/description/permissions/parentRoleId from
+  // the freshly fetched role.
+  useEffect(() => {
+    if (!isOpen) return;
+    setName(mode === 'clone' ? '' : role?.name || '');
+    setDescription(role?.description || '');
+    setPermissions(role?.permissions || []);
+    setParentRoleId(role?.parentRoleId || null);
+  }, [isOpen, role, mode]);
 
   if (!isOpen) return null;
 
