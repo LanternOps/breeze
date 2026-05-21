@@ -101,7 +101,11 @@ export const heartbeatSchema = z.object({
       ),
       ipType: z.enum(['ipv4', 'ipv6']).optional(),
       assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      macAddress: z.string().max(17).optional(),
+      // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
+      // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
+      // up to ~53 chars. Accept anything reasonable to avoid rejecting the
+      // whole heartbeat over an informational field.
+      macAddress: z.string().max(64).optional(),
       subnetMask: z.string().max(45).optional(),
       gateway: z.string().max(45).optional(),
       dnsServers: z.array(z.string().max(45)).max(8).optional()
@@ -117,7 +121,11 @@ export const heartbeatSchema = z.object({
       ),
       ipType: z.enum(['ipv4', 'ipv6']).optional(),
       assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      macAddress: z.string().max(17).optional(),
+      // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
+      // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
+      // up to ~53 chars. Accept anything reasonable to avoid rejecting the
+      // whole heartbeat over an informational field.
+      macAddress: z.string().max(64).optional(),
       subnetMask: z.string().max(45).optional(),
       gateway: z.string().max(45).optional(),
       dnsServers: z.array(z.string().max(45)).max(8).optional()
@@ -133,7 +141,11 @@ export const heartbeatSchema = z.object({
       ),
       ipType: z.enum(['ipv4', 'ipv6']).optional(),
       assignmentType: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
-      macAddress: z.string().max(17).optional(),
+      // Standard MAC is 17 chars (XX:XX:XX:XX:XX:XX), but Windows pseudo-
+      // interfaces (ISATAP, Teredo, etc.) report longer EUI-64 / tunnel forms
+      // up to ~53 chars. Accept anything reasonable to avoid rejecting the
+      // whole heartbeat over an informational field.
+      macAddress: z.string().max(64).optional(),
       subnetMask: z.string().max(45).optional(),
       gateway: z.string().max(45).optional(),
       dnsServers: z.array(z.string().max(45)).max(8).optional()
