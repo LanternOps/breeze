@@ -93,6 +93,73 @@ export function wakeFriendlyErrorMessage(code: string | undefined): string | nul
   }
 }
 
+export type WakeOutcome = 'online' | 'timeout' | 'aborted' | 'still-offline';
+
+export interface WatchWakeOutcomeOptions {
+  pollIntervalMs?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+// Polls /devices/:id after a successful wake dispatch and resolves when the
+// device transitions to 'online' or the timeout elapses. Best-effort: a
+// transient HTTP error doesn't abort, it just skips one poll. Caller fires
+// the user-visible follow-up toast based on the resolved outcome.
+//
+// Defaults: 8s poll interval, 4-minute total timeout. The existing
+// 5-min wake guidance covers the worst-case BIOS POST + Windows boot;
+// 4 min on the watcher prevents the toast from outlasting the user's
+// attention while still catching most successful wakes.
+export async function watchWakeOutcome(
+  deviceId: string,
+  opts: WatchWakeOutcomeOptions = {}
+): Promise<WakeOutcome> {
+  const interval = opts.pollIntervalMs ?? 8000;
+  const totalTimeout = opts.timeoutMs ?? 4 * 60 * 1000;
+  const deadline = Date.now() + totalTimeout;
+
+  while (Date.now() < deadline) {
+    if (opts.signal?.aborted) return 'aborted';
+
+    const remaining = deadline - Date.now();
+    const sleepFor = Math.min(interval, remaining);
+    if (sleepFor <= 0) break;
+    await waitOrAbort(sleepFor, opts.signal);
+    if (opts.signal?.aborted) return 'aborted';
+
+    try {
+      const resp = await fetchWithAuth(`/devices/${deviceId}`);
+      if (!resp.ok) continue;
+      const body = await resp.json();
+      const device = body.device ?? body.data ?? body;
+      if (device?.status === 'online') return 'online';
+    } catch {
+      // Network blip during polling is not an error condition for the
+      // wake outcome — just try again on the next tick.
+    }
+  }
+
+  return 'timeout';
+}
+
+function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
   const response = await fetchWithAuth(`/devices/${deviceId}/commands`, {
     method: 'POST',

@@ -10,6 +10,7 @@ import {
   sendWakeCommand,
   summarizeBulkWakeFailures,
   toggleMaintenanceMode,
+  watchWakeOutcome,
   WakeCommandError,
   wakeFriendlyErrorMessage,
   type BulkWakeFailed
@@ -292,6 +293,66 @@ describe('deviceActions service', () => {
       const err = await sendWakeCommand('dev-1').catch((e: unknown) => e);
       expect(err).toBeInstanceOf(WakeCommandError);
       expect((err as WakeCommandError).code).toBeUndefined();
+    });
+  });
+
+  describe('watchWakeOutcome', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    it('resolves "online" when the device transitions to online', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse({ device: { status: 'offline' } }))
+        .mockResolvedValueOnce(makeResponse({ device: { status: 'offline' } }))
+        .mockResolvedValueOnce(makeResponse({ device: { status: 'online' } }));
+
+      const promise = watchWakeOutcome('dev-1', { pollIntervalMs: 100, timeoutMs: 60_000 });
+      await vi.advanceTimersByTimeAsync(350);
+      await expect(promise).resolves.toBe('online');
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1');
+    });
+
+    it('resolves "timeout" if the device never transitions before timeoutMs', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ device: { status: 'offline' } }));
+
+      const promise = watchWakeOutcome('dev-1', { pollIntervalMs: 100, timeoutMs: 300 });
+      await vi.advanceTimersByTimeAsync(400);
+      await expect(promise).resolves.toBe('timeout');
+    });
+
+    it('resolves "aborted" when the signal is aborted mid-poll', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ device: { status: 'offline' } }));
+      const ctrl = new AbortController();
+
+      const promise = watchWakeOutcome('dev-1', {
+        pollIntervalMs: 1000,
+        timeoutMs: 60_000,
+        signal: ctrl.signal,
+      });
+      ctrl.abort();
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(promise).resolves.toBe('aborted');
+    });
+
+    it('keeps polling through transient HTTP errors', async () => {
+      fetchWithAuthMock
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValueOnce(makeResponse({ device: { status: 'offline' } }, false, 503))
+        .mockResolvedValueOnce(makeResponse({ device: { status: 'online' } }));
+
+      const promise = watchWakeOutcome('dev-1', { pollIntervalMs: 50, timeoutMs: 60_000 });
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(promise).resolves.toBe('online');
+    });
+
+    it('accepts `data` or `device` payload shapes from /devices/:id', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ data: { status: 'online' } }));
+
+      const promise = watchWakeOutcome('dev-1', { pollIntervalMs: 10, timeoutMs: 60_000 });
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(promise).resolves.toBe('online');
     });
   });
 
