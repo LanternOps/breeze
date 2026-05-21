@@ -1,22 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  avatarUrl: z
-    .string()
-    .max(2048, 'Avatar URL is too long')
-    .refine(
-      (value) => value.trim() === '' || /^https?:\/\//i.test(value.trim()),
-      'Avatar URL must start with http:// or https://'
-    )
-    .optional()
 });
 
 type ProfileFormValues = z.infer<typeof profileSchema>;
@@ -28,6 +20,15 @@ type User = {
   avatarUrl?: string;
   mfaEnabled?: boolean;
 };
+
+const ALLOWED_AVATAR_MIMES = ['image/png', 'image/jpeg', 'image/webp'];
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 type ProfilePageProps = {
   initialUser?: User;
@@ -49,17 +50,26 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
 
+  // Avatar upload state
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isDeletingAvatar, setIsDeletingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | undefined>();
+  const [avatarSuccess, setAvatarSuccess] = useState<string | undefined>();
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const updateAuthUser = useAuthStore((s) => s.updateUser);
+
   const {
     register,
     handleSubmit,
     reset,
-    watch,
     formState: { errors, isSubmitting }
   } = useForm<ProfileFormValues>({
     resolver: zodResolver(profileSchema),
     defaultValues: {
       name: user?.name ?? '',
-      avatarUrl: user?.avatarUrl ?? ''
     }
   });
 
@@ -67,7 +77,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     () => isUpdatingProfile || isSubmitting,
     [isUpdatingProfile, isSubmitting]
   );
-  const previewAvatarUrl = watch('avatarUrl')?.trim() || user?.avatarUrl || '';
+  // Preview priority: locally-selected file (object URL) → user's current avatar.
+  // Adding ?v=<id> would bust caches but adds a needless query string to images
+  // that never change on a single page load; rely on the 5-min Cache-Control
+  // and the auth store update to refresh other tabs.
+  const previewAvatarUrl = avatarPreview || user?.avatarUrl || '';
 
   // Fetch user data on mount
   useEffect(() => {
@@ -90,7 +104,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         setUser(userData);
         reset({
           name: userData.name ?? '',
-          avatarUrl: userData.avatarUrl ?? ''
         });
       } catch {
         setProfileError('Failed to load profile data');
@@ -113,7 +126,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setIsUpdatingProfile(true);
       const payload = {
         name: values.name.trim(),
-        avatarUrl: values.avatarUrl?.trim() ?? ''
       };
 
       const response = await fetchWithAuth('/users/me', {
@@ -130,7 +142,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(updatedUser);
       reset({
         name: updatedUser.name ?? '',
-        avatarUrl: updatedUser.avatarUrl ?? ''
       });
       setProfileSuccess('Profile updated successfully');
     } catch (error) {
@@ -139,6 +150,130 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setIsUpdatingProfile(false);
     }
   };
+
+  // --- Avatar upload handlers ---
+
+  const validateAvatarFile = useCallback((file: File): string | null => {
+    if (!ALLOWED_AVATAR_MIMES.includes(file.type)) {
+      return 'Unsupported file type. Use PNG, JPG, or WebP.';
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      return `File is too large (max ${formatBytes(MAX_AVATAR_BYTES)}).`;
+    }
+    if (file.size === 0) {
+      return 'File is empty.';
+    }
+    return null;
+  }, []);
+
+  const clearAvatarMessages = useCallback(() => {
+    setAvatarError(undefined);
+    setAvatarSuccess(undefined);
+  }, []);
+
+  const selectAvatarFile = useCallback((file: File) => {
+    clearAvatarMessages();
+    const err = validateAvatarFile(file);
+    if (err) {
+      setAvatarError(err);
+      return;
+    }
+    // Revoke any previous preview to avoid leaks.
+    if (avatarPreview && avatarPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+  }, [avatarPreview, validateAvatarFile, clearAvatarMessages]);
+
+  const cancelAvatarSelection = useCallback(() => {
+    if (avatarPreview && avatarPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    setAvatarFile(null);
+    setAvatarPreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [avatarPreview]);
+
+  const handleAvatarUpload = useCallback(async () => {
+    if (!avatarFile) return;
+    clearAvatarMessages();
+
+    try {
+      setIsUploadingAvatar(true);
+      const form = new FormData();
+      form.append('file', avatarFile);
+      // fetchWithAuth merges in JSON content-type by default; bypass by passing
+      // an explicit headers object so the browser sets the multipart boundary.
+      const response = await fetchWithAuth('/users/me/avatar', {
+        method: 'POST',
+        body: form,
+        headers: {},
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error ?? errorData.message ?? 'Failed to upload avatar');
+      }
+
+      const data = await response.json();
+      const newAvatarUrl: string = data.avatarUrl;
+      setUser((prev) => (prev ? { ...prev, avatarUrl: newAvatarUrl } : prev));
+      // Update the global auth store so the Header avatar refreshes immediately.
+      updateAuthUser({ avatarUrl: newAvatarUrl });
+
+      // Clear local preview state — the canonical URL will be used now.
+      cancelAvatarSelection();
+      setAvatarSuccess('Avatar updated.');
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : 'Failed to upload avatar');
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  }, [avatarFile, clearAvatarMessages, cancelAvatarSelection, updateAuthUser]);
+
+  const handleAvatarDelete = useCallback(async () => {
+    clearAvatarMessages();
+    try {
+      setIsDeletingAvatar(true);
+      const response = await fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error ?? errorData.message ?? 'Failed to remove avatar');
+      }
+      setUser((prev) => (prev ? { ...prev, avatarUrl: undefined } : prev));
+      updateAuthUser({ avatarUrl: undefined });
+      cancelAvatarSelection();
+      setAvatarSuccess('Avatar removed.');
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : 'Failed to remove avatar');
+    } finally {
+      setIsDeletingAvatar(false);
+    }
+  }, [clearAvatarMessages, cancelAvatarSelection, updateAuthUser]);
+
+  const handleAvatarFilePicked = useCallback((evt: React.ChangeEvent<HTMLInputElement>) => {
+    const file = evt.target.files?.[0];
+    if (file) selectAvatarFile(file);
+  }, [selectAvatarFile]);
+
+  const handleAvatarDrop = useCallback((evt: React.DragEvent<HTMLDivElement>) => {
+    evt.preventDefault();
+    setIsDragging(false);
+    const file = evt.dataTransfer.files?.[0];
+    if (file) selectAvatarFile(file);
+  }, [selectAvatarFile]);
+
+  // Clean up object URLs on unmount.
+  useEffect(() => {
+    return () => {
+      if (avatarPreview && avatarPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(avatarPreview);
+      }
+    };
+  }, [avatarPreview]);
 
   const handlePasswordChange = async (values: {
     currentPassword: string;
@@ -308,39 +443,94 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           <p className="text-sm text-muted-foreground">Update your personal details.</p>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted text-lg font-medium text-muted-foreground">
-            {previewAvatarUrl ? (
-              <img
-                src={previewAvatarUrl}
-                alt={user?.name ?? 'User avatar'}
-                className="h-16 w-16 rounded-full object-cover"
-              />
-            ) : (
-              user?.name?.charAt(0).toUpperCase() ?? '?'
-            )}
+        <div className="space-y-3">
+          <p className="text-sm font-medium">Avatar</p>
+          <div className="flex items-start gap-4">
+            <div
+              data-testid="avatar-dropzone"
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleAvatarDrop}
+              className={`flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-full border text-xl font-medium ${
+                isDragging
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-transparent bg-muted text-muted-foreground'
+              }`}
+            >
+              {previewAvatarUrl ? (
+                <img
+                  src={previewAvatarUrl}
+                  alt={user?.name ?? 'User avatar'}
+                  className="h-24 w-24 rounded-full object-cover"
+                />
+              ) : (
+                user?.name?.charAt(0).toUpperCase() ?? '?'
+              )}
+            </div>
+            <div className="flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={handleAvatarFilePicked}
+                  data-testid="avatar-file-input"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploadingAvatar || isDeletingAvatar}
+                  className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Upload new picture
+                </button>
+                {user?.avatarUrl && !avatarFile && (
+                  <button
+                    type="button"
+                    onClick={handleAvatarDelete}
+                    disabled={isUploadingAvatar || isDeletingAvatar}
+                    className="rounded-md border px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isDeletingAvatar ? 'Removing...' : 'Remove'}
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                PNG, JPG, or WebP. Max 5 MB. Drag and drop onto the circle, or click Upload.
+              </p>
+              {avatarFile && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                  <span className="truncate">{avatarFile.name}</span>
+                  <span className="text-xs text-muted-foreground">{formatBytes(avatarFile.size)}</span>
+                  <div className="ml-auto flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleAvatarUpload}
+                      disabled={isUploadingAvatar}
+                      className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isUploadingAvatar ? 'Uploading...' : 'Upload'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelAvatarSelection}
+                      disabled={isUploadingAvatar}
+                      className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              {avatarError && (
+                <p className="text-sm text-destructive" role="alert">{avatarError}</p>
+              )}
+              {avatarSuccess && (
+                <p className="text-sm text-emerald-600" role="status">{avatarSuccess}</p>
+              )}
+            </div>
           </div>
-          <div className="space-y-1">
-            <p className="text-sm font-medium">Avatar</p>
-            <p className="text-xs text-muted-foreground">
-              Provide an image URL to update your avatar.
-            </p>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <label htmlFor="avatarUrl" className="text-sm font-medium">
-            Avatar image URL
-          </label>
-          <input
-            id="avatarUrl"
-            type="url"
-            autoComplete="url"
-            placeholder="https://example.com/avatar.png"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            {...register('avatarUrl')}
-          />
-          {errors.avatarUrl && <p className="text-sm text-destructive">{errors.avatarUrl.message}</p>}
         </div>
 
         <div className="space-y-2">
