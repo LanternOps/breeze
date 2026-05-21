@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
 import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
@@ -20,6 +20,14 @@ import {
   writeColumnVisibility,
   type ColumnId,
 } from './columnVisibility';
+import {
+  DENSITY_OPTIONS,
+  densityTableClasses,
+  readDensity,
+  subscribeDensity,
+  writeDensity,
+  type Density,
+} from '@/lib/density';
 import { OSIcon } from './osIcons';
 
 export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
@@ -157,6 +165,15 @@ export default function DeviceList({
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => readColumnOrder());
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
+  // Table density preference (account-wide via localStorage). Subscribe so
+  // a sibling instance on the same page that flips density updates this
+  // one without a reload.
+  const [density, setDensity] = useState<Density>(() => readDensity());
+  useEffect(() => subscribeDensity(setDensity), []);
+  const handleDensityChange = (next: Density) => {
+    setDensity(next);
+    writeDensity(next);
+  };
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
@@ -755,6 +772,32 @@ export default function DeviceList({
                 </span>
               )}
             </button>
+            {/* Density toggle: comfortable / compact / dense. Single
+                account-wide preference (breeze.density in localStorage),
+                applied to descendant td/th via Tailwind arbitrary
+                variants on the table element. */}
+            <div className="inline-flex h-10 items-center rounded-md border" role="group" aria-label="Row density">
+              {DENSITY_OPTIONS.map((opt, idx) => {
+                const Icon = opt === 'comfortable' ? Rows3 : opt === 'compact' ? Rows4 : AlignJustify;
+                const label = opt.charAt(0).toUpperCase() + opt.slice(1);
+                const isActive = density === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => handleDensityChange(opt)}
+                    aria-pressed={isActive}
+                    aria-label={`${label} row density`}
+                    title={`${label} row density`}
+                    className={`flex h-full items-center justify-center px-2.5 text-sm transition ${
+                      isActive ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60'
+                    } ${idx === 0 ? 'rounded-l-md' : ''} ${idx === DENSITY_OPTIONS.length - 1 ? 'rounded-r-md' : 'border-r'}`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                );
+              })}
+            </div>
             <div className="relative" ref={columnsMenuRef}>
               <button
                 type="button"
@@ -1049,7 +1092,7 @@ export default function DeviceList({
       )}
 
       <div className="mt-6 overflow-x-auto rounded-md border">
-        <table className="w-full divide-y">
+        <table className={`w-full divide-y ${densityTableClasses(density)}`}>
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-3">
