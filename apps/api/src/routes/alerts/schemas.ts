@@ -126,13 +126,18 @@ export const createChannelSchema = z.object({
   name: z.string().min(1).max(255),
   type: z.enum(NOTIFICATION_CHANNEL_TYPES),
   config: z.record(z.unknown()), // JSONB for type-specific config
-  enabled: z.boolean().default(true)
+  enabled: z.boolean().default(true),
+  // Feature #4: per-channel notification throttle. null/omitted = unlimited.
+  throttleMaxPerWindow: z.number().int().min(1).max(10000).nullable().optional(),
+  throttleWindowSeconds: z.number().int().min(60).max(86400).optional()
 });
 
 export const updateChannelSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   config: z.record(z.unknown()).optional(),
-  enabled: z.boolean().optional()
+  enabled: z.boolean().optional(),
+  throttleMaxPerWindow: z.number().int().min(1).max(10000).nullable().optional(),
+  throttleWindowSeconds: z.number().int().min(60).max(86400).optional()
 });
 
 // Escalation Policies schemas

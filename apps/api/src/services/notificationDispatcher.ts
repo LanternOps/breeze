@@ -21,6 +21,7 @@ import {
 import { eq, and, inArray, asc } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
+import { checkNotificationThrottle } from './notificationThrottle';
 import { interpolateTemplate } from './alertConditions';
 import {
   sendEmailNotification,
@@ -357,6 +358,37 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
         success: false,
         channelType: channel.type,
         error: `Rate limited (resets at ${rateLimitResult.resetAt.toISOString()})`,
+        durationMs: Date.now() - startTime
+      };
+    }
+  }
+
+  // Feature #4: per-channel sliding-window throttle (defense-in-depth vs alert storms).
+  // Keyed by (channelId, device:<deviceId>) so one flooding device cannot starve other devices.
+  if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
+    const windowSeconds = channel.throttleWindowSeconds ?? 3600;
+    const throttle = await checkNotificationThrottle(
+      channel.id,
+      `device:${alert.deviceId}`,
+      channel.throttleMaxPerWindow,
+      windowSeconds
+    );
+    if (!throttle.allowed) {
+      const windowExpiresIso = new Date(throttle.windowExpiresAt).toISOString();
+      console.warn(
+        `[NotificationThrottle] Suppressed: channel=${channel.id} device=${alert.deviceId} ` +
+        `count=${throttle.currentCount}/${channel.throttleMaxPerWindow} resetsAt=${windowExpiresIso}`
+      );
+      await db.update(alertNotifications)
+        .set({
+          status: 'suppressed',
+          errorMessage: `Throttled: ${throttle.currentCount} delivered in last ${windowSeconds}s (cap=${channel.throttleMaxPerWindow})`
+        })
+        .where(eq(alertNotifications.id, notificationRecord.id));
+      return {
+        success: false,
+        channelType: channel.type,
+        error: `Throttled (resets at ${windowExpiresIso})`,
         durationMs: Date.now() - startTime
       };
     }
