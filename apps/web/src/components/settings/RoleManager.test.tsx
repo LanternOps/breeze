@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import RoleManager, { PermissionMatrix, RoleFormModal, type PermissionCatalog, type Permission } from './RoleManager';
+import RoleManager, { PermissionMatrix, RoleFormModal, type PermissionCatalog, type Permission, type Role } from './RoleManager';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -194,5 +194,130 @@ describe('RoleFormModal — submits catalog-valid pairs', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
     const submitted = onSubmit.mock.calls[0][0] as { permissions: Permission[] };
     expect(submitted.permissions).toEqual([{ resource: 'devices', action: 'write' }]);
+  });
+
+  // Regression: previously the Edit modal opened with name="" description=""
+  // and every permission unchecked because the reset hook used useState(() => {})
+  // instead of useEffect. The initializer ran once on first mount (when role
+  // was null) and never re-ran when role was later populated, so the form was
+  // always blank. The fix in this commit re-runs the reset on [isOpen, role, mode].
+  it('Edit mode loads the existing role: name, description, and matching cells are populated', async () => {
+    const existingRole: Role = {
+      id: 'role-test-1',
+      name: 'Test',
+      description: 'A test role with two permissions',
+      scope: 'organization',
+      isSystem: false,
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'alerts', action: 'acknowledge' }
+      ],
+      userCount: 0,
+      createdAt: '2026-05-21T00:00:00Z',
+      updatedAt: '2026-05-21T00:00:00Z'
+    };
+
+    // Mount with isOpen=false first so the modal hooks see role=null on initial
+    // mount, then flip to isOpen=true. This reproduces the real RolesPage flow,
+    // where the modal lives in the tree before the user clicks Edit.
+    const { rerender } = render(
+      <RoleFormModal
+        isOpen={false}
+        mode="edit"
+        role={null}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />
+    );
+
+    rerender(
+      <RoleFormModal
+        isOpen
+        mode="edit"
+        role={existingRole}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />
+    );
+
+    // Name and description must be populated from the role.
+    const nameInput = (await screen.findByLabelText('Name')) as HTMLInputElement;
+    const descriptionInput = screen.getByLabelText('Description') as HTMLInputElement;
+    expect(nameInput.value).toBe('Test');
+    expect(descriptionInput.value).toBe('A test role with two permissions');
+
+    // Wait for catalog fetch + matrix render.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Read' })).toBeTruthy();
+    });
+
+    // Exactly two checkboxes in the matrix should be checked: (devices,read)
+    // and (alerts,acknowledge). The matrix renders 6 cells total per the
+    // sample catalog.
+    const rows = screen.getAllByRole('row');
+    const devicesRow = rows.find((r) => within(r).queryByRole('button', { name: 'Devices' }));
+    const alertsRow = rows.find((r) => within(r).queryByRole('button', { name: 'Alerts' }));
+    expect(devicesRow).toBeTruthy();
+    expect(alertsRow).toBeTruthy();
+
+    // devices row: read should be checked, write + execute unchecked.
+    const devicesBoxes = within(devicesRow!).getAllByRole('checkbox') as HTMLInputElement[];
+    expect(devicesBoxes.length).toBe(3);
+    expect(devicesBoxes[0].checked).toBe(true); // read
+    expect(devicesBoxes[1].checked).toBe(false); // write
+    expect(devicesBoxes[2].checked).toBe(false); // execute
+
+    // alerts row: read unchecked, acknowledge checked.
+    const alertsBoxes = within(alertsRow!).getAllByRole('checkbox') as HTMLInputElement[];
+    expect(alertsBoxes.length).toBe(2);
+    expect(alertsBoxes[0].checked).toBe(false); // read
+    expect(alertsBoxes[1].checked).toBe(true); // acknowledge
+  });
+
+  // Belt-and-suspenders: also exercise the "open Edit for role A, close, then
+  // open Edit for role B" flow. With the old useState() initializer the
+  // second open would keep role A's state. With useEffect on [isOpen, role,
+  // mode] each open re-populates from the new role.
+  it('Edit mode repopulates when reopened for a different role', async () => {
+    const roleA: Role = {
+      id: 'role-a',
+      name: 'Role A',
+      description: 'A',
+      scope: 'organization',
+      isSystem: false,
+      permissions: [{ resource: 'devices', action: 'read' }],
+      userCount: 0,
+      createdAt: '2026-05-21T00:00:00Z',
+      updatedAt: '2026-05-21T00:00:00Z'
+    };
+    const roleB: Role = {
+      id: 'role-b',
+      name: 'Role B',
+      description: 'B',
+      scope: 'organization',
+      isSystem: false,
+      permissions: [{ resource: 'remote', action: 'access' }],
+      userCount: 0,
+      createdAt: '2026-05-21T00:00:00Z',
+      updatedAt: '2026-05-21T00:00:00Z'
+    };
+
+    const { rerender } = render(
+      <RoleFormModal isOpen={false} mode="edit" role={null} onSubmit={() => {}} onCancel={() => {}} />
+    );
+
+    rerender(<RoleFormModal isOpen mode="edit" role={roleA} onSubmit={() => {}} onCancel={() => {}} />);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Role A');
+    });
+
+    // Close, then open again for role B.
+    rerender(<RoleFormModal isOpen={false} mode="edit" role={null} onSubmit={() => {}} onCancel={() => {}} />);
+    rerender(<RoleFormModal isOpen mode="edit" role={roleB} onSubmit={() => {}} onCancel={() => {}} />);
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Role B');
+    });
+    expect((screen.getByLabelText('Description') as HTMLInputElement).value).toBe('B');
   });
 });
