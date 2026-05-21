@@ -160,31 +160,32 @@ function deriveCategory(action: string): string {
   return 'system';
 }
 
-type DbRow = {
+export type DbRow = {
   log: typeof auditLogsTable.$inferSelect;
   userName: string | null;
   deviceHostname: string | null;
   deviceDisplayName: string | null;
 };
 
-function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
+export function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
   if (row.userName) {
     return row.userName;
-  }
-
-  if (row.log.actorType === 'agent') {
-    const deviceName = row.deviceDisplayName || row.deviceHostname;
-    if (deviceName) return deviceName;
-  }
-
-  if (row.log.actorEmail) {
-    return row.log.actorEmail;
   }
 
   const rawActorId = typeof details?.rawActorId === 'string' ? details.rawActorId : null;
 
   if (row.log.actorType === 'agent') {
+    // Agent actions: never display the bare device hostname in the user
+    // column, because that makes the device look like it's masquerading
+    // as a user. Prefer "Agent (<hostname>)" when we can resolve a device,
+    // falling back to a short agent-id slug, then a generic "Agent".
+    const deviceName = row.deviceDisplayName || row.deviceHostname;
+    if (deviceName) return `Agent (${deviceName})`;
     return rawActorId ? `Agent ${rawActorId.slice(0, 8)}` : 'Agent';
+  }
+
+  if (row.log.actorEmail) {
+    return row.log.actorEmail;
   }
 
   if (row.log.actorType === 'api_key') {
