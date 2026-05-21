@@ -8,24 +8,29 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
-// countRows does: db.select().from().leftJoin().where() and destructures [row]
-// queryRows does: db.select().from().leftJoin().where().orderBy().limit().offset()
-// GET /logs/:id does: db.select().from().leftJoin().where() and destructures [row]
+// countRows does: db.select().from().where() and destructures [row]
+// queryRows does: db.select().from().leftJoin(users).leftJoin(devices).where().orderBy().limit().offset()
+// GET /logs/:id does: db.select().from().leftJoin(users).leftJoin(devices).where() and destructures [row]
 // So .where() must be both iterable (as array) AND have .orderBy()
 // Returning empty array by default; countRows returns row?.count ?? 0 = 0 when empty
+const createWhereChain = () =>
+  Object.assign(Promise.resolve([]), {
+    orderBy: vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue([])
+      })
+    })
+  });
+const createJoinChain = () => {
+  const chain: any = {
+    leftJoin: vi.fn(() => chain),
+    where: vi.fn().mockReturnValue(createWhereChain())
+  };
+  return chain;
+};
 const createDbChain = () => ({
   from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(
-        Object.assign(Promise.resolve([]), {
-          orderBy: vi.fn().mockReturnValue({
-            limit: vi.fn().mockReturnValue({
-              offset: vi.fn().mockResolvedValue([])
-            })
-          })
-        })
-      )
-    }),
+    leftJoin: vi.fn(() => createJoinChain()),
     where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([{ count: 0 }]), {
       limit: vi.fn().mockResolvedValue([])
     }))
@@ -47,7 +52,8 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   auditLogs: { orgId: 'orgId', actorId: 'actorId', timestamp: 'timestamp', id: 'id' },
-  users: { id: 'id', name: 'name' }
+  users: { id: 'id', name: 'name' },
+  devices: { agentId: 'agentId', hostname: 'hostname', displayName: 'displayName' }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -195,10 +201,12 @@ describe('audit log routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue([formulaRow])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([formulaRow])
+                  })
                 })
               })
             })
@@ -245,10 +253,12 @@ describe('audit log routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue([row])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
                 })
               })
             })
@@ -270,10 +280,12 @@ describe('audit log routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue([row])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
                 })
               })
             })
@@ -318,10 +330,12 @@ describe('audit log routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue([row])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
                 })
               })
             })
