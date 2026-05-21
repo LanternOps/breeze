@@ -244,7 +244,7 @@ export default function OrgSwitcher() {
               {isLoading ? 'Loading...' : 'No organizations available'}
             </div>
           ) : (
-            <div className="max-h-80 space-y-1 overflow-y-auto">
+            <div className="max-h-[70vh] space-y-1 overflow-y-auto">
               {organizations.map((org) => (
                 <OrgMenuItem
                   key={org.id}
