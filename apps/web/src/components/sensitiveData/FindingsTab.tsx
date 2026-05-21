@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import {
@@ -48,6 +48,15 @@ export default function FindingsTab() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showRemediation, setShowRemediation] = useState(false);
 
+  const filteredFindings = useMemo(
+    () => findings.filter((f: Finding) => !search || f.filePath.toLowerCase().includes(search.toLowerCase())),
+    [findings, search]
+  );
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [search]);
+
   const fetchFindings = useCallback(async (page = 1) => {
     try {
       setLoading(true);
@@ -83,10 +92,10 @@ export default function FindingsTab() {
   };
 
   const toggleAll = () => {
-    if (selectedIds.size === findings.length) {
+    if (selectedIds.size === filteredFindings.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(findings.map((f) => f.id)));
+      setSelectedIds(new Set(filteredFindings.map((f: Finding) => f.id)));
     }
   };
 
@@ -157,7 +166,7 @@ export default function FindingsTab() {
               <th className="px-4 py-3">
                 <input
                   type="checkbox"
-                  checked={findings.length > 0 && selectedIds.size === findings.length}
+                  checked={filteredFindings.length > 0 && selectedIds.size === filteredFindings.length}
                   onChange={toggleAll}
                   className="rounded border-border"
                 />
@@ -188,9 +197,7 @@ export default function FindingsTab() {
                 </td>
               </tr>
             )}
-            {!loading && findings
-              .filter((f) => !search || f.filePath.toLowerCase().includes(search.toLowerCase()))
-              .map((f) => (
+            {!loading && filteredFindings.map((f: Finding) => (
                 <tr key={f.id} className="text-sm hover:bg-muted/20">
                   <td className="px-4 py-3">
                     <input
