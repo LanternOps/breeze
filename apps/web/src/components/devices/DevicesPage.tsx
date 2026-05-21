@@ -12,7 +12,7 @@ import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
@@ -287,9 +287,21 @@ export default function DevicesPage() {
         case 'wake': {
           try {
             const wake = await sendWakeCommand(device.id);
+            const hostname = device.hostname;
             showToast({
               type: 'success',
-              message: `Wake packet sent to ${device.hostname} via ${wake.relay.hostname} (${wake.broadcast}). Wait up to 5 min for it to come online.`,
+              message: `Wake packet sent to ${hostname} via ${wake.relay.hostname} (${wake.broadcast}). Watching for it to come online…`,
+            });
+            void watchWakeOutcome(device.id).then(async (outcome) => {
+              if (outcome === 'online') {
+                showToast({ type: 'success', message: `${hostname} is now online.` });
+                await fetchDevices();
+              } else if (outcome === 'timeout') {
+                showToast({
+                  type: 'error',
+                  message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
+                });
+              }
             });
           } catch (err) {
             if (err instanceof WakeCommandError) {

@@ -8,7 +8,7 @@ import ChangeSiteModal from './ChangeSiteModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice, sendWakeCommand, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice, sendWakeCommand, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -153,9 +153,22 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         case 'wake': {
           try {
             const wake = await sendWakeCommand(device.id);
+            const hostname = device.hostname;
             showToast({
               type: 'success',
-              message: `Wake packet sent to ${device.hostname} via ${wake.relay.hostname} (${wake.broadcast}). Wait up to 5 min for it to come online.`,
+              message: `Wake packet sent to ${hostname} via ${wake.relay.hostname} (${wake.broadcast}). Watching for it to come online…`,
+            });
+            void watchWakeOutcome(device.id).then(async (outcome) => {
+              if (outcome === 'online') {
+                showToast({ type: 'success', message: `${hostname} is now online.` });
+                await fetchDevice();
+              } else if (outcome === 'timeout') {
+                showToast({
+                  type: 'error',
+                  message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
+                });
+              }
+              // 'aborted' is silent — user navigated away or page reloaded.
             });
           } catch (err) {
             if (err instanceof WakeCommandError) {
