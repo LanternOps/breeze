@@ -174,7 +174,9 @@ channelsRoutes.post(
         name: data.name,
         type: data.type,
         config: encryptNotificationChannelConfig(data.type, data.config),
-        enabled: data.enabled
+        enabled: data.enabled,
+        throttleMaxPerWindow: data.throttleMaxPerWindow ?? null,
+        throttleWindowSeconds: data.throttleWindowSeconds ?? 3600
       })
       .returning();
     if (!channel) {
@@ -250,6 +252,12 @@ channelsRoutes.put(
       updates.config = encryptNotificationChannelConfig(channel.type, data.config, channel.config);
     }
     if (data.enabled !== undefined) updates.enabled = data.enabled;
+    if (data.throttleMaxPerWindow !== undefined) {
+      updates.throttleMaxPerWindow = data.throttleMaxPerWindow;
+    }
+    if (data.throttleWindowSeconds !== undefined) {
+      updates.throttleWindowSeconds = data.throttleWindowSeconds;
+    }
 
     const [updated] = await db
       .update(notificationChannels)
