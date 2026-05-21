@@ -14,22 +14,27 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
-// countRows does: db.select().from().leftJoin().where() and destructures [row]
-// queryRows does: db.select().from().leftJoin().where().orderBy().limit().offset()
+// countRows does: db.select().from().where() and destructures [row]
+// queryRows does: db.select().from().leftJoin(users).leftJoin(devices).where().orderBy().limit().offset()
 // So .where() must be both iterable (as array) AND have .orderBy()
+const createWhereChain = () =>
+  Object.assign(Promise.resolve([{ count: 0 }]), {
+    orderBy: vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue([])
+      })
+    })
+  });
+const createJoinChain = () => {
+  const chain: any = {
+    leftJoin: vi.fn(() => chain),
+    where: vi.fn().mockReturnValue(createWhereChain())
+  };
+  return chain;
+};
 const createDbChain = () => ({
   from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(
-        Object.assign(Promise.resolve([{ count: 0 }]), {
-          orderBy: vi.fn().mockReturnValue({
-            limit: vi.fn().mockReturnValue({
-              offset: vi.fn().mockResolvedValue([])
-            })
-          })
-        })
-      )
-    }),
+    leftJoin: vi.fn(() => createJoinChain()),
     where: vi.fn().mockResolvedValue([{ count: 0 }])
   })
 });
@@ -48,7 +53,8 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   auditLogs: { orgId: 'orgId', actorId: 'actorId', timestamp: 'timestamp', id: 'id' },
-  users: { id: 'id', name: 'name' }
+  users: { id: 'id', name: 'name' },
+  devices: { agentId: 'agentId', hostname: 'hostname', displayName: 'displayName' }
 }));
 
 vi.mock('../middleware/auth', () => ({

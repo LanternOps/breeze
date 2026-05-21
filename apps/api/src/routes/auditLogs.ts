@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { auditLogs as auditLogsTable, users } from '../db/schema';
+import { auditLogs as auditLogsTable, users, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -155,11 +155,18 @@ function deriveCategory(action: string): string {
 type DbRow = {
   log: typeof auditLogsTable.$inferSelect;
   userName: string | null;
+  deviceHostname: string | null;
+  deviceDisplayName: string | null;
 };
 
 function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
   if (row.userName) {
     return row.userName;
+  }
+
+  if (row.log.actorType === 'agent') {
+    const deviceName = row.deviceDisplayName || row.deviceHostname;
+    if (deviceName) return deviceName;
   }
 
   if (row.log.actorEmail) {
@@ -298,20 +305,107 @@ function buildSearchCondition(q: string): SQL {
 
 async function queryRows(where: SQL | undefined, limit: number, offset: number): Promise<DbRow[]> {
   return db
-    .select({ log: auditLogsTable, userName: users.name })
+    .select({
+      log: auditLogsTable,
+      userName: users.name,
+      deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
+    })
     .from(auditLogsTable)
     .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+    .leftJoin(
+      devices,
+      sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
+    )
     .where(where)
     .orderBy(desc(auditLogsTable.timestamp))
     .limit(limit)
     .offset(offset);
 }
 
+// Fast path for the dashboard widget (RecentActivity): the RLS CASE in
+// breeze_has_org_access() cannot be pushed into audit_logs_org_timestamp_idx,
+// so a plain ORDER BY timestamp DESC LIMIT N degrades to a Parallel Seq Scan
+// over the whole table (~28s in prod). LATERAL per-org index scans gather N
+// rows per accessible org, then top-N sort. ~9ms under RLS.
+interface LateralAuditRow extends Record<string, unknown> {
+  id: string;
+  org_id: string | null;
+  timestamp: Date | string;
+  actor_type: 'user' | 'api_key' | 'agent' | 'system';
+  actor_id: string;
+  actor_email: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  resource_name: string | null;
+  details: unknown;
+  ip_address: string | null;
+  user_agent: string | null;
+  result: 'success' | 'failure' | 'denied';
+  error_message: string | null;
+  checksum: string | null;
+  initiated_by: string | null;
+  user_name: string | null;
+  device_hostname: string | null;
+  device_display_name: string | null;
+}
+
+async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow[]> {
+  const orgIdsSql = sql.join(orgIds.map((id) => sql`${id}::uuid`), sql`, `);
+  const rows = await db.execute<LateralAuditRow>(sql`
+    SELECT
+      al.id, al.org_id, al.timestamp, al.actor_type, al.actor_id,
+      al.actor_email, al.action, al.resource_type, al.resource_id,
+      al.resource_name, al.details, al.ip_address, al.user_agent,
+      al.result, al.error_message, al.checksum, al.initiated_by,
+      u.name AS user_name,
+      d.hostname AS device_hostname,
+      d.display_name AS device_display_name
+    FROM unnest(ARRAY[${orgIdsSql}]::uuid[]) AS o(org_id)
+    CROSS JOIN LATERAL (
+      SELECT * FROM audit_logs
+      WHERE audit_logs.org_id = o.org_id
+      ORDER BY timestamp DESC
+      LIMIT ${limit}
+    ) al
+    LEFT JOIN users u ON al.actor_id = u.id
+    LEFT JOIN devices d
+      ON al.actor_type = 'agent'
+      AND d.agent_id = al.details->>'rawActorId'
+    ORDER BY al.timestamp DESC
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({
+    log: {
+      id: r.id,
+      orgId: r.org_id,
+      timestamp: r.timestamp instanceof Date ? r.timestamp : new Date(r.timestamp),
+      actorType: r.actor_type,
+      actorId: r.actor_id,
+      actorEmail: r.actor_email,
+      action: r.action,
+      resourceType: r.resource_type,
+      resourceId: r.resource_id,
+      resourceName: r.resource_name,
+      details: r.details,
+      ipAddress: r.ip_address,
+      userAgent: r.user_agent,
+      result: r.result,
+      errorMessage: r.error_message,
+      checksum: r.checksum,
+      initiatedBy: r.initiated_by,
+    } as DbRow['log'],
+    userName: r.user_name ?? null,
+    deviceHostname: r.device_hostname ?? null,
+    deviceDisplayName: r.device_display_name ?? null,
+  }));
+}
+
 async function countRows(where: SQL | undefined): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(auditLogsTable)
-    .leftJoin(users, eq(auditLogsTable.actorId, users.id))
     .where(where);
   return row?.count ?? 0;
 }
@@ -435,9 +529,18 @@ function paginatedListHandler(
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the
     // count — it never displays "X of Y total". Pass skipCount=true there.
     const skipCount = query.skipCount === 'true';
+    const hasFilters = !!(query.user || query.action || query.resource || query.from || query.to);
+    const canUseFastPath =
+      skipCount &&
+      offset === 0 &&
+      !hasFilters &&
+      Array.isArray(auth.accessibleOrgIds) &&
+      auth.accessibleOrgIds.length > 0;
     const [total, rows] = await Promise.all([
       skipCount ? Promise.resolve(-1) : countRows(where),
-      queryRows(where, limit, offset)
+      canUseFastPath
+        ? queryLatestPerOrg(auth.accessibleOrgIds as string[], limit)
+        : queryRows(where, limit, offset)
     ]);
 
     return c.json({
@@ -482,9 +585,18 @@ auditLogRoutes.get(
     if (orgCond) conditions.push(orgCond);
 
     const [row] = await db
-      .select({ log: auditLogsTable, userName: users.name })
+      .select({
+        log: auditLogsTable,
+        userName: users.name,
+        deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
+      })
       .from(auditLogsTable)
       .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+      .leftJoin(
+        devices,
+        sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
+      )
       .where(and(...conditions));
 
     if (!row) {
