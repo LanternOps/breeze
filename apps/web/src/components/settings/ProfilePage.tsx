@@ -74,8 +74,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   });
 
   const isProfileLoading = useMemo(
-    () => isUpdatingProfile || isSubmitting,
-    [isUpdatingProfile, isSubmitting]
+    () => isUpdatingProfile || isSubmitting || isUploadingAvatar,
+    [isUpdatingProfile, isSubmitting, isUploadingAvatar]
   );
   // Preview priority: locally-selected file (object URL) → user's current avatar.
   // Adding ?v=<id> would bust caches but adds a needless query string to images
@@ -122,8 +122,23 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
   const handleProfileSubmit = async (values: ProfileFormValues) => {
     clearMessages();
+    clearAvatarMessages();
     try {
       setIsUpdatingProfile(true);
+
+      // 1. If a new avatar file is staged, upload it first. The avatar circle
+      //    already shows the local preview, but the canonical URL only exists
+      //    after a successful POST. Failing here aborts the rest of the save
+      //    so the user can fix the file and try again without losing edits.
+      if (avatarFile) {
+        const ok = await uploadStagedAvatar();
+        if (!ok) {
+          return;
+        }
+      }
+
+      // 2. Persist name changes (always run — backend is a no-op when nothing
+      //    actually changed, and this keeps the flow simple).
       const payload = {
         name: values.name.trim(),
       };
@@ -197,20 +212,20 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   }, [avatarPreview]);
 
-  const handleAvatarUpload = useCallback(async () => {
-    if (!avatarFile) return;
-    clearAvatarMessages();
+  // Upload the staged avatar file. Returns true on success, false on failure
+  // (and sets avatarError). Used by the unified Save-changes submit path.
+  // fetchWithAuth now correctly omits the JSON Content-Type for FormData
+  // bodies, so the browser sets the multipart boundary itself.
+  const uploadStagedAvatar = useCallback(async (): Promise<boolean> => {
+    if (!avatarFile) return true;
 
     try {
       setIsUploadingAvatar(true);
       const form = new FormData();
       form.append('file', avatarFile);
-      // fetchWithAuth merges in JSON content-type by default; bypass by passing
-      // an explicit headers object so the browser sets the multipart boundary.
       const response = await fetchWithAuth('/users/me/avatar', {
         method: 'POST',
         body: form,
-        headers: {},
       });
 
       if (!response.ok) {
@@ -226,13 +241,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       // Clear local preview state — the canonical URL will be used now.
       cancelAvatarSelection();
-      setAvatarSuccess('Avatar updated.');
+      return true;
     } catch (error) {
       setAvatarError(error instanceof Error ? error.message : 'Failed to upload avatar');
+      return false;
     } finally {
       setIsUploadingAvatar(false);
     }
-  }, [avatarFile, clearAvatarMessages, cancelAvatarSelection, updateAuthUser]);
+  }, [avatarFile, cancelAvatarSelection, updateAuthUser]);
 
   const handleAvatarDelete = useCallback(async () => {
     clearAvatarMessages();
@@ -503,24 +519,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
                   <span className="truncate">{avatarFile.name}</span>
                   <span className="text-xs text-muted-foreground">{formatBytes(avatarFile.size)}</span>
-                  <div className="ml-auto flex gap-2">
-                    <button
-                      type="button"
-                      onClick={handleAvatarUpload}
-                      disabled={isUploadingAvatar}
-                      className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isUploadingAvatar ? 'Uploading...' : 'Upload'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={cancelAvatarSelection}
-                      disabled={isUploadingAvatar}
-                      className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                  <span className="text-xs text-muted-foreground italic">Staged — click Save changes to upload.</span>
+                  <button
+                    type="button"
+                    onClick={cancelAvatarSelection}
+                    disabled={isUploadingAvatar || isProfileLoading}
+                    className="ml-auto text-xs font-medium text-muted-foreground hover:text-foreground underline disabled:cursor-not-allowed disabled:opacity-60"
+                    data-testid="avatar-remove-staged"
+                  >
+                    Remove staged file
+                  </button>
                 </div>
               )}
               {avatarError && (

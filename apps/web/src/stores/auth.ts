@@ -311,7 +311,19 @@ export async function fetchWithAuth(
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
   }
 
-  headers.set('Content-Type', 'application/json');
+  // Only force JSON Content-Type when:
+  //   1. The caller did not explicitly set one, AND
+  //   2. The body is not FormData / Blob (those need the browser to set the
+  //      multipart boundary or the correct content-type itself).
+  // Without this guard, multipart uploads (avatar upload) get a JSON
+  // content-type slapped on them, and the server can't parse the multipart
+  // body — it sees "file field is required" because the boundary is missing.
+  const bodyIsMultipart =
+    typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const bodyIsBlob = typeof Blob !== 'undefined' && options.body instanceof Blob;
+  if (!headers.has('Content-Type') && !bodyIsMultipart && !bodyIsBlob) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
   const externalSignal = options.signal;

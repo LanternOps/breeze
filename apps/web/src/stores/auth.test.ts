@@ -61,6 +61,45 @@ describe('auth store fetchWithAuth', () => {
     expect(headers.get('Content-Type')).toBe('application/json');
   });
 
+  it('does not force a JSON Content-Type when the body is FormData (multipart upload)', async () => {
+    // Regression: avatar upload was failing with 400 "file field is required"
+    // because fetchWithAuth was unconditionally setting Content-Type:
+    // application/json, which prevented the browser from setting the
+    // multipart/form-data boundary itself.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ avatarUrl: '/x' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const form = new FormData();
+    form.append('file', new File(['xx'], 'a.png', { type: 'image/png' }));
+
+    await fetchWithAuth('/users/me/avatar', { method: 'POST', body: form });
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = options.headers as Headers;
+    // Authorization still injected, but Content-Type must NOT be set so the
+    // browser fills it in with multipart/form-data; boundary=...
+    expect(headers.get('Authorization')).toBe(`Bearer ${baseTokens.accessToken}`);
+    expect(headers.get('Content-Type')).toBeNull();
+    expect(options.body).toBeInstanceOf(FormData);
+  });
+
+  it('preserves a caller-provided Content-Type and does not overwrite it with application/json', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'hi'
+    });
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = options.headers as Headers;
+    expect(headers.get('Content-Type')).toBe('text/plain');
+  });
+
   it('strips only exact /api prefix while preserving /api-* routes', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi
