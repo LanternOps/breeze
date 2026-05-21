@@ -22,7 +22,8 @@ export const dnsProviderEnum = pgEnum('dns_provider', [
   'dnsfilter',
   'pihole',
   'opendns',
-  'quad9'
+  'quad9',
+  'adguard_home'
 ]);
 
 export const dnsActionEnum = pgEnum('dns_action', [

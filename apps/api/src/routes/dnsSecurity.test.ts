@@ -41,7 +41,7 @@ vi.mock('../db/schema', () => ({
     createdBy: 'createdBy'
   },
   dnsPolicies: {},
-  dnsProviderEnum: { enumValues: ['umbrella', 'cloudflare', 'pihole'] },
+  dnsProviderEnum: { enumValues: ['umbrella', 'cloudflare', 'pihole', 'adguard_home'] },
   dnsSecurityEvents: {},
   dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing'] }
 }));

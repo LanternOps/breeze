@@ -3,6 +3,7 @@ import { UmbrellaProvider } from './umbrella';
 import { CloudflareGatewayProvider } from './cloudflare';
 import { DnsFilterProvider } from './dnsfilter';
 import { PiHoleProvider } from './pihole';
+import { AdGuardHomeProvider } from './adguardHome';
 
 export interface DnsEvent {
   timestamp: Date;
@@ -46,6 +47,8 @@ export function createDnsProvider(input: DnsProviderFactoryInput): DnsProvider {
       return new DnsFilterProvider(input.apiKey, input.config);
     case 'pihole':
       return new PiHoleProvider(input.apiKey, input.config);
+    case 'adguard_home':
+      return new AdGuardHomeProvider(input.apiKey, input.apiSecret, input.config);
     case 'opendns':
     case 'quad9':
       throw new Error(`Provider ${input.provider} is not yet supported for API sync`);
@@ -58,5 +61,6 @@ export {
   UmbrellaProvider,
   CloudflareGatewayProvider,
   DnsFilterProvider,
-  PiHoleProvider
+  PiHoleProvider,
+  AdGuardHomeProvider
 };
