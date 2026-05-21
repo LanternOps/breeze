@@ -15,11 +15,18 @@ interface AuditLogEntry {
     email: string;
   };
   action: string;
+  // Legacy flat fields (kept for back-compat with flattenEntry shape)
   resourceType?: string;
   targetType?: string;
   resourceId?: string;
   target?: string;
   targetName?: string;
+  // Current toFullEntry shape from /audit-logs/logs
+  resource?: {
+    type?: string;
+    id?: string;
+    name?: string;
+  };
   timestamp: string;
   createdAt?: string;
   details?: Record<string, unknown>;
@@ -153,13 +160,14 @@ export default function RecentActivity() {
             </thead>
             <tbody>
               {activities.map((activity) => {
-                const targetType = (activity.resourceType || activity.targetType || 'default').toLowerCase();
+                const resourceType = activity.resource?.type || activity.resourceType || activity.targetType;
+                const targetType = (resourceType || 'default').toLowerCase();
                 const Icon = typeIcons[targetType] || typeIcons.default;
                 const userName = activity.user?.name || activity.userName || 'System';
-                const targetName = activity.target || activity.targetName;
+                const targetName = activity.resource?.name || activity.target || activity.targetName;
                 const target = targetName && targetName.trim()
                   ? targetName
-                  : (activity.resourceType ? activity.resourceType : '-');
+                  : (resourceType ?? '-');
                 const timestamp = activity.timestamp || activity.createdAt || '';
 
                 return (

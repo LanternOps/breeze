@@ -3,6 +3,7 @@ import { Activity, Download, TrendingUp, User, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { formatAuditAction } from '@/lib/auditFormat';
 
 type ActivityEntry = {
   id: string;
@@ -231,8 +232,8 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
             Top Action
           </div>
-          <p className="mt-3 text-2xl font-semibold capitalize">
-            {topAction.action}
+          <p className="mt-3 text-2xl font-semibold">
+            {topAction.action === 'n/a' ? 'n/a' : formatAuditAction(topAction.action)}
           </p>
           <p className="text-sm text-muted-foreground">
             {topAction.count} occurrences
@@ -264,10 +265,12 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
                   />
                   <div className="flex-1 border-l border-dashed border-muted pl-4">
                     <p className="text-xs text-muted-foreground">{formatTimestamp(entry.timestamp, timezone)}</p>
-                    <p className="text-sm font-medium text-foreground capitalize">
-                      {entry.action} - {entry.resource}
+                    <p className="text-sm font-medium text-foreground">
+                      {formatAuditAction(entry.action)} - {entry.resource}
                     </p>
-                    <p className="text-xs text-muted-foreground">{entry.ipAddress}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {entry.ipAddress && entry.ipAddress.trim() ? entry.ipAddress : '-'}
+                    </p>
                   </div>
                 </div>
               ))
@@ -283,7 +286,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
             ) : (
               Object.entries(stats).map(([action, count]) => (
                 <div key={action} className="flex items-center justify-between text-sm">
-                  <span className="capitalize text-muted-foreground">{action}</span>
+                  <span className="text-muted-foreground">{formatAuditAction(action)}</span>
                   <span className="font-medium text-foreground">{count}</span>
                 </div>
               ))
@@ -315,9 +318,11 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
                 sortedTimeline.slice(0, 5).map(entry => (
                   <tr key={entry.id}>
                     <td className="px-3 py-2 text-muted-foreground">{formatTimestamp(entry.timestamp, timezone)}</td>
-                    <td className="px-3 py-2 capitalize text-foreground">{entry.action}</td>
+                    <td className="px-3 py-2 text-foreground">{formatAuditAction(entry.action)}</td>
                     <td className="px-3 py-2 text-foreground">{entry.resource}</td>
-                    <td className="px-3 py-2 text-muted-foreground">{entry.ipAddress}</td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {entry.ipAddress && entry.ipAddress.trim() ? entry.ipAddress : '-'}
+                    </td>
                   </tr>
                 ))
               )}
