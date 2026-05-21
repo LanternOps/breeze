@@ -86,3 +86,65 @@ export function formatAuditAction(action: string | null | undefined): string {
   if (!action) return '';
   return ACTION_DISPLAY[action] ?? prettify(action);
 }
+
+// Keys we never want to show in the compact Details cell — they're internal
+// plumbing, not human-relevant context.
+const NOISY_DETAIL_KEYS = new Set<string>([
+  'rawActorId',
+  'checksum',
+  'rawUserAgent',
+  'fingerprint',
+  'requestId',
+  'traceId',
+  'spanId',
+  'correlationId',
+]);
+
+// Pretty-print the relevant subset of an audit details payload as a compact
+// "key: value, key: value" string. Returns '' if nothing useful remains.
+export function formatAuditDetails(details: unknown): string {
+  if (details == null) return '';
+  if (typeof details === 'string') {
+    const trimmed = details.trim();
+    if (!trimmed) return '';
+    // Try to parse JSON strings; fall back to the raw string.
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return formatAuditDetails(JSON.parse(trimmed));
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  if (typeof details !== 'object') return String(details);
+  if (Array.isArray(details)) {
+    return details.length === 0 ? '' : `${details.length} items`;
+  }
+
+  const entries = Object.entries(details as Record<string, unknown>).filter(
+    ([key, value]) => {
+      if (NOISY_DETAIL_KEYS.has(key)) return false;
+      if (value === null || value === undefined) return false;
+      if (typeof value === 'string' && value.trim() === '') return false;
+      return true;
+    }
+  );
+
+  if (entries.length === 0) return '';
+
+  return entries
+    .map(([key, value]) => {
+      const label = key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').toLowerCase().trim();
+      let rendered: string;
+      if (value === null || value === undefined) {
+        rendered = '';
+      } else if (typeof value === 'object') {
+        rendered = Array.isArray(value) ? `${value.length} items` : '{ ... }';
+      } else {
+        rendered = String(value);
+      }
+      return `${label}: ${rendered}`;
+    })
+    .join(', ');
+}
