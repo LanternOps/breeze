@@ -90,6 +90,15 @@ const listScriptsSchema = z.object({
   includeSystem: z.string().optional() // 'true' to include system scripts
 });
 
+// Feature #3 (severity-by-exit-code): exit code -> severity map.
+// Keys must be non-negative integer strings (e.g. "0", "1", "2").
+// Values are an AlertSeverity literal or null (null = no alert for that code).
+const alertSeverityValueSchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
+const exitCodeSeverityMappingSchema = z.record(
+  z.string().regex(/^\d+$/, 'Exit codes must be non-negative integer strings'),
+  alertSeverityValueSchema.nullable()
+);
+
 const createScriptSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
@@ -101,7 +110,8 @@ const createScriptSchema = z.object({
   parameters: z.any().optional(),
   timeoutSeconds: z.number().int().min(1).max(86400).default(300),
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),
-  isSystem: z.boolean().optional()
+  isSystem: z.boolean().optional(),
+  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional()
 });
 
 const updateScriptSchema = z.object({
@@ -113,7 +123,8 @@ const updateScriptSchema = z.object({
   content: z.string().min(1).optional(),
   parameters: z.any().optional(),
   timeoutSeconds: z.number().int().min(1).max(86400).optional(),
-  runAs: z.enum(['system', 'user', 'elevated']).optional()
+  runAs: z.enum(['system', 'user', 'elevated']).optional(),
+  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional()
 });
 
 const executeScriptSchema = z.object({
@@ -460,6 +471,7 @@ scriptRoutes.post(
         runAs: data.runAs,
         isSystem,
         version: 1,
+        exitCodeSeverityMapping: data.exitCodeSeverityMapping ?? null,
         createdBy: auth.user.id
       })
       .returning();
@@ -519,6 +531,7 @@ scriptRoutes.put(
     if (data.parameters !== undefined) updates.parameters = data.parameters;
     if (data.timeoutSeconds !== undefined) updates.timeoutSeconds = data.timeoutSeconds;
     if (data.runAs !== undefined) updates.runAs = data.runAs;
+    if (data.exitCodeSeverityMapping !== undefined) updates.exitCodeSeverityMapping = data.exitCodeSeverityMapping;
 
     // Increment version if content changes
     if (data.content !== undefined && data.content !== script.content) {
