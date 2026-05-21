@@ -6,6 +6,7 @@ import ChangePasswordForm from './ChangePasswordForm';
 import MFASettings from './MFASettings';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -77,11 +78,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     () => isUpdatingProfile || isSubmitting || isUploadingAvatar,
     [isUpdatingProfile, isSubmitting, isUploadingAvatar]
   );
-  // Preview priority: locally-selected file (object URL) → user's current avatar.
-  // Adding ?v=<id> would bust caches but adds a needless query string to images
-  // that never change on a single page load; rely on the 5-min Cache-Control
-  // and the auth store update to refresh other tabs.
-  const previewAvatarUrl = avatarPreview || user?.avatarUrl || '';
+  // Preview priority: locally-selected file (object URL) → user's current
+  // avatar (fetched as blob through fetchWithAuth so the Bearer token gets
+  // attached — the API requires auth on GET /users/:id/avatar, and <img src=>
+  // can't send headers).
+  const resolvedAvatarUrl = useAvatarBlobUrl(avatarPreview ? null : user?.avatarUrl ?? null);
+  const previewAvatarUrl = avatarPreview || resolvedAvatarUrl || '';
 
   // Fetch user data on mount
   useEffect(() => {
