@@ -82,11 +82,19 @@ export default function FindingsTab() {
     });
   };
 
+  // The `search` filter is client-side only (dataType/risk/status refetch
+  // server-side). Select-all must operate on the visible rows, not the raw
+  // page-result, otherwise typing `.npm` and clicking the header checkbox
+  // selects findings the user can't see (#809).
+  const visibleFindings = findings.filter(
+    (f) => !search || f.filePath.toLowerCase().includes(search.toLowerCase())
+  );
+
   const toggleAll = () => {
-    if (selectedIds.size === findings.length) {
+    if (visibleFindings.length > 0 && selectedIds.size === visibleFindings.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(findings.map((f) => f.id)));
+      setSelectedIds(new Set(visibleFindings.map((f) => f.id)));
     }
   };
 
@@ -157,7 +165,7 @@ export default function FindingsTab() {
               <th className="px-4 py-3">
                 <input
                   type="checkbox"
-                  checked={findings.length > 0 && selectedIds.size === findings.length}
+                  checked={visibleFindings.length > 0 && selectedIds.size === visibleFindings.length}
                   onChange={toggleAll}
                   className="rounded border-border"
                 />
@@ -188,9 +196,7 @@ export default function FindingsTab() {
                 </td>
               </tr>
             )}
-            {!loading && findings
-              .filter((f) => !search || f.filePath.toLowerCase().includes(search.toLowerCase()))
-              .map((f) => (
+            {!loading && visibleFindings.map((f) => (
                 <tr key={f.id} className="text-sm hover:bg-muted/20">
                   <td className="px-4 py-3">
                     <input
