@@ -803,11 +803,8 @@ describe('patch routes', () => {
     mockAuthState.partnerId = 'partner-123';
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
 
-    vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn().mockReturnValue({
-        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined)
-      })
-    } as any);
+    // Mock db.execute since upsertPatchApproval uses raw SQL
+    vi.mocked(db.execute).mockResolvedValue(undefined);
 
     const res = await app.request('/patches/bulk-approve', {
       method: 'POST',
@@ -833,11 +830,8 @@ describe('patch routes', () => {
     mockAuthState.accessibleOrgIds = null;
 
     vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{ id: PATCH_ID }]) as any);
-    vi.mocked(db.insert).mockReturnValueOnce({
-      values: vi.fn().mockReturnValue({
-        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined)
-      })
-    } as any);
+    // Mock db.execute since upsertPatchApproval uses raw SQL
+    vi.mocked(db.execute).mockResolvedValueOnce(undefined);
 
     const res = await app.request(`/patches/${PATCH_ID}/approve`, {
       method: 'POST',
@@ -852,5 +846,49 @@ describe('patch routes', () => {
     const body = await res.json();
     expect(body.id).toBe(PATCH_ID);
     expect(body.status).toBe('approved');
+  });
+
+  it('accepts orgId from query parameter for bulk-approve', async () => {
+    mockAuthState.scope = 'partner';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+
+    // Mock db.execute since upsertPatchApproval uses raw SQL
+    vi.mocked(db.execute).mockResolvedValue(undefined);
+
+    const res = await app.request(`/patches/bulk-approve?orgId=${ACCESSIBLE_ORG_ID}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patchIds: [PATCH_ID],
+        note: 'Approve via query param'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.approved).toEqual([PATCH_ID]);
+  });
+
+  it('rejects bulk-approve with non-accessible orgId in query', async () => {
+    mockAuthState.scope = 'partner';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = 'partner-123';
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+
+    const res = await app.request(`/patches/bulk-approve?orgId=${BLOCKED_ORG_ID}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patchIds: [PATCH_ID],
+        note: 'Should be denied'
+      })
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Access denied to this organization');
   });
 });
