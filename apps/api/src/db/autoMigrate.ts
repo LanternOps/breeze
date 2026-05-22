@@ -239,7 +239,7 @@ async function recordMigration(
 }
 
 /** The highest legacy migration number that should be marked as applied for legacy DBs. */
-const LEGACY_CUTOFF = 65;
+export const LEGACY_CUTOFF = 65;
 
 /**
  * Single-track migration runner for Breeze.
