@@ -89,7 +89,7 @@ vi.mock('../../services/auditService', () => ({
   }),
 }));
 
-const cookieState = vi.hoisted(() => ({ set: null as string | null }));
+const cookieState = vi.hoisted(() => ({ set: null as string | null, cleared: false }));
 
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
@@ -107,6 +107,11 @@ vi.mock('./helpers', async () => {
     setRefreshTokenCookie: vi.fn((c: unknown, refreshToken: string) => {
       void c;
       cookieState.set = refreshToken;
+    }),
+    clearRefreshTokenCookie: vi.fn((c: unknown) => {
+      void c;
+      cookieState.set = null;
+      cookieState.cleared = true;
     }),
     getClientIP: () => '127.0.0.1',
   };
@@ -151,6 +156,7 @@ describe('GET /cf-access-login', () => {
     auditState.audits = [];
     auditState.loginFailures = [];
     cookieState.set = null;
+    cookieState.cleared = false;
   });
 
   it('redirects to /login with error=disabled when trust is off', async () => {
@@ -274,6 +280,25 @@ describe('GET /cf-access-login', () => {
     const res = await callGet('/cf-access-login?next=%2Fdevices', { 'Cf-Access-Jwt-Assertion': 'tok' });
     expect(res.status).toBe(302);
     expect(res.headers.get('Location')).toMatch(/^\/devices\?cf-access-login=success$/);
+  });
+
+  it('logout endpoint redirects to CF Access logout with returnTo set to /login?signedOut=1', async () => {
+    envState.enabled = true;
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', { method: 'GET' });
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('Location') ?? '';
+    expect(loc).toContain(`https://${envState.teamDomain}/cdn-cgi/access/logout`);
+    expect(loc).toContain('returnTo=');
+    expect(decodeURIComponent(loc.split('returnTo=')[1] ?? '')).toContain('/login?signedOut=1');
+    expect(cookieState.cleared).toBe(true);
+  });
+
+  it('logout endpoint falls back to /login?signedOut=1 when CF Access trust disabled', async () => {
+    envState.enabled = false;
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', { method: 'GET' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1');
+    expect(cookieState.cleared).toBe(true);
   });
 
   it('rejects an unsafe next param and falls back to /', async () => {

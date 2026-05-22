@@ -19,6 +19,7 @@ import { TenantInactiveError } from '../../services/tenantStatus';
 import { ENABLE_2FA } from './schemas';
 import {
   auditUserLoginFailure,
+  clearRefreshTokenCookie,
   getClientIP,
   resolveCurrentUserTokenContext,
   setRefreshTokenCookie,
@@ -200,5 +201,66 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
   return new Response(null, {
     status: 302,
     headers: { Location: location },
+  });
+});
+
+/**
+ * GET /api/v1/auth/cf-access-logout
+ *
+ * Top-level browser navigation entry-point for completing logout when CF
+ * Access trust is in front of Breeze. Without this, clicking "Sign out"
+ * only clears the Breeze session — CF Access still has an active session
+ * for the user, so the next visit re-enters Breeze via the SSO redirect
+ * loop with no user interaction.
+ *
+ * Flow:
+ *   1. Clear the Breeze refresh cookie.
+ *   2. 302 to CF Access logout endpoint with `returnTo` pointing back at
+ *      `/login?signedOut=1`. CF clears its own session and bounces the
+ *      user back. `LoginPage` honours the `signedOut=1` flag and shows
+ *      the password form instead of triggering the SSO redirect again.
+ *
+ * If CF Access trust is disabled, falls back to a plain 302 to /login
+ * after clearing the refresh cookie.
+ *
+ * Not authMiddleware-gated: a top-level GET navigation cannot present a
+ * Bearer token. The refresh cookie is enough to identify the session and
+ * the cookie is cleared regardless.
+ */
+cfAccessRedirectLoginRoutes.get('/cf-access-logout', (c) => {
+  clearRefreshTokenCookie(c);
+
+  if (!cfAccessTrustEnabled()) {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: '/login?signedOut=1' },
+    });
+  }
+
+  const teamDomain = cfAccessTeamDomain();
+  if (!teamDomain) {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: '/login?signedOut=1' },
+    });
+  }
+
+  // Reconstruct the public origin from the incoming request so the
+  // `returnTo` parameter survives whatever proxy / CNAME setup is in
+  // front of the api. Falls back to the Host header if the URL parse
+  // fails for any reason.
+  let origin: string;
+  try {
+    origin = new URL(c.req.url).origin;
+  } catch {
+    const host = c.req.header('host') ?? '';
+    origin = host ? `https://${host}` : '';
+  }
+  const returnTo = `${origin}/login?signedOut=1`;
+  const cfLogoutUrl = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(returnTo)}`;
+
+  return new Response(null, {
+    status: 302,
+    headers: { Location: cfLogoutUrl },
   });
 });

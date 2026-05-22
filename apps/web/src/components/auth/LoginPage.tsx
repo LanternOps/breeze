@@ -18,10 +18,13 @@ function getRegistrationDisabledNotice(): string | undefined {
 function shouldSkipCfAccessRedirect(): boolean {
   if (typeof window === 'undefined') return true;
   const params = new URLSearchParams(window.location.search);
-  // Don't loop: if we just came back from cf-access-login with an error,
-  // or with a success (handled by AuthOverlay), stay on the form.
+  // Don't loop:
+  // - error=cf-access  → we just bounced off a failed JWT verification
+  // - cf-access-login=success → we just succeeded; AuthOverlay handles the rest
+  // - signedOut=1 → the user just hit Sign out; respect that intent
   if (params.get('error') === 'cf-access') return true;
   if (params.get('cf-access-login') === 'success') return true;
+  if (params.get('signedOut') === '1') return true;
   return false;
 }
 
