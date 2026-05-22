@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
+import { runOutsideDbContext } from '../db';
 
 // Event types for type safety
 export type EventType =
@@ -173,7 +174,6 @@ class EventBus {
     source: string,
     options: PublishOptions = {}
   ): Promise<string> {
-    const redis = this.getOrCreateRedis();
     const eventId = randomUUID();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
@@ -192,32 +192,44 @@ class EventBus {
       }
     };
 
-    // Add to Redis Stream
-    await redis.xadd(
-      streamKey,
-      'MAXLEN',
-      '~',
-      MAX_STREAM_LENGTH.toString(),
-      '*',
-      'event',
-      JSON.stringify(event)
-    );
+    // Escape any active AsyncLocalStorage DB transaction context before doing
+    // Redis-bound work. Otherwise a publishEvent call made from inside a
+    // transaction (e.g. alertWorker, createAlert, publishEvent) holds the
+    // Postgres connection in `idle in transaction` for as long as Redis takes.
+    // Any local handler (e.g. webhookDelivery / automationWorker `*`
+    // subscribers that queue BullMQ deliveries) compounds that wait. Under a
+    // Redis stall this manifested as Postgres pool exhaustion and login
+    // lockout on 2026-05-21.
+    return runOutsideDbContext(async () => {
+      const redis = this.getOrCreateRedis();
 
-    // Also publish to pub/sub for real-time subscribers
-    await redis.publish(`${STREAM_PREFIX}:live:${orgId}`, JSON.stringify(event));
+      // Add to Redis Stream
+      await redis.xadd(
+        streamKey,
+        'MAXLEN',
+        '~',
+        MAX_STREAM_LENGTH.toString(),
+        '*',
+        'event',
+        JSON.stringify(event)
+      );
 
-    // Publish to global channel for cross-org subscribers (webhooks, etc.)
-    await redis.publish(`${STREAM_PREFIX}:global`, JSON.stringify(event));
+      // Also publish to pub/sub for real-time subscribers
+      await redis.publish(`${STREAM_PREFIX}:live:${orgId}`, JSON.stringify(event));
 
-    if (type !== 'monitoring.check_failed' && type !== 'monitoring.check_recovered') {
-      console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
-    }
+      // Publish to global channel for cross-org subscribers (webhooks, etc.)
+      await redis.publish(`${STREAM_PREFIX}:global`, JSON.stringify(event));
 
-    // Invoke local in-process handlers immediately
-    // This handles the case where startConsuming() hasn't been called
-    await this.invokeLocalHandlers(event as BreezeEvent);
+      if (type !== 'monitoring.check_failed' && type !== 'monitoring.check_recovered') {
+        console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
+      }
 
-    return eventId;
+      // Invoke local in-process handlers immediately
+      // This handles the case where startConsuming() hasn't been called
+      await this.invokeLocalHandlers(event as BreezeEvent);
+
+      return eventId;
+    });
   }
 
   /**

@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 export type Permission = {
   resource: string;
@@ -28,6 +29,15 @@ export type Role = {
   updatedAt: string;
 };
 
+// Authoritative permission catalog as returned by GET /permissions/catalog.
+// Source of truth lives in apps/api/src/services/permissions.ts; the UI must
+// never hard-code its own resource/action lists (issue #801).
+export type PermissionCatalog = {
+  permissions: Permission[];
+  resourceLabels: Record<string, string>;
+  actionLabels: Record<string, string>;
+};
+
 type RoleManagerProps = {
   roles: Role[];
   availableParentRoles?: Role[];
@@ -36,42 +46,6 @@ type RoleManagerProps = {
   onDeleteRole?: (role: Role) => void;
   onCloneRole?: (role: Role) => void;
   onViewUsers?: (role: Role) => void;
-};
-
-const RESOURCES = [
-  'devices',
-  'scripts',
-  'alerts',
-  'automations',
-  'reports',
-  'users',
-  'settings',
-  'organizations',
-  'sites',
-  'remote'
-] as const;
-
-const ACTIONS = ['view', 'create', 'update', 'delete', 'execute'] as const;
-
-const resourceLabels: Record<string, string> = {
-  devices: 'Devices',
-  scripts: 'Scripts',
-  alerts: 'Alerts',
-  automations: 'Automations',
-  reports: 'Reports',
-  users: 'Users',
-  settings: 'Settings',
-  organizations: 'Organizations',
-  sites: 'Sites',
-  remote: 'Remote Access'
-};
-
-const actionLabels: Record<string, string> = {
-  view: 'View',
-  create: 'Create',
-  update: 'Update',
-  delete: 'Delete',
-  execute: 'Execute'
 };
 
 export default function RoleManager({
@@ -87,31 +61,72 @@ export default function RoleManager({
   const [typeFilter, setTypeFilter] = useState<'all' | 'system' | 'custom'>('all');
   const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
   const [rolePermissions, setRolePermissions] = useState<Record<string, Permission[]>>({});
+  const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogReloadKey, setCatalogReloadKey] = useState(0);
 
-  const normalizePermissions = useCallback((perms: Permission[]): Permission[] => {
-    // Map API action names to matrix action names
-    const actionMap: Record<string, string> = { read: 'view' };
-    const normalized: Permission[] = [];
-    for (const p of perms) {
-      // Expand wildcards
-      if (p.resource === '*' && p.action === '*') {
-        for (const r of RESOURCES) {
-          for (const a of ACTIONS) {
-            normalized.push({ resource: r, action: a });
+  const reloadCatalog = useCallback(() => setCatalogReloadKey((k) => k + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCatalogError(null);
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/permissions/catalog');
+        if (!res.ok) {
+          if (res.status === 401) {
+            void navigateTo('/login', { replace: true });
+            return;
           }
+          if (!cancelled) {
+            setCatalogError(`Failed to load permissions (${res.status} ${res.statusText || 'error'})`);
+          }
+          return;
         }
-        continue;
-      }
-      const resources = p.resource === '*' ? [...RESOURCES] : [p.resource];
-      const actions = p.action === '*' ? [...ACTIONS] : [actionMap[p.action] || p.action];
-      for (const r of resources) {
-        for (const a of actions) {
-          normalized.push({ resource: r, action: a });
+        const data = (await res.json()) as PermissionCatalog;
+        if (!cancelled) {
+          setCatalog(data);
+          setCatalogError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCatalogError(err instanceof Error ? err.message : 'Failed to load permissions');
         }
       }
-    }
-    return normalized;
-  }, []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogReloadKey]);
+
+  const normalizePermissions = useCallback(
+    (perms: Permission[]): Permission[] => {
+      if (!catalog) return [];
+      const normalized: Permission[] = [];
+      for (const p of perms) {
+        // Expand wildcards against the catalog (no static fallback list).
+        if (p.resource === '*' && p.action === '*') {
+          normalized.push(...catalog.permissions);
+          continue;
+        }
+        if (p.resource === '*') {
+          for (const cp of catalog.permissions) {
+            if (cp.action === p.action) normalized.push({ resource: cp.resource, action: cp.action });
+          }
+          continue;
+        }
+        if (p.action === '*') {
+          for (const cp of catalog.permissions) {
+            if (cp.resource === p.resource) normalized.push({ resource: cp.resource, action: cp.action });
+          }
+          continue;
+        }
+        normalized.push({ resource: p.resource, action: p.action });
+      }
+      return normalized;
+    },
+    [catalog]
+  );
 
   const toggleExpand = useCallback(async (role: Role) => {
     if (expandedRoleId === role.id) {
@@ -347,8 +362,11 @@ export default function RoleManager({
                       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         Permissions for {role.name}
                       </div>
-                      {rolePermissions[role.id] ? (
+                      {catalogError ? (
+                        <CatalogLoadError message={catalogError} onRetry={reloadCatalog} />
+                      ) : rolePermissions[role.id] && catalog ? (
                         <PermissionMatrix
+                          catalog={catalog}
                           permissions={rolePermissions[role.id]}
                           onChange={() => {}}
                           disabled
@@ -372,15 +390,34 @@ export default function RoleManager({
   );
 }
 
+// Inline error block for permission-catalog fetch failures. Surfaces the
+// failure to the user with a Retry, instead of leaving the matrix wedged on
+// "Loading permissions..." forever.
+function CatalogLoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-start gap-2 py-2 text-sm">
+      <p className="text-destructive">{message}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 // Permission Matrix Component for Create/Edit modals
 type PermissionMatrixProps = {
+  catalog: PermissionCatalog;
   permissions: Permission[];
   inheritedPermissions?: EffectivePermission[];
   onChange: (permissions: Permission[]) => void;
   disabled?: boolean;
 };
 
-export function PermissionMatrix({ permissions, inheritedPermissions = [], onChange, disabled = false }: PermissionMatrixProps) {
+export function PermissionMatrix({ catalog, permissions, inheritedPermissions = [], onChange, disabled = false }: PermissionMatrixProps) {
   const permissionSet = useMemo(() => {
     const set = new Set<string>();
     permissions.forEach((p) => set.add(`${p.resource}:${p.action}`));
@@ -393,20 +430,62 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
     return set;
   }, [inheritedPermissions]);
 
+  const catalogKeySet = useMemo(() => {
+    const set = new Set<string>();
+    catalog.permissions.forEach((p) => set.add(`${p.resource}:${p.action}`));
+    return set;
+  }, [catalog]);
+
+  // Derive resources and actions present in the catalog. Preserve the order in
+  // which they first appear so the matrix layout is stable across loads.
+  const resources = useMemo(() => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const p of catalog.permissions) {
+      if (!seen.has(p.resource)) {
+        seen.add(p.resource);
+        result.push(p.resource);
+      }
+    }
+    return result;
+  }, [catalog]);
+
+  const actions = useMemo(() => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const p of catalog.permissions) {
+      if (!seen.has(p.action)) {
+        seen.add(p.action);
+        result.push(p.action);
+      }
+    }
+    return result;
+  }, [catalog]);
+
+  // For each resource, the subset of actions it actually supports per the catalog.
+  const actionsByResource = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const p of catalog.permissions) {
+      if (!map.has(p.resource)) map.set(p.resource, new Set());
+      map.get(p.resource)!.add(p.action);
+    }
+    return map;
+  }, [catalog]);
+
   const togglePermission = (resource: string, action: string) => {
     if (disabled) return;
 
     const key = `${resource}:${action}`;
+    // Defense in depth: never submit a pair that isn't in the catalog.
+    if (!catalogKeySet.has(key)) return;
     const newPermissions = [...permissions];
 
     if (permissionSet.has(key)) {
-      // Remove permission
       const index = newPermissions.findIndex((p) => p.resource === resource && p.action === action);
       if (index !== -1) {
         newPermissions.splice(index, 1);
       }
     } else {
-      // Add permission
       newPermissions.push({ resource, action });
     }
 
@@ -416,18 +495,19 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
   const toggleRow = (resource: string) => {
     if (disabled) return;
 
-    const resourcePerms = permissions.filter((p) => p.resource === resource);
-    const allChecked = resourcePerms.length === ACTIONS.length;
+    const supported = Array.from(actionsByResource.get(resource) ?? []);
+    if (supported.length === 0) return;
+
+    const resourcePerms = permissions.filter((p) => p.resource === resource && supported.includes(p.action));
+    const allChecked = resourcePerms.length === supported.length;
 
     let newPermissions: Permission[];
 
     if (allChecked) {
-      // Remove all for this resource
       newPermissions = permissions.filter((p) => p.resource !== resource);
     } else {
-      // Add all for this resource
       const existing = permissions.filter((p) => p.resource !== resource);
-      const newPerms = ACTIONS.map((action) => ({ resource, action }));
+      const newPerms = supported.map((action) => ({ resource, action }));
       newPermissions = [...existing, ...newPerms];
     }
 
@@ -437,18 +517,20 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
   const toggleColumn = (action: string) => {
     if (disabled) return;
 
-    const actionPerms = permissions.filter((p) => p.action === action);
-    const allChecked = actionPerms.length === RESOURCES.length;
+    // Only toggle resources that actually support this action.
+    const supportedResources = resources.filter((r) => actionsByResource.get(r)?.has(action));
+    if (supportedResources.length === 0) return;
+
+    const actionPerms = permissions.filter((p) => p.action === action && supportedResources.includes(p.resource));
+    const allChecked = actionPerms.length === supportedResources.length;
 
     let newPermissions: Permission[];
 
     if (allChecked) {
-      // Remove all for this action
       newPermissions = permissions.filter((p) => p.action !== action);
     } else {
-      // Add all for this action
       const existing = permissions.filter((p) => p.action !== action);
-      const newPerms = RESOURCES.map((resource) => ({ resource, action }));
+      const newPerms = supportedResources.map((resource) => ({ resource, action }));
       newPermissions = [...existing, ...newPerms];
     }
 
@@ -461,7 +543,7 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
         <thead className="bg-muted/40">
           <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <th className="px-3 py-2">Resource</th>
-            {ACTIONS.map((action) => (
+            {actions.map((action) => (
               <th key={action} className="px-3 py-2 text-center">
                 <button
                   type="button"
@@ -472,14 +554,14 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
                     disabled && 'cursor-not-allowed opacity-50'
                   )}
                 >
-                  {actionLabels[action]}
+                  {catalog.actionLabels[action] ?? action}
                 </button>
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {RESOURCES.map((resource) => (
+          {resources.map((resource) => (
             <tr key={resource} className="border-b">
               <td className="px-3 py-2">
                 <button
@@ -491,11 +573,21 @@ export function PermissionMatrix({ permissions, inheritedPermissions = [], onCha
                     disabled && 'cursor-not-allowed opacity-50'
                   )}
                 >
-                  {resourceLabels[resource]}
+                  {catalog.resourceLabels[resource] ?? resource}
                 </button>
               </td>
-              {ACTIONS.map((action) => {
+              {actions.map((action) => {
                 const key = `${resource}:${action}`;
+                const supported = catalogKeySet.has(key);
+                if (!supported) {
+                  // Cell intentionally empty — this (resource, action) pair is
+                  // not a real permission. Issue #801 fix.
+                  return (
+                    <td key={action} className="px-3 py-2 text-center text-muted-foreground/30">
+                      &mdash;
+                    </td>
+                  );
+                }
                 const isDirectlyAssigned = permissionSet.has(key);
                 const isInherited = inheritedPermissionSet.has(key);
                 const isChecked = isDirectlyAssigned || isInherited;
@@ -557,16 +649,60 @@ export function RoleFormModal({
   const [description, setDescription] = useState(role?.description || '');
   const [permissions, setPermissions] = useState<Permission[]>(role?.permissions || []);
   const [parentRoleId, setParentRoleId] = useState<string | null>(role?.parentRoleId || null);
+  const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogReloadKey, setCatalogReloadKey] = useState(0);
 
-  // Reset form when modal opens with new role
-  useState(() => {
-    if (isOpen) {
-      setName(mode === 'clone' ? '' : role?.name || '');
-      setDescription(role?.description || '');
-      setPermissions(role?.permissions || []);
-      setParentRoleId(role?.parentRoleId || null);
-    }
-  });
+  const reloadCatalog = useCallback(() => setCatalogReloadKey((k) => k + 1), []);
+
+  // Fetch permission catalog while modal is open. Issue #801: UI must render
+  // from API's authoritative list so the matrix matches the allowlist gate.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setCatalogError(null);
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/permissions/catalog');
+        if (!res.ok) {
+          if (res.status === 401) {
+            void navigateTo('/login', { replace: true });
+            return;
+          }
+          if (!cancelled) {
+            setCatalogError(`Failed to load permissions (${res.status} ${res.statusText || 'error'})`);
+          }
+          return;
+        }
+        const data = (await res.json()) as PermissionCatalog;
+        if (!cancelled) {
+          setCatalog(data);
+          setCatalogError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCatalogError(err instanceof Error ? err.message : 'Failed to load permissions');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, catalogReloadKey]);
+
+  // Reset form whenever the modal opens or the target role changes. Previously
+  // this used useState(() => {...}), whose initializer runs only on first mount,
+  // so opening Edit for a role after the page mounted left every field blank
+  // (issue #801 regression report). useEffect with [isOpen, role, mode] re-runs
+  // on each open, repopulating name/description/permissions/parentRoleId from
+  // the freshly fetched role.
+  useEffect(() => {
+    if (!isOpen) return;
+    setName(mode === 'clone' ? '' : role?.name || '');
+    setDescription(role?.description || '');
+    setPermissions(role?.permissions || []);
+    setParentRoleId(role?.parentRoleId || null);
+  }, [isOpen, role, mode]);
 
   if (!isOpen) return null;
 
@@ -661,12 +797,24 @@ export function RoleFormModal({
               )}
             </p>
             <div className="rounded-md border">
-              <PermissionMatrix
-                permissions={permissions}
-                inheritedPermissions={inheritedPermissions}
-                onChange={setPermissions}
-                disabled={loading}
-              />
+              {catalogError ? (
+                <div className="px-3 py-4">
+                  <CatalogLoadError message={catalogError} onRetry={reloadCatalog} />
+                </div>
+              ) : catalog ? (
+                <PermissionMatrix
+                  catalog={catalog}
+                  permissions={permissions}
+                  inheritedPermissions={inheritedPermissions}
+                  onChange={setPermissions}
+                  disabled={loading}
+                />
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  Loading permissions...
+                </div>
+              )}
             </div>
           </div>
 
@@ -681,7 +829,8 @@ export function RoleFormModal({
             </button>
             <button
               type="submit"
-              disabled={loading || !name.trim()}
+              disabled={loading || !name.trim() || !catalog}
+              title={!catalog ? 'Waiting for permission catalog to load' : undefined}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading

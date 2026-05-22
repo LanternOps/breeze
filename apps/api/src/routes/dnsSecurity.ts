@@ -159,6 +159,23 @@ const createIntegrationSchema = z.object({
       message: 'apiEndpoint is required for Pi-hole'
     });
   }
+
+  if (data.provider === 'adguard_home') {
+    if (!data.config?.apiEndpoint) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['config', 'apiEndpoint'],
+        message: 'apiEndpoint is required for AdGuard Home (e.g. https://adguard.client.local)'
+      });
+    }
+    if (!data.apiSecret) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['apiSecret'],
+        message: 'apiSecret (HTTP Basic auth password) is required for AdGuard Home'
+      });
+    }
+  }
 });
 
 const listEventsQuerySchema = z.object({

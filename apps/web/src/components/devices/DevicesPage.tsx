@@ -302,6 +302,15 @@ export default function DevicesPage() {
           break;
         }
 
+        case 'refresh': {
+          await sendDeviceCommand(device.id, 'refresh_inventory');
+          showToast({
+            type: 'success',
+            message: `Inventory refresh requested for ${device.hostname}. Fresh data in 1–2 minutes.`,
+          });
+          break;
+        }
+
         case 'maintenance':
           const isCurrentlyMaintenance = device.status === 'maintenance';
           await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);

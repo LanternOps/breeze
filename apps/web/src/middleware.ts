@@ -1,5 +1,5 @@
 import { defineMiddleware } from 'astro:middleware';
-import { resolveConnectSrcDirective, resolveUnsafeInlineCspOptions } from './lib/csp';
+import { resolveConnectSrcDirective, resolveFrameSrcDirective, resolveUnsafeInlineCspOptions } from './lib/csp';
 
 function readFlag(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -26,6 +26,7 @@ function buildFallbackCspDirectives(options: {
     "worker-src 'self' blob:",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
+    resolveFrameSrcDirective({}),
     resolveConnectSrcDirective({ isDev: options.isDev })
   ];
 

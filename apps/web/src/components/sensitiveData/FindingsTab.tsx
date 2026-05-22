@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import {
@@ -82,11 +82,31 @@ export default function FindingsTab() {
     });
   };
 
+  // The `search` filter is client-side only (dataType/risk/status refetch
+  // server-side). Select-all must operate on the visible rows, not the raw
+  // page-result, otherwise typing `.npm` and clicking the header checkbox
+  // selects findings the user can't see (#809). Memoized so toggle handlers
+  // identity-compare cleanly and don't re-run on unrelated state changes.
+  const visibleFindings = useMemo(
+    () => findings.filter(
+      (f) => !search || f.filePath.toLowerCase().includes(search.toLowerCase())
+    ),
+    [findings, search]
+  );
+
+  // Drop the current selection whenever the search term changes. Without
+  // this, a user can filter, select, change the filter, and then bulk-remediate
+  // items they never saw on screen — quiet footgun the header checkbox
+  // alone can't prevent. Behaviour adopted from saracmert@'s #811.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [search]);
+
   const toggleAll = () => {
-    if (selectedIds.size === findings.length) {
+    if (visibleFindings.length > 0 && selectedIds.size === visibleFindings.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(findings.map((f) => f.id)));
+      setSelectedIds(new Set(visibleFindings.map((f) => f.id)));
     }
   };
 
@@ -157,7 +177,7 @@ export default function FindingsTab() {
               <th className="px-4 py-3">
                 <input
                   type="checkbox"
-                  checked={findings.length > 0 && selectedIds.size === findings.length}
+                  checked={visibleFindings.length > 0 && selectedIds.size === visibleFindings.length}
                   onChange={toggleAll}
                   className="rounded border-border"
                 />
@@ -181,16 +201,16 @@ export default function FindingsTab() {
                 </td>
               </tr>
             )}
-            {!loading && findings.length === 0 && (
+            {!loading && visibleFindings.length === 0 && (
               <tr>
                 <td colSpan={10} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No findings match the current filters.
+                  {findings.length === 0
+                    ? 'No findings match the current filters.'
+                    : 'No findings on this page match your search.'}
                 </td>
               </tr>
             )}
-            {!loading && findings
-              .filter((f) => !search || f.filePath.toLowerCase().includes(search.toLowerCase()))
-              .map((f) => (
+            {!loading && visibleFindings.map((f) => (
                 <tr key={f.id} className="text-sm hover:bg-muted/20">
                   <td className="px-4 py-3">
                     <input
@@ -257,7 +277,9 @@ export default function FindingsTab() {
       {/* Pagination */}
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground">
-          Showing {findings.length} of {pagination.total} findings
+          {search
+            ? `Showing ${visibleFindings.length} of ${findings.length} on this page (${pagination.total} total)`
+            : `Showing ${visibleFindings.length} of ${pagination.total} findings`}
         </span>
         <div className="flex items-center gap-2">
           <button

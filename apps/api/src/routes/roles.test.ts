@@ -88,8 +88,15 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
-import { clearPermissionCache, getUserPermissions } from '../services/permissions';
+import { clearPermissionCache, getUserPermissions, isAssignablePermission } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
+// Pull the REAL assignable-permissions list from the un-mocked services module so
+// the regression-guard loop can iterate the actual canonical set. The rest of
+// this file relies on the mocked services module above; we use
+// vi.importActual here to bypass the mock for just this constant.
+const { ASSIGNABLE_PERMISSIONS: REAL_ASSIGNABLE_PERMISSIONS } = await vi.importActual<
+  typeof import('../services/permissions')
+>('../services/permissions');
 
 describe('role routes', () => {
   let app: Hono;
@@ -511,5 +518,82 @@ describe('role routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
     });
+  });
+
+  // Regression guard for issue #801: every entry in ASSIGNABLE_PERMISSIONS must
+  // be accepted by POST /roles. If a future change to the registry breaks this
+  // contract (or the UI rebuilds itself off a stale list), this test catches it
+  // before it ships.
+  describe('POST /roles — ASSIGNABLE_PERMISSIONS coverage (regression for #801)', () => {
+    it.each(REAL_ASSIGNABLE_PERMISSIONS.map((p) => [p.resource, p.action]))(
+      'accepts %s:%s',
+      async (resource, action) => {
+        // Use the real allowlist gate for this loop.
+        vi.mocked(isAssignablePermission).mockImplementation((permission: any) =>
+          REAL_ASSIGNABLE_PERMISSIONS.some(
+            (p) => p.resource === permission.resource && p.action === permission.action
+          )
+        );
+
+        const roleInsertValues = vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            {
+              id: `role-${resource}-${action}`,
+              name: `T-${resource}-${action}`,
+              description: null,
+              scope: 'partner',
+              isSystem: false,
+              parentRoleId: null,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            }
+          ])
+        });
+        const rolePermissionsValues = vi.fn().mockResolvedValue(undefined);
+        const txInsert = vi
+          .fn()
+          .mockReturnValueOnce({ values: roleInsertValues })
+          .mockReturnValueOnce({ values: rolePermissionsValues });
+
+        vi.mocked(db.transaction).mockImplementation(async (fn) => {
+          return fn({ insert: txInsert } as any);
+        });
+
+        // For getOrCreatePermission: first SELECT returns empty, then INSERT returns id.
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: `perm-${resource}-${action}` }])
+          })
+        } as any);
+
+        // Caller has wildcard, so hasPermission allows everything. No need to
+        // remock that.
+        vi.mocked(getUserPermissions).mockResolvedValue({
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: 'partner-123',
+          orgId: null,
+          roleId: 'role-admin',
+          scope: 'partner'
+        } as any);
+
+        const res = await app.request('/roles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: `T-${resource}-${action}`,
+            permissions: [{ resource, action }]
+          })
+        });
+
+        expect(res.status, `expected 201 for ${resource}:${action}`).toBe(201);
+      }
+    );
   });
 });

@@ -218,6 +218,11 @@ type Heartbeat struct {
 	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
 	// production — the real sendHeartbeat method is invoked.
 	sendHeartbeatFn func()
+
+	// sendInventoryFn is an optional override used by tests to replace the
+	// real sendInventory call inside handleRefreshInventory. nil in
+	// production — the real sendInventory method is invoked.
+	sendInventoryFn func()
 }
 
 func New(cfg *config.Config) *Heartbeat {

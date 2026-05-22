@@ -126,6 +126,11 @@ export default function DeviceList({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
+  // Flip the row dropdown direction when the click happens close to the
+  // viewport bottom — the menu has ~7 items × ~36px, so any row whose
+  // kebab sits <300px from the viewport bottom would otherwise render
+  // its dropdown into the area below the table and get clipped.
+  const [rowMenuFlipUp, setRowMenuFlipUp] = useState(false);
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
   const [serverFilterLoading, setServerFilterLoading] = useState(false);
@@ -811,13 +816,21 @@ export default function DeviceList({
                       <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
                         <button
                           type="button"
-                          onClick={() => setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id)}
+                          onClick={(e) => {
+                            if (rowMenuOpenId !== device.id) {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              // ~280px dropdown height (7 items × ~36px + padding/divider).
+                              // Flip up when the space below the button is less than that.
+                              setRowMenuFlipUp(window.innerHeight - rect.bottom < 300);
+                            }
+                            setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id);
+                          }}
                           className="flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted"
                         >
                           <MoreVertical className="h-4 w-4" />
                         </button>
                         {rowMenuOpenId === device.id && (
-                          <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-md border bg-card shadow-lg">
+                          <div className={`absolute right-0 z-50 w-48 rounded-md border bg-card shadow-lg ${rowMenuFlipUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
                             <button
                               type="button"
                               disabled={device.status !== 'online'}

@@ -272,7 +272,7 @@ async function insertDiscoveryChangeEvent(values: typeof networkChangeEvents.$in
       profilePredicate,
       eq(networkChangeEvents.eventType, values.eventType),
       eq(networkChangeEvents.ipAddress, values.ipAddress),
-      sql`${networkChangeEvents.detectedAt} >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000)}`
+      sql`${networkChangeEvents.detectedAt} >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()}`
     ))
     .limit(25);
 

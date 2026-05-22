@@ -213,6 +213,34 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+/**
+ * Apply a per-domain provider mutation strictly sequentially — one provider
+ * API call at a time, never concurrently.
+ *
+ * The DNS provider add/remove domain methods are NOT safe to run in parallel:
+ * several providers expose only a "replace the entire rule array" API (e.g.
+ * AdGuard Home's `set_rules`), so each method performs a read-modify-write
+ * (GET current rules -> mutate -> POST full array). Running N of these
+ * concurrently means all N read the same baseline and each POSTs its own
+ * array — last write wins and silently drops the other N-1 domains' changes,
+ * while the policy-sync job still records `sync_status='synced'`. That is
+ * silent tenant data loss (issue #827).
+ *
+ * Sequential execution guarantees every call observes the previous call's
+ * write. Domain counts per policy are small and these are cheap HTTP calls,
+ * so serialization has negligible cost. Do NOT reintroduce concurrency here
+ * without a per-provider guarantee that the mutation API is incremental
+ * rather than full-array.
+ */
+export async function runSequentialDomainMutations(
+  domains: string[],
+  operation: (domain: string) => Promise<void>
+): Promise<void> {
+  for (const domain of domains) {
+    await operation(domain);
+  }
+}
+
 function syncIntervalMinutesFromConfig(config: DnsIntegrationConfig): number {
   const configured = Number(config.syncInterval);
   if (!Number.isFinite(configured)) return DEFAULT_SYNC_INTERVAL_MINUTES;
@@ -561,24 +589,14 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
       ? normalizeDomainList(data.operations.remove)
       : [];
 
-    const runBatched = async (
-      domains: string[],
-      operation: (domain: string) => Promise<void>,
-      concurrency = 10
-    ): Promise<void> => {
-      if (domains.length === 0) return;
-      for (let i = 0; i < domains.length; i += concurrency) {
-        const block = domains.slice(i, i + concurrency);
-        await Promise.all(block.map(operation));
-      }
-    };
-
+    // Mutations MUST run sequentially — see runSequentialDomainMutations for
+    // why concurrency here causes silent rule clobbering (issue #827).
     if (row.policy.type === 'blocklist') {
-      await runBatched(addDomains, (domain) => provider.addBlocklistDomain(domain), 10);
-      await runBatched(removeDomains, (domain) => provider.removeBlocklistDomain(domain), 10);
+      await runSequentialDomainMutations(addDomains, (domain) => provider.addBlocklistDomain(domain));
+      await runSequentialDomainMutations(removeDomains, (domain) => provider.removeBlocklistDomain(domain));
     } else {
-      await runBatched(addDomains, (domain) => provider.addAllowlistDomain(domain), 10);
-      await runBatched(removeDomains, (domain) => provider.removeAllowlistDomain(domain), 10);
+      await runSequentialDomainMutations(addDomains, (domain) => provider.addAllowlistDomain(domain));
+      await runSequentialDomainMutations(removeDomains, (domain) => provider.removeAllowlistDomain(domain));
     }
 
     await db

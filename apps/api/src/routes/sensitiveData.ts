@@ -362,7 +362,19 @@ sensitiveDataRoutes.get(
   '/scans',
   requireScope('organization', 'partner', 'system'),
   requireSensitiveDataRead,
-  zValidator('query', z.object({ limit: z.coerce.number().int().min(1).max(200).optional() }).strict().optional()),
+  zValidator(
+    'query',
+    z
+      .object({
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+        // Frontend always sends ?orgId=<currentOrgId> for partner-scope context;
+        // we accept it so the strict() schema doesn't ZodError. Org scoping is
+        // enforced by `auth.orgCondition(...)` below, not by this field.
+        orgId: z.string().uuid().optional(),
+      })
+      .strict()
+      .optional()
+  ),
   async (c) => {
     const auth = c.get('auth');
     const limit = Number(c.req.query('limit') ?? 50);

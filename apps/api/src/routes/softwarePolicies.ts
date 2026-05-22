@@ -196,7 +196,14 @@ softwarePoliciesRoutes.post(
     const auth = c.get('auth');
     const payload = c.req.valid('json');
 
-    const resolvedOrg = resolveOrgIdForWrite(auth, payload.orgId);
+    // The frontend always sends ?orgId=<currentOrgId> on partner-scope POSTs,
+    // not in the JSON body. Reading only from payload.orgId left partner-scope
+    // users with no resolvable org (#808: "orgId is required for this scope"
+    // after the underlying 500 from #807 was fixed).
+    const resolvedOrg = resolveOrgIdForWrite(
+      auth,
+      payload.orgId ?? c.req.query('orgId') ?? undefined
+    );
     if (!resolvedOrg.orgId) {
       return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
     }

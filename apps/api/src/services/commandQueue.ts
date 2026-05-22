@@ -128,6 +128,10 @@ export const CommandTypes = {
   REBOOT_SAFE_MODE: 'reboot_safe_mode',
   // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
   WAKE_ON_LAN: 'wake_on_lan',
+  // On-demand inventory refresh — agent re-runs every send*Inventory collector,
+  // so the API sees fresh hardware/software/network/etc. without waiting for
+  // the next periodic cycle.
+  REFRESH_INVENTORY: 'refresh_inventory',
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
   // Backup

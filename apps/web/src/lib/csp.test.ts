@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveConnectSrcDirective, resolveUnsafeInlineCspOptions } from './csp';
+import {
+  resolveConnectSrcDirective,
+  resolveFrameSrcDirective,
+  resolveUnsafeInlineCspOptions,
+} from './csp';
 
 describe('web CSP helpers', () => {
   it('does not allow arbitrary HTTPS or WebSocket endpoints in production', () => {
@@ -15,6 +19,29 @@ describe('web CSP helpers', () => {
     expect(directive).not.toMatch(/connect-src[^;]*\bhttps:(\s|$)/);
     expect(directive).not.toMatch(/connect-src[^;]*\bws:(\s|$)/);
     expect(directive).not.toMatch(/connect-src[^;]*\bwss:(\s|$)/);
+  });
+
+  it('allows the hosted docs origin so the in-app help panel iframe loads', () => {
+    const directive = resolveFrameSrcDirective({ env: {} });
+
+    expect(directive).toBe("frame-src 'self' https://docs.breezermm.com");
+  });
+
+  it('also allows a self-hosted docs origin from PUBLIC_DOCS_URL without duplicating the default', () => {
+    expect(
+      resolveFrameSrcDirective({ env: { PUBLIC_DOCS_URL: 'https://docs.example.com/help/' } }),
+    ).toBe("frame-src 'self' https://docs.breezermm.com https://docs.example.com");
+
+    expect(
+      resolveFrameSrcDirective({ env: { PUBLIC_DOCS_URL: 'https://docs.breezermm.com' } }),
+    ).toBe("frame-src 'self' https://docs.breezermm.com");
+  });
+
+  it('ignores an invalid PUBLIC_DOCS_URL and never widens to a bare scheme', () => {
+    const directive = resolveFrameSrcDirective({ env: { PUBLIC_DOCS_URL: 'not a url' } });
+
+    expect(directive).toBe("frame-src 'self' https://docs.breezermm.com");
+    expect(directive).not.toMatch(/frame-src[^;]*\bhttps:(\s|$)/);
   });
 
   it('ignores unsafe-inline env flags outside development', () => {

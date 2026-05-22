@@ -74,7 +74,13 @@ export async function upsertPatchApproval(values: {
   deferUntil?: Date | null;
   notes?: string | null;
 }) {
-  // Use raw SQL for upsert because the unique index uses COALESCE expression
+  // Use raw SQL for upsert because the unique index uses COALESCE expression.
+  // Dates must be serialized to ISO strings before binding. postgres-js's
+  // template-literal driver path (db.execute(sql`...`)) doesn't auto-coerce
+  // Date instances and throws `TypeError: ... Received an instance of Date`
+  // at the Bind step (#805 root cause).
+  const approvedAtIso = values.approvedAt ? values.approvedAt.toISOString() : null;
+  const deferUntilIso = values.deferUntil ? values.deferUntil.toISOString() : null;
   await db.execute(sql`
     INSERT INTO patch_approvals (id, org_id, patch_id, ring_id, status, approved_by, approved_at, defer_until, notes, created_at, updated_at)
     VALUES (
@@ -84,8 +90,8 @@ export async function upsertPatchApproval(values: {
       ${values.ringId},
       ${values.status},
       ${values.approvedBy ?? null},
-      ${values.approvedAt ?? null},
-      ${values.deferUntil ?? null},
+      ${approvedAtIso},
+      ${deferUntilIso},
       ${values.notes ?? null},
       NOW(),
       NOW()
