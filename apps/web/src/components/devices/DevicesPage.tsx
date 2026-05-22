@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useEventStream } from '../../hooks/useEventStream';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
@@ -59,6 +59,21 @@ export default function DevicesPage() {
   const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
+
+  // Track every in-flight wake watcher so navigating away aborts the
+  // long-running poll loop. Without this, each wake fired on this page
+  // keeps polling /devices/:id for up to 4 minutes after unmount and
+  // attempts setState (via showToast + fetchDevices) on a dead component.
+  // (Todd's #789 review.) A user can wake several rows in quick
+  // succession, hence a Set rather than a single controller.
+  const wakeWatchersRef = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const watchers = wakeWatchersRef.current;
+    return () => {
+      for (const ctrl of watchers) ctrl.abort();
+      watchers.clear();
+    };
+  }, []);
 
   const scriptTargetLabel =
     scriptTargetDevices.length === 1
@@ -292,17 +307,24 @@ export default function DevicesPage() {
               type: 'success',
               message: `Wake packet sent to ${hostname} via ${wake.relay.hostname} (${wake.broadcast}). Watching for it to come online…`,
             });
-            void watchWakeOutcome(device.id).then(async (outcome) => {
-              if (outcome === 'online') {
-                showToast({ type: 'success', message: `${hostname} is now online.` });
-                await fetchDevices();
-              } else if (outcome === 'timeout') {
-                showToast({
-                  type: 'error',
-                  message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
-                });
-              }
-            });
+            const wakeController = new AbortController();
+            wakeWatchersRef.current.add(wakeController);
+            void watchWakeOutcome(device.id, { signal: wakeController.signal })
+              .then(async (outcome) => {
+                if (outcome === 'online') {
+                  showToast({ type: 'success', message: `${hostname} is now online.` });
+                  await fetchDevices();
+                } else if (outcome === 'timeout') {
+                  showToast({
+                    type: 'error',
+                    message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
+                  });
+                }
+                // 'aborted' is silent — user navigated away or page reloaded.
+              })
+              .finally(() => {
+                wakeWatchersRef.current.delete(wakeController);
+              });
           } catch (err) {
             if (err instanceof WakeCommandError) {
               const friendly = wakeFriendlyErrorMessage(err.code) ?? err.message;

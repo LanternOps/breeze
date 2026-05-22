@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useEventStream } from '../../hooks/useEventStream';
 import { ArrowLeft } from 'lucide-react';
 import { showToast } from '../shared/Toast';
@@ -25,6 +25,22 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+
+  // Track every in-flight wake watcher so that navigating away aborts the
+  // long-running poll loop. Without this, watchWakeOutcome keeps polling
+  // /devices/:id for up to 4 minutes after unmount and tries to render a
+  // toast / setDevice on a dead component. (Todd's #789 review.) A Set is
+  // used because a single device-detail page can only have one wake at a
+  // time, but the abstraction matches the multi-target DevicesPage path
+  // and is cheap.
+  const wakeWatchersRef = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const watchers = wakeWatchersRef.current;
+    return () => {
+      for (const ctrl of watchers) ctrl.abort();
+      watchers.clear();
+    };
+  }, []);
 
   const fetchDevice = useCallback(async () => {
     try {
@@ -158,18 +174,24 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
               type: 'success',
               message: `Wake packet sent to ${hostname} via ${wake.relay.hostname} (${wake.broadcast}). Watching for it to come online…`,
             });
-            void watchWakeOutcome(device.id).then(async (outcome) => {
-              if (outcome === 'online') {
-                showToast({ type: 'success', message: `${hostname} is now online.` });
-                await fetchDevice();
-              } else if (outcome === 'timeout') {
-                showToast({
-                  type: 'error',
-                  message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
-                });
-              }
-              // 'aborted' is silent — user navigated away or page reloaded.
-            });
+            const wakeController = new AbortController();
+            wakeWatchersRef.current.add(wakeController);
+            void watchWakeOutcome(device.id, { signal: wakeController.signal })
+              .then(async (outcome) => {
+                if (outcome === 'online') {
+                  showToast({ type: 'success', message: `${hostname} is now online.` });
+                  await fetchDevice();
+                } else if (outcome === 'timeout') {
+                  showToast({
+                    type: 'error',
+                    message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
+                  });
+                }
+                // 'aborted' is silent — user navigated away or page reloaded.
+              })
+              .finally(() => {
+                wakeWatchersRef.current.delete(wakeController);
+              });
           } catch (err) {
             if (err instanceof WakeCommandError) {
               const friendly = wakeFriendlyErrorMessage(err.code) ?? err.message;
