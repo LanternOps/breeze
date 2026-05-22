@@ -94,20 +94,6 @@ describe('fetchAllDevices', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
-  it('accepts `devices` key shape as well as `data` (legacy fallback)', async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({
-          devices: [{ id: 'legacy-1' }, { id: 'legacy-2' }],
-          pagination: { page: 1, limit: 500, total: 2 },
-        }),
-      );
-    const result = await fetchAllDevices({ fetcher });
-    expect(result.data).toEqual([{ id: 'legacy-1' }, { id: 'legacy-2' }]);
-    expect(result.total).toBe(2);
-  });
-
   it('respects includeDecommissioned=false', async () => {
     const fetcher = vi
       .fn()
@@ -116,6 +102,72 @@ describe('fetchAllDevices', () => {
       );
     await fetchAllDevices({ fetcher, includeDecommissioned: false });
     expect(fetcher.mock.calls[0][0]).not.toContain('includeDecommissioned');
+  });
+
+  describe('MAX_PAGES safety ceiling (#778 review)', () => {
+    it('stops walking at MAX_PAGES=200 and returns total=undefined to signal "not the full fleet"', async () => {
+      // Server returns nextCursor forever. The walker must stop at the
+      // hard ceiling — without it, a stuck server-side cursor would spin
+      // the UI thread forever.
+      const fetcher = vi.fn().mockImplementation(async () =>
+        jsonResponse({
+          data: [{ id: 'd' }],
+          pagination: { nextCursor: 'never-ending', limit: 1 },
+        }),
+      );
+
+      const result = await fetchAllDevices({ fetcher, pageLimit: 1 });
+
+      expect(result.pagesWalked).toBe(200);
+      expect(result.total).toBeUndefined();
+      expect(result.data.length).toBe(200);
+      expect(fetcher).toHaveBeenCalledTimes(200);
+    });
+
+    it('invokes onTruncated with {pagesWalked, pageLimit} when the ceiling is hit', async () => {
+      const onTruncated = vi.fn();
+      const fetcher = vi.fn().mockImplementation(async () =>
+        jsonResponse({
+          data: [{ id: 'd' }],
+          pagination: { nextCursor: 'never-ending', limit: 1 },
+        }),
+      );
+
+      await fetchAllDevices({ fetcher, pageLimit: 1, onTruncated });
+
+      expect(onTruncated).toHaveBeenCalledTimes(1);
+      expect(onTruncated).toHaveBeenCalledWith({ pagesWalked: 200, pageLimit: 1 });
+    });
+
+    it('does NOT invoke onTruncated when the walk terminates naturally', async () => {
+      const onTruncated = vi.fn();
+      const fetcher = vi.fn().mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ id: 'a' }],
+          pagination: { nextCursor: null, limit: 200, total: 1 },
+        }),
+      );
+
+      await fetchAllDevices({ fetcher, onTruncated });
+      expect(onTruncated).not.toHaveBeenCalled();
+    });
+
+    it('a throwing onTruncated does not corrupt the return value', async () => {
+      const onTruncated = vi.fn(() => {
+        throw new Error('boom');
+      });
+      const fetcher = vi.fn().mockImplementation(async () =>
+        jsonResponse({
+          data: [{ id: 'd' }],
+          pagination: { nextCursor: 'never-ending', limit: 1 },
+        }),
+      );
+
+      const result = await fetchAllDevices({ fetcher, pageLimit: 1, onTruncated });
+      // Walker still returns the truncated rows even though the callback threw.
+      expect(result.pagesWalked).toBe(200);
+      expect(result.data.length).toBe(200);
+    });
   });
 
   describe('AbortSignal', () => {

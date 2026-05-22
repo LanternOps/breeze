@@ -64,6 +64,13 @@ export interface FetchAllDevicesOptions {
    *  after the user has left the page — wasted bandwidth on slow links
    *  and unnecessary API load. */
   signal?: AbortSignal;
+  /** Invoked when the walker hits the MAX_PAGES safety ceiling without
+   *  reaching the end of the cursor. Lets the caller surface a visible
+   *  warning (toast, telemetry) so a silent truncation doesn't get
+   *  reported later as "devices are missing." The walker still returns
+   *  the accumulated rows with `total=undefined` to indicate the count
+   *  is unreliable. */
+  onTruncated?: (info: { pagesWalked: number; pageLimit: number }) => void;
 }
 
 /**
@@ -116,7 +123,6 @@ export async function fetchAllDevices(
     if (!resp.ok) throw resp;
     const body = (await resp.json()) as {
       data?: Record<string, unknown>[];
-      devices?: Record<string, unknown>[];
       pagination?: {
         nextCursor?: string | null;
         total?: number;
@@ -125,7 +131,10 @@ export async function fetchAllDevices(
         limit?: number;
       };
     };
-    const page = body.data ?? body.devices ?? [];
+    // Both the cursor API (#777) and the legacy offset API return `data`.
+    // A previous draft also accepted a `devices` key, but no deployed shape
+    // ever returns that — dropped per #778 review.
+    const page = body.data ?? [];
     accumulated.push(...page);
 
     if (pageNum === 0 && typeof body.pagination?.total === 'number') {
@@ -142,11 +151,20 @@ export async function fetchAllDevices(
 
   // Hit the safety ceiling. Return what we have, but flag total as
   // undefined so the caller knows the walk didn't complete and shouldn't
-  // assert "this is the full fleet."
+  // assert "this is the full fleet." Invoke onTruncated so the UI can
+  // surface a visible warning — a silent console.warn gets reported as
+  // "missing devices" with no obvious cause (Todd's #778 review).
   console.warn(
     `[fetchAllDevices] hit MAX_PAGES=${MAX_PAGES} safety ceiling at limit=${pageLimit}; truncating walk. ` +
       `Investigate server-side cursor loop.`,
   );
+  try {
+    options.onTruncated?.({ pagesWalked: MAX_PAGES, pageLimit });
+  } catch (err) {
+    // A misbehaving onTruncated must not corrupt the return — we still
+    // surface the accumulated rows so the UI degrades gracefully.
+    console.warn('[fetchAllDevices] onTruncated callback threw:', err);
+  }
   return { data: accumulated, total: undefined, pagesWalked: MAX_PAGES };
 }
 

@@ -101,7 +101,21 @@ export default function DevicesPage() {
       // capped page and stops — same UX as before, no user-visible cap
       // once the server-side cursor migration lands.
       const [devicesResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
-        fetchAllDevices({ includeDecommissioned: true }),
+        fetchAllDevices({
+          includeDecommissioned: true,
+          // Surface the silent-cap case (#778 review). Without this, hitting
+          // the safety ceiling would render an incomplete device list and
+          // get reported later as "devices are missing."
+          onTruncated: ({ pagesWalked, pageLimit }) => {
+            showToast({
+              type: 'error',
+              message:
+                `Devices list truncated at ${pagesWalked * pageLimit} rows ` +
+                `(safety cap hit). Some devices may not be shown — refresh or contact support.`,
+              duration: 8000
+            });
+          }
+        }),
         fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites'),
         fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
