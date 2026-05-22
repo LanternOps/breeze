@@ -124,7 +124,7 @@ describe('fetchAllDevices', () => {
       expect(fetcher).toHaveBeenCalledTimes(200);
     });
 
-    it('invokes onTruncated with {pagesWalked, pageLimit} when the ceiling is hit', async () => {
+    it('invokes onTruncated with {pagesWalked, pageLimit, actualCount} when the ceiling is hit', async () => {
       const onTruncated = vi.fn();
       const fetcher = vi.fn().mockImplementation(async () =>
         jsonResponse({
@@ -136,7 +136,38 @@ describe('fetchAllDevices', () => {
       await fetchAllDevices({ fetcher, pageLimit: 1, onTruncated });
 
       expect(onTruncated).toHaveBeenCalledTimes(1);
-      expect(onTruncated).toHaveBeenCalledWith({ pagesWalked: 200, pageLimit: 1 });
+      // 200 pages × 1 row each = 200 rows accumulated. The callback's third
+      // field is the EXACT count, not the pagesWalked * pageLimit product
+      // (which overcounts when the final page arrived partial). Todd's
+      // #778 review noted the overcount; this asserts the precise figure.
+      expect(onTruncated).toHaveBeenCalledWith({
+        pagesWalked: 200,
+        pageLimit: 1,
+        actualCount: 200,
+      });
+    });
+
+    it('actualCount reflects the real accumulated rows, not pagesWalked * pageLimit', async () => {
+      // Server returns 7 rows on the first page but the cursor never ends.
+      // The walker burns the rest of MAX_PAGES with empty data pages.
+      // pagesWalked * pageLimit would say 200 × 10 = 2000; actualCount = 7.
+      const onTruncated = vi.fn();
+      let firstCall = true;
+      const fetcher = vi.fn().mockImplementation(async () => {
+        const body = firstCall
+          ? { data: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }, { id: 'f' }, { id: 'g' }], pagination: { nextCursor: 'still-going', limit: 10 } }
+          : { data: [], pagination: { nextCursor: 'still-going', limit: 10 } };
+        firstCall = false;
+        return jsonResponse(body);
+      });
+
+      await fetchAllDevices({ fetcher, pageLimit: 10, onTruncated });
+
+      expect(onTruncated).toHaveBeenCalledWith({
+        pagesWalked: 200,
+        pageLimit: 10,
+        actualCount: 7, // NOT 2000
+      });
     });
 
     it('does NOT invoke onTruncated when the walk terminates naturally', async () => {

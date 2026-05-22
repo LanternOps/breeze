@@ -69,8 +69,13 @@ export interface FetchAllDevicesOptions {
    *  warning (toast, telemetry) so a silent truncation doesn't get
    *  reported later as "devices are missing." The walker still returns
    *  the accumulated rows with `total=undefined` to indicate the count
-   *  is unreliable. */
-  onTruncated?: (info: { pagesWalked: number; pageLimit: number }) => void;
+   *  is unreliable.
+   *
+   *  `actualCount` is the precise number of rows accumulated (which may
+   *  be slightly less than `pagesWalked * pageLimit` if the final page
+   *  arrived partial). Callers should display this rather than the
+   *  pagesWalked * pageLimit product. (Todd's #778 review.) */
+  onTruncated?: (info: { pagesWalked: number; pageLimit: number; actualCount: number }) => void;
 }
 
 /**
@@ -159,7 +164,11 @@ export async function fetchAllDevices(
       `Investigate server-side cursor loop.`,
   );
   try {
-    options.onTruncated?.({ pagesWalked: MAX_PAGES, pageLimit });
+    options.onTruncated?.({
+      pagesWalked: MAX_PAGES,
+      pageLimit,
+      actualCount: accumulated.length,
+    });
   } catch (err) {
     // A misbehaving onTruncated must not corrupt the return — we still
     // surface the accumulated rows so the UI degrades gracefully.

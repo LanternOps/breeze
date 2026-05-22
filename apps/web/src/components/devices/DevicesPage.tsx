@@ -88,7 +88,7 @@ export default function DevicesPage() {
     return unique.length > 0 ? unique : undefined;
   }, [scriptTargetDevices]);
 
-  const fetchDevices = useCallback(async () => {
+  const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true);
       setError(null);
@@ -100,25 +100,33 @@ export default function DevicesPage() {
       // pages, against the legacy offset API it returns the first
       // capped page and stops — same UX as before, no user-visible cap
       // once the server-side cursor migration lands.
+      //
+      // `signal` is wired by the mount useEffect's AbortController so a
+      // navigate-away mid-walk stops the next page request and prevents
+      // setState on an unmounted component (#778 review).
       const [devicesResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
+          signal,
           // Surface the silent-cap case (#778 review). Without this, hitting
           // the safety ceiling would render an incomplete device list and
           // get reported later as "devices are missing."
-          onTruncated: ({ pagesWalked, pageLimit }) => {
+          onTruncated: ({ actualCount }) => {
             showToast({
               type: 'error',
               message:
-                `Devices list truncated at ${pagesWalked * pageLimit} rows ` +
+                `Devices list truncated at ${actualCount} rows ` +
                 `(safety cap hit). Some devices may not be shown — refresh or contact support.`,
               duration: 8000
             });
           }
         }),
-        fetchWithAuth('/orgs'),
-        fetchWithAuth('/orgs/sites'),
-        fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
+        fetchWithAuth('/orgs', { signal }),
+        fetchWithAuth('/orgs/sites', { signal }),
+        fetchWithAuth('/device-groups?includeMemberships=true', { signal }).catch((err) => {
+          // AbortError on unmount is expected — bubble it up so the outer
+          // catch can short-circuit cleanly; don't log it as a real failure.
+          if (err instanceof Error && err.name === 'AbortError') throw err;
           console.warn('Failed to fetch device groups:', err);
           return null;
         })
@@ -205,14 +213,23 @@ export default function DevicesPage() {
       setOrgs(orgsList);
       setSites(sitesList);
     } catch (err) {
+      // Aborts are expected when the component unmounts mid-walk — drop
+      // them silently rather than rendering a misleading error banner.
+      if (err instanceof Error && err.name === 'AbortError') return;
       setError(err);
     } finally {
-      setLoading(false);
+      // setLoading(false) is harmless after unmount (React 18 ignores
+      // setState on unmounted components for hook-based components) but
+      // we still skip it when we know the call aborted, to avoid a
+      // brief flicker if the component remounts on the same key.
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchDevices();
+    const controller = new AbortController();
+    fetchDevices(controller.signal);
+    return () => controller.abort();
   }, [fetchDevices]);
 
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
@@ -623,7 +640,7 @@ export default function DevicesPage() {
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button
             type="button"
-            onClick={fetchDevices}
+            onClick={() => void fetchDevices()}
             className="text-xs font-medium text-primary hover:underline"
           >
             Try again
