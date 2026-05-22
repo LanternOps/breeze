@@ -282,14 +282,23 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toMatch(/^\/devices\?cf-access-login=success$/);
   });
 
-  it('logout endpoint redirects to CF Access logout with returnTo set to /login?signedOut=1', async () => {
+  it('logout endpoint chains app-domain + team-domain CF logouts ending at /login?signedOut=1', async () => {
     envState.enabled = true;
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', { method: 'GET' });
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'breeze.example.com' },
+    });
     expect(res.status).toBe(302);
     const loc = res.headers.get('Location') ?? '';
-    expect(loc).toContain(`https://${envState.teamDomain}/cdn-cgi/access/logout`);
-    expect(loc).toContain('returnTo=');
-    expect(decodeURIComponent(loc.split('returnTo=')[1] ?? '')).toContain('/login?signedOut=1');
+    // Outer hop is the app-domain logout.
+    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
+    // Inner hop (decoded once) is the team-domain logout.
+    const innerEncoded = loc.split('returnTo=')[1] ?? '';
+    const inner = decodeURIComponent(innerEncoded);
+    expect(inner.startsWith(`https://${envState.teamDomain}/cdn-cgi/access/logout?returnTo=`)).toBe(true);
+    // Innermost (decoded twice) is the SPA landing page.
+    const finalEncoded = inner.split('returnTo=')[1] ?? '';
+    expect(decodeURIComponent(finalEncoded)).toBe('https://breeze.example.com/login?signedOut=1');
     expect(cookieState.cleared).toBe(true);
   });
 

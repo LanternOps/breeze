@@ -231,36 +231,41 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', (c) => {
   clearRefreshTokenCookie(c);
 
   if (!cfAccessTrustEnabled()) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: '/login?signedOut=1' },
-    });
+    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
   }
 
   const teamDomain = cfAccessTeamDomain();
   if (!teamDomain) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: '/login?signedOut=1' },
-    });
+    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
   }
 
-  // Reconstruct the public origin from the incoming request so the
-  // `returnTo` parameter survives whatever proxy / CNAME setup is in
-  // front of the api. Falls back to the Host header if the URL parse
-  // fails for any reason.
-  let origin: string;
-  try {
-    origin = new URL(c.req.url).origin;
-  } catch {
-    const host = c.req.header('host') ?? '';
-    origin = host ? `https://${host}` : '';
-  }
-  const returnTo = `${origin}/login?signedOut=1`;
-  const cfLogoutUrl = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(returnTo)}`;
+  // Reconstruct the public origin. The api sits behind a TLS-terminating
+  // proxy so `c.req.url` shows `http://`. Honour X-Forwarded-Proto when
+  // the proxy is trusted, otherwise default to `https://`.
+  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
+  const trustProxy = (process.env.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase();
+  const trustProxyOn = ['true', '1', 'yes', 'on'].includes(trustProxy);
+  const scheme = trustProxyOn && forwardedProto ? forwardedProto : 'https';
+  const host = c.req.header('host') ?? '';
+  const origin = host ? `${scheme}://${host}` : '';
 
-  return new Response(null, {
-    status: 302,
-    headers: { Location: cfLogoutUrl },
-  });
+  // CF Access stores TWO `CF_Authorization` cookies per session:
+  // 1. Per-application cookie at the app domain (breeze.bdunn.com)
+  // 2. Global session token at the team domain (bdunnco.cloudflareaccess.com)
+  // Each domain's `/cdn-cgi/access/logout` endpoint clears only its own
+  // cookie (per
+  // https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/).
+  // For a full logout we need to hit both. Chain them via returnTo:
+  //
+  //   app-logout (clears per-app cookie)
+  //   └─ returnTo=team-logout (clears global cookie)
+  //      └─ returnTo=/login?signedOut=1
+  //
+  // The `/cdn-cgi/access/*` paths are reserved by Cloudflare and
+  // intercepted at the edge, so they never hit the origin and aren't
+  // affected by the `/api/*` bypass app.
+  const finalReturn = `${origin}/login?signedOut=1`;
+  const teamLogout = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(finalReturn)}`;
+  const appLogout = `${origin}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(teamLogout)}`;
+  return new Response(null, { status: 302, headers: { Location: appLogout } });
 });

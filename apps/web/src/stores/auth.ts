@@ -304,6 +304,12 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
   if (!user || !user.id) return false;
 
   useAuthStore.getState().login(user, tokens);
+
+  // Mirror what LoginPage does after a successful password login: pull
+  // /users/me into the store and apply the theme to the DOM. Without
+  // this, dark mode reverts to default and the onboarding tour reads
+  // an empty preferences object on first render.
+  await fetchAndApplyPreferences();
   return true;
 }
 
