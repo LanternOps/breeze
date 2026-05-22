@@ -155,7 +155,103 @@ describe('RoleManager — catalog fetch failure handling (Todd review on #802)',
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
-  it('expansion row in the table shows the error UI when catalog fetch fails', async () => {
+  it('expansion row shows the role-permissions error UI when /roles/:id fetch fails (issue #832)', async () => {
+    // Catalog loads fine; the role-detail fetch fails. Previously the
+    // expansion row would render a misleading zero-permissions matrix.
+    // Now it should render the inline error block with a Retry button.
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/permissions/catalog') {
+        return makeJsonResponse({
+          permissions: [{ resource: 'devices', action: 'read' }],
+          resourceLabels: { devices: 'Devices' },
+          actionLabels: { read: 'Read' },
+        });
+      }
+      if (url.startsWith('/roles/')) {
+        return makeJsonResponse({}, false, 500);
+      }
+      return makeJsonResponse({});
+    });
+
+    const systemRole: Role = {
+      id: 'sys-1',
+      name: 'Administrator',
+      description: null,
+      scope: 'system',
+      isSystem: true,
+      userCount: 1,
+      createdAt: '2026-05-21T00:00:00Z',
+      updatedAt: '2026-05-21T00:00:00Z'
+    };
+
+    render(<RoleManager roles={[systemRole]} />);
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/permissions/catalog');
+    });
+
+    const adminRow = screen.getByText('Administrator').closest('tr');
+    expect(adminRow).toBeTruthy();
+    fireEvent.click(adminRow!);
+
+    // Inline error block + Retry — NOT a blank PermissionMatrix.
+    await screen.findByText((t) => t.startsWith('Failed to load permissions'));
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
+  it('expansion-row Retry refetches /roles/:id and renders the matrix on the second attempt (issue #832)', async () => {
+    // First call to /roles/:id fails 500; second call (after Retry) succeeds.
+    let roleCallCount = 0;
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/permissions/catalog') {
+        return makeJsonResponse({
+          permissions: [{ resource: 'devices', action: 'read' }],
+          resourceLabels: { devices: 'Devices' },
+          actionLabels: { read: 'Read' },
+        });
+      }
+      if (url.startsWith('/roles/')) {
+        roleCallCount += 1;
+        if (roleCallCount === 1) return makeJsonResponse({}, false, 500);
+        return makeJsonResponse({ permissions: [{ resource: 'devices', action: 'read' }] });
+      }
+      return makeJsonResponse({});
+    });
+
+    const systemRole: Role = {
+      id: 'sys-1',
+      name: 'Administrator',
+      description: null,
+      scope: 'system',
+      isSystem: true,
+      userCount: 1,
+      createdAt: '2026-05-21T00:00:00Z',
+      updatedAt: '2026-05-21T00:00:00Z'
+    };
+
+    render(<RoleManager roles={[systemRole]} />);
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/permissions/catalog');
+    });
+
+    const adminRow = screen.getByText('Administrator').closest('tr');
+    fireEvent.click(adminRow!);
+    await screen.findByText((t) => t.startsWith('Failed to load permissions'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    // After successful retry, the matrix renders. The error block is gone.
+    await waitFor(() => {
+      expect(roleCallCount).toBe(2);
+    });
+    await waitFor(() => {
+      expect(screen.queryByText((t) => t.startsWith('Failed to load permissions'))).toBeNull();
+    });
+  });
+
+  it('expansion row in the table shows the error UI when catalog fetch fails (and /roles/:id succeeds)', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/permissions/catalog') {

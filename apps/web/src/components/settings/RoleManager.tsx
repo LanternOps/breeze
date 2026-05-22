@@ -61,6 +61,11 @@ export default function RoleManager({
   const [typeFilter, setTypeFilter] = useState<'all' | 'system' | 'custom'>('all');
   const [expandedRoleId, setExpandedRoleId] = useState<string | null>(null);
   const [rolePermissions, setRolePermissions] = useState<Record<string, Permission[]>>({});
+  // Per-role error state for the expansion-row fetch. Distinct from
+  // catalogError so a transient /roles/:id failure doesn't get blamed on
+  // the catalog (which may still be perfectly loaded) and doesn't render
+  // a misleading zero-permissions matrix (issue #832).
+  const [rolePermissionsError, setRolePermissionsError] = useState<Record<string, string>>({});
   const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogReloadKey, setCatalogReloadKey] = useState(0);
@@ -128,28 +133,50 @@ export default function RoleManager({
     [catalog]
   );
 
+  const loadRolePermissions = useCallback(async (role: Role) => {
+    // Clear any prior error from a previous failed attempt before retry.
+    setRolePermissionsError(prev => {
+      if (!(role.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[role.id];
+      return next;
+    });
+    try {
+      const res = await fetchWithAuth(`/roles/${role.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setRolePermissions(prev => ({ ...prev, [role.id]: normalizePermissions(data.permissions || []) }));
+        return;
+      }
+      // Match the catalog-fetch pattern: 401 → login redirect, other errors
+      // surface as an inline error block with a Retry button instead of
+      // rendering a misleading zero-permissions matrix (#832).
+      if (res.status === 401) {
+        void navigateTo('/login', { replace: true });
+        return;
+      }
+      const message = `Failed to load permissions (${res.status} ${res.statusText || 'error'})`;
+      console.error(`Role ${role.id}: ${message}`);
+      setRolePermissionsError(prev => ({ ...prev, [role.id]: message }));
+    } catch (err) {
+      console.error(`Error fetching permissions for role ${role.id}:`, err);
+      const message = err instanceof Error ? err.message : 'Network error while loading permissions';
+      setRolePermissionsError(prev => ({ ...prev, [role.id]: message }));
+    }
+  }, [normalizePermissions]);
+
   const toggleExpand = useCallback(async (role: Role) => {
     if (expandedRoleId === role.id) {
       setExpandedRoleId(null);
       return;
     }
     setExpandedRoleId(role.id);
-    if (!rolePermissions[role.id]) {
-      try {
-        const res = await fetchWithAuth(`/roles/${role.id}`);
-        if (res.ok) {
-          const data = await res.json();
-          setRolePermissions(prev => ({ ...prev, [role.id]: normalizePermissions(data.permissions || []) }));
-        } else {
-          console.error(`Failed to fetch permissions for role ${role.id}: ${res.status} ${res.statusText}`);
-          setRolePermissions(prev => ({ ...prev, [role.id]: [] }));
-        }
-      } catch (err) {
-        console.error(`Error fetching permissions for role ${role.id}:`, err);
-        setRolePermissions(prev => ({ ...prev, [role.id]: [] }));
-      }
+    // Re-fetch when no prior result exists OR a prior attempt errored — so
+    // expanding-after-a-failure naturally retries without an extra click.
+    if (!rolePermissions[role.id] || rolePermissionsError[role.id]) {
+      await loadRolePermissions(role);
     }
-  }, [expandedRoleId, rolePermissions, normalizePermissions]);
+  }, [expandedRoleId, rolePermissions, rolePermissionsError, loadRolePermissions]);
 
   const filteredRoles = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -362,8 +389,22 @@ export default function RoleManager({
                       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         Permissions for {role.name}
                       </div>
-                      {catalogError ? (
-                        <CatalogLoadError message={catalogError} onRetry={reloadCatalog} />
+                      {/* Render precedence (intentional ordering):
+                            1. Role-specific fetch error (with Retry) — must beat
+                               the matrix render so a failed /roles/:id never
+                                shows a misleading zero-permissions matrix (#832).
+                            2. Matrix when both role-perms AND catalog are present.
+                                If `catalog` is still cached from an earlier load,
+                                a later catalogError shouldn't blank out an
+                                already-rendered expansion (nit #1 on issue #832).
+                            3. catalogError (only when catalog is also missing)
+                                so the user has SOMETHING to retry from.
+                            4. Loading spinner. */}
+                      {rolePermissionsError[role.id] ? (
+                        <CatalogLoadError
+                          message={rolePermissionsError[role.id]}
+                          onRetry={() => void loadRolePermissions(role)}
+                        />
                       ) : rolePermissions[role.id] && catalog ? (
                         <PermissionMatrix
                           catalog={catalog}
@@ -371,6 +412,8 @@ export default function RoleManager({
                           onChange={() => {}}
                           disabled
                         />
+                      ) : catalogError ? (
+                        <CatalogLoadError message={catalogError} onRetry={reloadCatalog} />
                       ) : (
                         <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
                           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
