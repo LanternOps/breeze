@@ -369,6 +369,15 @@ describe('device commands routes', () => {
         status: 'online'
       } as never);
 
+      // Mock the pending check to return no existing command
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as never);
+
       vi.mocked(db.insert).mockReturnValueOnce({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
@@ -391,6 +400,40 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.type).toBe('refresh_inventory');
       expect(body.status).toBe('pending');
+    });
+
+    it('rejects refresh_inventory when one is already pending (spam protection)', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      // Mock the pending check to return an existing command
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'cmd-existing',
+              deviceId: 'device-a',
+              type: 'refresh_inventory',
+              status: 'pending'
+            }])
+          })
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'refresh_inventory' })
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain('already pending');
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('rejects an unknown command type with 400', async () => {

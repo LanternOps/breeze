@@ -135,6 +135,26 @@ commandsRoutes.post(
         continue;
       }
 
+      // Prevent spam: skip refresh_inventory if one is already pending for this device
+      if (data.type === 'refresh_inventory') {
+        const [existingPending] = await db
+          .select()
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.type, 'refresh_inventory'),
+              eq(deviceCommands.status, 'pending')
+            )
+          )
+          .limit(1);
+
+        if (existingPending) {
+          failed.push(deviceId);
+          continue;
+        }
+      }
+
       const [command] = await db
         .insert(deviceCommands)
         .values({
@@ -201,6 +221,25 @@ commandsRoutes.post(
     // Don't allow commands to decommissioned devices
     if (device.status === 'decommissioned') {
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+
+    // Prevent spam: reject refresh_inventory if one is already pending for this device
+    if (data.type === 'refresh_inventory') {
+      const [existingPending] = await db
+        .select()
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.type, 'refresh_inventory'),
+            eq(deviceCommands.status, 'pending')
+          )
+        )
+        .limit(1);
+
+      if (existingPending) {
+        return c.json({ error: 'A refresh_inventory command is already pending for this device' }, 409);
+      }
     }
 
     // Wake-on-LAN takes a separate path: the command row must be addressed to
