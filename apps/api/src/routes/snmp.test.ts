@@ -144,6 +144,40 @@ describe('snmp routes', () => {
     expect(res.status).toBe(410);
   });
 
+  // Smoke test for #726: GET /snmp/templates was returning 500 with a
+  // Postgres "column \"org_id\" does not exist" error before the schema
+  // gained `snmp_templates.org_id`. This test exercises the GET path and
+  // would have surfaced that regression earlier — and will surface a
+  // future regression where the column is dropped or renamed.
+  it('GET /snmp/templates returns 200 with a templates list (smoke for #726)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockResolvedValue([{
+            id: 'template-builtin-1',
+            orgId: null,
+            name: 'Generic UPS (RFC 1628)',
+            description: 'Standards UPS template',
+            vendor: null,
+            deviceType: 'ups',
+            oids: [{ oid: '1.3.6.1.2.1.33.1.2.1.0', name: 'upsBatteryStatus' }],
+            isBuiltIn: true,
+            createdAt: new Date('2026-05-22T00:00:00.000Z'),
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/snmp/templates');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data[0].name).toBe('Generic UPS (RFC 1628)');
+    expect(body.data[0].source).toBe('builtin');
+    expect(body.data[0].oidCount).toBe(1);
+  });
+
   it('creates tenant SNMP templates scoped to the auth organization', async () => {
     const values = vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue([{
