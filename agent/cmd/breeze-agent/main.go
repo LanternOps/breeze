@@ -283,6 +283,14 @@ type agentComponents struct {
 	hb          *heartbeat.Heartbeat
 	wsClient    *websocket.Client
 	secureToken *secmem.SecureString
+
+	// supervisorCancel cancels long-lived supervisory goroutines started in
+	// startAgent (currently: the Windows watchdog supervisor). nil on
+	// platforms or run modes where no supervisor was started.
+	supervisorCancel context.CancelFunc
+	// supervisorDone closes after the supervisor goroutine has fully
+	// exited. nil when supervisorCancel is nil.
+	supervisorDone <-chan struct{}
 }
 
 // shutdownAgent gracefully stops all agent components.
@@ -294,6 +302,18 @@ type agentComponents struct {
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
+	}
+
+	// Cancel the watchdog supervisor BEFORE we tell the watchdog the agent
+	// is intentionally stopping. Otherwise the supervisor could race
+	// in-flight and re-start a watchdog the SCM is mid-stop on.
+	if comps.supervisorCancel != nil {
+		comps.supervisorCancel()
+		if comps.supervisorDone != nil {
+			runWithTimeout("watchdog supervisor stop", 2*time.Second, func() {
+				<-comps.supervisorDone
+			})
+		}
 	}
 
 	// Write stopping state so the watchdog knows shutdown is intentional.
@@ -538,10 +558,25 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Tell the heartbeat where the state file is so it can update after each heartbeat.
 	hb.SetStatePath(statePath)
 
+	// Mutual supervision: when running as the Windows service, this agent
+	// process supervises BreezeWatchdog the same way BreezeWatchdog
+	// supervises us. On macOS/Linux the OS service managers (launchd
+	// KeepAlive, systemd Restart=always) already do this, so the
+	// non-Windows stub of startWatchdogSupervisor is a no-op.
+	var supervisorCancel context.CancelFunc
+	var supervisorDone <-chan struct{}
+	if cfg.IsService {
+		supCtx, supCancel := context.WithCancel(context.Background())
+		supervisorCancel = supCancel
+		supervisorDone = startWatchdogSupervisor(supCtx)
+	}
+
 	return &agentComponents{
-		hb:          hb,
-		wsClient:    wsClient,
-		secureToken: secureToken,
+		hb:               hb,
+		wsClient:         wsClient,
+		secureToken:      secureToken,
+		supervisorCancel: supervisorCancel,
+		supervisorDone:   supervisorDone,
 	}, nil
 }
 
