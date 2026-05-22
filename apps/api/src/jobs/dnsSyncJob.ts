@@ -21,6 +21,7 @@ import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptSecret } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
+import { publishEvent, EVENT_TYPES } from '../services/eventBus';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -505,6 +506,40 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
         if (row.action === 'blocked') current.blockedQueries += 1;
         if (row.action === 'allowed') current.allowedQueries += 1;
         aggregationMap.set(key, current);
+
+        // #829 — emit dns.threat.blocked so the existing event-bus
+        // subscribers (webhookDelivery, automationWorker, alert rules) can
+        // consume the signal. Only fire for actually-blocked threat events
+        // (action=blocked AND category present) so an "allowed" DNS query
+        // doesn't pollute the bus. Best-effort: failure to publish here
+        // must not abort sync — the event-bus internals already swallow
+        // local-handler errors with structured logging (#820), but we
+        // still wrap the call to suppress a hypothetical xadd reject.
+        if (row.action === 'blocked' && category) {
+          publishEvent(
+            EVENT_TYPES.DNS_THREAT_BLOCKED,
+            row.orgId,
+            {
+              deviceId: row.deviceId,
+              domain: row.domain,
+              category,
+              integrationId: row.integrationId,
+              timestamp: row.timestamp.toISOString(),
+            },
+            'dns-sync-job',
+            { priority: 'high' }
+          ).catch((err) => {
+            console.error(
+              '[DnsSyncJob] dns.threat.blocked publish failed',
+              JSON.stringify({
+                orgId: row.orgId,
+                domain: row.domain,
+                category,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          });
+        }
       }
     }
 
