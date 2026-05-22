@@ -21,6 +21,23 @@ const sentryIntegration = sentryDsn
     ]
   : [];
 
+// HelpPanel.tsx embeds the docs site in an <iframe>; without an explicit
+// frame-src the browser falls back to `default-src 'self'` and blocks it.
+// This config is plain ESM evaluated before the TS pipeline, so we can't reuse
+// resolveFrameSrcDirective from ./src/lib/csp.ts — keep the semantics in sync.
+const frameSrcDirective = (() => {
+  const sources = new Set(["'self'", 'https://docs.breezermm.com']);
+  try {
+    if (process.env.PUBLIC_DOCS_URL) {
+      const { protocol, origin } = new URL(process.env.PUBLIC_DOCS_URL);
+      if (protocol === 'http:' || protocol === 'https:') sources.add(origin);
+    }
+  } catch {
+    // Ignore invalid PUBLIC_DOCS_URL and fall back to the default origin.
+  }
+  return `frame-src ${Array.from(sources).join(' ')}`;
+})();
+
 export default defineConfig({
   output: 'server',
   devToolbar: {
@@ -37,6 +54,7 @@ export default defineConfig({
         "form-action 'self'",
         "frame-ancestors 'none'",
         "object-src 'none'",
+        frameSrcDirective,
         "worker-src 'self' blob:",
         "img-src 'self' data: blob: https:",
         "font-src 'self' data:",

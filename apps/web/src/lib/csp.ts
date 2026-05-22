@@ -44,6 +44,39 @@ function addSentryOrigin(sources: Set<string>, rawDsn: string | undefined): void
   }
 }
 
+/** Canonical hosted documentation origin embedded by the in-app help panel. */
+const DOCS_FRAME_ORIGIN = 'https://docs.breezermm.com';
+
+function addFrameOrigin(sources: Set<string>, rawUrl: string | undefined): void {
+  if (!rawUrl) return;
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+
+    // Only the origin — frame-src has no WebSocket counterpart, and a bare
+    // scheme (e.g. `https:`) would defeat the point of scoping the iframe.
+    sources.add(parsed.origin);
+  } catch {
+    // Ignore invalid URL configuration and fall back to the default origin.
+  }
+}
+
+/**
+ * `HelpPanel.tsx` embeds the docs site in an <iframe>. Without an explicit
+ * frame-src the browser falls back to `default-src 'self'` and blocks it.
+ * Always allow the canonical hosted docs origin, plus a self-hosted docs
+ * origin when `PUBLIC_DOCS_URL` is configured.
+ */
+export function resolveFrameSrcDirective(options: { env?: EnvMap }): string {
+  const env = options.env ?? process.env;
+  const sources = new Set<string>(["'self'", DOCS_FRAME_ORIGIN]);
+
+  addFrameOrigin(sources, env.PUBLIC_DOCS_URL);
+
+  return `frame-src ${Array.from(sources).join(' ')}`;
+}
+
 export function resolveConnectSrcDirective(options: {
   env?: EnvMap;
   isDev: boolean;
