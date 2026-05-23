@@ -509,7 +509,17 @@ export async function syncFromGitHub(
       fallbackChecksums,
       releaseTag: release.tag_name,
     });
-    if (!metadata) continue;
+    if (!metadata) {
+      // `!asset` above is silent (legitimate "release predates this artifact"
+      // case). `!metadata` is different: the asset IS in the release but its
+      // checksum could not be resolved from the trusted manifest or the
+      // fallback checksums file. That's an unexpected manifest/checksums
+      // inconsistency the on-call should be told about — don't skip silently.
+      console.warn(
+        `[binarySync] Missing metadata for agent asset (release=${release.tag_name}, asset=${assetName}, component=agent); skipping`,
+      );
+      continue;
+    }
     const platform = GH_PLATFORM_MAP[target.goos];
     if (!platform) continue;
 
@@ -542,7 +552,14 @@ export async function syncFromGitHub(
       fallbackChecksums,
       releaseTag: release.tag_name,
     });
-    if (!metadata) continue;
+    if (!metadata) {
+      // See agent loop above: `!metadata` after `!asset` passed indicates an
+      // unexpected manifest/checksums inconsistency, not a missing artifact.
+      console.warn(
+        `[binarySync] Missing metadata for helper asset (release=${release.tag_name}, asset=${target.assetName}, component=helper); skipping`,
+      );
+      continue;
+    }
     const platform = GH_PLATFORM_MAP[target.goos];
     if (!platform) continue;
 
@@ -578,7 +595,14 @@ export async function syncFromGitHub(
       fallbackChecksums,
       releaseTag: release.tag_name,
     });
-    if (!metadata) continue;
+    if (!metadata) {
+      // See agent loop above: `!metadata` after `!asset` passed indicates an
+      // unexpected manifest/checksums inconsistency, not a missing artifact.
+      console.warn(
+        `[binarySync] Missing metadata for user-helper asset (release=${release.tag_name}, asset=${target.assetName}, component=user-helper); skipping`,
+      );
+      continue;
+    }
     const platform = GH_PLATFORM_MAP[target.goos];
     if (!platform) continue;
 
