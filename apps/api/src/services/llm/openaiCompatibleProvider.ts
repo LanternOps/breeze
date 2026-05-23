@@ -30,6 +30,16 @@ interface OAIChunk {
   } | null;
 }
 
+function isAbortError(err: unknown, callerSignal?: AbortSignal): boolean {
+  if (callerSignal?.aborted) return true;
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  return (
+    typeof DOMException !== 'undefined' &&
+    err instanceof DOMException &&
+    err.name === 'AbortError'
+  );
+}
+
 export interface OpenAICompatibleProviderConfig {
   baseUrl: string;
   apiKey: string;
@@ -81,6 +91,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       });
     } catch (err) {
       clearTimeout(timeoutId);
+      if (isAbortError(err, options.signal)) {
+        return;
+      }
       const msg = err instanceof Error ? err.message : 'Network error calling LLM endpoint';
       yield { type: 'error', message: msg };
       return;
@@ -111,64 +124,73 @@ export class OpenAICompatibleProvider implements LLMProvider {
     let buffer = '';
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(value, { stream: true });
 
-        // SSE events are separated by \r\n\r\n or \n\n (spec allows both;
-        // normalise so proxies that add \r\n don't break parsing).
-        const parts = buffer.split(/\r?\n\r?\n/);
-        // Keep the last potentially-incomplete event in the buffer.
-        buffer = parts.pop() ?? '';
+          // SSE events are separated by \r\n\r\n or \n\n (spec allows both;
+          // normalise so proxies that add \r\n don't break parsing).
+          const parts = buffer.split(/\r?\n\r?\n/);
+          // Keep the last potentially-incomplete event in the buffer.
+          buffer = parts.pop() ?? '';
 
-        for (const part of parts) {
-          for (const line of part.split(/\r?\n/)) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
+          for (const part of parts) {
+            for (const line of part.split(/\r?\n/)) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) continue;
 
-            const payload = trimmed.slice(5).trim();
-            if (payload === '[DONE]') continue;
+              const payload = trimmed.slice(5).trim();
+              if (payload === '[DONE]') continue;
 
-            let chunk: OAIChunk;
-            try {
-              chunk = JSON.parse(payload) as OAIChunk;
-            } catch {
-              continue;
-            }
+              let chunk: OAIChunk;
+              try {
+                chunk = JSON.parse(payload) as OAIChunk;
+              } catch {
+                continue;
+              }
 
-            // Usage is sometimes in the final chunk (stream_options.include_usage)
-            if (chunk.usage) {
-              inputTokens = chunk.usage.prompt_tokens ?? inputTokens;
-              outputTokens = chunk.usage.completion_tokens ?? outputTokens;
-            }
+              // Usage is sometimes in the final chunk (stream_options.include_usage)
+              if (chunk.usage) {
+                inputTokens = chunk.usage.prompt_tokens ?? inputTokens;
+                outputTokens = chunk.usage.completion_tokens ?? outputTokens;
+              }
 
-            const choice = chunk.choices?.[0];
-            if (!choice) continue;
+              const choice = chunk.choices?.[0];
+              if (!choice) continue;
 
-            // Defensive: reject tool_calls even though we didn't request them.
-            // Check both delta.tool_calls and finish_reason since some backends
-            // signal tool use via finish_reason rather than (or in addition to) delta.
-            const hasToolCallDelta =
-              choice.delta?.tool_calls != null && (choice.delta.tool_calls as unknown[]).length > 0;
-            const hasToolCallFinishReason = choice.finish_reason === 'tool_calls';
+              // Defensive: reject tool_calls even though we didn't request them.
+              // Check both delta.tool_calls and finish_reason since some backends
+              // signal tool use via finish_reason rather than (or in addition to) delta.
+              const hasToolCallDelta =
+                choice.delta?.tool_calls != null && (choice.delta.tool_calls as unknown[]).length > 0;
+              const hasToolCallFinishReason = choice.finish_reason === 'tool_calls';
 
-            if (hasToolCallDelta || hasToolCallFinishReason) {
-              yield {
-                type: 'error',
-                message:
-                  'Tool calling is not supported on the openai-compatible path. ' +
-                  'Use the Anthropic backend for tool-enabled sessions.',
-              };
-              return;
-            }
+              if (hasToolCallDelta || hasToolCallFinishReason) {
+                yield {
+                  type: 'error',
+                  message:
+                    'Tool calling is not supported on the openai-compatible path. ' +
+                    'Use the Anthropic backend for tool-enabled sessions.',
+                };
+                return;
+              }
 
-            if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
-              yield { type: 'content_delta', delta: choice.delta.content };
+              if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
+                yield { type: 'content_delta', delta: choice.delta.content };
+              }
             }
           }
         }
+      } catch (err) {
+        if (isAbortError(err, options.signal)) {
+          return;
+        }
+        const msg = err instanceof Error ? err.message : 'Error reading LLM stream';
+        yield { type: 'error', message: msg };
+        return;
       }
     } finally {
       clearTimeout(timeoutId);
