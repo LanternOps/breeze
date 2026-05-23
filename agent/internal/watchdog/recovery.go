@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+// serviceController is the OS-specific surface RecoveryManager.Attempt depends
+// on. Production builds inject osServiceController (one impl per GOOS).
+// Tests inject a fake. Method names match the existing package-level
+// functions so platform files only need to wrap them.
+type serviceController interface {
+	RestartAgentService() error
+	StartAgentService() error
+	ForceKillProcess(pid int)
+}
+
 // RecoveryManager tracks escalating recovery attempts for an unhealthy agent.
 type RecoveryManager struct {
 	maxAttempts int
@@ -13,14 +23,23 @@ type RecoveryManager struct {
 	attempts    int
 	lastAttempt time.Time
 	windowStart time.Time
+	svc         serviceController
 }
 
-// NewRecoveryManager creates a RecoveryManager with the given limits.
+// NewRecoveryManager creates a RecoveryManager with the given limits and the
+// real OS service controller.
 func NewRecoveryManager(maxAttempts int, cooldown time.Duration) *RecoveryManager {
+	return newRecoveryManagerWithDeps(maxAttempts, cooldown, osServiceController{})
+}
+
+// newRecoveryManagerWithDeps is the test seam — callers can inject a fake
+// serviceController. Not exported.
+func newRecoveryManagerWithDeps(maxAttempts int, cooldown time.Duration, svc serviceController) *RecoveryManager {
 	return &RecoveryManager{
 		maxAttempts: maxAttempts,
 		cooldown:    cooldown,
 		windowStart: time.Now(),
+		svc:         svc,
 	}
 }
 
@@ -37,7 +56,7 @@ func (r *RecoveryManager) CanAttempt() bool {
 // Attempt increments the counter and executes an escalating recovery action
 // based on how many attempts have been made:
 //
-//	Attempt 1: Graceful restart via service manager (restartAgentService).
+//	Attempt 1: Graceful restart via service manager.
 //	Attempt 2: Force-kill the process then start via service manager.
 //	Attempt 3+: Just try starting the service (process may already be gone).
 //
@@ -49,16 +68,12 @@ func (r *RecoveryManager) Attempt(pid int) (bool, error) {
 	var err error
 	switch r.attempts {
 	case 1:
-		// Step 1: ask the service manager for a clean restart.
-		err = restartAgentService()
+		err = r.svc.RestartAgentService()
 	case 2:
-		// Step 2: force-kill the stale process then let the service manager
-		// start a fresh one.
-		forceKillProcess(pid) // best-effort; ignore error
-		err = startAgentService()
+		r.svc.ForceKillProcess(pid)
+		err = r.svc.StartAgentService()
 	default:
-		// Step 3+: the process is likely already gone; just start.
-		err = startAgentService()
+		err = r.svc.StartAgentService()
 	}
 
 	if err != nil {
@@ -68,15 +83,22 @@ func (r *RecoveryManager) Attempt(pid int) (bool, error) {
 }
 
 // Attempts returns the current attempt count within the active window.
-func (r *RecoveryManager) Attempts() int {
-	return r.attempts
-}
+func (r *RecoveryManager) Attempts() int { return r.attempts }
 
 // Reset clears the attempt counter and resets the window start time.
 func (r *RecoveryManager) Reset() {
 	r.attempts = 0
 	r.windowStart = time.Now()
 }
+
+// osServiceController is the production serviceController. Each GOOS file
+// supplies RestartAgentService and StartAgentService via the package-level
+// helpers; ForceKillProcess is the same SIGKILL on every platform.
+type osServiceController struct{}
+
+func (osServiceController) RestartAgentService() error { return restartAgentService() }
+func (osServiceController) StartAgentService() error   { return startAgentService() }
+func (osServiceController) ForceKillProcess(pid int)   { forceKillProcess(pid) }
 
 // forceKillProcess sends SIGKILL to the process identified by pid.
 // Errors are silently ignored — the process may already be gone.
