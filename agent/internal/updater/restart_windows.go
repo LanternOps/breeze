@@ -98,38 +98,93 @@ type restartScriptOptions struct {
 // for backward-compatible behavior when the user-helper paths are unset
 // (issue #816). Single-quote escaping doubles single quotes, matching the
 // established convention for the agent path.
+//
+// Error handling: PowerShell's Copy-Item is a non-terminating cmdlet by
+// default — a failed Copy (locked file, ACL denied, disk full) does NOT
+// stop the script, so without `$ErrorActionPreference = 'Stop'` + try/catch,
+// we'd swallow the failure and proceed to Start-Service, ending up with the
+// new agent paired with a stale or missing user-helper — exactly the
+// partial-success state #816 was filed against. The generated script:
+//   - sets `$ErrorActionPreference = 'Stop'` globally,
+//   - wraps the swap block (Stop-Service / Stop-Process / Copy-Item agent /
+//     Copy-Item user-helper) in a single try/catch,
+//   - logs Exception.Message / StackTrace / ScriptStackTrace + a named
+//     "operation" tag to `${env:TEMP}\breeze-update-failure-<unix>.log` on
+//     failure (TEMP always exists; ProgramData may not on fresh installs —
+//     see #609),
+//   - always falls through to Start-Service afterwards so the host doesn't
+//     end with the service stopped (catch path attempts start too — if the
+//     partial swap left a corrupt agent, the start may fail, but at least
+//     we've tried and the failure log captures the cause),
+//   - keeps Remove-Item cleanups outside the try/catch so they always run.
 func buildRestartScript(opts restartScriptOptions) string {
 	safeAgent := strings.ReplaceAll(opts.AgentTempPath, "'", "''")
 	safeAgentTarget := strings.ReplaceAll(opts.AgentTargetPath, "'", "''")
 
-	lines := []string{
-		"Start-Sleep -Seconds 3",
-		// Stop the agent service first
-		"Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
-		// Kill any lingering breeze processes (helper, viewer, user helpers)
-		// that might hold file locks on the binary or shared directory.
-		"Get-Process -Name 'breeze-helper','breeze-agent','breeze-user-helper','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
-		"Start-Sleep -Seconds 2",
-		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeAgent, safeAgentTarget),
+	hasHelper := opts.UserHelperTempPath != "" && opts.UserHelperTargetPath != ""
+	var safeHelper, safeHelperTarget string
+	if hasHelper {
+		safeHelper = strings.ReplaceAll(opts.UserHelperTempPath, "'", "''")
+		safeHelperTarget = strings.ReplaceAll(opts.UserHelperTargetPath, "'", "''")
 	}
 
-	// Optionally swap in the user-helper too. Skipped when the caller didn't
-	// pre-download it (pre-#816 release, network failure, 404, etc.) — the
-	// agent-only upgrade still succeeds in that case.
-	if opts.UserHelperTempPath != "" && opts.UserHelperTargetPath != "" {
-		safeHelper := strings.ReplaceAll(opts.UserHelperTempPath, "'", "''")
-		safeHelperTarget := strings.ReplaceAll(opts.UserHelperTargetPath, "'", "''")
+	lines := []string{
+		// Make all errors in the swap block terminating so try/catch can
+		// actually catch a failed Copy-Item. Without this, Copy-Item is
+		// non-terminating and a write failure would silently regress to
+		// the pre-#816 bug (new agent + stale/missing user-helper).
+		"$ErrorActionPreference = 'Stop'",
+		"Start-Sleep -Seconds 3",
+		"try {",
+		// Stop the agent service first. We OPT OUT of -ErrorAction Stop here
+		// because the service may not exist on some test paths and that
+		// shouldn't fail the script.
+		"  Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
+		// Kill any lingering breeze processes (helper, viewer, user helpers)
+		// that might hold file locks on the binary or shared directory.
+		"  Get-Process -Name 'breeze-helper','breeze-agent','breeze-user-helper','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+		"  Start-Sleep -Seconds 2",
+		fmt.Sprintf("  Copy-Item -Path '%s' -Destination '%s' -Force", safeAgent, safeAgentTarget),
+	}
+
+	// Ordering: the agent Copy MUST come before the helper Copy. A partial
+	// failure that stops between the two leaves a working (if pre-#816)
+	// install rather than the helper-installed-but-agent-stale state #816
+	// was filed against. (See restart_windows_test.go's ordering test.)
+	if hasHelper {
 		lines = append(lines,
-			fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeHelper, safeHelperTarget),
+			fmt.Sprintf("  Copy-Item -Path '%s' -Destination '%s' -Force", safeHelper, safeHelperTarget),
 		)
 	}
 
 	lines = append(lines,
-		"Start-Service -Name '"+serviceName+"'",
+		// Success path: start the service.
+		"  Start-Service -Name '"+serviceName+"'",
+		"} catch {",
+		// Failure path: log structured diagnostics. ${env:TEMP} always exists
+		// on Windows (unlike C:\ProgramData\Breeze, which may not exist yet
+		// on a fresh install — see #609 / HardenProgramDataAcl sequencing).
+		"  $stamp = [int][double]::Parse((Get-Date -UFormat %s))",
+		"  $logPath = Join-Path $env:TEMP (\"breeze-update-failure-$stamp.log\")",
+		"  $op = if ($_.InvocationInfo) { $_.InvocationInfo.Line } else { '<unknown>' }",
+		"  $msg = @(",
+		"    \"Breeze update-helper failure at $(Get-Date -Format o)\",",
+		"    \"operation: $op\",",
+		"    \"exception: $($_.Exception.Message)\",",
+		"    \"stackTrace: $($_.Exception.StackTrace)\",",
+		"    \"scriptStackTrace: $($_.ScriptStackTrace)\"",
+		"  ) -join \"`r`n\"",
+		"  $msg | Out-File -FilePath $logPath -Append -Encoding utf8",
+		// Always attempt Start-Service afterwards so we don't leave the host
+		// with the service stopped. If the partial Copy corrupted the agent,
+		// this start may fail too — that's OK, the log above captures why.
+		"  Start-Service -Name '"+serviceName+"' -ErrorAction SilentlyContinue",
+		"}",
+		// Cleanup OUTSIDE the try/catch — these should always run regardless
+		// of swap success or failure, and Remove-Item is best-effort anyway.
 		fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeAgent),
 	)
-	if opts.UserHelperTempPath != "" && opts.UserHelperTargetPath != "" {
-		safeHelper := strings.ReplaceAll(opts.UserHelperTempPath, "'", "''")
+	if hasHelper {
 		lines = append(lines,
 			fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeHelper),
 		)

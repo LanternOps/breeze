@@ -28,6 +28,149 @@ func TestBuildRestartScript_AgentOnly(t *testing.T) {
 	}
 }
 
+// TestBuildRestartScript_ErrorActionPreference asserts the generated script
+// makes Copy-Item failures terminating. Without this, a Copy-Item failure
+// during the swap would not propagate into the try/catch and the script
+// would silently regress to the pre-#816 partial-success state.
+func TestBuildRestartScript_ErrorActionPreference(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		AgentTempPath:   `C:\tmp\agent.exe`,
+		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+	})
+	if !strings.Contains(got, "$ErrorActionPreference = 'Stop'") {
+		t.Fatalf("expected $ErrorActionPreference = 'Stop'; script was:\n%s", got)
+	}
+}
+
+// TestBuildRestartScript_TryCatchWrapsSwap asserts the swap block (Copy-Item
+// calls etc.) is wrapped in a single try { … } catch { … } so a failed Copy
+// produces a structured failure log instead of a silent agent-only outcome.
+func TestBuildRestartScript_TryCatchWrapsSwap(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		AgentTempPath:        `C:\tmp\agent.exe`,
+		AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
+		UserHelperTempPath:   `C:\tmp\helper.exe`,
+		UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+	})
+
+	tryIdx := strings.Index(got, "try {")
+	catchIdx := strings.Index(got, "} catch {")
+	if tryIdx < 0 {
+		t.Fatalf("expected `try {` opener; script was:\n%s", got)
+	}
+	if catchIdx <= tryIdx {
+		t.Fatalf("expected `} catch {` after `try {`; script was:\n%s", got)
+	}
+
+	// Both Copy-Item calls must live inside the try block (i.e. between the
+	// `try {` opener and the `} catch {` line).
+	agentCopy := `Copy-Item -Path 'C:\tmp\agent.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`
+	helperCopy := `Copy-Item -Path 'C:\tmp\helper.exe' -Destination 'C:\Program Files\Breeze\breeze-user-helper.exe' -Force`
+	agentIdx := strings.Index(got, agentCopy)
+	helperIdx := strings.Index(got, helperCopy)
+	if agentIdx < tryIdx || agentIdx > catchIdx {
+		t.Fatalf("agent Copy-Item must be inside try { … } catch; script was:\n%s", got)
+	}
+	if helperIdx < tryIdx || helperIdx > catchIdx {
+		t.Fatalf("helper Copy-Item must be inside try { … } catch; script was:\n%s", got)
+	}
+}
+
+// TestBuildRestartScript_StartServiceInBothPaths verifies Start-Service is
+// invoked in BOTH the try-success path (inside the try { … }) AND the catch
+// path (so a partial-Copy failure still leaves the host with a service
+// start attempt — better to fail the start with a corrupt agent than to
+// leave the service stopped indefinitely).
+func TestBuildRestartScript_StartServiceInBothPaths(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		AgentTempPath:   `C:\tmp\agent.exe`,
+		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+	})
+
+	// Count Start-Service invocations on the BreezeAgent service — must be 2
+	// (one in try-path, one in catch-path). Test by substring count.
+	const needle = "Start-Service -Name 'BreezeAgent'"
+	count := strings.Count(got, needle)
+	if count != 2 {
+		t.Fatalf("expected Start-Service to appear twice (try + catch); got %d. Script was:\n%s", count, got)
+	}
+
+	// The catch-path Start-Service must use -ErrorAction SilentlyContinue
+	// (since `$ErrorActionPreference = 'Stop'` is set globally and we DON'T
+	// want a failed start inside the catch to re-throw and skip cleanup).
+	if !strings.Contains(got, "Start-Service -Name 'BreezeAgent' -ErrorAction SilentlyContinue") {
+		t.Fatalf("expected catch-path Start-Service with -ErrorAction SilentlyContinue; script was:\n%s", got)
+	}
+}
+
+// TestBuildRestartScript_FailureLogUsesTemp verifies the structured failure
+// log goes to ${env:TEMP}, not a hardcoded drive letter or
+// C:\ProgramData\Breeze (which may not exist yet on a fresh install — see
+// #609). %TEMP% is guaranteed to exist on any Windows host.
+func TestBuildRestartScript_FailureLogUsesTemp(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		AgentTempPath:   `C:\tmp\agent.exe`,
+		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+	})
+
+	if !strings.Contains(got, "$env:TEMP") {
+		t.Fatalf("expected failure log path to reference $env:TEMP; script was:\n%s", got)
+	}
+	if !strings.Contains(got, "breeze-update-failure-") {
+		t.Fatalf("expected failure log filename pattern breeze-update-failure-<stamp>.log; script was:\n%s", got)
+	}
+	// `Out-File -Append -Encoding utf8` is the spec'd write call.
+	if !strings.Contains(got, "Out-File") || !strings.Contains(got, "-Append") || !strings.Contains(got, "-Encoding utf8") {
+		t.Fatalf("expected Out-File -Append -Encoding utf8 for the failure log; script was:\n%s", got)
+	}
+	// Defense-in-depth: no hardcoded C:\ProgramData log path crept in.
+	if strings.Contains(got, `C:\ProgramData\Breeze\breeze-update-failure`) {
+		t.Fatalf("failure log must not be written under C:\\ProgramData\\Breeze (may not exist on fresh installs); script was:\n%s", got)
+	}
+}
+
+// TestBuildRestartScript_CleanupOutsideTryCatch asserts the Remove-Item
+// cleanup lines run regardless of swap success/failure — they must live
+// AFTER the closing `}` of the catch block, not inside try or catch.
+func TestBuildRestartScript_CleanupOutsideTryCatch(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		AgentTempPath:        `C:\tmp\agent.exe`,
+		AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
+		UserHelperTempPath:   `C:\tmp\helper.exe`,
+		UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+	})
+
+	// Find the close of the catch block: the literal "\n}\r\n" — i.e. the
+	// catch-closing brace must be followed by the cleanup Remove-Item lines.
+	// Match the position of the catch-closing brace as the first standalone
+	// "}" that follows the `} catch {` opener.
+	catchOpenerIdx := strings.Index(got, "} catch {")
+	if catchOpenerIdx < 0 {
+		t.Fatalf("expected `} catch {`; script was:\n%s", got)
+	}
+	// The closing `}` of the catch is the next `}` AFTER `} catch {`'s `{`.
+	closeIdx := strings.Index(got[catchOpenerIdx+len("} catch {"):], "\n}")
+	if closeIdx < 0 {
+		t.Fatalf("expected catch-block closing `}`; script was:\n%s", got)
+	}
+	catchCloseIdx := catchOpenerIdx + len("} catch {") + closeIdx
+
+	// All Remove-Item lines must appear AFTER the catch close.
+	for _, needle := range []string{
+		`Remove-Item -Path 'C:\tmp\agent.exe' -Force -ErrorAction SilentlyContinue`,
+		`Remove-Item -Path 'C:\tmp\helper.exe' -Force -ErrorAction SilentlyContinue`,
+		"Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue",
+	} {
+		idx := strings.Index(got, needle)
+		if idx < 0 {
+			t.Fatalf("missing cleanup line %q; script was:\n%s", needle, got)
+		}
+		if idx < catchCloseIdx {
+			t.Fatalf("cleanup line %q must appear after catch block close; script was:\n%s", needle, got)
+		}
+	}
+}
+
 // TestBuildRestartScript_WithUserHelper verifies that when both user-helper
 // paths are provided the generated script emits a second Copy-Item AFTER the
 // agent's and includes a cleanup step for the helper temp file. The ordering
