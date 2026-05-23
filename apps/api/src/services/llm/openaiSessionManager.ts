@@ -17,7 +17,7 @@
  * to avoid coupling. Any divergence would be a deliberate future decision.
  */
 
-import { db, withDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
@@ -31,6 +31,10 @@ import { sanitizeErrorForClient } from '../aiAgent';
 import { getConfig } from '../../config/validate';
 import type { OpenAISession } from './types';
 import type { RequestLike } from '../auditEvents';
+
+// Mirror StreamingSessionManager: leave request ALS before starting the async turn so
+// nested withDbAccessContext(...) takes the transaction + set_config path (RLS GUCs).
+const runOutsideDbContextSafe = runOutsideDbContext;
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -116,6 +120,10 @@ export class OpenAISessionManager {
    * saves assistant message, records cost, then publishes 'done'.
    *
    * The caller MUST have already called tryTransitionToProcessing() before startTurn().
+   *
+   * Matches Anthropic: turn work starts outside the HTTP request ALS (see
+   * StreamingSessionManager runOutsideDbContextSafe) so post-stream DB writes get a
+   * fresh withDbAccessContext transaction and correct breeze.* session variables.
    */
   startTurn(
     session: OpenAISession,
@@ -126,7 +134,9 @@ export class OpenAISessionManager {
     // tryTransitionToProcessing and startTurn) then assign a fresh controller.
     try { session.abortController.abort(); } catch { /* ignore */ }
     session.abortController = new AbortController();
-    void this.runTurn(session, _model, systemPrompt);
+    runOutsideDbContextSafe(() => {
+      void this.runTurn(session, _model, systemPrompt);
+    });
   }
 
   private async runTurn(
