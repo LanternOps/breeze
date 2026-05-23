@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Network, Plug, ListChecks, ScrollText } from 'lucide-react';
 import DnsSecurityIntegrationsTab from './DnsSecurityIntegrationsTab';
 import DnsSecurityPoliciesTab from './DnsSecurityPoliciesTab';
+import DnsSecurityEventsTab from './DnsSecurityEventsTab';
+import DnsSecurityOverviewTab from './DnsSecurityOverviewTab';
 
 type Tab = 'overview' | 'integrations' | 'policies' | 'events';
 
@@ -57,10 +59,10 @@ export default function DnsSecurityPage() {
       </nav>
 
       <div role="tabpanel">
-        {activeTab === 'overview' && <OverviewPlaceholder />}
+        {activeTab === 'overview' && <DnsSecurityOverviewTab />}
         {activeTab === 'integrations' && <DnsSecurityIntegrationsTab />}
         {activeTab === 'policies' && <DnsSecurityPoliciesTab />}
-        {activeTab === 'events' && <EventsPlaceholder />}
+        {activeTab === 'events' && <DnsSecurityEventsTab />}
       </div>
     </div>
   );
@@ -95,21 +97,3 @@ function TabButton({
   );
 }
 
-function OverviewPlaceholder() {
-  return (
-    <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
-      DNS threat counters + top-blocked widget land here in a follow-up PR. The data
-      endpoints (<code>/dns-security/stats</code>, <code>/dns-security/top-blocked</code>)
-      are already API-complete.
-    </div>
-  );
-}
-
-function EventsPlaceholder() {
-  return (
-    <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
-      Threat events list (blocked-by-default with "show all" toggle) lands in a follow-up PR.
-      Backed by <code>GET /dns-security/events</code>.
-    </div>
-  );
-}

@@ -228,7 +228,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(7);
+    expect(absoluteFiles.length).toBe(8);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
