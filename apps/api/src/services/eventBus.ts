@@ -66,6 +66,8 @@ export type EventType =
   | 'compliance.sensitive_data_found'
   | 'compliance.credential_exposed'
   | 'compliance.sensitive_data_remediated'
+  // DNS Security events (#829)
+  | 'dns.threat.blocked'
   // Browser security events
   | 'compliance.browser_policy_applied'
   // Peripheral control events
@@ -554,6 +556,8 @@ export const EVENT_TYPES = {
   COMPLIANCE_SENSITIVE_DATA_FOUND: 'compliance.sensitive_data_found' as const,
   COMPLIANCE_CREDENTIAL_EXPOSED: 'compliance.credential_exposed' as const,
   COMPLIANCE_SENSITIVE_DATA_REMEDIATED: 'compliance.sensitive_data_remediated' as const,
+  // DNS Security (#829)
+  DNS_THREAT_BLOCKED: 'dns.threat.blocked' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,

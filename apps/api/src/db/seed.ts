@@ -759,6 +759,25 @@ export async function seedRoles() {
 // Built-in alert templates for event log conditions
 const EVENT_LOG_ALERT_TEMPLATES = [
   {
+    name: 'DNS Threat Blocked',
+    description: 'Device attempted to reach a blocked malicious / threat-categorized domain',
+    conditions: {
+      type: 'dns_threat',
+      eventType: 'dns.threat.blocked',
+      // When `categories` is empty, any category triggers (default-permissive).
+      // Operators can narrow via the rule's override_settings.conditions.categories array.
+      categories: [] as string[]
+    },
+    severity: 'high' as const,
+    titleTemplate: 'DNS threat blocked: {{domain}} ({{category}})',
+    messageTemplate: 'Device {{hostname}} attempted to reach {{domain}} ({{category}}, {{threat_type}}). Query blocked at the resolver.',
+    // 60-minute window so a device hammering one malicious domain doesn't
+    // page-storm. Multiple distinct domains/categories within the window
+    // are de-duplicated by the alert engine's per-(template, target, key)
+    // cooldown logic; first matched event wins.
+    cooldownMinutes: 60
+  },
+  {
     name: 'Auth Failure Burst',
     description: '5+ authentication failures within 10 minutes',
     conditions: {

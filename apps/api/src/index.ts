@@ -148,6 +148,7 @@ import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker 
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
+import { registerDnsThreatAlertSubscriber } from './services/dnsThreatAlerts';
 import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
@@ -1005,6 +1006,7 @@ async function initializeWorkers(): Promise<void> {
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
+    ['dnsThreatAlertSubscriber', async () => { registerDnsThreatAlertSubscriber(); }],
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
     ['logForwardingWorker', initializeLogForwardingWorker],
