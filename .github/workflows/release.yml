@@ -538,6 +538,20 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      # Issue #816: ship the user-helper as a discrete GitHub release asset
+      # so the agent's in-place auto-upgrade can fetch it directly. Pre-#816
+      # the binary was only ever bundled into the MSI installer, which meant
+      # hosts that reached new versions via auto-update never received it
+      # and the HelperLifecycleManager fell through to a
+      # `breeze-agent.exe user-helper` fallback every ~30s.
+      - name: Upload signed Windows user-helper EXE artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-user-helper-windows-amd64
+          path: dist/breeze-user-helper-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
       - name: Upload Windows MSI artifact
         uses: actions/upload-artifact@v7
         with:
@@ -1805,7 +1819,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1828,6 +1842,14 @@ jobs:
 
           # Copy desktop-helper binaries
           for dir in artifacts/breeze-desktop-helper-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+
+          # Copy user-helper binaries (Windows-only sibling of the agent that
+          # runs in interactive user sessions). See #816.
+          for dir in artifacts/breeze-user-helper-*; do
             if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
               cp "$dir"/* release-assets/
             fi

@@ -498,6 +498,58 @@ describe("agentVersions routes", () => {
       }
     });
 
+    // Issue #816: the download route must serve a row for the new
+    // component=user-helper value. Pre-fix the zod schema rejected this with
+    // a 400 (component not in enum), which forced the agent to abort the
+    // upgrade entirely instead of falling back to an agent-only swap.
+    it("serves component=user-helper rows (#816)", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-user-helper-windows-amd64.exe";
+      const checksum = "f".repeat(64);
+      const signed = makeSignedReleaseArtifactManifest({
+        assetName: "breeze-user-helper-windows-amd64.exe",
+        checksum,
+        size: 2048,
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "windows",
+                architecture: "amd64",
+                component: "user-helper",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "release-artifact-manifest-ed25519",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=windows&arch=amd64&component=user-helper",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // user-helper is NOT routed through the server-relative proxy today
+        // (the /agents/download/:os/:arch route is agent-only); the canonical
+        // GitHub URL is returned as-is. See buildServerRelativeAgentDownloadUrl.
+        expect(body.url).toBe(canonical);
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+      }
+    });
+
     it("should return 404 for unknown version", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({

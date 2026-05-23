@@ -37,7 +37,10 @@ const architectureEnum = z.enum(["amd64", "arm64"]);
 const latestQuerySchema = z.object({
   platform: platformEnum,
   arch: architectureEnum,
-  component: z.enum(["agent", "helper", "viewer"]).optional().default("agent"),
+  component: z
+    .enum(["agent", "helper", "viewer", "user-helper"])
+    .optional()
+    .default("agent"),
 });
 
 const downloadParamsSchema = z.object({
@@ -47,7 +50,10 @@ const downloadParamsSchema = z.object({
 const downloadQuerySchema = z.object({
   platform: platformEnum,
   arch: architectureEnum,
-  component: z.enum(["agent", "helper", "viewer"]).optional().default("agent"),
+  component: z
+    .enum(["agent", "helper", "viewer", "user-helper"])
+    .optional()
+    .default("agent"),
 });
 
 const createVersionSchema = z.object({
@@ -62,7 +68,10 @@ const createVersionSchema = z.object({
   fileSize: z.number().int().positive().optional(),
   releaseNotes: z.string().optional(),
   isLatest: z.boolean().optional().default(false),
-  component: z.enum(["agent", "helper", "viewer"]).optional().default("agent"),
+  component: z
+    .enum(["agent", "helper", "viewer", "user-helper"])
+    .optional()
+    .default("agent"),
 });
 
 type ReleaseManifest = {

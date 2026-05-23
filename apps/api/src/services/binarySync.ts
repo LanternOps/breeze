@@ -36,6 +36,19 @@ const HELPER_TARGETS = [
   { goos: "linux", goarch: "amd64", assetName: "breeze-helper-linux.AppImage" },
 ] as const;
 
+// Issue #816: breeze-user-helper is the GUI-subsystem Windows sibling of
+// breeze-agent that the sessionbroker spawns into interactive user sessions.
+// It's signed by the same Azure Trusted Signing pipeline as the agent and
+// shipped as its own GitHub release asset so the agent's in-place auto-upgrade
+// (heartbeat.doUpgrade) can fetch it as a separate component. Windows-only.
+const USER_HELPER_TARGETS = [
+  {
+    goos: "windows",
+    goarch: "amd64",
+    assetName: "breeze-user-helper-windows-amd64.exe",
+  },
+] as const;
+
 interface BinaryInfo {
   filename: string;
   filePath: string;
@@ -547,6 +560,42 @@ export async function syncFromGitHub(
     } catch (err) {
       console.error(
         `[binarySync] Failed to upsert helper version for ${platform}/${target.goarch}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // Sync user-helper binaries (Windows-only; issue #816). Missing for any
+  // pre-#816 release — `release.assets.find` returns undefined and the loop
+  // body short-circuits. The agent treats a 404 here as non-fatal and falls
+  // back to an agent-only upgrade.
+  for (const target of USER_HELPER_TARGETS) {
+    const asset = release.assets.find((a) => a.name === target.assetName);
+    if (!asset) continue;
+    const metadata = await getReleaseAssetMetadata({
+      asset,
+      trustedManifest,
+      fallbackChecksums,
+      releaseTag: release.tag_name,
+    });
+    if (!metadata) continue;
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+
+    try {
+      await upsertVersion(
+        version,
+        platform,
+        target.goarch,
+        "user-helper",
+        asset.browser_download_url,
+        metadata,
+        release.body,
+      );
+      synced.push(`user-helper:${platform}/${target.goarch}`);
+    } catch (err) {
+      console.error(
+        `[binarySync] Failed to upsert user-helper version for ${platform}/${target.goarch}:`,
         err instanceof Error ? err.message : err,
       );
     }
