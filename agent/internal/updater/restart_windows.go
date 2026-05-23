@@ -78,19 +78,22 @@ func Restart() error {
 // performs the in-place agent binary swap on Windows. Built by RestartWithHelper
 // and consumed by buildRestartScript so the script text can be unit-tested
 // without spawning PowerShell.
+//
+// The half-set invariant from the pre-PR-B shape (four parallel string fields
+// where "both UserHelper paths are set OR both empty" was only enforced by a
+// defensive runtime check) is now expressed in the type system: UserHelper is
+// a *BinaryPair, nil means "no helper to swap", and a non-nil value carries
+// both paths together. Issue #816, #845 follow-up.
 type restartScriptOptions struct {
-	// AgentTempPath is the freshly-downloaded breeze-agent.exe in a temp dir.
-	AgentTempPath string
-	// AgentTargetPath is the final install location of breeze-agent.exe.
-	AgentTargetPath string
-	// UserHelperTempPath is the freshly-downloaded breeze-user-helper.exe
-	// in a temp dir. Empty string means "no user-helper to swap" — the
-	// generated script omits the helper Copy-Item entirely (backward-compat
-	// with releases that lack the user-helper artifact). Issue #816.
-	UserHelperTempPath string
-	// UserHelperTargetPath is the final install location of
-	// breeze-user-helper.exe (typically the same directory as the agent).
-	UserHelperTargetPath string
+	// Agent is the freshly-downloaded breeze-agent.exe temp file plus its
+	// final install location. Required.
+	Agent BinaryPair
+	// UserHelper, when non-nil, is the freshly-downloaded breeze-user-helper.exe
+	// temp file plus its final install location (typically the same directory
+	// as the agent). nil means "no user-helper to swap" — the generated script
+	// omits the helper Copy-Item entirely (backward-compat with releases that
+	// lack the user-helper artifact). Issue #816.
+	UserHelper *BinaryPair
 }
 
 // buildRestartScript renders the PowerShell helper script. Extracted from
@@ -118,14 +121,17 @@ type restartScriptOptions struct {
 //     we've tried and the failure log captures the cause),
 //   - keeps Remove-Item cleanups outside the try/catch so they always run.
 func buildRestartScript(opts restartScriptOptions) string {
-	safeAgent := strings.ReplaceAll(opts.AgentTempPath, "'", "''")
-	safeAgentTarget := strings.ReplaceAll(opts.AgentTargetPath, "'", "''")
+	safeAgent := strings.ReplaceAll(opts.Agent.Temp, "'", "''")
+	safeAgentTarget := strings.ReplaceAll(opts.Agent.Target, "'", "''")
 
-	hasHelper := opts.UserHelperTempPath != "" && opts.UserHelperTargetPath != ""
+	// nil-as-absent: the type system now guarantees both helper paths come as
+	// a single unit, so we cannot land in the half-set state the pre-PR-B
+	// defensive check guarded against.
+	hasHelper := opts.UserHelper != nil
 	var safeHelper, safeHelperTarget string
 	if hasHelper {
-		safeHelper = strings.ReplaceAll(opts.UserHelperTempPath, "'", "''")
-		safeHelperTarget = strings.ReplaceAll(opts.UserHelperTargetPath, "'", "''")
+		safeHelper = strings.ReplaceAll(opts.UserHelper.Temp, "'", "''")
+		safeHelperTarget = strings.ReplaceAll(opts.UserHelper.Target, "'", "''")
 	}
 
 	lines := []string{
@@ -205,17 +211,15 @@ func buildRestartScript(opts restartScriptOptions) string {
 // This avoids the race where the agent tries to SCM-stop itself
 // (killing the goroutine before it can call Start).
 //
-// userHelperTempPath / userHelperTargetPath are optional. Pass empty strings
-// to perform an agent-only upgrade (the pre-#816 behavior). When both are
-// non-empty, the generated script also copies the user-helper into place
-// so the post-upgrade HelperLifecycleManager finds it on disk and does not
-// fall back to spawning breeze-agent.exe in a loop (issue #816).
-func RestartWithHelper(newBinaryPath, targetPath string, userHelperTempPath, userHelperTargetPath string) error {
+// userHelper is optional. Pass nil to perform an agent-only upgrade (the
+// pre-#816 behavior). When non-nil, the generated script also copies the
+// user-helper into place so the post-upgrade HelperLifecycleManager finds
+// it on disk and does not fall back to spawning breeze-agent.exe in a loop
+// (issue #816).
+func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair) error {
 	script := buildRestartScript(restartScriptOptions{
-		AgentTempPath:        newBinaryPath,
-		AgentTargetPath:      targetPath,
-		UserHelperTempPath:   userHelperTempPath,
-		UserHelperTargetPath: userHelperTargetPath,
+		Agent:      agent,
+		UserHelper: userHelper,
 	})
 
 	scriptFile, err := os.CreateTemp("", "breeze-update-*.ps1")
@@ -229,12 +233,18 @@ func RestartWithHelper(newBinaryPath, targetPath string, userHelperTempPath, use
 	}
 	scriptFile.Close()
 
+	userHelperTemp := ""
+	userHelperTarget := ""
+	if userHelper != nil {
+		userHelperTemp = userHelper.Temp
+		userHelperTarget = userHelper.Target
+	}
 	log.Info("spawning update helper script",
 		"script", scriptFile.Name(),
-		"newBinary", newBinaryPath,
-		"target", targetPath,
-		"userHelperTemp", userHelperTempPath,
-		"userHelperTarget", userHelperTargetPath,
+		"newBinary", agent.Temp,
+		"target", agent.Target,
+		"userHelperTemp", userHelperTemp,
+		"userHelperTarget", userHelperTarget,
 	)
 
 	cmd := exec.Command("powershell.exe",

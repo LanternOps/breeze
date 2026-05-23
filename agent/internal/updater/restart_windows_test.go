@@ -8,13 +8,15 @@ import (
 )
 
 // TestBuildRestartScript_AgentOnly is the pre-#816 baseline: when the caller
-// passes empty user-helper paths the generated script must not reference the
+// passes a nil UserHelper the generated script must not reference the
 // user-helper at all (backward-compatible with releases that don't yet ship
 // the breeze-user-helper artifact and with non-Windows release histories).
 func TestBuildRestartScript_AgentOnly(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:   `C:\Windows\Temp\breeze-agent-1234.exe`,
-		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\Windows\Temp\breeze-agent-1234.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
 	})
 
 	if !strings.Contains(got, `Copy-Item -Path 'C:\Windows\Temp\breeze-agent-1234.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`) {
@@ -28,14 +30,42 @@ func TestBuildRestartScript_AgentOnly(t *testing.T) {
 	}
 }
 
+// TestBuildRestartScript_NilUserHelperIsAbsent verifies the new contract from
+// PR B (#845 follow-up): UserHelper == nil means "no helper to swap" and the
+// generated script must omit any helper Copy-Item / Remove-Item lines. This
+// replaces the pre-PR-B TestBuildRestartScript_HelperOnlyPathsAreIgnoredIfEmpty
+// test that verified defensive runtime behavior — the half-set state is now
+// impossible to construct at the type level (the four parallel string fields
+// were collapsed into a single *BinaryPair).
+func TestBuildRestartScript_NilUserHelperIsAbsent(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: nil,
+	})
+
+	if strings.Contains(got, "breeze-user-helper") {
+		t.Fatalf("nil UserHelper script must not mention breeze-user-helper; script was:\n%s", got)
+	}
+	// Defense in depth: also verify no second Copy-Item snuck in. The agent
+	// Copy-Item is the only Copy-Item line we expect.
+	if c := strings.Count(got, "Copy-Item -Path"); c != 1 {
+		t.Fatalf("expected exactly one Copy-Item line with nil UserHelper; got %d. Script was:\n%s", c, got)
+	}
+}
+
 // TestBuildRestartScript_ErrorActionPreference asserts the generated script
 // makes Copy-Item failures terminating. Without this, a Copy-Item failure
 // during the swap would not propagate into the try/catch and the script
 // would silently regress to the pre-#816 partial-success state.
 func TestBuildRestartScript_ErrorActionPreference(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:   `C:\tmp\agent.exe`,
-		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
 	})
 	if !strings.Contains(got, "$ErrorActionPreference = 'Stop'") {
 		t.Fatalf("expected $ErrorActionPreference = 'Stop'; script was:\n%s", got)
@@ -47,10 +77,14 @@ func TestBuildRestartScript_ErrorActionPreference(t *testing.T) {
 // produces a structured failure log instead of a silent agent-only outcome.
 func TestBuildRestartScript_TryCatchWrapsSwap(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:        `C:\tmp\agent.exe`,
-		AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
-		UserHelperTempPath:   `C:\tmp\helper.exe`,
-		UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: &BinaryPair{
+			Temp:   `C:\tmp\helper.exe`,
+			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		},
 	})
 
 	tryIdx := strings.Index(got, "try {")
@@ -83,8 +117,10 @@ func TestBuildRestartScript_TryCatchWrapsSwap(t *testing.T) {
 // leave the service stopped indefinitely).
 func TestBuildRestartScript_StartServiceInBothPaths(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:   `C:\tmp\agent.exe`,
-		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
 	})
 
 	// Count Start-Service invocations on the BreezeAgent service — must be 2
@@ -109,8 +145,10 @@ func TestBuildRestartScript_StartServiceInBothPaths(t *testing.T) {
 // #609). %TEMP% is guaranteed to exist on any Windows host.
 func TestBuildRestartScript_FailureLogUsesTemp(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:   `C:\tmp\agent.exe`,
-		AgentTargetPath: `C:\Program Files\Breeze\breeze-agent.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
 	})
 
 	if !strings.Contains(got, "$env:TEMP") {
@@ -134,10 +172,14 @@ func TestBuildRestartScript_FailureLogUsesTemp(t *testing.T) {
 // AFTER the closing `}` of the catch block, not inside try or catch.
 func TestBuildRestartScript_CleanupOutsideTryCatch(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:        `C:\tmp\agent.exe`,
-		AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
-		UserHelperTempPath:   `C:\tmp\helper.exe`,
-		UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: &BinaryPair{
+			Temp:   `C:\tmp\helper.exe`,
+			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		},
 	})
 
 	// Find the close of the catch block: the literal "\n}\r\n" — i.e. the
@@ -171,18 +213,22 @@ func TestBuildRestartScript_CleanupOutsideTryCatch(t *testing.T) {
 	}
 }
 
-// TestBuildRestartScript_WithUserHelper verifies that when both user-helper
-// paths are provided the generated script emits a second Copy-Item AFTER the
-// agent's and includes a cleanup step for the helper temp file. The ordering
-// matters: the agent Copy-Item must come first so a partial failure still
-// leaves a working (if pre-#816) install rather than an installed user-helper
-// with a stale agent.
+// TestBuildRestartScript_WithUserHelper verifies that when a non-nil
+// UserHelper is provided the generated script emits a second Copy-Item AFTER
+// the agent's and includes a cleanup step for the helper temp file. The
+// ordering matters: the agent Copy-Item must come first so a partial failure
+// still leaves a working (if pre-#816) install rather than an installed
+// user-helper with a stale agent.
 func TestBuildRestartScript_WithUserHelper(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:        `C:\Windows\Temp\breeze-agent-1234.exe`,
-		AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
-		UserHelperTempPath:   `C:\Windows\Temp\breeze-user-helper-5678.exe`,
-		UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\Windows\Temp\breeze-agent-1234.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: &BinaryPair{
+			Temp:   `C:\Windows\Temp\breeze-user-helper-5678.exe`,
+			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		},
 	})
 
 	agentCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-agent-1234.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`
@@ -214,10 +260,14 @@ func TestBuildRestartScript_WithUserHelper(t *testing.T) {
 // user-helper path must follow the same rule (issue #816).
 func TestBuildRestartScript_EscapesSingleQuotes(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
-		AgentTempPath:        `C:\tmp\agent'evil.exe`,
-		AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
-		UserHelperTempPath:   `C:\tmp\helper'evil.exe`,
-		UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent'evil.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: &BinaryPair{
+			Temp:   `C:\tmp\helper'evil.exe`,
+			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		},
 	})
 
 	if !strings.Contains(got, `'C:\tmp\agent''evil.exe'`) {
@@ -231,41 +281,5 @@ func TestBuildRestartScript_EscapesSingleQuotes(t *testing.T) {
 	// inject commands via a crafted temp path.
 	if strings.Contains(got, `'C:\tmp\agent'evil.exe'`) {
 		t.Fatalf("agent path single quote was not escaped; script was:\n%s", got)
-	}
-}
-
-// TestBuildRestartScript_HelperOnlyPathsAreIgnoredIfEmpty exercises the
-// defensive code path where only one of the two helper paths is provided.
-// We treat this as "no user-helper to install" rather than partially
-// generating a broken script.
-func TestBuildRestartScript_HelperOnlyPathsAreIgnoredIfEmpty(t *testing.T) {
-	cases := []struct {
-		name string
-		opts restartScriptOptions
-	}{
-		{
-			name: "temp set, target empty",
-			opts: restartScriptOptions{
-				AgentTempPath:      `C:\tmp\agent.exe`,
-				AgentTargetPath:    `C:\Program Files\Breeze\breeze-agent.exe`,
-				UserHelperTempPath: `C:\tmp\helper.exe`,
-			},
-		},
-		{
-			name: "target set, temp empty",
-			opts: restartScriptOptions{
-				AgentTempPath:        `C:\tmp\agent.exe`,
-				AgentTargetPath:      `C:\Program Files\Breeze\breeze-agent.exe`,
-				UserHelperTargetPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := buildRestartScript(tc.opts)
-			if strings.Contains(got, `breeze-user-helper.exe' -Force`) {
-				t.Fatalf("expected no user-helper Copy-Item when one path is empty; script was:\n%s", got)
-			}
-		})
 	}
 }

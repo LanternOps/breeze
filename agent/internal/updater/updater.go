@@ -326,7 +326,14 @@ func (u *Updater) UpdateTo(version string) error {
 		// component-agnostic, and downloading a second component requires
 		// the caller's AuthToken/server context. Pass empty strings for an
 		// agent-only swap (backward compatible). Issue #816.
-		if err := RestartWithHelper(tempPath, u.config.BinaryPath, u.extras.userHelperTempPath, u.extras.userHelperTargetPath); err != nil {
+		var userHelperOpt *BinaryPair
+		if u.extras.userHelperTempPath != "" || u.extras.userHelperTargetPath != "" {
+			userHelperOpt = &BinaryPair{
+				Temp:   u.extras.userHelperTempPath,
+				Target: u.extras.userHelperTargetPath,
+			}
+		}
+		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, userHelperOpt); err != nil {
 			removeCleanup(tempPath)
 			// The user-helper temp was pre-downloaded by the caller before
 			// UpdateTo was invoked; if we never spawned the restart script,
@@ -805,7 +812,14 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
-		if err := RestartWithHelper(tempPath, u.config.BinaryPath, u.extras.userHelperTempPath, u.extras.userHelperTargetPath); err != nil {
+		var userHelperOpt *BinaryPair
+		if u.extras.userHelperTempPath != "" || u.extras.userHelperTargetPath != "" {
+			userHelperOpt = &BinaryPair{
+				Temp:   u.extras.userHelperTempPath,
+				Target: u.extras.userHelperTargetPath,
+			}
+		}
+		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, userHelperOpt); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
