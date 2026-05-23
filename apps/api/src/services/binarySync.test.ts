@@ -90,6 +90,43 @@ function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
   };
 }
 
+// Multi-asset variant for tests that need the same signed manifest to cover
+// both the agent and the user-helper sync loops (issue #816 / PR #845).
+function makeSignedReleaseManifestMulti(
+  assets: { name: string; buffer: Buffer }[],
+  release = "v1.2.3",
+) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  const rawPublicKey = publicDer
+    .subarray(publicDer.length - 32)
+    .toString("base64");
+  const checksums = new Map<string, string>();
+  for (const a of assets) {
+    checksums.set(a.name, createHash("sha256").update(a.buffer).digest("hex"));
+  }
+  const manifest = Buffer.from(
+    JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release,
+      assets: assets.map((a) => ({
+        name: a.name,
+        sha256: checksums.get(a.name)!,
+        size: a.buffer.length,
+        platformTrust: "release-workflow-produced",
+      })),
+    }),
+  );
+  return {
+    checksums,
+    manifest,
+    signature: Buffer.from(sign(null, manifest, privateKey).toString("base64")),
+    publicKey: rawPublicKey,
+    release,
+  };
+}
+
 describe("binarySync", () => {
   const originalEnv = process.env;
 
@@ -269,6 +306,211 @@ describe("binarySync", () => {
 
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  // Issue #816 / PR #845: syncFromGitHub gained a USER_HELPER_TARGETS loop
+  // that registers the windows/amd64 breeze-user-helper.exe asset as its own
+  // component=user-helper row. heartbeat.doUpgrade's prefetch then fetches
+  // it via GET /agent-versions/:v/download. The three tests below cover the
+  // load-bearing behaviors of that loop.
+  describe("syncFromGitHub user-helper loop (#816)", () => {
+    function stubGitHubReleaseFetch(
+      signed: ReturnType<typeof makeSignedReleaseManifestMulti>,
+      assetBytes: Map<string, Buffer>,
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: signed.release,
+                body: "release notes",
+                assets: [
+                  ...Array.from(assetBytes.entries()).map(([name, buf]) => ({
+                    name,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/${name}`,
+                    size: buf.length,
+                  })),
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json`,
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json.ed25519`,
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    it("registers component=user-helper when both agent and user-helper assets are present", async () => {
+      const agentAsset = {
+        name: "breeze-agent-windows-amd64.exe",
+        buffer: Buffer.from("trusted windows agent bytes"),
+      };
+      const userHelperAsset = {
+        name: "breeze-user-helper-windows-amd64.exe",
+        buffer: Buffer.from("trusted user-helper bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([
+        agentAsset,
+        userHelperAsset,
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([
+          [agentAsset.name, agentAsset.buffer],
+          [userHelperAsset.name, userHelperAsset.buffer],
+        ]),
+      );
+
+      const result = await syncFromGitHub();
+
+      expect(result.version).toBe("1.2.3");
+      expect(result.synced).toEqual(
+        expect.arrayContaining([
+          "agent:windows/amd64",
+          "user-helper:windows/amd64",
+        ]),
+      );
+
+      // Assert the user-helper upsert specifically — same checksum + canonical
+      // browser_download_url the agent will resolve via the download route.
+      const userHelperInsert = (
+        dbMocks.insertValues.mock.calls as any[][]
+      ).find(
+        (call) =>
+          (call[0] as { component: string }).component === "user-helper",
+      );
+      expect(userHelperInsert).toBeDefined();
+      expect(userHelperInsert![0]).toMatchObject({
+        version: "1.2.3",
+        platform: "windows",
+        architecture: "amd64",
+        component: "user-helper",
+        checksum: signed.checksums.get(userHelperAsset.name),
+        downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${userHelperAsset.name}`,
+      });
+    });
+
+    it("succeeds without user-helper row when the asset is missing (pre-#816 release backward-compat)", async () => {
+      // Pre-#816 GitHub releases ship the agent asset but not the user-helper.
+      // The loop MUST short-circuit silently — anything else would block all
+      // historical releases from syncing.
+      const agentAsset = {
+        name: "breeze-agent-windows-amd64.exe",
+        buffer: Buffer.from("pre-816 agent bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([agentAsset]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([[agentAsset.name, agentAsset.buffer]]),
+      );
+
+      const result = await syncFromGitHub();
+
+      // Agent sync still succeeded.
+      expect(result.synced).toContain("agent:windows/amd64");
+      // No user-helper row registered.
+      expect(result.synced).not.toContain("user-helper:windows/amd64");
+      const userHelperInserts = dbMocks.insertValues.mock.calls.filter(
+        (call: any[]) => (call[0] as { component: string }).component === "user-helper",
+      );
+      expect(userHelperInserts).toHaveLength(0);
+    });
+
+    it("isolates user-helper upsert failures from the agent insert (logs error, agent still synced)", async () => {
+      // Mirror the existing error-handling pattern: per-target try/catch
+      // logs to console.error and continues with the next target. A
+      // user-helper insert failure MUST NOT abort the agent insert.
+      const agentAsset = {
+        name: "breeze-agent-windows-amd64.exe",
+        buffer: Buffer.from("agent bytes"),
+      };
+      const userHelperAsset = {
+        name: "breeze-user-helper-windows-amd64.exe",
+        buffer: Buffer.from("user-helper bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([
+        agentAsset,
+        userHelperAsset,
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([
+          [agentAsset.name, agentAsset.buffer],
+          [userHelperAsset.name, userHelperAsset.buffer],
+        ]),
+      );
+
+      // Make the transaction throw ONLY for the user-helper insert. Both
+      // agent and user-helper paths run through db.transaction(); detect
+      // which is which by peeking at the captured insertValues args.
+      const defaultTxImpl = async (fn: (tx: any) => Promise<void>) =>
+        fn(dbMocks.tx);
+      dbMocks.transaction.mockImplementation(
+        async (fn: (tx: any) => Promise<void>) => {
+          // Wrap the inner insert to inspect its values before deciding
+          // whether to throw.
+          const insertWrap = vi.fn((row: Record<string, unknown>) => {
+            if (row.component === "user-helper") {
+              // Record the captured row so the assertion below can still
+              // inspect what would have been inserted.
+              (dbMocks.insertValues as any)(row);
+              throw new Error("simulated user-helper upsert failure");
+            }
+            return (dbMocks.insertValues as any)(row);
+          });
+          const tx = {
+            update: dbMocks.tx.update,
+            insert: vi.fn(() => ({ values: insertWrap })),
+          };
+          return fn(tx);
+        },
+      );
+
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        const result = await syncFromGitHub();
+
+        // Agent insert succeeded.
+        expect(result.synced).toContain("agent:windows/amd64");
+        // User-helper insert did NOT make it into the synced list.
+        expect(result.synced).not.toContain("user-helper:windows/amd64");
+
+        // Error was logged via console.error (don't pin the exact string;
+        // the file's existing pattern is `[binarySync] Failed to upsert
+        // user-helper version for ...`).
+        const userHelperErrCalls = errorSpy.mock.calls.filter((args) =>
+          String(args[0] ?? "").includes("user-helper"),
+        );
+        expect(userHelperErrCalls.length).toBeGreaterThan(0);
+      } finally {
+        errorSpy.mockRestore();
+        // Restore the hoisted default so later tests don't recurse through
+        // the wrapper above.
+        dbMocks.transaction.mockImplementation(defaultTxImpl);
+      }
+    });
   });
 
   it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
