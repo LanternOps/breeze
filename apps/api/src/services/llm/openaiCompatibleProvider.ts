@@ -103,8 +103,6 @@ export class OpenAICompatibleProvider implements LLMProvider {
       return;
     }
 
-    yield { type: 'message_start' };
-
     let inputTokens = 0;
     let outputTokens = 0;
 
