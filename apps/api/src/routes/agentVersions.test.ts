@@ -565,6 +565,36 @@ describe("agentVersions routes", () => {
 
       expect(res.status).toBe(404);
     });
+
+    // Issue #816 / PR #845: heartbeat.doUpgrade pre-downloads the user-helper
+    // for in-place Windows upgrades and treats a 404 from this route as a
+    // non-fatal "release predates #816, fall back to agent-only upgrade"
+    // signal. This test pins the 404 contract for the (version, platform,
+    // arch, component=user-helper) tuple that the agent's prefetchUserHelper
+    // depends on. If the route ever started returning 200/400/500 here,
+    // doUpgrade's fallback would break and we'd silently re-create the
+    // #816 production failure.
+    it("returns 404 when component=user-helper has no row (pins #845 agent fallback contract)", async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(
+        "/agent-versions/1.0.0/download?platform=windows&arch=amd64&component=user-helper",
+      );
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error?: string };
+      // Body MUST include some error message — the agent treats this as
+      // non-fatal, but droplet operators reading API logs need a human-
+      // readable reason. Empty bodies make the failure invisible.
+      expect(typeof body.error).toBe("string");
+      expect(body.error?.length ?? 0).toBeGreaterThan(0);
+    });
   });
 
   describe("POST /agent-versions", () => {
