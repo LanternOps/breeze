@@ -1000,3 +1000,76 @@ func TestExpectedReleaseAssetNames_Agent(t *testing.T) {
 		t.Fatalf("expected %q in agent asset name set, got %v", expected, got)
 	}
 }
+
+// TestUpdateToWithUserHelper_CleansHelperTempOnFailure regression-tests the
+// fix for the orphan-temp-file bug flagged in the #845 follow-up review:
+// when UpdateTo returns an error AND the caller pre-downloaded a user-helper
+// to `userHelperTempPath`, the temp file must be removed. Before the fix
+// only the agent temp was cleaned up, leaking the helper temp in %TEMP%
+// on every failed upgrade.
+//
+// We force UpdateTo to fail by giving it no AuthToken — downloadBinary
+// returns "auth token not available" immediately on every platform.
+func TestUpdateToWithUserHelper_CleansHelperTempOnFailure(t *testing.T) {
+	// Synthesize a "pre-downloaded user-helper" tempfile. The test owns the
+	// file; UpdateToWithUserHelper is expected to remove it on UpdateTo failure.
+	helperTemp, err := os.CreateTemp("", "breeze-user-helper-leak-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperTemp.Close()
+	helperTempPath := helperTemp.Name()
+	// Best-effort cleanup if the test fails (we expect the SUT to do this).
+	t.Cleanup(func() { _ = os.Remove(helperTempPath) })
+
+	// On non-Windows, UpdateTo's first step (checkWritable) would fail before
+	// we get to the AuthToken check. Use a path that exists and is writable
+	// so we DO reach downloadBinary and fail there with "auth token not
+	// available" — exercises the same UpdateTo error-return path on every OS.
+	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryFile.Close()
+	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
+
+	u := New(&Config{
+		ServerURL:  "http://localhost:0",
+		BinaryPath: binaryFile.Name(),
+		BackupPath: binaryFile.Name() + ".backup",
+		// AuthToken intentionally nil — forces downloadBinary to return early.
+	})
+
+	err = u.UpdateToWithUserHelper("9.9.9", helperTempPath, `C:\target\breeze-user-helper.exe`)
+	if err == nil {
+		t.Fatal("expected UpdateTo to fail (no auth token configured)")
+	}
+
+	if _, statErr := os.Stat(helperTempPath); !os.IsNotExist(statErr) {
+		t.Fatalf("user-helper temp file should be removed on UpdateTo failure; got stat err=%v", statErr)
+	}
+}
+
+// TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp guards against a
+// regression where the new cleanup branch fires when no helper-temp was
+// ever passed (call path: agent-only upgrade on a release that doesn't
+// ship the user-helper artifact). It must not error or panic.
+func TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp(t *testing.T) {
+	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryFile.Close()
+	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
+
+	u := New(&Config{
+		ServerURL:  "http://localhost:0",
+		BinaryPath: binaryFile.Name(),
+		BackupPath: binaryFile.Name() + ".backup",
+	})
+
+	// Empty userHelperTempPath should leave the cleanup branch dormant.
+	if err := u.UpdateToWithUserHelper("9.9.9", "", ""); err == nil {
+		t.Fatal("expected UpdateTo to fail (no auth token configured)")
+	}
+}

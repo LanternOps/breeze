@@ -254,10 +254,21 @@ func writeUpdateMarker(version string) {
 // restart helper to copy a freshly-downloaded breeze-user-helper.exe into
 // place alongside the agent. Empty paths fall back to agent-only behavior.
 // Issue #816.
+//
+// Cleanup contract: on UpdateTo failure, the user-helper temp file is
+// removed here too. UpdateTo's own error branches only know about the agent
+// tempPath, so without this cleanup the pre-downloaded helper would orphan
+// in %TEMP% on every failed upgrade. On success (UpdateTo returns nil) we
+// intentionally leave the file in place — the spawned restart script owns
+// it and removes it after the swap.
 func (u *Updater) UpdateToWithUserHelper(version, userHelperTempPath, userHelperTargetPath string) error {
 	u.extras.userHelperTempPath = userHelperTempPath
 	u.extras.userHelperTargetPath = userHelperTargetPath
-	return u.UpdateTo(version)
+	err := u.UpdateTo(version)
+	if err != nil && userHelperTempPath != "" {
+		removeCleanup(userHelperTempPath)
+	}
+	return err
 }
 
 // UpdateTo downloads and installs a new version
@@ -304,6 +315,13 @@ func (u *Updater) UpdateTo(version string) error {
 		// agent-only swap (backward compatible). Issue #816.
 		if err := RestartWithHelper(tempPath, u.config.BinaryPath, u.extras.userHelperTempPath, u.extras.userHelperTargetPath); err != nil {
 			removeCleanup(tempPath)
+			// The user-helper temp was pre-downloaded by the caller before
+			// UpdateTo was invoked; if we never spawned the restart script,
+			// nothing will ever clean it up. Mirror the agent tempPath
+			// cleanup so failed spawns don't leak helper temps in %TEMP%.
+			if u.extras.userHelperTempPath != "" {
+				removeCleanup(u.extras.userHelperTempPath)
+			}
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
 			}
