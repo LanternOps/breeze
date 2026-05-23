@@ -7,6 +7,7 @@ import {
   devices,
   deviceMetrics,
   agentVersions,
+  agentLogs,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
@@ -112,6 +113,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // Emit only on the silence→silent transition so subscribers (alerts,
     // webhooks) don't fire once per watchdog tick during the outage.
     // The clear-side event fires from the main-agent branch on recovery.
+    // (#800 Layer C)
     if (transitioningIntoSilent) {
       publishEvent('device.main_agent_silent', device.orgId, {
         deviceId: device.id,
@@ -124,6 +126,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }, 'heartbeat-watchdog-branch', { priority: 'high' }).catch((err) => {
         console.error('[heartbeat] device.main_agent_silent publish failed:', err);
       });
+    }
+
+    // #799 Layer B — record any non-zero main-agent restart activity into
+    // agent_logs so on-call has a queryable trail of flap-loop scenarios.
+    // Do not block the heartbeat path on logging failure.
+    const restartCount = data.mainAgentRestartCount24h ?? 0;
+    if (restartCount > 0 || data.flapDetected === true) {
+      try {
+        await db.insert(agentLogs).values({
+          deviceId: device.id,
+          orgId: device.orgId,
+          timestamp: new Date(),
+          level: data.flapDetected ? 'error' : 'warn',
+          component: 'watchdog',
+          message: data.flapDetected
+            ? `Main agent restart flap detected (${restartCount} restarts in 24h)`
+            : `Main agent restart activity: ${restartCount} in 24h`,
+          fields: {
+            count24h: restartCount,
+            lastRestartAt: data.mainAgentLastRestartAt ?? null,
+            flapDetected: data.flapDetected === true,
+            watchdogState: data.watchdogState ?? null,
+          },
+          agentVersion: data.agentVersion,
+        });
+      } catch (err) {
+        console.error('Failed to write watchdog restart-activity log:', err);
+      }
     }
 
     // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)

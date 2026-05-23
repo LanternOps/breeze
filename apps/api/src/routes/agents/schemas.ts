@@ -177,6 +177,10 @@ export const heartbeatSchema = z.object({
   isHeadless: z.boolean().optional(),
   role: z.enum(['agent', 'watchdog']).optional(),
   watchdogState: z.string().optional(),
+  // Watchdog-only: 24h restart accounting for the main agent (#799 Layer B).
+  mainAgentRestartCount24h: z.number().int().min(0).max(10_000).optional(),
+  mainAgentLastRestartAt: z.string().datetime({ offset: true }).optional(),
+  flapDetected: z.boolean().optional(),
   osType: z.string().optional(),
 });
 
