@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -225,6 +226,19 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// Create recovery manager.
 	recovery := watchdog.NewRecoveryManager(wdCfg.MaxRecoveryAttempts, wdCfg.RecoveryCooldown)
 
+	// Persist the 24h restart history alongside the health journal so it
+	// survives watchdog restarts.
+	historyPath := filepath.Join(config.LogDir(), "watchdog-restart-history.json")
+	recovery.SetHistoryPath(historyPath)
+
+	// Verification state for the in-flight restart attempt, if any. nil =
+	// no attempt waiting on verification; non-nil = we restarted at this
+	// time and are watching for the agent's LastHeartbeat to advance past
+	// (startedAt + RestartVerificationGrace).
+	var pendingVerify *struct {
+		startedAt time.Time
+	}
+
 	// Wrap auth token in a mutable holder so IPC token updates are visible
 	// to every goroutine that reads the token (failover client, updater, etc.).
 	tokenStore := &tokenHolder{}
@@ -365,28 +379,78 @@ func runWatchdog(stopCh <-chan struct{}) {
 		// State-driven actions after each tick.
 		switch wd.State() {
 		case watchdog.StateRecovering:
-			if recovery.CanAttempt() {
-				journal.Log(watchdog.LevelInfo, "recovery.attempt", map[string]any{
-					"attempt": recovery.Attempts() + 1,
-					"pid":     pid,
-				})
-				ok, err := recovery.Attempt(pid)
-				if ok {
-					journal.Log(watchdog.LevelInfo, "recovery.success", nil)
-					wd.HandleEvent(watchdog.EventAgentRecovered)
-				} else {
-					journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
-						"error": errStr(err),
-					})
+			// If a restart is awaiting verification, don't start another one.
+			if pendingVerify != nil {
+				elapsed := time.Since(pendingVerify.startedAt)
+				// Re-read state so we see the freshest LastHeartbeat. A
+				// transient disk error here would otherwise look like a
+				// hung verification loop with no log evidence — match the
+				// warn pattern used by the heartbeat ticker.
+				if s, err := state.Read(statePath); err == nil && s != nil {
+					agentState = s
+				} else if err != nil {
+					slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
 				}
-			} else {
+				// Success = heartbeat advanced past (startedAt + grace).
+				verifyDeadline := pendingVerify.startedAt.Add(cfg.Watchdog.RestartVerificationGrace)
+				if agentState != nil && agentState.LastHeartbeat.After(verifyDeadline) {
+					journal.Log(watchdog.LevelInfo, "recovery.verified", map[string]any{
+						"elapsed_ms":     elapsed.Milliseconds(),
+						"last_heartbeat": agentState.LastHeartbeat.Format(time.RFC3339),
+					})
+					pendingVerify = nil
+					wd.HandleEvent(watchdog.EventAgentRecovered)
+					break
+				}
+				// Timeout = give up on this attempt; let the next tick try again.
+				if elapsed > cfg.Watchdog.RestartVerificationTimeout {
+					journal.Log(watchdog.LevelWarn, "recovery.verify_timeout", map[string]any{
+						"elapsed_ms": elapsed.Milliseconds(),
+					})
+					pendingVerify = nil
+				}
+				break
+			}
+
+			// Flap-detection gate: if we've exceeded the 24h budget, jump to FAILOVER.
+			if recovery.Count24h() >= cfg.Watchdog.MaxRestartsPer24h {
+				journal.Log(watchdog.LevelError, "recovery.flap_detected", map[string]any{
+					"count_24h": recovery.Count24h(),
+				})
+				wd.HandleEvent(watchdog.EventRecoveryExhausted)
+				break
+			}
+
+			if !recovery.CanAttempt() {
 				journal.Log(watchdog.LevelError, "recovery.exhausted", map[string]any{
 					"attempts": recovery.Attempts(),
 				})
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
+				break
+			}
+
+			journal.Log(watchdog.LevelInfo, "recovery.attempt", map[string]any{
+				"attempt":   recovery.Attempts() + 1,
+				"count_24h": recovery.Count24h(),
+				"pid":       pid,
+			})
+			ok, err := recovery.Attempt(pid)
+			if ok {
+				pendingVerify = &struct{ startedAt time.Time }{startedAt: time.Now()}
+				journal.Log(watchdog.LevelInfo, "recovery.attempt_dispatched", map[string]any{
+					"attempt":   recovery.Attempts(),
+					"count_24h": recovery.Count24h(),
+				})
+			} else {
+				journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
+					"error": errStr(err),
+				})
 			}
 
 		case watchdog.StateFailover:
+			if pendingVerify != nil {
+				pendingVerify = nil
+			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
 				failoverClient = watchdog.NewFailoverClient(
 					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
@@ -412,8 +476,12 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case watchdog.StateMonitoring:
-			// Reset recovery counter when healthy.
+			// Reset per-window recovery counter when healthy. Note: restart history
+			// (24h window) is intentionally retained so flap detection stays armed.
 			recovery.Reset()
+			if pendingVerify != nil {
+				pendingVerify = nil
+			}
 			if failoverClient != nil {
 				failoverClient = nil
 			}
