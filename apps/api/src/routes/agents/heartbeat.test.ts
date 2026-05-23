@@ -43,6 +43,7 @@ vi.mock('../../db/schema', () => ({
     tokenIssuedAt: 'devices.token_issued_at',
   },
   deviceMetrics: { deviceId: 'device_metrics.device_id' },
+  agentLogs: { deviceId: 'agent_logs.device_id' },
   agentVersions: {
     platform: 'agent_versions.platform',
     architecture: 'agent_versions.architecture',
@@ -148,6 +149,22 @@ function buildApp(): Hono {
       orgId: 'org-1',
       siteId: 'site-1',
       role: 'agent',
+    });
+    await next();
+  });
+  app.route('/agents', heartbeatRoutes);
+  return app;
+}
+
+function buildWatchdogApp(): Hono {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', {
+      deviceId: 'device-1',
+      agentId: 'agent-1',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      role: 'watchdog',
     });
     await next();
   });
@@ -278,22 +295,7 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
 // ---------------------------------------------------------------------
 // #800 — main-agent-silent asymmetry detector
 // ---------------------------------------------------------------------
-
-function buildWatchdogApp(): Hono {
-  const app = new Hono();
-  app.use('*', async (c, next) => {
-    c.set('agent', {
-      deviceId: 'device-1',
-      agentId: 'agent-1',
-      orgId: 'org-1',
-      siteId: 'site-1',
-      role: 'watchdog',
-    });
-    await next();
-  });
-  app.route('/agents', heartbeatRoutes);
-  return app;
-}
+// (buildWatchdogApp is defined above near buildApp.)
 
 describe('POST /agents/:id/heartbeat — main-agent-silent asymmetry detector (#800)', () => {
   beforeEach(() => {
@@ -480,5 +482,134 @@ describe('POST /agents/:id/heartbeat — main-agent-silent asymmetry detector (#
 
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.mainAgentSilentSince).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------
+// #799 — watchdog restart-stats logging (Layer B)
+// ---------------------------------------------------------------------
+
+// Shared device fixture for watchdog-role heartbeat tests.
+const watchdogDeviceRow = {
+  id: 'device-1',
+  orgId: 'org-1',
+  siteId: 'site-1',
+  hostname: 'host-1',
+  osType: 'linux',
+  osVersion: 'Ubuntu 22.04',
+  osBuild: null,
+  architecture: 'amd64',
+  agentVersion: '0.65.20',
+  deviceRole: 'server',
+  deviceRoleSource: 'auto',
+  agentTokenHash: 'hash',
+  tokenIssuedAt: new Date(),
+  watchdogVersion: '0.65.20',
+  watchdogStatus: 'connected',
+  watchdogLastSeen: new Date(),
+};
+
+describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)', () => {
+  // Track the values passed to the most recent agentLogs insert.
+  let capturedInsertTable: unknown;
+  let capturedInsertValues: unknown;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Device lookup → returns a row with watchdog columns.
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([watchdogDeviceRow]),
+    );
+
+    // db.update for devices (watchdog status update) → no return needed.
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+
+    // Intercept db.insert to capture what table and values were provided.
+    capturedInsertTable = undefined;
+    capturedInsertValues = undefined;
+    insertMock.mockImplementation((table: unknown) => {
+      capturedInsertTable = table;
+      return {
+        values: vi.fn((vals: unknown) => {
+          capturedInsertValues = vals;
+          return Promise.resolve(undefined);
+        }),
+      };
+    });
+
+    // Any further selects (e.g. agentVersions for watchdog upgrade lookup) → empty.
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  it('watchdog heartbeat with mainAgentRestartCount24h=3, flapDetected=false writes a warn-level agent_logs row', async () => {
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.20',
+        watchdogState: 'RECOVERING',
+        mainAgentRestartCount24h: 3,
+        mainAgentLastRestartAt: '2026-05-22T11:30:00Z',
+        flapDetected: false,
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    // Insert went specifically to agentLogs — assert the table object's sentinel
+    // property so a misdirected insert into a different table would be caught.
+    expect((capturedInsertTable as { deviceId?: string }).deviceId).toBe('agent_logs.device_id');
+    const vals = capturedInsertValues as Record<string, unknown>;
+    expect(vals.level).toBe('warn');
+    expect(vals.component).toBe('watchdog');
+    const fields = vals.fields as Record<string, unknown>;
+    expect(fields.count24h).toBe(3);
+    expect(fields.flapDetected).toBe(false);
+  });
+
+  it('watchdog heartbeat with mainAgentRestartCount24h=5, flapDetected=true writes an error-level agent_logs row', async () => {
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.20',
+        watchdogState: 'FAILOVER',
+        mainAgentRestartCount24h: 5,
+        mainAgentLastRestartAt: '2026-05-22T10:00:00Z',
+        flapDetected: true,
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect((capturedInsertTable as { deviceId?: string }).deviceId).toBe('agent_logs.device_id');
+    const vals = capturedInsertValues as Record<string, unknown>;
+    expect(vals.level).toBe('error');
+    expect(vals.component).toBe('watchdog');
+    const fields = vals.fields as Record<string, unknown>;
+    expect(fields.count24h).toBe(5);
+    expect(fields.flapDetected).toBe(true);
+  });
+
+  it('watchdog heartbeat with no restart stats does not write to agent_logs', async () => {
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.20',
+        watchdogState: 'MONITORING',
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    // insertMock should NOT have been called for agentLogs — no restart activity.
+    expect(capturedInsertTable).toBeUndefined();
+    expect(capturedInsertValues).toBeUndefined();
   });
 });
