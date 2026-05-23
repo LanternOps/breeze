@@ -1,8 +1,8 @@
 import { useId, useState } from 'react';
-import { X } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { Dialog } from '../shared/Dialog';
 
 /**
  * Supported provider IDs. Mirrors the wire-format `dns_provider` enum,
@@ -151,17 +151,14 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
+    <Dialog
+      open
+      onClose={onClose}
+      title="Add DNS Integration"
+      maxWidth="lg"
+      className="p-6 max-h-[90vh] overflow-y-auto"
+    >
+      <div className="relative">
         <h2 className="text-lg font-semibold">Add DNS Integration</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Connect a DNS filtering provider to ingest query logs and threat events.
@@ -293,7 +290,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
           </div>
         </form>
       </div>
-    </div>
+    </Dialog>
   );
 }
 

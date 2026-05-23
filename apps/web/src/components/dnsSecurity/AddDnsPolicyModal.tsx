@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useState } from 'react';
-import { X } from 'lucide-react';
+import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -56,6 +56,11 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
       if (list.length > 0 && !integrationId) {
         setIntegrationId(list[0]!.id);
       }
+    } catch (err) {
+      // Match the sibling-tab pattern: silent on AbortError, otherwise
+      // surface to the dialog's inline error UI. (Todd #847 review.)
+      if (err instanceof Error && err.name === 'AbortError') return;
+      setError(err instanceof Error ? err.message : 'Failed to load integrations');
     } finally {
       setLoadingIntegrations(false);
     }
@@ -123,17 +128,14 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
+    <Dialog
+      open
+      onClose={onClose}
+      title="New DNS Policy"
+      maxWidth="lg"
+      className="p-6 max-h-[90vh] overflow-y-auto"
+    >
+      <div className="relative">
         <h2 className="text-lg font-semibold">New DNS Policy</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Blocklist or allowlist domains pushed to your DNS provider on the next sync cycle.
@@ -252,6 +254,6 @@ export default function AddDnsPolicyModal({ onClose, onCreated }: AddDnsPolicyMo
           </div>
         </form>
       </div>
-    </div>
+    </Dialog>
   );
 }
