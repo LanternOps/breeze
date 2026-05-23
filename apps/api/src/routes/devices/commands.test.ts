@@ -361,12 +361,21 @@ describe('device commands routes', () => {
       expect(auditPayload).not.toContain('abc123');
     });
 
-    it('queues a refresh_inventory command as a pending row', async () => {
+    it('queues a refresh_inventory command as a pending row when none exists', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
         id: 'device-a',
         orgId: 'org-123',
         hostname: 'host-a',
         status: 'online'
+      } as never);
+
+      // Dedup pre-check: no existing pending refresh_inventory for this device.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
       } as never);
 
       vi.mocked(db.insert).mockReturnValueOnce({
@@ -391,6 +400,69 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.type).toBe('refresh_inventory');
       expect(body.status).toBe('pending');
+    });
+
+    it('rejects a duplicate refresh_inventory with 409 when one is already pending (#830)', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      // Dedup pre-check: an existing pending refresh_inventory blocks a new one.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'cmd-existing' }])
+          })
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'refresh_inventory' })
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('ALREADY_PENDING');
+      expect(body.commandId).toBe('cmd-existing');
+      // Crucial: no new row was queued.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('does NOT apply dedup pre-check for non-refresh commands (reboot still inserts directly)', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-reboot',
+            deviceId: 'device-a',
+            type: 'reboot',
+            status: 'pending',
+            createdAt: new Date()
+          }])
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'reboot' })
+      });
+
+      expect(res.status).toBe(201);
+      // Reboot/shutdown are self-limiting (device goes away), so the dedup
+      // check is intentionally scoped to refresh_inventory only.
+      expect(db.select).not.toHaveBeenCalled();
     });
 
     it('rejects an unknown command type with 400', async () => {

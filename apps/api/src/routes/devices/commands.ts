@@ -203,6 +203,37 @@ commandsRoutes.post(
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
     }
 
+    // Dedup refresh_inventory: each click fans out ~12 collectors on the
+    // agent, and the API returns 201 as soon as the row is inserted, so a
+    // fast clicker could queue an unbounded backlog. Reject when a pending
+    // refresh_inventory already exists for this device. Other commands
+    // are self-limiting (reboot/shutdown — the device goes away) or rare
+    // (containment, evidence collection) so this guard is scoped narrowly.
+    // (#830)
+    if (data.type === 'refresh_inventory') {
+      const [existingPending] = await db
+        .select({ id: deviceCommands.id })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.type, 'refresh_inventory'),
+            eq(deviceCommands.status, 'pending'),
+          ),
+        )
+        .limit(1);
+      if (existingPending) {
+        return c.json(
+          {
+            error: 'An inventory refresh is already pending for this device',
+            code: 'ALREADY_PENDING',
+            commandId: existingPending.id,
+          },
+          409,
+        );
+      }
+    }
+
     // Wake-on-LAN takes a separate path: the command row must be addressed to
     // an online relay agent on the target's LAN, not the offline target.
     if (data.type === 'wake') {
