@@ -507,7 +507,11 @@ aiRoutes.post(
 
     let result: { interrupted: boolean; reason?: string };
     try {
-      result = await streamingSessionManager.interrupt(sessionId);
+      const manager =
+        getConfig().MCP_LLM_PROVIDER === 'openai-compatible'
+          ? getOpenAISessionManager()
+          : streamingSessionManager;
+      result = await manager.interrupt(sessionId);
     } catch (err) {
       console.error('[AI] Interrupt failed:', err);
       return c.json({ error: 'Failed to interrupt session' }, 500);
