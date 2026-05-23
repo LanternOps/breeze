@@ -121,6 +121,7 @@ const navSections: NavSection[] = [
     items: [
       { name: 'Network Monitor', href: '/monitoring', icon: Activity },
       { name: 'Security', href: '/security', icon: ShieldCheck },
+      { name: 'DNS Security', href: '/dns-security', icon: Network },
       { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch },
       { name: 'Peripherals', href: '/peripherals', icon: Usb },
       { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
