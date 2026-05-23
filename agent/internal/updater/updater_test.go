@@ -959,3 +959,44 @@ func TestTrustedManifestKeys_SkipsMalformedPinnedEntries(t *testing.T) {
 		t.Fatalf("expected at least 1 (embedded) key, got %d", len(keys))
 	}
 }
+
+// TestExpectedReleaseAssetNames_UserHelper covers the component=user-helper
+// branch added by #816. The breeze-user-helper exists only on Windows; other
+// platforms must return an empty allowlist so verifyReleaseArtifactManifest
+// surfaces a clear "no expected asset names" error instead of accidentally
+// accepting an unrelated artifact.
+func TestExpectedReleaseAssetNames_UserHelper(t *testing.T) {
+	u := &Updater{config: &Config{Component: "user-helper"}}
+	got := u.expectedReleaseAssetNames()
+
+	if runtime.GOOS == "windows" {
+		expected := "breeze-user-helper-windows-" + runtime.GOARCH + ".exe"
+		if len(got) != 1 {
+			t.Fatalf("expected exactly 1 asset name on windows, got %d (%v)", len(got), got)
+		}
+		if _, ok := got[expected]; !ok {
+			t.Fatalf("expected %q in asset name set, got %v", expected, got)
+		}
+		return
+	}
+
+	// Non-Windows: user-helper isn't shipped, so the set is empty.
+	if len(got) != 0 {
+		t.Fatalf("expected empty asset name set on %s, got %v", runtime.GOOS, got)
+	}
+}
+
+// TestExpectedReleaseAssetNames_Agent guards against regressions in the
+// existing agent branch when refactoring the user-helper case.
+func TestExpectedReleaseAssetNames_Agent(t *testing.T) {
+	u := &Updater{config: &Config{Component: "agent"}}
+	got := u.expectedReleaseAssetNames()
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	expected := "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	if _, ok := got[expected]; !ok {
+		t.Fatalf("expected %q in agent asset name set, got %v", expected, got)
+	}
+}

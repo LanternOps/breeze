@@ -3047,8 +3047,47 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
 	}
 
+	// On Windows, also pre-download breeze-user-helper.exe so the restart
+	// helper script can drop it alongside the new agent binary. Without this,
+	// in-place upgrades produce an agent install missing the user-helper
+	// (only the MSI installer ever placed it on disk before #816), the
+	// HelperLifecycleManager falls through to a `breeze-agent.exe user-helper`
+	// fallback every ~30s, and orphaned processes accumulate during heartbeat
+	// goroutine wedges until the service dies.
+	//
+	// 404 / network / checksum errors are non-fatal: we log and proceed with
+	// an agent-only upgrade (no regression vs. pre-#816 behavior), which
+	// matters for releases that don't yet ship the user-helper artifact.
+	userHelperTempPath := ""
+	userHelperTargetPath := ""
+	if runtime.GOOS == "windows" {
+		helperCfg := &updater.Config{
+			ServerURL:             h.config.ServerURL,
+			AuthToken:             h.secureToken,
+			CurrentVersion:        h.agentVersion,
+			Component:             "user-helper",
+			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		}
+		helperUpdater := updater.New(helperCfg)
+		if tempPath, dlErr := helperUpdater.DownloadBinary(targetVersion); dlErr != nil {
+			log.Warn(
+				"user-helper download failed; proceeding with agent-only upgrade",
+				"targetVersion", targetVersion,
+				"error", dlErr.Error(),
+			)
+		} else {
+			userHelperTempPath = tempPath
+			userHelperTargetPath = filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
+			log.Info(
+				"pre-downloaded user-helper for restart-helper swap",
+				"temp", userHelperTempPath,
+				"target", userHelperTargetPath,
+			)
+		}
+	}
+
 	u := updater.New(updaterCfg)
-	if err := u.UpdateTo(targetVersion); err != nil {
+	if err := u.UpdateToWithUserHelper(targetVersion, userHelperTempPath, userHelperTargetPath); err != nil {
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)

@@ -47,6 +47,10 @@ type Config struct {
 type Updater struct {
 	config *Config
 	client *http.Client
+	// extras is set by UpdateToWithCompanions / UpdateFromURLWithCompanions
+	// to forward companion-binary paths (e.g. breeze-user-helper.exe) into
+	// the Windows restart helper. Not user-visible. Issue #816.
+	extras updateExtras
 }
 
 // New creates a new Updater
@@ -55,6 +59,15 @@ func New(cfg *Config) *Updater {
 		config: cfg,
 		client: &http.Client{Timeout: 5 * time.Minute},
 	}
+}
+
+// updateExtras carries optional companion-binary info into the Windows
+// restart helper. It is set transiently via the Updater's exported
+// UpdateToWithCompanions / UpdateFromURLWithCompanions wrappers so the
+// existing UpdateTo signature stays stable. Issue #816.
+type updateExtras struct {
+	userHelperTempPath   string
+	userHelperTargetPath string
 }
 
 // ErrReadOnlyFS is returned when the binary path is on a read-only filesystem.
@@ -165,6 +178,18 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 		case "linux":
 			return map[string]struct{}{"breeze-viewer-linux.AppImage": {}}
 		}
+	case "user-helper":
+		// breeze-user-helper is the GUI-subsystem sibling of breeze-agent
+		// that runs in interactive user sessions (sessionbroker spawn path).
+		// It only exists on Windows — Linux/macOS user-session work is
+		// handled by other surfaces. See agent/installer/build-msi.ps1
+		// for how it's bundled into the installer; the in-place
+		// auto-upgrade path (#816) downloads it as a separate artifact.
+		if runtime.GOOS == "windows" {
+			return map[string]struct{}{
+				fmt.Sprintf("breeze-user-helper-%s-%s.exe", runtime.GOOS, runtime.GOARCH): {},
+			}
+		}
 	}
 	return map[string]struct{}{}
 }
@@ -225,6 +250,16 @@ func writeUpdateMarker(version string) {
 	}
 }
 
+// UpdateToWithUserHelper behaves like UpdateTo but also instructs the Windows
+// restart helper to copy a freshly-downloaded breeze-user-helper.exe into
+// place alongside the agent. Empty paths fall back to agent-only behavior.
+// Issue #816.
+func (u *Updater) UpdateToWithUserHelper(version, userHelperTempPath, userHelperTargetPath string) error {
+	u.extras.userHelperTempPath = userHelperTempPath
+	u.extras.userHelperTargetPath = userHelperTargetPath
+	return u.UpdateTo(version)
+}
+
 // UpdateTo downloads and installs a new version
 func (u *Updater) UpdateTo(version string) error {
 	log.Info("starting update", "targetVersion", version)
@@ -262,7 +297,12 @@ func (u *Updater) UpdateTo(version string) error {
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
 		writeUpdateMarker(version)
-		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
+		// User-helper swap is wired in by the heartbeat-layer caller
+		// (heartbeat.doUpgrade), not here — the updater package is
+		// component-agnostic, and downloading a second component requires
+		// the caller's AuthToken/server context. Pass empty strings for an
+		// agent-only swap (backward compatible). Issue #816.
+		if err := RestartWithHelper(tempPath, u.config.BinaryPath, u.extras.userHelperTempPath, u.extras.userHelperTargetPath); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
@@ -489,6 +529,24 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 	}, nil
 }
 
+// DownloadBinary is the exported wrapper around downloadBinary used by
+// callers that need to pre-download a companion artifact (e.g. the
+// breeze-user-helper.exe) outside the full UpdateTo flow. Returns the
+// temp-file path on success after verifying the downloaded bytes against
+// the signed manifest checksum. The caller is responsible for cleanup.
+// Issue #816.
+func (u *Updater) DownloadBinary(version string) (string, error) {
+	tempPath, manifest, err := u.downloadBinary(version)
+	if err != nil {
+		return "", err
+	}
+	if err := u.verifyChecksum(tempPath, manifest.Checksum); err != nil {
+		removeCleanup(tempPath)
+		return "", fmt.Errorf("checksum verification failed: %w", err)
+	}
+	return tempPath, nil
+}
+
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
 func (u *Updater) downloadBinary(version string) (string, updateManifest, error) {
@@ -706,7 +764,7 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
-		if err := RestartWithHelper(tempPath, u.config.BinaryPath); err != nil {
+		if err := RestartWithHelper(tempPath, u.config.BinaryPath, u.extras.userHelperTempPath, u.extras.userHelperTargetPath); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)

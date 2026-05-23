@@ -74,21 +74,35 @@ func Restart() error {
 	return nil
 }
 
-// RestartWithHelper spawns a detached PowerShell script that:
-//  1. Waits for the current process to exit
-//  2. Stops the service
-//  3. Copies the new binary over the old one
-//  4. Starts the service
-//  5. Cleans up temp files
-//
-// This avoids the race where the agent tries to SCM-stop itself
-// (killing the goroutine before it can call Start).
-func RestartWithHelper(newBinaryPath, targetPath string) error {
-	// Escape single quotes to prevent PowerShell injection
-	safeBinary := strings.ReplaceAll(newBinaryPath, "'", "''")
-	safeTarget := strings.ReplaceAll(targetPath, "'", "''")
+// restartScriptOptions captures inputs to the PowerShell helper script that
+// performs the in-place agent binary swap on Windows. Built by RestartWithHelper
+// and consumed by buildRestartScript so the script text can be unit-tested
+// without spawning PowerShell.
+type restartScriptOptions struct {
+	// AgentTempPath is the freshly-downloaded breeze-agent.exe in a temp dir.
+	AgentTempPath string
+	// AgentTargetPath is the final install location of breeze-agent.exe.
+	AgentTargetPath string
+	// UserHelperTempPath is the freshly-downloaded breeze-user-helper.exe
+	// in a temp dir. Empty string means "no user-helper to swap" — the
+	// generated script omits the helper Copy-Item entirely (backward-compat
+	// with releases that lack the user-helper artifact). Issue #816.
+	UserHelperTempPath string
+	// UserHelperTargetPath is the final install location of
+	// breeze-user-helper.exe (typically the same directory as the agent).
+	UserHelperTargetPath string
+}
 
-	script := strings.Join([]string{
+// buildRestartScript renders the PowerShell helper script. Extracted from
+// RestartWithHelper so it can be unit-tested for shell-injection safety and
+// for backward-compatible behavior when the user-helper paths are unset
+// (issue #816). Single-quote escaping doubles single quotes, matching the
+// established convention for the agent path.
+func buildRestartScript(opts restartScriptOptions) string {
+	safeAgent := strings.ReplaceAll(opts.AgentTempPath, "'", "''")
+	safeAgentTarget := strings.ReplaceAll(opts.AgentTargetPath, "'", "''")
+
+	lines := []string{
 		"Start-Sleep -Seconds 3",
 		// Stop the agent service first
 		"Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
@@ -96,11 +110,58 @@ func RestartWithHelper(newBinaryPath, targetPath string) error {
 		// that might hold file locks on the binary or shared directory.
 		"Get-Process -Name 'breeze-helper','breeze-agent','breeze-user-helper','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
 		"Start-Sleep -Seconds 2",
-		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeBinary, safeTarget),
-		"Start-Service -Name '" + serviceName + "'",
-		fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeBinary),
-		"Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue",
-	}, "\r\n")
+		fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeAgent, safeAgentTarget),
+	}
+
+	// Optionally swap in the user-helper too. Skipped when the caller didn't
+	// pre-download it (pre-#816 release, network failure, 404, etc.) — the
+	// agent-only upgrade still succeeds in that case.
+	if opts.UserHelperTempPath != "" && opts.UserHelperTargetPath != "" {
+		safeHelper := strings.ReplaceAll(opts.UserHelperTempPath, "'", "''")
+		safeHelperTarget := strings.ReplaceAll(opts.UserHelperTargetPath, "'", "''")
+		lines = append(lines,
+			fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Force", safeHelper, safeHelperTarget),
+		)
+	}
+
+	lines = append(lines,
+		"Start-Service -Name '"+serviceName+"'",
+		fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeAgent),
+	)
+	if opts.UserHelperTempPath != "" && opts.UserHelperTargetPath != "" {
+		safeHelper := strings.ReplaceAll(opts.UserHelperTempPath, "'", "''")
+		lines = append(lines,
+			fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeHelper),
+		)
+	}
+	lines = append(lines, "Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue")
+
+	return strings.Join(lines, "\r\n")
+}
+
+// RestartWithHelper spawns a detached PowerShell script that:
+//  1. Waits for the current process to exit
+//  2. Stops the service
+//  3. Copies the new agent binary (and, optionally, the new user-helper)
+//     over the old one
+//  4. Starts the service
+//  5. Cleans up temp files
+//
+// This avoids the race where the agent tries to SCM-stop itself
+// (killing the goroutine before it can call Start).
+//
+// userHelperTempPath / userHelperTargetPath are optional. Pass empty strings
+// to perform an agent-only upgrade (the pre-#816 behavior). When both are
+// non-empty, the generated script also copies the user-helper into place
+// so the post-upgrade HelperLifecycleManager finds it on disk and does not
+// fall back to spawning breeze-agent.exe in a loop (issue #816).
+func RestartWithHelper(newBinaryPath, targetPath string, userHelperTempPath, userHelperTargetPath string) error {
+	script := buildRestartScript(restartScriptOptions{
+		AgentTempPath:        newBinaryPath,
+		AgentTargetPath:      targetPath,
+		UserHelperTempPath:   userHelperTempPath,
+		UserHelperTargetPath: userHelperTargetPath,
+	})
 
 	scriptFile, err := os.CreateTemp("", "breeze-update-*.ps1")
 	if err != nil {
@@ -117,6 +178,8 @@ func RestartWithHelper(newBinaryPath, targetPath string) error {
 		"script", scriptFile.Name(),
 		"newBinary", newBinaryPath,
 		"target", targetPath,
+		"userHelperTemp", userHelperTempPath,
+		"userHelperTarget", userHelperTargetPath,
 	)
 
 	cmd := exec.Command("powershell.exe",
