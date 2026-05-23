@@ -3055,9 +3055,17 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// fallback every ~30s, and orphaned processes accumulate during heartbeat
 	// goroutine wedges until the service dies.
 	//
-	// 404 / network / checksum errors are non-fatal: we log and proceed with
-	// an agent-only upgrade (no regression vs. pre-#816 behavior), which
-	// matters for releases that don't yet ship the user-helper artifact.
+	// ANY download failure is non-fatal — we log a WARN and proceed with an
+	// agent-only upgrade. This is intentional and covers more than just 404s
+	// (manifest signature failure, auth-token expiry, JSON decode error, FS
+	// write error, etc. all land here):
+	//   (a) pre-#816 releases legitimately lack the user-helper artifact, so
+	//       we don't want to block their upgrades, and
+	//   (b) we'd rather degrade than fail an agent upgrade on a transient
+	//       helper-fetch glitch.
+	// `currentVersion` is included in the WARN so operators can tell the
+	// "legitimately pre-#816, ignore" case apart from the "this release SHOULD
+	// have shipped the artifact, something's broken" case.
 	userHelperTempPath := ""
 	userHelperTargetPath := ""
 	if runtime.GOOS == "windows" {
@@ -3072,6 +3080,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		if tempPath, dlErr := helperUpdater.DownloadBinary(targetVersion); dlErr != nil {
 			log.Warn(
 				"user-helper download failed; proceeding with agent-only upgrade",
+				"currentVersion", h.agentVersion,
 				"targetVersion", targetVersion,
 				"error", dlErr.Error(),
 			)
