@@ -19,7 +19,7 @@
 
 import { db, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import type { AuditSnapshot } from '../streamingSessionManager';
 import { SessionEventBus } from '../streamingSessionManager';
@@ -174,68 +174,90 @@ export class OpenAISessionManager {
     const providerModel = getConfig().MCP_LLM_MODEL!;
 
     try {
-      for await (const event of this.provider.chatStream(messages, {
-        model: providerModel,
-        signal: session.abortController.signal,
-      })) {
-        if (session.state === 'closing' || session.state === 'closed') break;
+      try {
+        for await (const event of this.provider.chatStream(messages, {
+          model: providerModel,
+          signal: session.abortController.signal,
+        })) {
+          if (session.state === 'closing' || session.state === 'closed') break;
 
-        switch (event.type) {
-          case 'content_delta':
-            assistantText += event.delta;
-            session.eventBus.publish({ type: 'content_delta', delta: event.delta });
-            break;
-          case 'message_end':
-            inputTokens = event.inputTokens;
-            outputTokens = event.outputTokens;
-            session.eventBus.publish({
-              type: 'message_end',
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-            });
-            break;
-          case 'error':
-            hadError = true;
-            session.eventBus.publish({ type: 'error', message: event.message });
-            break;
-          case 'message_start':
-            // Already published above; ignore duplicate from provider
-            break;
+          switch (event.type) {
+            case 'content_delta':
+              assistantText += event.delta;
+              session.eventBus.publish({ type: 'content_delta', delta: event.delta });
+              break;
+            case 'message_end':
+              inputTokens = event.inputTokens;
+              outputTokens = event.outputTokens;
+              session.eventBus.publish({
+                type: 'message_end',
+                inputTokens: event.inputTokens,
+                outputTokens: event.outputTokens,
+              });
+              break;
+            case 'error':
+              hadError = true;
+              session.eventBus.publish({ type: 'error', message: event.message });
+              break;
+            case 'message_start':
+              // Already published above; ignore duplicate from provider
+              break;
+          }
+        }
+      } catch (err) {
+        hadError = true;
+        captureException(err);
+        session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
+      }
+
+      if (!hadError && assistantText) {
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+            () =>
+              db.insert(aiMessages).values({
+                sessionId: breezeSessionId,
+                role: 'assistant',
+                content: assistantText,
+                inputTokens,
+                outputTokens,
+              }),
+          );
+        } catch (err) {
+          captureException(err);
+          console.error('[OpenAISessionManager] Failed to save assistant message:', err);
+        }
+
+        try {
+          const costUsd = this.provider.computeCostUsd(inputTokens, outputTokens);
+          await withDbAccessContext(
+            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+            () => recordOpenAIUsage(breezeSessionId, orgId, inputTokens, outputTokens, costUsd),
+          );
+        } catch (err) {
+          captureException(err);
+          console.error('[OpenAISessionManager] Failed to record usage:', err);
         }
       }
-    } catch (err) {
-      hadError = true;
-      captureException(err);
-      session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
-    }
-
-    if (!hadError && assistantText) {
+    } finally {
+      // Turn count: increments only after we invoked the LLM HTTP path — success or failure on that path
+      // (provider errors incl. HTTP 5xx, tool-call rejection, mid-stream abort). Upstream refusal before
+      // chatStream starts (e.g. ToolUseInHistoryError) does not consume a turn; maintainer may revisit.
       try {
         await withDbAccessContext(
           { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
           () =>
-            db.insert(aiMessages).values({
-              sessionId: breezeSessionId,
-              role: 'assistant',
-              content: assistantText,
-              inputTokens,
-              outputTokens,
-            }),
+            db
+              .update(aiSessions)
+              .set({
+                turnCount: sql`${aiSessions.turnCount} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(eq(aiSessions.id, breezeSessionId)),
         );
       } catch (err) {
         captureException(err);
-        console.error('[OpenAISessionManager] Failed to save assistant message:', err);
-      }
-
-      try {
-        const costUsd = this.provider.computeCostUsd(inputTokens, outputTokens);
-        await withDbAccessContext(
-          { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-          () => recordOpenAIUsage(breezeSessionId, orgId, inputTokens, outputTokens, costUsd),
-        );
-      } catch (err) {
-        captureException(err);
-        console.error('[OpenAISessionManager] Failed to record usage:', err);
+        console.error('[OpenAISessionManager] Failed to increment turnCount:', err);
       }
     }
 

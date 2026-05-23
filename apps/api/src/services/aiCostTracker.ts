@@ -360,7 +360,6 @@ export async function recordOpenAIUsage(
         totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
         totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
-        turnCount: sql`${aiSessions.turnCount} + 1`,
         lastActivityAt: now,
         updatedAt: now,
       })
