@@ -223,6 +223,18 @@ type Heartbeat struct {
 	// real sendInventory call inside handleRefreshInventory. nil in
 	// production — the real sendInventory method is invoked.
 	sendInventoryFn func()
+
+	// userHelperDownloader is an optional test seam: when non-nil,
+	// prefetchUserHelper calls this instead of constructing a real
+	// updater.Updater and invoking DownloadBinary. nil in production.
+	// Signature mirrors updater.Updater.DownloadBinary so the production
+	// default can be a one-line shim.
+	userHelperDownloader func(targetVersion string) (string, error)
+
+	// userHelperGOOS is an optional test seam: when non-empty, replaces
+	// runtime.GOOS in prefetchUserHelper. nil/"" in production — the real
+	// runtime.GOOS value is used so the prefetch only runs on Windows.
+	userHelperGOOS string
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -3008,6 +3020,73 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	}
 }
 
+// prefetchUserHelper pre-downloads breeze-user-helper.exe so the upgrade-restart
+// script can drop it alongside the new agent binary. Returns nil when the
+// helper is not applicable (non-Windows) or could not be fetched (404 for
+// pre-#816 releases, network errors, checksum mismatches, manifest signature
+// failure, etc.). Callers proceed with an agent-only upgrade in that case —
+// non-fatal by design (issue #816).
+//
+// Without this prefetch, in-place upgrades produce an agent install missing
+// the user-helper (only the MSI installer ever placed it on disk before #816),
+// the HelperLifecycleManager falls through to a `breeze-agent.exe user-helper`
+// fallback every ~30s, and orphaned processes accumulate during heartbeat
+// goroutine wedges until the service dies.
+//
+// ANY download failure is non-fatal — we log a WARN and return nil. This is
+// intentional and covers more than just 404s:
+//   (a) pre-#816 releases legitimately lack the user-helper artifact, so we
+//       don't want to block their upgrades, and
+//   (b) we'd rather degrade than fail an agent upgrade on a transient
+//       helper-fetch glitch.
+// `currentVersion` is included in the WARN so operators can tell the
+// "legitimately pre-#816, ignore" case apart from the "this release SHOULD
+// have shipped the artifact, something's broken" case.
+func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *updater.BinaryPair {
+	goos := h.userHelperGOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "windows" {
+		return nil
+	}
+
+	download := h.userHelperDownloader
+	if download == nil {
+		helperCfg := &updater.Config{
+			ServerURL:             h.config.ServerURL,
+			AuthToken:             h.secureToken,
+			CurrentVersion:        h.agentVersion,
+			Component:             "user-helper",
+			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		}
+		helperUpdater := updater.New(helperCfg)
+		download = helperUpdater.DownloadBinary
+	}
+
+	tempPath, dlErr := download(targetVersion)
+	if dlErr != nil {
+		log.Warn(
+			"user-helper download failed; proceeding with agent-only upgrade",
+			"currentVersion", h.agentVersion,
+			"targetVersion", targetVersion,
+			"error", dlErr.Error(),
+		)
+		return nil
+	}
+
+	pair := &updater.BinaryPair{
+		Temp:   tempPath,
+		Target: filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe"),
+	}
+	log.Info(
+		"pre-downloaded user-helper for restart-helper swap",
+		"temp", pair.Temp,
+		"target", pair.Target,
+	)
+	return pair
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
 	log.Info("upgrade requested", "targetVersion", targetVersion)
@@ -3047,54 +3126,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
 	}
 
-	// On Windows, also pre-download breeze-user-helper.exe so the restart
-	// helper script can drop it alongside the new agent binary. Without this,
-	// in-place upgrades produce an agent install missing the user-helper
-	// (only the MSI installer ever placed it on disk before #816), the
-	// HelperLifecycleManager falls through to a `breeze-agent.exe user-helper`
-	// fallback every ~30s, and orphaned processes accumulate during heartbeat
-	// goroutine wedges until the service dies.
-	//
-	// ANY download failure is non-fatal — we log a WARN and proceed with an
-	// agent-only upgrade. This is intentional and covers more than just 404s
-	// (manifest signature failure, auth-token expiry, JSON decode error, FS
-	// write error, etc. all land here):
-	//   (a) pre-#816 releases legitimately lack the user-helper artifact, so
-	//       we don't want to block their upgrades, and
-	//   (b) we'd rather degrade than fail an agent upgrade on a transient
-	//       helper-fetch glitch.
-	// `currentVersion` is included in the WARN so operators can tell the
-	// "legitimately pre-#816, ignore" case apart from the "this release SHOULD
-	// have shipped the artifact, something's broken" case.
-	var userHelperPair *updater.BinaryPair
-	if runtime.GOOS == "windows" {
-		helperCfg := &updater.Config{
-			ServerURL:             h.config.ServerURL,
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
-		}
-		helperUpdater := updater.New(helperCfg)
-		if tempPath, dlErr := helperUpdater.DownloadBinary(targetVersion); dlErr != nil {
-			log.Warn(
-				"user-helper download failed; proceeding with agent-only upgrade",
-				"currentVersion", h.agentVersion,
-				"targetVersion", targetVersion,
-				"error", dlErr.Error(),
-			)
-		} else {
-			userHelperPair = &updater.BinaryPair{
-				Temp:   tempPath,
-				Target: filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe"),
-			}
-			log.Info(
-				"pre-downloaded user-helper for restart-helper swap",
-				"temp", userHelperPair.Temp,
-				"target", userHelperPair.Target,
-			)
-		}
-	}
+	// Pre-download breeze-user-helper.exe on Windows so the restart-helper
+	// script can drop it alongside the new agent binary. See prefetchUserHelper
+	// for the full rationale (issue #816 / PR #845). All failure modes are
+	// non-fatal — a nil return value is the normal "agent-only upgrade"
+	// outcome.
+	userHelperPair := h.prefetchUserHelper(targetVersion, binaryPath)
 
 	u := updater.New(updaterCfg)
 	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair}); err != nil {
