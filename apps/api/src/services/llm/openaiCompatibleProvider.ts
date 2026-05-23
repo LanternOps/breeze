@@ -186,6 +186,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
                 return;
               }
 
+              // Some OpenAI-compatible backends return `delta.content` as a multipart
+              // array; vLLM does not today, so non-string content is silently dropped.
+              // Revisit if a future backend emits multipart chunks here.
               if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
                 yield { type: 'content_delta', delta: choice.delta.content };
               }
