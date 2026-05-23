@@ -14,6 +14,19 @@
 import type { LLMProvider, LLMStreamEvent, ChatMessage } from './types';
 
 const FETCH_TIMEOUT_MS = 6 * 60 * 1000; // 6 min, aligned with Anthropic turn timeout
+const LLM_REQUEST_TIMEOUT_MESSAGE = 'LLM request timed out after 6 minutes';
+
+/**
+ * Abort comes from AbortSignal.any([caller, timeout]): distinguish timeout vs user Stop.
+ */
+function classifyOpenAICompatAbort(
+  timeoutSignal: AbortSignal,
+  callerSignal?: AbortSignal,
+): 'timeout' | 'user' | null {
+  if (timeoutSignal.aborted) return 'timeout';
+  if (callerSignal?.aborted) return 'user';
+  return null;
+}
 
 // OpenAI streaming chunk shape (minimal subset we care about)
 interface OAIChunk {
@@ -28,16 +41,6 @@ interface OAIChunk {
     prompt_tokens?: number;
     completion_tokens?: number;
   } | null;
-}
-
-function isAbortError(err: unknown, callerSignal?: AbortSignal): boolean {
-  if (callerSignal?.aborted) return true;
-  if (err instanceof Error && err.name === 'AbortError') return true;
-  return (
-    typeof DOMException !== 'undefined' &&
-    err instanceof DOMException &&
-    err.name === 'AbortError'
-  );
 }
 
 export interface OpenAICompatibleProviderConfig {
@@ -91,7 +94,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
       });
     } catch (err) {
       clearTimeout(timeoutId);
-      if (isAbortError(err, options.signal)) {
+      const abortKind = classifyOpenAICompatAbort(timeoutController.signal, options.signal);
+      if (abortKind === 'timeout') {
+        yield { type: 'error', message: LLM_REQUEST_TIMEOUT_MESSAGE };
+        return;
+      }
+      if (abortKind === 'user') {
         return;
       }
       const msg = err instanceof Error ? err.message : 'Network error calling LLM endpoint';
@@ -185,7 +193,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
           }
         }
       } catch (err) {
-        if (isAbortError(err, options.signal)) {
+        const abortKind = classifyOpenAICompatAbort(timeoutController.signal, options.signal);
+        if (abortKind === 'timeout') {
+          yield { type: 'error', message: LLM_REQUEST_TIMEOUT_MESSAGE };
+          return;
+        }
+        if (abortKind === 'user') {
           return;
         }
         const msg = err instanceof Error ? err.message : 'Error reading LLM stream';
