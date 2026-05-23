@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -671,6 +672,80 @@ func TestDownloadBinaryServerError(t *testing.T) {
 	_, _, err := u.downloadBinary("1.0.0")
 	if err == nil {
 		t.Fatal("should fail on server error")
+	}
+}
+
+// TestDownloadBinary_ChecksumMismatchCleansUpTempFile pins the cleanup-on-checksum-
+// failure contract in the exported DownloadBinary path. heartbeat.doUpgrade's
+// user-helper fallback (issue #816, PR #845) relies on DownloadBinary returning
+// "" and leaving no temp file behind on checksum failure — otherwise repeated
+// upgrade retries leak temp files into the OS temp dir.
+func TestDownloadBinary_ChecksumMismatchCleansUpTempFile(t *testing.T) {
+	// Redirect os.CreateTemp("", ...) into the test's TempDir so we can
+	// detect any leftover binary fragments.
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+
+	// Intended content (what the signed manifest declares).
+	intendedContent := []byte("INTENDED-binary-bytes")
+	// Tampered content actually served by the binary URL. Same length as
+	// intendedContent so the manifest.Size check passes and we reach the
+	// post-download verifyChecksum.
+	tamperedContent := []byte("TAMPERED-binary-bytes")
+	if len(intendedContent) != len(tamperedContent) {
+		t.Fatalf("test setup invariant: intended and tampered must be same length (%d vs %d)",
+			len(intendedContent), len(tamperedContent))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
+			w.Header().Set("Content-Type", "application/json")
+			// Manifest is signed against the *intended* bytes' SHA256.
+			json.NewEncoder(w).Encode(signedDownloadInfo(
+				t, "1.0.0", "agent",
+				"http://"+r.Host+"/binary/breeze-agent",
+				intendedContent,
+			))
+		case r.URL.Path == "/binary/breeze-agent":
+			// Serve the tampered bytes so the post-write verifyChecksum
+			// inside DownloadBinary fails.
+			w.Write(tamperedContent)
+		default:
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	u := New(&Config{
+		ServerURL: server.URL,
+		AuthToken: secmem.NewSecureString("test-token"),
+	})
+	u.client = server.Client()
+
+	gotPath, err := u.DownloadBinary("1.0.0")
+	if err == nil {
+		t.Fatalf("expected checksum mismatch error, got nil (path=%q)", gotPath)
+	}
+	if gotPath != "" {
+		t.Fatalf("expected empty returned path on checksum failure, got %q", gotPath)
+	}
+
+	// Confirm no temp file was leaked: walk the redirected temp dir.
+	// The only entries should be ones t.TempDir created internally; the
+	// breeze-agent-dev-* file from downloadFromURL must not be present.
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatalf("failed to read temp dir %s: %v", tempRoot, err)
+	}
+	for _, entry := range entries {
+		// t.TempDir() places per-test subdirs under TMPDIR; allow those,
+		// but no breeze-agent-dev-* leftovers.
+		name := entry.Name()
+		if strings.HasPrefix(name, "breeze-agent-dev-") {
+			t.Fatalf("temp file leaked after checksum failure: %s", filepath.Join(tempRoot, name))
+		}
 	}
 }
 
