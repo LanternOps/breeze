@@ -134,7 +134,9 @@ export default function DevicesPage() {
           agentVersion: (d.agentVersion ?? '') as string,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
-          deviceRoleSource: d.deviceRoleSource as string | undefined
+          deviceRoleSource: d.deviceRoleSource as string | undefined,
+          mainAgentSilentSince: (d.mainAgentSilentSince ?? null) as string | null,
+          watchdogStatus: (d.watchdogStatus ?? null) as Device['watchdogStatus']
         };
       });
 

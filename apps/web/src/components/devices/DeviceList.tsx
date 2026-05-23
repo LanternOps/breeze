@@ -38,6 +38,21 @@ export type Device = {
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
+  /**
+   * Server-detected asymmetry: timestamp at which the API stopped
+   * receiving main-agent heartbeats while the watchdog is still
+   * reporting in. Set by the heartbeat handler (#851 / Layer C).
+   * Null when the agent is heartbeating normally or has fully gone
+   * silent (watchdog included).
+   */
+  mainAgentSilentSince?: string | null;
+  /**
+   * Watchdog reachability as last reported. 'connected' = normal,
+   * 'failover' = watchdog took over because main-agent stopped,
+   * 'offline' = we haven't heard from the watchdog either (in which
+   * case `status === 'offline'` is the load-bearing signal).
+   */
+  watchdogStatus?: 'connected' | 'failover' | 'offline' | null;
 };
 
 type DeviceListProps = {
@@ -77,6 +92,28 @@ const statusLabels: Record<DeviceStatus, string> = {
   quarantined: 'Quarantined',
   updating: 'Updating'
 };
+
+/**
+ * "Agent silent (watchdog OK)" amber badge. Fires when the server-side
+ * asymmetry detector (#851 / Layer C) has marked `mainAgentSilentSince`
+ * AND the watchdog is still reporting in (`watchdogStatus !== 'offline'`).
+ * That state means the main agent has wedged but the box is alive — a
+ * different failure mode from a fully-offline device, and the distinction
+ * is the whole point of #800.
+ *
+ * Returns null when no asymmetry is present so the cell stays clean.
+ */
+function shouldShowAgentSilentBadge(device: Pick<Device, 'mainAgentSilentSince' | 'watchdogStatus'>): boolean {
+  return Boolean(device.mainAgentSilentSince) && device.watchdogStatus !== 'offline';
+}
+
+function formatSilentDuration(silentSince: string): string {
+  const minutes = Math.max(1, Math.floor((Date.now() - new Date(silentSince).getTime()) / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
 
 const osLabels: Record<OSType, string> = {
   windows: 'Windows',
@@ -768,9 +805,20 @@ export default function DeviceList({
                     })()}
                   </td>
                   <td className="px-3 py-3 text-sm">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
-                      {statusLabels[device.status]}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
+                        {statusLabels[device.status]}
+                      </span>
+                      {shouldShowAgentSilentBadge(device) && (
+                        <span
+                          data-testid={`device-${device.id}-agent-silent-badge`}
+                          title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
+                          className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                        >
+                          Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-3 py-3 text-sm">
                     {device.status === 'online' ? (
