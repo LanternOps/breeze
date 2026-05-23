@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// Clock abstracts time for deterministic tests. Production uses realClock.
+type Clock interface {
+	Now() time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
 // serviceController is the OS-specific surface RecoveryManager.Attempt depends
 // on. Production builds inject osServiceController (one impl per GOOS).
 // Tests inject a fake. Method names match the existing package-level
@@ -24,31 +33,34 @@ type RecoveryManager struct {
 	lastAttempt time.Time
 	windowStart time.Time
 	svc         serviceController
+	clk         Clock
 }
 
 // NewRecoveryManager creates a RecoveryManager with the given limits and the
 // real OS service controller.
 func NewRecoveryManager(maxAttempts int, cooldown time.Duration) *RecoveryManager {
-	return newRecoveryManagerWithDeps(maxAttempts, cooldown, osServiceController{})
+	return newRecoveryManagerWithDeps(maxAttempts, cooldown, osServiceController{}, realClock{})
 }
 
 // newRecoveryManagerWithDeps is the test seam — callers can inject a fake
 // serviceController. Not exported.
-func newRecoveryManagerWithDeps(maxAttempts int, cooldown time.Duration, svc serviceController) *RecoveryManager {
+func newRecoveryManagerWithDeps(maxAttempts int, cooldown time.Duration, svc serviceController, clk Clock) *RecoveryManager {
 	return &RecoveryManager{
 		maxAttempts: maxAttempts,
 		cooldown:    cooldown,
-		windowStart: time.Now(),
+		windowStart: clk.Now(),
 		svc:         svc,
+		clk:         clk,
 	}
 }
 
 // CanAttempt returns true if another recovery attempt is allowed. If the
 // cooldown window has passed since windowStart, the counter is reset first.
 func (r *RecoveryManager) CanAttempt() bool {
-	if time.Since(r.windowStart) >= r.cooldown {
+	now := r.clk.Now()
+	if now.Sub(r.windowStart) >= r.cooldown {
 		r.attempts = 0
-		r.windowStart = time.Now()
+		r.windowStart = now
 	}
 	return r.attempts < r.maxAttempts
 }
@@ -63,7 +75,7 @@ func (r *RecoveryManager) CanAttempt() bool {
 // Returns (true, nil) on success, (false, err) on failure.
 func (r *RecoveryManager) Attempt(pid int) (bool, error) {
 	r.attempts++
-	r.lastAttempt = time.Now()
+	r.lastAttempt = r.clk.Now()
 
 	var err error
 	switch r.attempts {
@@ -88,7 +100,7 @@ func (r *RecoveryManager) Attempts() int { return r.attempts }
 // Reset clears the attempt counter and resets the window start time.
 func (r *RecoveryManager) Reset() {
 	r.attempts = 0
-	r.windowStart = time.Now()
+	r.windowStart = r.clk.Now()
 }
 
 // osServiceController is the production serviceController. Each GOOS file
