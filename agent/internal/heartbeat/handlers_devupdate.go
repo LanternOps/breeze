@@ -243,7 +243,10 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 	// Run the update in a goroutine since UpdateFromURL triggers a restart
 	go func() {
 		h.sendUpdateStatus(version)
-		if err := u.UpdateFromURL(downloadURL, checksum); err != nil {
+		// dev_push is agent-only — no user-helper swap on this path. If a
+		// future dev-push surface needs to swap a companion binary too, pass
+		// updater.UpdateOptions{UserHelper: ...} here.
+		if err := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{}); err != nil {
 			log.Error("dev_update failed", "version", version, "error", err.Error())
 		}
 	}()

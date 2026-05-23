@@ -3066,8 +3066,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// `currentVersion` is included in the WARN so operators can tell the
 	// "legitimately pre-#816, ignore" case apart from the "this release SHOULD
 	// have shipped the artifact, something's broken" case.
-	userHelperTempPath := ""
-	userHelperTargetPath := ""
+	var userHelperPair *updater.BinaryPair
 	if runtime.GOOS == "windows" {
 		helperCfg := &updater.Config{
 			ServerURL:             h.config.ServerURL,
@@ -3085,18 +3084,20 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"error", dlErr.Error(),
 			)
 		} else {
-			userHelperTempPath = tempPath
-			userHelperTargetPath = filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
+			userHelperPair = &updater.BinaryPair{
+				Temp:   tempPath,
+				Target: filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe"),
+			}
 			log.Info(
 				"pre-downloaded user-helper for restart-helper swap",
-				"temp", userHelperTempPath,
-				"target", userHelperTargetPath,
+				"temp", userHelperPair.Temp,
+				"target", userHelperPair.Target,
 			)
 		}
 	}
 
 	u := updater.New(updaterCfg)
-	if err := u.UpdateToWithUserHelper(targetVersion, userHelperTempPath, userHelperTargetPath); err != nil {
+	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair}); err != nil {
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)
