@@ -47,9 +47,18 @@ type Config struct {
 type Updater struct {
 	config *Config
 	client *http.Client
-	// extras is set by UpdateToWithCompanions / UpdateFromURLWithCompanions
-	// to forward companion-binary paths (e.g. breeze-user-helper.exe) into
-	// the Windows restart helper. Not user-visible. Issue #816.
+	// extras is set by UpdateToWithUserHelper to forward companion-binary
+	// paths (e.g. breeze-user-helper.exe) into the Windows restart helper.
+	// Not user-visible. Issue #816.
+	//
+	// Asymmetry note (footgun): UpdateFromURL (the dev_push path) also
+	// reads u.extras when it calls RestartWithHelper on Windows, but there
+	// is no UpdateFromURLWithUserHelper wrapper. A dev-push caller that
+	// wants a helper swap on that path has to mutate u.extras directly.
+	// Currently no dev-push caller does this — the surface is flagged here
+	// so a future addition doesn't silently no-op the helper field. The
+	// upcoming type-design refactor (PR B of the #845 follow-up series)
+	// will fold this into an explicit options struct.
 	extras updateExtras
 }
 
@@ -63,8 +72,12 @@ func New(cfg *Config) *Updater {
 
 // updateExtras carries optional companion-binary info into the Windows
 // restart helper. It is set transiently via the Updater's exported
-// UpdateToWithCompanions / UpdateFromURLWithCompanions wrappers so the
-// existing UpdateTo signature stays stable. Issue #816.
+// UpdateToWithUserHelper wrapper so the existing UpdateTo signature stays
+// stable. Issue #816.
+//
+// Note: only UpdateToWithUserHelper exists today — UpdateFromURL (dev-push)
+// has no companion-setter wrapper but still consumes u.extras when it
+// builds the Windows restart script. See the field comment on Updater.
 type updateExtras struct {
 	userHelperTempPath   string
 	userHelperTargetPath string
@@ -553,6 +566,16 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 // temp-file path on success after verifying the downloaded bytes against
 // the signed manifest checksum. The caller is responsible for cleanup.
 // Issue #816.
+//
+// Note on the second verifyChecksum: internal downloadBinary verifies the
+// signed MANIFEST (the JSON payload's Ed25519 signature) but does NOT
+// verify the downloaded FILE bytes against manifest.Checksum — that
+// file-checksum verification is done by callers of downloadBinary
+// (e.g. UpdateTo does its own verify post-write). DownloadBinary, as an
+// exported method, performs the file-checksum verification HERE so
+// exported callers get a verified file without having to know about the
+// manifest-vs-file distinction. The second verify is intentional and a
+// future simplifier should not delete it as "redundant".
 func (u *Updater) DownloadBinary(version string) (string, error) {
 	tempPath, manifest, err := u.downloadBinary(version)
 	if err != nil {
