@@ -368,6 +368,8 @@ coreRoutes.get(
         architecture: devices.architecture,
         agentVersion: devices.agentVersion,
         status: devices.status,
+        watchdogStatus: devices.watchdogStatus,
+        mainAgentSilentSince: devices.mainAgentSilentSince,
         lastSeenAt: devices.lastSeenAt,
         enrolledAt: devices.enrolledAt,
         tags: devices.tags,
