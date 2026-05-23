@@ -1001,18 +1001,21 @@ func TestExpectedReleaseAssetNames_Agent(t *testing.T) {
 	}
 }
 
-// TestUpdateToWithUserHelper_CleansHelperTempOnFailure regression-tests the
+// TestUpdateToWithOptions_CleansHelperTempOnFailure regression-tests the
 // fix for the orphan-temp-file bug flagged in the #845 follow-up review:
 // when UpdateTo returns an error AND the caller pre-downloaded a user-helper
-// to `userHelperTempPath`, the temp file must be removed. Before the fix
-// only the agent temp was cleaned up, leaking the helper temp in %TEMP%
-// on every failed upgrade.
+// via opts.UserHelper, the temp file must be removed. Before the fix only
+// the agent temp was cleaned up, leaking the helper temp in %TEMP% on every
+// failed upgrade.
+//
+// Ported from the pre-PR-B TestUpdateToWithUserHelper_CleansHelperTempOnFailure
+// — same intent, new API surface (UpdateToWithOptions + UpdateOptions).
 //
 // We force UpdateTo to fail by giving it no AuthToken — downloadBinary
 // returns "auth token not available" immediately on every platform.
-func TestUpdateToWithUserHelper_CleansHelperTempOnFailure(t *testing.T) {
+func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	// Synthesize a "pre-downloaded user-helper" tempfile. The test owns the
-	// file; UpdateToWithUserHelper is expected to remove it on UpdateTo failure.
+	// file; UpdateToWithOptions is expected to remove it on update failure.
 	helperTemp, err := os.CreateTemp("", "breeze-user-helper-leak-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -1040,7 +1043,12 @@ func TestUpdateToWithUserHelper_CleansHelperTempOnFailure(t *testing.T) {
 		// AuthToken intentionally nil — forces downloadBinary to return early.
 	})
 
-	err = u.UpdateToWithUserHelper("9.9.9", helperTempPath, `C:\target\breeze-user-helper.exe`)
+	err = u.UpdateToWithOptions("9.9.9", UpdateOptions{
+		UserHelper: &BinaryPair{
+			Temp:   helperTempPath,
+			Target: `C:\target\breeze-user-helper.exe`,
+		},
+	})
 	if err == nil {
 		t.Fatal("expected UpdateTo to fail (no auth token configured)")
 	}
@@ -1050,11 +1058,13 @@ func TestUpdateToWithUserHelper_CleansHelperTempOnFailure(t *testing.T) {
 	}
 }
 
-// TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp guards against a
-// regression where the new cleanup branch fires when no helper-temp was
-// ever passed (call path: agent-only upgrade on a release that doesn't
-// ship the user-helper artifact). It must not error or panic.
-func TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp(t *testing.T) {
+// TestUpdateToWithOptions_NoUserHelperIsNoOp guards against a regression
+// where the helper-temp cleanup branch fires when opts.UserHelper is nil
+// (call path: agent-only upgrade on a release that doesn't ship the
+// user-helper artifact, or a non-Windows host). It must not error or panic.
+//
+// Ported from the pre-PR-B TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp.
+func TestUpdateToWithOptions_NoUserHelperIsNoOp(t *testing.T) {
 	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -1068,8 +1078,48 @@ func TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp(t *testing.T) {
 		BackupPath: binaryFile.Name() + ".backup",
 	})
 
-	// Empty userHelperTempPath should leave the cleanup branch dormant.
-	if err := u.UpdateToWithUserHelper("9.9.9", "", ""); err == nil {
+	// nil UserHelper should leave the cleanup branch dormant.
+	if err := u.UpdateToWithOptions("9.9.9", UpdateOptions{}); err == nil {
 		t.Fatal("expected UpdateTo to fail (no auth token configured)")
+	}
+}
+
+// TestUpdateTo_DelegatesToUpdateToWithOptions verifies the thin-shim wiring
+// added by PR B: UpdateTo must forward to UpdateToWithOptions with a
+// zero-valued UpdateOptions, i.e. the agent-only path. We can't observe the
+// internal call directly, but we can prove equivalence by asserting both
+// invocations produce the same observable error (no auth token), confirming
+// the shim doesn't drop arguments or short-circuit.
+func TestUpdateTo_DelegatesToUpdateToWithOptions(t *testing.T) {
+	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryFile.Close()
+	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
+
+	mkUpdater := func() *Updater {
+		return New(&Config{
+			ServerURL:  "http://localhost:0",
+			BinaryPath: binaryFile.Name(),
+			BackupPath: binaryFile.Name() + ".backup",
+		})
+	}
+
+	shimErr := mkUpdater().UpdateTo("9.9.9")
+	if shimErr == nil {
+		t.Fatal("expected shim UpdateTo to fail (no auth token)")
+	}
+
+	explicitErr := mkUpdater().UpdateToWithOptions("9.9.9", UpdateOptions{})
+	if explicitErr == nil {
+		t.Fatal("expected explicit UpdateToWithOptions to fail (no auth token)")
+	}
+
+	// Errors must be structurally identical — same wrapped message text — to
+	// prove the shim isn't munging args. Use Error() string equality; both
+	// flows reach the same downloadBinary "auth token not available" branch.
+	if shimErr.Error() != explicitErr.Error() {
+		t.Fatalf("shim and explicit calls produced different errors:\n  shim:     %v\n  explicit: %v", shimErr, explicitErr)
 	}
 }

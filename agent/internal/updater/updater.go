@@ -47,19 +47,6 @@ type Config struct {
 type Updater struct {
 	config *Config
 	client *http.Client
-	// extras is set by UpdateToWithUserHelper to forward companion-binary
-	// paths (e.g. breeze-user-helper.exe) into the Windows restart helper.
-	// Not user-visible. Issue #816.
-	//
-	// Asymmetry note (footgun): UpdateFromURL (the dev_push path) also
-	// reads u.extras when it calls RestartWithHelper on Windows, but there
-	// is no UpdateFromURLWithUserHelper wrapper. A dev-push caller that
-	// wants a helper swap on that path has to mutate u.extras directly.
-	// Currently no dev-push caller does this — the surface is flagged here
-	// so a future addition doesn't silently no-op the helper field. The
-	// upcoming type-design refactor (PR B of the #845 follow-up series)
-	// will fold this into an explicit options struct.
-	extras updateExtras
 }
 
 // New creates a new Updater
@@ -68,19 +55,6 @@ func New(cfg *Config) *Updater {
 		config: cfg,
 		client: &http.Client{Timeout: 5 * time.Minute},
 	}
-}
-
-// updateExtras carries optional companion-binary info into the Windows
-// restart helper. It is set transiently via the Updater's exported
-// UpdateToWithUserHelper wrapper so the existing UpdateTo signature stays
-// stable. Issue #816.
-//
-// Note: only UpdateToWithUserHelper exists today — UpdateFromURL (dev-push)
-// has no companion-setter wrapper but still consumes u.extras when it
-// builds the Windows restart script. See the field comment on Updater.
-type updateExtras struct {
-	userHelperTempPath   string
-	userHelperTargetPath string
 }
 
 // ErrReadOnlyFS is returned when the binary path is on a read-only filesystem.
@@ -263,29 +237,41 @@ func writeUpdateMarker(version string) {
 	}
 }
 
-// UpdateToWithUserHelper behaves like UpdateTo but also instructs the Windows
-// restart helper to copy a freshly-downloaded breeze-user-helper.exe into
-// place alongside the agent. Empty paths fall back to agent-only behavior.
-// Issue #816.
+// UpdateTo is a thin shim around UpdateToWithOptions for the common case of
+// an agent-only upgrade. New code (and any caller that needs to thread a
+// companion binary like breeze-user-helper.exe through the Windows restart
+// helper) should call UpdateToWithOptions directly.
+func (u *Updater) UpdateTo(version string) error {
+	return u.UpdateToWithOptions(version, UpdateOptions{})
+}
+
+// UpdateToWithOptions downloads and installs a new version. When
+// opts.UserHelper is non-nil and the host is Windows, the Windows restart
+// helper script also swaps the user-helper binary alongside the agent.
 //
-// Cleanup contract: on UpdateTo failure, the user-helper temp file is
-// removed here too. UpdateTo's own error branches only know about the agent
-// tempPath, so without this cleanup the pre-downloaded helper would orphan
-// in %TEMP% on every failed upgrade. On success (UpdateTo returns nil) we
-// intentionally leave the file in place — the spawned restart script owns
-// it and removes it after the swap.
-func (u *Updater) UpdateToWithUserHelper(version, userHelperTempPath, userHelperTargetPath string) error {
-	u.extras.userHelperTempPath = userHelperTempPath
-	u.extras.userHelperTargetPath = userHelperTargetPath
-	err := u.UpdateTo(version)
-	if err != nil && userHelperTempPath != "" {
-		removeCleanup(userHelperTempPath)
+// Cleanup contract: on update failure (any error returned from this method),
+// if opts.UserHelper != nil the user-helper temp file is removed. The agent
+// caller pre-downloaded the helper to a temp file before invoking this method;
+// if we never spawn the restart script, nothing else will ever clean it up.
+// On success (this method returns nil) the helper temp is intentionally left
+// in place — the spawned restart script owns it and removes it after the swap.
+//
+// Issue #816 / #845 follow-up (PR B): replaces UpdateToWithUserHelper and the
+// u.extras action-at-a-distance state with an explicit options parameter.
+func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error {
+	err := u.updateTo(version, opts)
+	if err != nil && opts.UserHelper != nil && opts.UserHelper.Temp != "" {
+		// Cleanup contract: see method doc. Preserved verbatim from
+		// PR A's UpdateToWithUserHelper error-path cleanup.
+		removeCleanup(opts.UserHelper.Temp)
 	}
 	return err
 }
 
-// UpdateTo downloads and installs a new version
-func (u *Updater) UpdateTo(version string) error {
+// updateTo is the unexported implementation shared by UpdateTo and
+// UpdateToWithOptions. opts.UserHelper, when non-nil, is threaded through to
+// RestartWithHelper on Windows.
+func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	log.Info("starting update", "targetVersion", version)
 
 	// Pre-flight: verify we can write to the binary's directory.
@@ -324,23 +310,17 @@ func (u *Updater) UpdateTo(version string) error {
 		// User-helper swap is wired in by the heartbeat-layer caller
 		// (heartbeat.doUpgrade), not here — the updater package is
 		// component-agnostic, and downloading a second component requires
-		// the caller's AuthToken/server context. Pass empty strings for an
-		// agent-only swap (backward compatible). Issue #816.
-		var userHelperOpt *BinaryPair
-		if u.extras.userHelperTempPath != "" || u.extras.userHelperTargetPath != "" {
-			userHelperOpt = &BinaryPair{
-				Temp:   u.extras.userHelperTempPath,
-				Target: u.extras.userHelperTargetPath,
-			}
-		}
-		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, userHelperOpt); err != nil {
+		// the caller's AuthToken/server context. Pass nil for an agent-only
+		// swap (backward compatible). Issue #816.
+		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper); err != nil {
 			removeCleanup(tempPath)
-			// The user-helper temp was pre-downloaded by the caller before
-			// UpdateTo was invoked; if we never spawned the restart script,
-			// nothing will ever clean it up. Mirror the agent tempPath
-			// cleanup so failed spawns don't leak helper temps in %TEMP%.
-			if u.extras.userHelperTempPath != "" {
-				removeCleanup(u.extras.userHelperTempPath)
+			// Defense in depth: UpdateToWithOptions also cleans the helper
+			// temp on any returned error, but we mirror the agent tempPath
+			// removal here too so the cleanup happens in the same branch as
+			// the agent's, keeping the spawn-failure flow tidy. The
+			// outer-layer cleanup is then a no-op for this case.
+			if opts.UserHelper != nil && opts.UserHelper.Temp != "" {
+				removeCleanup(opts.UserHelper.Temp)
 			}
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
@@ -779,7 +759,16 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 
 // UpdateFromURL downloads a binary directly from a URL (skipping the version-lookup
 // API call used by UpdateTo). Used by dev_push for fast iteration.
-func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
+//
+// opts.UserHelper, when non-nil and on Windows, is threaded through to the
+// restart helper script so a dev-push can swap the user-helper alongside the
+// agent. Existing dev_push callers (handlers_devupdate.go) pass UpdateOptions{}
+// for agent-only behavior. Issue #816 / #845 follow-up (PR B): replaces the
+// prior u.extras action-at-a-distance read inside UpdateFromURL — that read
+// silently inherited whatever UpdateToWithUserHelper had last stuffed into
+// u.extras, which was a real footgun for any future dev-push surface that
+// shared an Updater instance with the heartbeat upgrade path.
+func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions) error {
 	log.Info("starting dev update from URL", "url", url)
 
 	// Pre-flight: verify we can write to the binary's directory.
@@ -812,14 +801,7 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string) error {
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
-		var userHelperOpt *BinaryPair
-		if u.extras.userHelperTempPath != "" || u.extras.userHelperTargetPath != "" {
-			userHelperOpt = &BinaryPair{
-				Temp:   u.extras.userHelperTempPath,
-				Target: u.extras.userHelperTargetPath,
-			}
-		}
-		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, userHelperOpt); err != nil {
+		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
