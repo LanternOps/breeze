@@ -122,6 +122,68 @@ describe('device commands routes', () => {
       expect(body.failed).toEqual(['22222222-2222-2222-2222-222222222222']);
     });
 
+    it('bulk refresh_inventory dedups already-pending devices, skips silently (caught by @xxiaoxiong on #831)', async () => {
+      // Two devices: A has a pending refresh_inventory already, B does not.
+      // Expected: A is silently skipped (not added to `failed`), B gets a
+      // new pending row. The single-device endpoint (#856) returns 409
+      // on duplicate; the bulk path can't 409 per-device, so silent skip
+      // is the right behavior — already-queued isn't an error.
+      const deviceA = '11111111-1111-1111-1111-111111111111';
+      const deviceB = '22222222-2222-2222-2222-222222222222';
+
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({ id: deviceA, orgId: 'org-123', hostname: 'a', status: 'online' } as never)
+        .mockResolvedValueOnce({ id: deviceB, orgId: 'org-123', hostname: 'b', status: 'online' } as never);
+
+      // Dedup pre-check: A returns an existing pending row, B returns empty.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'cmd-existing-a' }])
+            })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as never);
+
+      // Insert only fires for B.
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-new-b',
+            deviceId: deviceB,
+            type: 'refresh_inventory',
+            status: 'pending',
+            createdAt: new Date()
+          }])
+        })
+      } as never);
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          deviceIds: [deviceA, deviceB],
+          type: 'refresh_inventory'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.commands).toHaveLength(1);
+      expect(body.commands[0].deviceId).toBe(deviceB);
+      // A was skipped silently — NOT in failed (already-pending isn't a failure).
+      expect(body.failed).not.toContain(deviceA);
+      // Insert was called exactly once (for B), not twice.
+      expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects generic script command requests before device lookup', async () => {
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',

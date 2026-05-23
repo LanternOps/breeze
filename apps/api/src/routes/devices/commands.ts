@@ -135,6 +135,26 @@ commandsRoutes.post(
         continue;
       }
 
+      // Same dedup #856 added to /:id/commands. The bulk path was
+      // missed — caught by @xxiaoxiong on #831. Skip the device
+      // silently when one is already pending (already-queued isn't an
+      // error in bulk context; nothing actionable for the caller to
+      // retry, and adding to `failed` would falsely imply a problem).
+      if (data.type === 'refresh_inventory') {
+        const [existingPending] = await db
+          .select({ id: deviceCommands.id })
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.type, 'refresh_inventory'),
+              eq(deviceCommands.status, 'pending'),
+            ),
+          )
+          .limit(1);
+        if (existingPending) continue;
+      }
+
       const [command] = await db
         .insert(deviceCommands)
         .values({
