@@ -55,7 +55,7 @@ function getOpenAISessionManager(): OpenAISessionManager {
     }
     const provider = new OpenAICompatibleProvider({
       baseUrl: cfg.MCP_LLM_BASE_URL,
-      apiKey: cfg.MCP_LLM_API_KEY ?? '',
+      apiKey: cfg.MCP_LLM_API_KEY!,
       priceInputPerMUsd: cfg.MCP_LLM_PRICE_INPUT_PER_M_USD,
       priceOutputPerMUsd: cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
     });
