@@ -257,7 +257,7 @@ describe('ThirdPartyCatalog', () => {
     confirmSpy.mockRestore();
   });
 
-  it('renders a platform-admin permission state when the API returns 403 (#721 Case 1)', async () => {
+  it('renders a platform-admin permission state on any 403 (#721 Case 1)', async () => {
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(
       makeJsonResponse({ error: 'platform admin access required' }, false, 403),
@@ -276,7 +276,26 @@ describe('ThirdPartyCatalog', () => {
     expect(screen.queryByTestId('catalog-total')).toBeNull();
   });
 
-  it('still surfaces a generic error banner for non-permission 403s and 500s', async () => {
+  it('renders the permission state for a 403 regardless of body wording', async () => {
+    // The endpoint is platform-admin-gated end-to-end, so any 403 is a
+    // platform-admin denial. A backend rewording of the error string
+    // (e.g. "platform_admin_required" or "forbidden") must NOT cause the
+    // page to fall back to the generic "Failed to load" banner — that
+    // would be a silent regression invisible to the previous body-sniff
+    // test design. (Todd review on #857.)
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(
+      makeJsonResponse({ error: 'forbidden' }, false, 403),
+    );
+
+    render(<ThirdPartyCatalog />);
+
+    const state = await screen.findByTestId('catalog-requires-platform-admin');
+    expect(state.textContent).toMatch(/Platform-admin access required/i);
+    expect(screen.queryByText(/Failed to load catalog/i)).toBeNull();
+  });
+
+  it('surfaces a generic error banner for non-403 failures (500)', async () => {
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(
       makeJsonResponse({ error: 'internal' }, false, 500),

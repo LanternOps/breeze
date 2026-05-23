@@ -69,20 +69,18 @@ export default function ThirdPartyCatalog() {
       if (showOnlyTested) params.set('breezeTested', 'true');
       const response = await fetchWithAuth(`/third-party-catalog?${params.toString()}`);
       if (!response.ok) {
-        // The third-party catalog endpoint is platform-admin only. A non-
-        // platform-admin admin (org/partner admin, the prod default since
-        // there's no platform-admin in prod) gets a 403 with
-        // {"error":"platform admin access required"}. Render a clear
-        // authorization-boundary state instead of a generic red "Failed to
-        // load catalog" banner that looks like an outage. (#721 Case 1)
+        // The third-party catalog endpoint is platform-admin-gated end-to-
+        // end (`apps/api/src/routes/thirdPartyCatalog/list.ts` uses
+        // platformAdminMiddleware), so any 403 here is platform-admin
+        // denial. Match the sibling pattern in
+        // AccountDeletionRequestsList.tsx:42-45 — status-only check, no
+        // body sniff (a backend rewording of the error string would
+        // silently break the UI without test coverage). (#721 Case 1)
         if (response.status === 403) {
-          const body = await response.clone().json().catch(() => ({})) as { error?: string };
-          if (typeof body.error === 'string' && body.error.toLowerCase().includes('platform admin')) {
-            setRequiresPlatformAdmin(true);
-            setItems([]);
-            setTotal(0);
-            return;
-          }
+          setRequiresPlatformAdmin(true);
+          setItems([]);
+          setTotal(0);
+          return;
         }
         throw new Error('Failed to load catalog');
       }
