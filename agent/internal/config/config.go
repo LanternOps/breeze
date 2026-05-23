@@ -23,6 +23,10 @@ type WatchdogConfig struct {
 	FailoverPollInterval    time.Duration `mapstructure:"failover_poll_interval" yaml:"failover_poll_interval"`
 	HealthJournalMaxSizeMB  int           `mapstructure:"health_journal_max_size_mb" yaml:"health_journal_max_size_mb"`
 	HealthJournalMaxFiles   int           `mapstructure:"health_journal_max_files" yaml:"health_journal_max_files"`
+	// Auto-restart verification gate — set after Task 5 wires them.
+	RestartVerificationGrace   time.Duration `mapstructure:"restart_verification_grace" yaml:"restart_verification_grace"`
+	RestartVerificationTimeout time.Duration `mapstructure:"restart_verification_timeout" yaml:"restart_verification_timeout"`
+	MaxRestartsPer24h          int           `mapstructure:"max_restarts_per_24h" yaml:"max_restarts_per_24h"`
 }
 
 type PolicyRegistryStateProbe struct {
@@ -198,16 +202,19 @@ func Default() *Config {
 		PolicyConfigStateProbes:    []PolicyConfigStateProbe{},
 
 		Watchdog: WatchdogConfig{
-			Enabled:                 true,
-			ProcessCheckInterval:    5 * time.Second,
-			IPCProbeInterval:        30 * time.Second,
-			HeartbeatStaleThreshold: 3 * time.Minute,
-			MaxRecoveryAttempts:     3,
-			RecoveryCooldown:        10 * time.Minute,
-			StandbyTimeout:          30 * time.Minute,
-			FailoverPollInterval:    30 * time.Second,
-			HealthJournalMaxSizeMB:  10,
-			HealthJournalMaxFiles:   3,
+			Enabled:                    true,
+			ProcessCheckInterval:       5 * time.Second,
+			IPCProbeInterval:           30 * time.Second,
+			HeartbeatStaleThreshold:    3 * time.Minute,
+			MaxRecoveryAttempts:        3,
+			RecoveryCooldown:           10 * time.Minute,
+			StandbyTimeout:             30 * time.Minute,
+			FailoverPollInterval:       30 * time.Second,
+			HealthJournalMaxSizeMB:     10,
+			HealthJournalMaxFiles:      3,
+			RestartVerificationGrace:   30 * time.Second,
+			RestartVerificationTimeout: 120 * time.Second,
+			MaxRestartsPer24h:          5,
 		},
 	}
 }
@@ -235,6 +242,14 @@ func Load(cfgFile string) (*Config, error) {
 
 	if err := viper.Unmarshal(cfg); err != nil {
 		return nil, err
+	}
+
+	// Accept watchdog.max_heartbeat_staleness_sec (in seconds) as documented in
+	// issue #799 — coerce to the canonical Duration field. The alias mechanism
+	// in viper does not coerce numeric→Duration, so we read it explicitly after
+	// Unmarshal.
+	if v := viper.GetInt("watchdog.max_heartbeat_staleness_sec"); v > 0 {
+		cfg.Watchdog.HeartbeatStaleThreshold = time.Duration(v) * time.Second
 	}
 
 	// Merge secrets from the separate secrets file if it exists.

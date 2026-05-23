@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -304,5 +305,46 @@ func TestAtomicWriteFileCleansUpOnOpenFailure(t *testing.T) {
 	}
 	if _, statErr := os.Stat(path + ".partial"); !os.IsNotExist(statErr) {
 		t.Fatalf(".partial should not exist after failed open, stat err=%v", statErr)
+	}
+}
+
+func TestMaxHeartbeatStalenessSecAlias(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	yaml := `
+agent_id: 00000000-0000-0000-0000-000000000001
+server_url: https://example.com
+watchdog:
+  max_heartbeat_staleness_sec: 240
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Reset viper between tests because it's a global singleton. Use defer
+	// so a t.Fatal in Load can't leak singleton state to the next test
+	// (consistent with the rest of this file).
+	viper.Reset()
+	defer viper.Reset()
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := 240 * time.Second
+	if cfg.Watchdog.HeartbeatStaleThreshold != want {
+		t.Fatalf("HeartbeatStaleThreshold: want %v, got %v", want, cfg.Watchdog.HeartbeatStaleThreshold)
+	}
+}
+
+func TestWatchdogDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Watchdog.RestartVerificationGrace != 30*time.Second {
+		t.Errorf("RestartVerificationGrace default: want 30s, got %v", cfg.Watchdog.RestartVerificationGrace)
+	}
+	if cfg.Watchdog.RestartVerificationTimeout != 120*time.Second {
+		t.Errorf("RestartVerificationTimeout default: want 120s, got %v", cfg.Watchdog.RestartVerificationTimeout)
+	}
+	if cfg.Watchdog.MaxRestartsPer24h != 5 {
+		t.Errorf("MaxRestartsPer24h default: want 5, got %d", cfg.Watchdog.MaxRestartsPer24h)
 	}
 }
