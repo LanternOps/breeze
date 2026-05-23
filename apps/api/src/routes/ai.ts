@@ -593,6 +593,16 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+      return c.json(
+        {
+          error: 'This operation is not supported when using the OpenAI-compatible provider.',
+          code: 'NOT_SUPPORTED_ON_PROVIDER',
+        },
+        501,
+      );
+    }
+
     const activeSession = streamingSessionManager.get(sessionId);
     if (!activeSession) {
       return c.json({ error: 'Session not active in memory' }, 404);
@@ -638,6 +648,16 @@ aiRoutes.post(
     const session = await getSession(sessionId, auth);
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+
+    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+      return c.json(
+        {
+          error: 'This operation is not supported when using the OpenAI-compatible provider.',
+          code: 'NOT_SUPPORTED_ON_PROVIDER',
+        },
+        501,
+      );
     }
 
     const activeSession = streamingSessionManager.get(sessionId);
@@ -701,6 +721,16 @@ aiRoutes.post(
     const session = await getSession(sessionId, auth);
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+
+    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+      return c.json(
+        {
+          error: 'This operation is not supported when using the OpenAI-compatible provider.',
+          code: 'NOT_SUPPORTED_ON_PROVIDER',
+        },
+        501,
+      );
     }
 
     const activeSession = streamingSessionManager.get(sessionId);
