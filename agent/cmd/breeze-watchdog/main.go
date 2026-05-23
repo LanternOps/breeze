@@ -373,7 +373,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery)
+			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h)
 		}
 
 		// State-driven actions after each tick.
@@ -458,7 +458,8 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelInfo, "failover.start", nil)
 
 				// Send initial failover heartbeat.
-				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10))
+				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
+				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 				if err != nil {
 					journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 						"error": err.Error(),
@@ -557,9 +558,11 @@ func handleFailoverPoll(
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
+	maxPer24h int,
 ) {
 	// Send failover heartbeat.
-	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10))
+	stats := currentRestartStats(recovery, maxPer24h)
+	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 	if err != nil {
 		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 			"error": err.Error(),
@@ -858,4 +861,14 @@ func errStr(err error) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// currentRestartStats builds a RestartStats snapshot from the RecoveryManager.
+func currentRestartStats(rm *watchdog.RecoveryManager, maxPer24h int) watchdog.RestartStats {
+	count := rm.Count24h()
+	return watchdog.RestartStats{
+		Count24h:      count,
+		LastRestartAt: rm.LastRestartAt(),
+		FlapDetected:  count >= maxPer24h,
+	}
 }

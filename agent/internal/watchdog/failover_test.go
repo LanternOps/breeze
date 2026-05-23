@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,7 +42,7 @@ func TestFailoverHeartbeat(t *testing.T) {
 		{Time: time.Now(), Level: LevelInfo, Event: "startup"},
 	}
 
-	resp, err := client.SendHeartbeat("0.1.0", StateFailover, entries)
+	resp, err := client.SendHeartbeat("0.1.0", StateFailover, entries, RestartStats{})
 	if err != nil {
 		t.Fatalf("SendHeartbeat returned error: %v", err)
 	}
@@ -130,5 +131,38 @@ func TestFailoverSubmitResult(t *testing.T) {
 	statusField, _ := gotBody["status"].(string)
 	if statusField != "success" {
 		t.Errorf("body status = %q, want success", statusField)
+	}
+}
+
+func TestSendHeartbeatIncludesRestartStats(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Fatalf("server: unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer server.Close()
+
+	fc := NewFailoverClient(server.URL, "agent-xyz", "token", nil)
+	stats := RestartStats{
+		Count24h:      4,
+		LastRestartAt: time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC),
+		FlapDetected:  false,
+	}
+	if _, err := fc.SendHeartbeat("0.65.20", "RECOVERING", nil, stats); err != nil {
+		t.Fatalf("SendHeartbeat: %v", err)
+	}
+
+	if got := captured["mainAgentRestartCount24h"]; got != float64(4) {
+		t.Errorf("mainAgentRestartCount24h: want 4, got %v", got)
+	}
+	if got, _ := captured["mainAgentLastRestartAt"].(string); got != "2026-05-22T12:00:00Z" {
+		t.Errorf("mainAgentLastRestartAt: want 2026-05-22T12:00:00Z, got %v", got)
+	}
+	if got := captured["flapDetected"]; got != false {
+		t.Errorf("flapDetected: want false, got %v", got)
 	}
 }
