@@ -121,6 +121,10 @@ export class OpenAISessionManager {
    *
    * The caller MUST have already called tryTransitionToProcessing() before startTurn().
    *
+   * `userMessage` must be the same sanitized payload persisted to ai_messages just before this
+   * call — runTurn rebuilds prompts from committed DB rows plus this in-memory current turn so
+   * vLLM always receives the latest user text (never rely on SELECT seeing the pending INSERT).
+   *
    * Matches Anthropic: turn work starts outside the HTTP request ALS (see
    * StreamingSessionManager runOutsideDbContextSafe) so post-stream DB writes get a
    * fresh withDbAccessContext transaction and correct breeze.* session variables.
@@ -129,13 +133,14 @@ export class OpenAISessionManager {
     session: OpenAISession,
     _model: string,
     systemPrompt: string,
+    userMessage: string,
   ): void {
     // Abort any previous turn (defensive: covers the gap between
     // tryTransitionToProcessing and startTurn) then assign a fresh controller.
     try { session.abortController.abort(); } catch { /* ignore */ }
     session.abortController = new AbortController();
     runOutsideDbContextSafe(() => {
-      void this.runTurn(session, _model, systemPrompt).catch((err) => {
+      void this.runTurn(session, _model, systemPrompt, userMessage).catch((err) => {
         captureException(err);
         console.error('[OpenAISessionManager] Background runTurn error:', err);
       });
@@ -146,6 +151,7 @@ export class OpenAISessionManager {
     session: OpenAISession,
     _model: string,
     systemPrompt: string,
+    userMessage: string,
   ): Promise<void> {
     const { breezeSessionId, orgId } = session;
 
@@ -172,6 +178,8 @@ export class OpenAISessionManager {
     const messages = [
       { role: 'system' as const, content: systemPrompt },
       ...history,
+      // Current user row is not visible to buildMessagesFromHistory (see historyBuilder docs).
+      { role: 'user' as const, content: userMessage },
     ];
 
     const messageId = crypto.randomUUID();

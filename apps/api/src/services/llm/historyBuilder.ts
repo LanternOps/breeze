@@ -7,6 +7,15 @@
  * Scope: user and assistant text messages only. Tool-use messages are not supported on
  * this path. If the history contains tool_use or tool_result rows, this function throws
  * so the caller can surface an explicit error rather than silently losing context.
+ *
+ * Important (openai-compatible turn construction): During an HTTP handler, OpenAISessionManager
+ * persists the newest user row in the auth middleware transaction, then invokes
+ * buildMessagesFromHistory from runTurn after runOutsideDbContext. That SELECT runs in another
+ * transaction and cannot see the uncommitted INSERT, so committed history returned here
+ * intentionally omits the *current* user message. Callers MUST append that message from
+ * sanitized in-memory content (parallel to Anthropic: DB persistence + pushMessage to the SDK).
+ * If the isolation model ever changes so buildMessagesFromHistory could see that same row, the
+ * caller would duplicate the last user message and must reconcile explicitly.
  */
 
 import { db, withDbAccessContext } from '../../db';

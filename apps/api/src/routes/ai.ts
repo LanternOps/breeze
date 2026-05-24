@@ -379,7 +379,7 @@ aiRoutes.post(
         }
       }
 
-      openaiManager.startTurn(openaiSession, dbSession.model, systemPrompt);
+      openaiManager.startTurn(openaiSession, dbSession.model, systemPrompt, sanitizedContent);
 
       const subscriptionId = crypto.randomUUID();
       return streamSSE(c, async (stream) => {
