@@ -135,7 +135,10 @@ export class OpenAISessionManager {
     try { session.abortController.abort(); } catch { /* ignore */ }
     session.abortController = new AbortController();
     runOutsideDbContextSafe(() => {
-      void this.runTurn(session, _model, systemPrompt);
+      void this.runTurn(session, _model, systemPrompt).catch((err) => {
+        captureException(err);
+        console.error('[OpenAISessionManager] Background runTurn error:', err);
+      });
     });
   }
 
