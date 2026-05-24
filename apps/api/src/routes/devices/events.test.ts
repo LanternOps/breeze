@@ -54,10 +54,19 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (resource === 'devices' && action === 'read' && c.req.header('x-deny-devices-read') === 'true') {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('./helpers', () => ({
-  getDeviceWithOrgCheck: vi.fn().mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', orgId: 'org-123' })
+  getDeviceWithOrgCheck: vi.fn().mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', orgId: 'org-123' }),
+  getDeviceWithOrgAndSiteCheck: vi.fn().mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', orgId: 'org-123', siteId: 'site-1' }),
+  SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
 import { eventsRoutes } from './events';

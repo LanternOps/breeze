@@ -49,7 +49,10 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('./helpers', () => ({
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
-  getDeviceWithOrgCheck: vi.fn()
+  getDeviceWithOrgCheck: vi.fn(),
+  getDeviceWithOrgAndSiteCheck: vi.fn(),
+  SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
+  stripSensitiveDeviceFields: vi.fn((d: unknown) => d),
 }));
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
@@ -82,7 +85,7 @@ vi.mock('../../services/sentry', () => ({
 }));
 
 import { coreRoutes } from './core';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgCheck, getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { requirePermission, requireMfa } from '../../middleware/auth';
@@ -124,6 +127,7 @@ describe('POST /devices/:id/remote-access-launch', () => {
 
   it('returns 404 when device does not exist', async () => {
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(null as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);
     const res = await app.request(`/devices/${deviceId}/remote-access-launch`, {
       method: 'POST',
       headers: { Authorization: 'Bearer token' }
@@ -132,6 +136,13 @@ describe('POST /devices/:id/remote-access-launch', () => {
   });
 
   it('returns 404 with skipReason when no launcher provider is configured', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId,
+      orgId: 'org-123',
+      hostname: 'host-1',
+      siteId: 'site-1',
+      customFields: {}
+    } as never);
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
       id: deviceId,
       orgId: 'org-123',
@@ -150,6 +161,13 @@ describe('POST /devices/:id/remote-access-launch', () => {
   });
 
   it('returns 200 with launchUrl on success and audits issuance', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId,
+      orgId: 'org-123',
+      hostname: 'host-1',
+      siteId: 'site-1',
+      customFields: { rustdesk_id: '294064193' }
+    } as never);
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
       id: deviceId,
       orgId: 'org-123',
@@ -204,6 +222,13 @@ describe('POST /devices/:id/remote-access-launch', () => {
   });
 
   it('returns 422 + audit event + Sentry capture when scheme rejected at substitution', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId,
+      orgId: 'org-123',
+      hostname: 'host-1',
+      siteId: 'site-1',
+      customFields: { k: 'avas' }
+    } as never);
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
       id: deviceId,
       orgId: 'org-123',
@@ -251,6 +276,13 @@ describe('POST /devices/:id/remote-access-launch', () => {
   });
 
   it('GET /devices/:id no longer exposes remoteAccessLaunchUrl', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId,
+      orgId: 'org-123',
+      hostname: 'host-1',
+      siteId: 'site-1',
+      customFields: {}
+    } as never);
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
       id: deviceId,
       orgId: 'org-123',

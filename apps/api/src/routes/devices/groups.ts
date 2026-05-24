@@ -3,7 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, asc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroups, deviceGroupMemberships, sites } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, ensureOrgAccess } from './helpers';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -16,6 +17,7 @@ groupsRoutes.use('*', authMiddleware);
 groupsRoutes.get(
   '/groups',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const { orgId, page = '1', limit = '50' } = c.req.query();
@@ -44,8 +46,19 @@ groupsRoutes.get(
       .limit(pagination.limit)
       .offset(pagination.offset);
 
+    // Site-scope filter: when the caller has an allowedSiteIds restriction,
+    // hide groups whose siteId is outside the allowlist. Groups with no
+    // siteId are org-wide and remain visible (existing site-restricted users
+    // can already enumerate the org). NOTE: this filters in-memory rather
+    // than at the DB layer to avoid an extra `inArray` query when no
+    // restriction is set; the page size cap (50) keeps the work bounded.
+    const userPerms = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
+    const filteredGroups = userPerms?.allowedSiteIds
+      ? groups.filter(g => !g.siteId || userPerms.allowedSiteIds!.includes(g.siteId))
+      : groups;
+
     return c.json({
-      data: groups,
+      data: filteredGroups,
       pagination: {
         page: pagination.page,
         limit: pagination.limit,
@@ -59,6 +72,8 @@ groupsRoutes.get(
 groupsRoutes.post(
   '/groups',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', createGroupSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -133,6 +148,8 @@ groupsRoutes.post(
 groupsRoutes.patch(
   '/groups/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', updateGroupSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -219,6 +236,8 @@ groupsRoutes.patch(
 groupsRoutes.delete(
   '/groups/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const groupId = c.req.param('id')!;
@@ -264,6 +283,8 @@ groupsRoutes.delete(
 groupsRoutes.post(
   '/groups/:id/members',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const groupId = c.req.param('id')!;
@@ -288,9 +309,11 @@ groupsRoutes.post(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Verify all devices belong to the same org
+    // Verify all devices belong to the same org and intersect with the
+    // caller's allowedSiteIds (if any). Site-restricted users must not be
+    // able to add cross-site devices via the group membership endpoint.
     const validDevices = await db
-      .select({ id: devices.id })
+      .select({ id: devices.id, siteId: devices.siteId })
       .from(devices)
       .where(
         and(
@@ -299,9 +322,19 @@ groupsRoutes.post(
         )
       );
 
-    const validDeviceIds = validDevices.map(d => d.id);
+    const userPerms = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
+    const siteAllowed = userPerms?.allowedSiteIds
+      ? validDevices.filter(d => typeof d.siteId === 'string' && userPerms.allowedSiteIds!.includes(d.siteId))
+      : validDevices;
+    const validDeviceIds = siteAllowed.map(d => d.id);
 
     if (validDeviceIds.length === 0) {
+      // If the caller had site restrictions AND every requested device fell
+      // outside the allowlist, this is a 403, not a 400. Otherwise (no
+      // matching org devices at all) keep the 400 behavior.
+      if (userPerms?.allowedSiteIds && validDevices.length > 0) {
+        return c.json({ error: 'Access to these device sites denied' }, 403);
+      }
       return c.json({ error: 'No valid devices found' }, 400);
     }
 
@@ -341,6 +374,8 @@ groupsRoutes.post(
 groupsRoutes.delete(
   '/groups/:id/members',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const groupId = c.req.param('id')!;
@@ -365,12 +400,33 @@ groupsRoutes.delete(
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    // Site-scope: a site-restricted caller may only remove devices whose
+    // site is in their allowlist. If every requested device is out of
+    // scope, deny outright; otherwise silently filter.
+    let targetDeviceIds = deviceIds;
+    const userPerms = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
+    if (userPerms?.allowedSiteIds) {
+      const inScopeDevices = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(
+          and(
+            inArray(devices.id, deviceIds),
+            inArray(devices.siteId, userPerms.allowedSiteIds)
+          )
+        );
+      targetDeviceIds = inScopeDevices.map(d => d.id);
+      if (targetDeviceIds.length === 0) {
+        return c.json({ error: 'Access to these device sites denied' }, 403);
+      }
+    }
+
     await db
       .delete(deviceGroupMemberships)
       .where(
         and(
           eq(deviceGroupMemberships.groupId, groupId),
-          inArray(deviceGroupMemberships.deviceId, deviceIds)
+          inArray(deviceGroupMemberships.deviceId, targetDeviceIds)
         )
       );
 

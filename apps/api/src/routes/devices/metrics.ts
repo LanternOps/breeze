@@ -3,8 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, gte, lte, sql, asc } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceMetrics, sites } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
-import { getDeviceWithOrgCheck } from './helpers';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { metricsQuerySchema } from './schemas';
 
 export const metricsRoutes = new Hono();
@@ -165,13 +166,17 @@ function aggregateMetricsByInterval(
 metricsRoutes.get(
   '/:id/metrics',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', metricsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id');
     const query = c.req.valid('query');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

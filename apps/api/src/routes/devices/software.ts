@@ -3,8 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, like, sql, asc } from 'drizzle-orm';
 import { db } from '../../db';
 import { softwareInventory } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
-import { getPagination, getDeviceWithOrgCheck } from './helpers';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
+import { getPagination, getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { softwareQuerySchema } from './schemas';
 
 export const softwareRoutes = new Hono();
@@ -15,6 +16,7 @@ softwareRoutes.use('*', authMiddleware);
 softwareRoutes.get(
   '/:id/software',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', softwareQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -22,7 +24,10 @@ softwareRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query, 1000);
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

@@ -6,7 +6,7 @@ import { db } from '../../db';
 import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 
@@ -104,13 +104,17 @@ function safeParsePatchResult(result: unknown): unknown {
 patchesRoutes.get(
   '/:id/patches/history',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', patchHistoryQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
     const { limit, offset, type, status } = c.req.valid('query');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -171,11 +175,15 @@ patchesRoutes.get(
 patchesRoutes.get(
   '/:id/patches',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -307,7 +315,10 @@ patchesRoutes.post(
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -382,7 +393,10 @@ patchesRoutes.post(
     const auth = c.get('auth');
     const { id: deviceId, patchId } = c.req.valid('param');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

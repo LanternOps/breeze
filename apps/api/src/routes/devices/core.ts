@@ -17,7 +17,12 @@ import {
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { getPagination, getDeviceWithOrgCheck, stripSensitiveDeviceFields } from './helpers';
+import {
+  getPagination,
+  getDeviceWithOrgAndSiteCheck,
+  SITE_ACCESS_DENIED,
+  stripSensitiveDeviceFields,
+} from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
@@ -218,6 +223,7 @@ coreRoutes.post(
 coreRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listDevicesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -529,11 +535,15 @@ coreRoutes.get(
 coreRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -718,7 +728,10 @@ coreRoutes.post(
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -800,11 +813,15 @@ coreRoutes.post(
 coreRoutes.get(
   '/:id/management-posture',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -822,6 +839,8 @@ coreRoutes.get(
 coreRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', updateDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -832,7 +851,10 @@ coreRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -888,7 +910,10 @@ coreRoutes.patch(
       details: { changedFields: Object.keys(data) }
     });
 
-    return c.json(updated);
+    // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
+    // material to the client (these are credential verifiers / lifecycle
+    // metadata that belong only inside the API).
+    return c.json(updated ? stripSensitiveDeviceFields(updated) : updated);
   }
 );
 
@@ -902,7 +927,10 @@ coreRoutes.post(
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -945,12 +973,17 @@ coreRoutes.post(
 // DELETE /devices/:id - Decommission device (soft delete)
 coreRoutes.delete(
   '/:id',
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -976,19 +1009,24 @@ coreRoutes.delete(
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
     });
 
-    return c.json({ success: true, device: updated });
+    return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
   }
 );
 
 // POST /devices/:id/restore - Restore a decommissioned device
 coreRoutes.post(
   '/:id/restore',
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -1014,19 +1052,24 @@ coreRoutes.post(
       resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
     });
 
-    return c.json({ success: true, device: updated });
+    return c.json({ success: true, device: updated ? stripSensitiveDeviceFields(updated) : updated });
   }
 );
 
 // DELETE /devices/:id/permanent - Permanently delete a device record
 coreRoutes.delete(
   '/:id/permanent',
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

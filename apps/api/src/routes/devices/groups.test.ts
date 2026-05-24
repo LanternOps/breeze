@@ -41,6 +41,19 @@ vi.mock('../../db/schema', () => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((_c: any, next: any) => next()),
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    const denyHeader = c.req.header(`x-deny-${resource}-${action}`);
+    if (denyHeader === 'true') {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (c.req.header('x-deny-mfa') === 'true') {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  }),
 }));
 
 vi.mock('../../services/auditEvents', () => ({

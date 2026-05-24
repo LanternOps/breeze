@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { and, eq, gte, lte, desc, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceEventLogs } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
-import { getDeviceWithOrgCheck, getPagination } from './helpers';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination } from './helpers';
 
 export const eventLogsRoutes = new Hono();
 
@@ -25,6 +26,7 @@ const eventLogsQuerySchema = z.object({
 eventLogsRoutes.get(
   '/:id/eventlogs',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', eventLogsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -32,7 +34,10 @@ eventLogsRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query, 500);
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

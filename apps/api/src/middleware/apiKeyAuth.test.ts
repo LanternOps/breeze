@@ -565,3 +565,29 @@ describe('eitherAuth middleware', () => {
     expect(next).toHaveBeenCalled();
   });
 });
+
+describe('API key auth + requireMfa interaction (intentional break)', () => {
+  // E.7: API-key-authenticated requests do NOT set the `auth` context value;
+  // they set `apiKey` instead. `requireMfa()` reads `auth` and rejects 401
+  // when missing — so any route gated with `requireMfa()` is effectively
+  // off-limits to API keys. This is intentional: API keys are unattended
+  // service-account credentials with no MFA factor, and silently waiving MFA
+  // for them would defeat the gate. If we ever want service-account access
+  // to MFA-gated routes, the right fix is a dedicated mechanism (signed
+  // intent, scoped capability), not a quiet bypass. This test exists so any
+  // future patch that "fixes" the 401 by short-circuiting requireMfa fails
+  // CI loudly.
+  it('API key auth cannot satisfy requireMfa (intentional break — service accounts need a dedicated path)', async () => {
+    const { requireMfa } = await import('./auth');
+    // Build a context that mimics a request handled by apiKeyAuthMiddleware:
+    // `apiKey` is set, but `auth` is NOT.
+    const c = createContext();
+    c.set('apiKey', { id: 'k', scopes: ['devices:write'] } as any);
+    const next = vi.fn();
+
+    await expect(requireMfa()(c, next)).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+});

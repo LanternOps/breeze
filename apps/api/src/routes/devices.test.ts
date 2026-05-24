@@ -116,7 +116,19 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    // Populate the `permissions` context value so getDeviceWithOrgAndSiteCheck
+    // doesn't trip its "called without requirePermission" 500 safety throw.
+    // No allowedSiteIds → unrestricted, mirrors a role with full site access.
+    c.set('permissions', {
+      permissions: [{ resource, action }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-123',
+      scope: 'organization',
+    });
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
