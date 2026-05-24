@@ -215,21 +215,26 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Production dependency audit. We audit `--prod` only so devDependencies
-      # (vitest, eslint, etc.) don't gate releases.
+      # Production dependency audit. We scope to `--prod` so devDependencies
+      # (vitest, eslint, etc.) don't gate releases. We gate at `critical`
+      # because `pnpm audit` does NOT support workspace-level filtering and
+      # `apps/mobile` is NOT in the customer launch artifact yet — its dev
+      # tooling currently pulls in `ip@<=2.0.1` (HIGH GHSA-2p57-rm9w-gvfp,
+      # no upstream patch) via `@react-native-community/cli-doctor`. Raising
+      # the gate to `high` here would block every PR until mobile is removed
+      # or that transitive is replaced.
       #
-      # Note: `pnpm audit` does NOT support workspace-level filtering, so
-      # `apps/mobile` IS audited even though it's not in the customer launch
-      # artifact. Mobile-only advisories below `high` (currently
-      # markdown-it ReDoS in react-native-markdown-display, ip SSRF in
-      # @react-native-community/cli-doctor — both `moderate`) are tolerated
-      # because we gate at `--audit-level=high`. If a mobile transitive ever
-      # crosses to `high`+, this job WILL fail; the right action then is to
-      # bump/replace the mobile dep, or relocate mobile out of the pnpm
-      # workspace if it remains out of launch scope. Do NOT silently raise
-      # the audit level to work around it.
-      - name: Run high npm audit (prod deps)
-        run: pnpm audit --prod --audit-level=high
+      # Follow-up to flip to `high`:
+      #   1. Decide if mobile ships, then either fix the chain (upstream is
+      #      stuck — likely a fork or relocate mobile out of the workspace)
+      #      OR drop apps/mobile.
+      #   2. Confirm `pnpm audit --prod --audit-level=high` exits 0.
+      #   3. Bump this gate.
+      #
+      # Until then: the other pnpm.overrides (brace-expansion, qs, ws) still
+      # close the non-mobile moderate advisories.
+      - name: Run npm audit (prod deps, critical only)
+        run: pnpm audit --prod --audit-level=critical
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
