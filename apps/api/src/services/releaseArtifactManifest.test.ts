@@ -83,6 +83,56 @@ describe("releaseArtifactManifest", () => {
     );
   });
 
+  it("accepts a repository mismatch that differs only in case", async () => {
+    // GitHub repo names are case-insensitive for routing, and the manifest's
+    // repository field reflects whatever case the org had at repo-create time
+    // (GITHUB_REPOSITORY env var in release.yml). A strict comparison against
+    // a lowercased default like "lanternops/breeze" rejects manifests written
+    // as "LanternOps/breeze", which is exactly the bug self-hosters hit when
+    // generating an MSI installer link.
+    const asset = Buffer.from("trusted-msi");
+    const signed = makeSignedManifest({
+      assetName: "breeze-agent.msi",
+      assetBuffer: asset,
+      repository: "LanternOps/breeze",
+    });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    await expect(
+      verifyReleaseArtifactBuffer({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        expectedRepository: "lanternops/breeze",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        repository: "LanternOps/breeze",
+      }),
+    );
+  });
+
+  it("still rejects a repository mismatch beyond case differences", async () => {
+    const asset = Buffer.from("trusted-msi");
+    const signed = makeSignedManifest({
+      assetName: "breeze-agent.msi",
+      assetBuffer: asset,
+      repository: "evilorg/breeze",
+    });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    await expect(
+      verifyReleaseArtifactBuffer({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        expectedRepository: "lanternops/breeze",
+      }),
+    ).rejects.toThrow("repository mismatch");
+  });
+
   it("rejects a tampered manifest signature", async () => {
     const asset = Buffer.from("trusted-pkg");
     const signed = makeSignedManifest({

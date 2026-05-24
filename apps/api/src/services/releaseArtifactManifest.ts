@@ -236,11 +236,19 @@ function selectManifestAsset(args: {
 }): SelectedReleaseArtifactManifestAsset {
   const { manifest } = args;
   if (args.expectedRepository) {
-    assertStringEqual(
-      manifest.repository,
-      args.expectedRepository,
-      "repository",
-    );
+    // GitHub repository names are case-insensitive for routing; the manifest
+    // case reflects whatever GITHUB_REPOSITORY was set to at release time
+    // (canonical org case, e.g. "LanternOps/breeze") while callers may pass a
+    // lowercased default. Lock identity but tolerate case to avoid the
+    // self-hoster footgun in fetchRegularMsi/fetchMacosPkg pre-flight.
+    if (
+      typeof manifest.repository !== "string" ||
+      manifest.repository.toLowerCase() !== args.expectedRepository.toLowerCase()
+    ) {
+      throw new Error(
+        `Release artifact manifest repository mismatch: expected ${args.expectedRepository}, got ${String(manifest.repository)}`,
+      );
+    }
   }
   if (args.expectedRelease) {
     assertStringEqual(manifest.release, args.expectedRelease, "release");
