@@ -196,7 +196,11 @@ aiRoutes.delete(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    streamingSessionManager.remove(sessionId);
+    const manager =
+      getConfig().MCP_LLM_PROVIDER === 'openai-compatible'
+        ? getOpenAISessionManager()
+        : streamingSessionManager;
+    manager.remove(sessionId);
 
     writeRouteAudit(c, {
       orgId: closed.orgId,
