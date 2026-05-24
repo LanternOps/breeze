@@ -86,7 +86,7 @@ Watch the API container logs for these one-time warnings. Each is a backlog item
 
 The following defaults are temporary to avoid stranding existing deployments:
 
-- `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` — currently defaults to `true`; flips to `false` next release. Migrate clients to read `breeze_refresh_token` HttpOnly cookie instead of JSON `refreshToken`.
+- `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` — **default is now `false`** as of this release. The refresh token is delivered only via the HttpOnly `breeze_refresh_token` cookie; the JSON `refreshToken` field is omitted. If an external SSO client still reads `response.refreshToken`, set `SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true` explicitly (in `/opt/breeze/.env` **and** the `api` service `environment:` block of `/opt/breeze/docker-compose.yml` — compose interpolation requires both) while you migrate it to the cookie. The flag and JSON field will be removed entirely after the Sunset date (2026-08-01).
 - `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` — currently defaults to `true`; flips to `false` next release. Migrate webhook senders to HMAC.
 - `ENROLLMENT_SECRET_ENFORCEMENT_MODE=warn` — accepted in this release only. Next release will require either `AGENT_ENROLLMENT_SECRET` or per-key secrets.
 - Legacy enrollment-key pepper fallback (`APP_ENCRYPTION_KEY`/`JWT_SECRET`) — will be removed once existing keys are re-hashed under `ENROLLMENT_KEY_PEPPER`.

@@ -998,11 +998,12 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
 
   setRefreshTokenCookie(c, grant.refreshToken);
 
-  // Default to including refreshToken in the JSON response for one release after
-  // the cookie-based default flipped, so existing callers reading `response.refreshToken`
-  // continue to work. Operators can set SSO_EXCHANGE_RETURN_REFRESH_TOKEN=false to opt
-  // into the cookie-only behavior immediately. Next release flips the default to false.
-  const returnRefreshToken = envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', true);
+  // The refresh token is delivered via the HttpOnly `breeze_refresh_token` cookie set
+  // above. Returning it in the JSON body is now opt-in only for any operator who still
+  // has an external SSO client that reads `response.refreshToken` — set
+  // SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true to restore the legacy behavior. The flag
+  // (and the JSON refreshToken field) will be removed entirely after the Sunset date.
+  const returnRefreshToken = envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', false);
   if (returnRefreshToken) {
     c.header('Deprecation', 'true');
     c.header('Sunset', 'Fri, 01 Aug 2026 00:00:00 GMT');

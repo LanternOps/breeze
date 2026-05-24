@@ -614,16 +614,16 @@ describe('sso routes', () => {
 
     expect(exchangeRes.status).toBe(200);
     const body = await exchangeRes.json();
-    // SSO_EXCHANGE_RETURN_REFRESH_TOKEN defaults to true for one release after
-    // the cookie-based default flipped, so existing callers that read
-    // response.refreshToken keep working. The Deprecation header signals the
-    // pending flip back to cookie-only.
+    // SSO_EXCHANGE_RETURN_REFRESH_TOKEN defaults to false: the refresh token
+    // is delivered only via the HttpOnly `breeze_refresh_token` cookie, never
+    // in the JSON response. The Deprecation header is only emitted when the
+    // legacy JSON behavior is explicitly re-enabled via the env flag.
     expect(body).toEqual({
       accessToken: 'access-token',
-      expiresInSeconds: 900,
-      refreshToken: 'refresh-token'
+      expiresInSeconds: 900
     });
-    expect(exchangeRes.headers.get('deprecation')).toBe('true');
+    expect(body.refreshToken).toBeUndefined();
+    expect(exchangeRes.headers.get('deprecation')).toBeNull();
     const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('breeze_refresh_token=');
     expect(setCookie).toContain('HttpOnly');
@@ -728,5 +728,12 @@ describe('sso routes', () => {
     expect(exchangeRes.status).toBe(200);
     const body = await exchangeRes.json();
     expect(body.refreshToken).toBe('refresh-token');
+    // HttpOnly cookie is set in both modes — flag only controls JSON body.
+    const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('breeze_refresh_token=');
+    expect(setCookie).toContain('HttpOnly');
+    // Deprecation headers are emitted when the legacy JSON behavior is opted into.
+    expect(exchangeRes.headers.get('deprecation')).toBe('true');
+    expect(exchangeRes.headers.get('sunset')).toBeTruthy();
   });
 });
