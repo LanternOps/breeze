@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -144,6 +143,14 @@ func runWatchdogSupervisor(ctx context.Context, ctl watchdogServiceController, i
 		case svc.Running:
 			if consecutiveFailures > 0 {
 				log.Info("watchdog supervisor: watchdog healthy again", "previousFailures", consecutiveFailures)
+				// Recovery detected — drop the backoff cadence immediately
+				// rather than waiting another slow tick to learn we're back.
+				if currentInterval != interval {
+					t.Reset(interval)
+					currentInterval = interval
+					log.Info("watchdog supervisor: cadence reset to fast after recovery",
+						"interval", interval.String())
+				}
 			}
 			consecutiveFailures = 0
 			return
@@ -171,6 +178,14 @@ func runWatchdogSupervisor(ctx context.Context, ctl watchdogServiceController, i
 			log.Info("watchdog supervisor: restart issued",
 				"totalRestarts", watchdogSupervisorRestartCount.Load())
 			consecutiveFailures = 0
+			// Restart issued — return to fast cadence so the verifying probe
+			// arrives one interval from now, not five.
+			if currentInterval != interval {
+				t.Reset(interval)
+				currentInterval = interval
+				log.Info("watchdog supervisor: cadence reset to fast after restart",
+					"interval", interval.String())
+			}
 		default:
 			// Unknown state code — log and move on.
 			log.Warn("watchdog supervisor: unexpected service state, ignoring", "state", state)
@@ -204,7 +219,3 @@ func runWatchdogSupervisor(ctx context.Context, ctl watchdogServiceController, i
 		}
 	}
 }
-
-// errSupervisorStopped is a sentinel for tests that want to assert the
-// goroutine exited via ctx-cancel rather than a panic.
-var errSupervisorStopped = errors.New("watchdog supervisor stopped")

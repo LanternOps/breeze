@@ -23,11 +23,13 @@ type fakeSCM struct {
 	queryErr   error
 	startErr   error
 	startCalls int
+	queryCalls int
 }
 
 func (f *fakeSCM) QueryState(_ string) (svc.State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.queryCalls++
 	if f.queryErr != nil {
 		return 0, f.queryErr
 	}
@@ -58,6 +60,12 @@ func (f *fakeSCM) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.startCalls
+}
+
+func (f *fakeSCM) queryCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.queryCalls
 }
 
 // waitUntil polls cond until it returns true or the timeout fires. Used to
@@ -105,8 +113,8 @@ func TestWatchdogSupervisor_NoopWhenRunning(t *testing.T) {
 	done := make(chan struct{})
 	go runWatchdogSupervisor(ctx, fake, 5*time.Millisecond, done)
 
-	// Let several ticks elapse.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for several probes to happen, then verify no Start was issued.
+	waitUntil(t, time.Second, func() bool { return fake.queryCount() >= 3 })
 
 	if got := fake.callCount(); got != 0 {
 		t.Fatalf("Start called %d times; expected 0 when service is Running", got)
@@ -129,7 +137,7 @@ func TestWatchdogSupervisor_BacksOffOnRepeatedFailure(t *testing.T) {
 
 	// Failure path doesn't call Start, but we can verify the goroutine
 	// keeps running rather than panicking on repeated query errors.
-	time.Sleep(60 * time.Millisecond)
+	waitUntil(t, time.Second, func() bool { return fake.queryCount() >= 3 })
 
 	if got := fake.callCount(); got != 0 {
 		t.Fatalf("Start called %d times despite query failure; expected 0", got)
@@ -159,7 +167,7 @@ func TestWatchdogSupervisor_IgnoresPendingStates(t *testing.T) {
 	done := make(chan struct{})
 	go runWatchdogSupervisor(ctx, fake, 5*time.Millisecond, done)
 
-	time.Sleep(80 * time.Millisecond)
+	waitUntil(t, time.Second, func() bool { return fake.queryCount() >= 4 })
 
 	if got := fake.callCount(); got != 0 {
 		t.Fatalf("Start called %d times on pending states; expected 0", got)

@@ -558,11 +558,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Tell the heartbeat where the state file is so it can update after each heartbeat.
 	hb.SetStatePath(statePath)
 
-	// Mutual supervision: when running as the Windows service, this agent
-	// process supervises BreezeWatchdog the same way BreezeWatchdog
+	// Mutual supervision: on Windows, when running as the SCM service this
+	// agent process supervises BreezeWatchdog the same way BreezeWatchdog
 	// supervises us. On macOS/Linux the OS service managers (launchd
-	// KeepAlive, systemd Restart=always) already do this, so the
-	// non-Windows stub of startWatchdogSupervisor is a no-op.
+	// KeepAlive, systemd Restart=always) already do this — and although
+	// LaunchDaemons report cfg.IsService=true via service_unix.go:21-26,
+	// startWatchdogSupervisor is a no-op stub on non-Windows builds, so
+	// gating on cfg.IsService here is safe across platforms.
 	var supervisorCancel context.CancelFunc
 	var supervisorDone <-chan struct{}
 	if cfg.IsService {
