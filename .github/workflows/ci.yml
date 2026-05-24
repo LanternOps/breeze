@@ -215,8 +215,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run critical npm audit
-        run: pnpm audit --audit-level=critical
+      # Production dependency audit. We audit `--prod` only so devDependencies
+      # (vitest, eslint, etc.) don't gate releases.
+      #
+      # Note: `pnpm audit` does NOT support workspace-level filtering, so
+      # `apps/mobile` IS audited even though it's not in the customer launch
+      # artifact. Mobile-only advisories below `high` (currently
+      # markdown-it ReDoS in react-native-markdown-display, ip SSRF in
+      # @react-native-community/cli-doctor — both `moderate`) are tolerated
+      # because we gate at `--audit-level=high`. If a mobile transitive ever
+      # crosses to `high`+, this job WILL fail; the right action then is to
+      # bump/replace the mobile dep, or relocate mobile out of the pnpm
+      # workspace if it remains out of launch scope. Do NOT silently raise
+      # the audit level to work around it.
+      - name: Run high npm audit (prod deps)
+        run: pnpm audit --prod --audit-level=high
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
