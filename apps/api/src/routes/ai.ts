@@ -53,6 +53,15 @@ function getOpenAISessionManager(): OpenAISessionManager {
       // but guard here in case getConfig() is called before validateConfig().
       throw new Error('MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible');
     }
+    if (
+      cfg.MCP_LLM_PROVIDER === 'openai-compatible' &&
+      cfg.MCP_LLM_PRICE_INPUT_PER_M_USD === 0 &&
+      cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD === 0
+    ) {
+      console.warn(
+        'MCP_LLM_PROVIDER=openai-compatible but both MCP_LLM_PRICE_*_PER_M_USD are 0: cost tracking and budget enforcement are no-ops on this path.'
+      );
+    }
     const provider = new OpenAICompatibleProvider({
       baseUrl: cfg.MCP_LLM_BASE_URL,
       apiKey: cfg.MCP_LLM_API_KEY!,
