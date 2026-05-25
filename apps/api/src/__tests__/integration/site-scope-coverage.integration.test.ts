@@ -87,15 +87,6 @@ const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
   'routes/monitoring.ts:GET /results/:deviceId/summary',
   'routes/monitoring.ts:GET /status/:deviceId',
 
-  // -- routes/security -------------------------------------------------------
-  // Posture, threat, and scan endpoints scoped to a single device. All
-  // pre-existing site-scope misses — deferred (one cohesive sweep planned).
-  'routes/security/posture.ts:GET /posture/:deviceId',
-  'routes/security/scans.ts:GET /scans/:deviceId',
-  'routes/security/scans.ts:POST /scan/:deviceId',
-  'routes/security/status.ts:GET /status/:deviceId',
-  'routes/security/threats.ts:GET /threats/:deviceId',
-
   // -- routes/snmp -----------------------------------------------------------
   // SNMP metric/threshold endpoints for a single device. Pre-existing
   // site-scope miss — deferred.

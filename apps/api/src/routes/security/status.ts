@@ -1,7 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { eq } from 'drizzle-orm';
 
+import { db } from '../../db';
+import { devices } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
+import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import { listStatusQuerySchema, deviceIdParamSchema } from './schemas';
 import { getPagination, paginate, listStatusRows, toStatusResponse } from './helpers';
 
@@ -66,6 +70,28 @@ statusRoutes.get(
 
     if (!status) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // Site-scope gate: partner-scope users restricted via `allowedSiteIds`
+    // must not see status for devices in sites they cannot access. RLS does
+    // not defend the site axis — mirrors PR #864/#868.
+    let userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (!userPerms) {
+      const fetched = await getUserPermissions(auth.user.id, {
+        partnerId: auth.partnerId || undefined,
+        orgId: auth.orgId || undefined,
+      });
+      userPerms = fetched || undefined;
+    }
+    if (userPerms?.allowedSiteIds) {
+      const [device] = await db
+        .select({ siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (!device || typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
     }
 
     return c.json({ data: status });
