@@ -216,7 +216,13 @@ describe('device endpoints (authenticated)', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.commands).toHaveLength(2);
-      expect(body.failed).toEqual([deviceThree.id]);
+      expect(body.failed).toEqual([
+        {
+          deviceId: deviceThree.id,
+          code: 'DECOMMISSIONED',
+          message: 'Cannot send commands to a decommissioned device.',
+        },
+      ]);
       expect(body.commands.map((command: { deviceId: string }) => command.deviceId)).toEqual([
         deviceOne.id,
         deviceTwo.id
