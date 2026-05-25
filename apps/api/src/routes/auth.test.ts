@@ -10,6 +10,7 @@ vi.mock('../services', () => ({
   createTokenPair: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
+    refreshJti: 'jti-mock',
     expiresInSeconds: 900
   }),
   verifyToken: vi.fn(),
@@ -25,6 +26,14 @@ vi.mock('../services', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined),
   isRefreshTokenJtiRevoked: vi.fn().mockResolvedValue(false),
   revokeRefreshTokenJti: vi.fn().mockResolvedValue(undefined),
+  // Task 7: refresh-token family revocation helpers. Default mock behaviour
+  // mirrors a healthy "no reuse, no revocation" path so existing /refresh
+  // tests continue to assert success on the happy path.
+  rememberJtiFamily: vi.fn().mockResolvedValue(undefined),
+  getFamilyForJti: vi.fn().mockResolvedValue(null),
+  revokeFamily: vi.fn().mockResolvedValue(undefined),
+  isFamilyRevoked: vi.fn().mockResolvedValue(false),
+  touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
@@ -89,6 +98,13 @@ vi.mock('../db/schema', () => ({
   partners: {
     id: 'partners.id',
     name: 'partners.name'
+  },
+  // Task 7: refresh-token family registry. The /login handler inserts a row
+  // here before minting tokens; the mock db.insert below returns void, which
+  // is sufficient for these unit tests.
+  refreshTokenFamilies: {
+    familyId: 'refreshTokenFamilies.familyId',
+    userId: 'refreshTokenFamilies.userId'
   }
 }));
 
@@ -698,12 +714,18 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.tokens).toBeDefined();
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({
-        scope: 'system',
-        roleId: null,
-        orgId: null,
-        partnerId: null
-      }));
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'system',
+          roleId: null,
+          orgId: null,
+          partnerId: null
+        }),
+        // Task 7: /refresh now passes a 2nd `CreateTokenPairOptions` arg.
+        // Empty object when the prior token had no `fam` claim (legacy /
+        // unit-test path where getFamilyForJti is mocked to null).
+        expect.any(Object)
+      );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-1');
     });
 
@@ -834,13 +856,17 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({
-        sub: 'user-123',
-        scope: 'organization',
-        roleId: 'role-live',
-        orgId: 'org-live',
-        partnerId: 'partner-live'
-      }));
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sub: 'user-123',
+          scope: 'organization',
+          roleId: 'role-live',
+          orgId: 'org-live',
+          partnerId: 'partner-live'
+        }),
+        // Task 7: /refresh now passes a 2nd CreateTokenPairOptions arg.
+        expect.any(Object)
+      );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
     });
 

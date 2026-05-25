@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
 import * as dbModule from '../../db';
-import { users } from '../../db/schema';
+import { users, refreshTokenFamilies } from '../../db/schema';
 import {
   createTokenPair,
   verifyToken,
@@ -13,7 +14,12 @@ import {
   getRedis,
   isRefreshTokenJtiRevoked,
   revokeAllUserTokens,
-  revokeRefreshTokenJti
+  revokeRefreshTokenJti,
+  rememberJtiFamily,
+  getFamilyForJti,
+  revokeFamily,
+  isFamilyRevoked,
+  touchFamilyLastUsed
 } from '../../services';
 import { authMiddleware } from '../../middleware/auth';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -201,6 +207,22 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   // Create tokens with user's context
   // MFA is vacuously satisfied when the user hasn't enrolled in MFA
   const mfaSatisfied = !(ENABLE_2FA && user.mfaEnabled);
+
+  // Task 7: mint a fresh refresh-token family for this login. The family id
+  // is embedded in the refresh token's `fam` claim and tracked in
+  // refresh_token_families. Every subsequent /refresh inherits this family;
+  // if a revoked jti from this chain is ever replayed, the WHOLE chain
+  // (every descendant + the current valid token) gets revoked, not just the
+  // replayed jti — closing the OAuth 2.1 token-reuse race described in
+  // RFC 9700 §4.13.2.
+  const familyId = randomUUID();
+  await withSystemDbAccessContext(async () =>
+    db.insert(refreshTokenFamilies).values({
+      familyId,
+      userId: user.id,
+    })
+  );
+
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
@@ -213,7 +235,12 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
     mdid: readMobileDeviceId(c) ?? undefined
-  });
+  }, { refreshFam: familyId });
+
+  // Record the jti → family mapping in Redis for hot-path /refresh lookup.
+  // Best-effort: the family id is also encoded in the JWT, so a Redis miss
+  // still works via the verified claim.
+  await rememberJtiFamily(tokens.refreshJti, familyId);
 
   // Update last login
   await db
@@ -308,7 +335,51 @@ loginRoutes.post('/refresh', async (c) => {
     }
   }
 
-  if (await isRefreshTokenJtiRevoked(payload.jti)) {
+  // Task 7: resolve the family for this jti. Prefer the verified JWT claim
+  // (`fam`) — it's cryptographically signed and can't be tampered with. Fall
+  // back to the Redis jti→family map for tokens that pre-date this rollout
+  // (legacy: claim absent → only `refresh-jti-fam:<jti>` may know the
+  // family). When BOTH are missing we treat the token as legacy and skip the
+  // family-revocation checks — backwards-compat for sessions issued before
+  // this PR. The per-jti revocation check below still gates those.
+  let familyId: string | null = payload.fam ?? null;
+  if (!familyId) {
+    familyId = await getFamilyForJti(payload.jti);
+  }
+
+  // Reuse detection: if this jti has already been revoked AND we have a
+  // family id, this is a replay of an old (rotated) refresh token. Kill the
+  // whole family + write an audit row + return 401. Without this check the
+  // attacker's later jti would still be valid even after the legitimate
+  // user's next rotation.
+  const jtiAlreadyRevoked = await isRefreshTokenJtiRevoked(payload.jti);
+  if (jtiAlreadyRevoked) {
+    if (familyId) {
+      await revokeFamily(familyId, 'reuse-detected');
+      createAuditLogAsync({
+        actorType: 'user',
+        actorId: payload.sub,
+        actorEmail: payload.email,
+        action: 'auth.refresh.reuse_detected',
+        resourceType: 'refresh_token_family',
+        resourceId: familyId,
+        details: {
+          replayedJti: payload.jti,
+          reason: 'Revoked refresh-token JTI replayed — entire family revoked',
+        },
+        ipAddress: getClientIP(c),
+        userAgent: c.req.header('user-agent'),
+        result: 'denied',
+      });
+    }
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  // Family-revoked sentinel check: covers the descendant case. If a sibling
+  // refresh on this family already triggered reuse-detection, this token —
+  // although its own jti hasn't been revoked — must also fail.
+  if (familyId && (await isFamilyRevoked(familyId))) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
@@ -341,7 +412,22 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Create new token pair
+  // Task 7: revoke the OLD jti BEFORE minting the new token, not after. This
+  // closes a TOCTOU window — a concurrent /refresh racing on the same cookie
+  // would otherwise both see "jti not revoked" and both mint new pairs.
+  // Revocation failing means we must NOT issue a new cookie (the attacker's
+  // window stays open if revocation didn't stick).
+  try {
+    await revokeRefreshTokenJti(payload.jti);
+  } catch (error) {
+    console.error('[auth] Refusing to mint refresh token — old jti revocation failed:', error);
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  // Create new token pair. Inherit the family from the verified claim (or
+  // the looked-up familyId from Redis for legacy tokens that didn't carry
+  // the claim but we still know the family for).
   const tokens = await createTokenPair({
     sub: user.id,
     email: user.email,
@@ -354,13 +440,18 @@ loginRoutes.post('/refresh', async (c) => {
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.
     mdid: carryForwardBinding(payload)
-  });
+  }, familyId ? { refreshFam: familyId } : {});
 
-  try {
-    await revokeRefreshTokenJti(payload.jti);
-  } catch (error) {
-    console.error('[auth] Failed to revoke old refresh token JTI during rotation:', error);
+  if (familyId) {
+    // Map the newly-minted jti to the same family so a future replay of THIS
+    // jti can also be detected via Redis. Best-effort; the JWT `fam` claim
+    // is the primary record.
+    await rememberJtiFamily(tokens.refreshJti, familyId);
+    // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
+    // blocks the refresh.
+    void touchFamilyLastUsed(familyId);
   }
+
   setRefreshTokenCookie(c, tokens.refreshToken);
   return c.json({ tokens: toPublicTokens(tokens) });
 });

@@ -177,6 +177,12 @@ export interface TokenPayload {
   // The lost-phone block is enforced against this SIGNED value, never a
   // client-supplied header (which is spoofable / omittable).
   mdid?: string;
+  // Refresh-token family id (Task 7 / RFC 9700 §4.13.2). Carried on REFRESH
+  // tokens only — access tokens never need it. Each /login mints a fresh
+  // family; every rotation inherits the family from the prior refresh token.
+  // Legacy tokens minted before this rollout have no `fam` and use the
+  // backwards-compat per-jti revocation path on /refresh.
+  fam?: string;
   iat?: number;
   jti?: string;
 }
@@ -207,16 +213,30 @@ export async function createAccessToken(payload: Omit<TokenPayload, 'type'>): Pr
 }
 
 export async function createRefreshToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
-  const { key, kid } = getSignKey();
+  return (await createRefreshTokenWithJti(payload)).token;
+}
 
-  return new SignJWT({ ...payload, type: 'refresh' })
+/**
+ * Like `createRefreshToken` but also returns the embedded jti so callers
+ * can establish a jti → family mapping (Task 7) without re-verifying the
+ * token. Used by `createTokenPair` for the family-aware path.
+ */
+export async function createRefreshTokenWithJti(
+  payload: Omit<TokenPayload, 'type'>
+): Promise<{ token: string; jti: string }> {
+  const { key, kid } = getSignKey();
+  const jti = randomUUID();
+
+  const token = await new SignJWT({ ...payload, type: 'refresh' })
     .setProtectedHeader(buildHeader(kid))
-    .setJti(randomUUID())
+    .setJti(jti)
     .setIssuedAt()
     .setExpirationTime(REFRESH_TOKEN_EXPIRY)
     .setIssuer('breeze')
     .setAudience('breeze-api')
     .sign(key);
+
+  return { token, jti };
 }
 
 export async function verifyToken(token: string): Promise<TokenPayload | null> {
@@ -237,6 +257,7 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       type: payload.type as 'access' | 'refresh',
       mfa: payload.mfa === true,
       mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
+      fam: typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
@@ -292,17 +313,39 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
   }
 }
 
+export interface CreateTokenPairOptions {
+  /**
+   * Refresh-token family id (Task 7). When present, the new refresh token
+   * carries this id in its `fam` claim. The access token never gets it.
+   * Callers that don't care about family tracking (legacy paths, or non-
+   * /login entry points) can omit this and tokens fall back to the
+   * backwards-compat per-jti revocation path on /refresh.
+   */
+  refreshFam?: string;
+}
+
 export async function createTokenPair(
-  payload: Omit<TokenPayload, 'type'>
-): Promise<{ accessToken: string; refreshToken: string; expiresInSeconds: number }> {
-  const [accessToken, refreshToken] = await Promise.all([
-    createAccessToken(payload),
-    createRefreshToken(payload)
+  payload: Omit<TokenPayload, 'type'>,
+  options: CreateTokenPairOptions = {}
+): Promise<{ accessToken: string; refreshToken: string; refreshJti: string; expiresInSeconds: number }> {
+  // Strip `fam` from the access-token payload defensively — it should never
+  // have been propagated there in the first place, but enforce here so any
+  // future caller can't accidentally leak it.
+  const { fam: _famIgnored, ...accessPayload } = payload;
+  void _famIgnored;
+  const refreshPayload: Omit<TokenPayload, 'type'> = options.refreshFam
+    ? { ...payload, fam: options.refreshFam }
+    : payload;
+
+  const [accessToken, refresh] = await Promise.all([
+    createAccessToken(accessPayload),
+    createRefreshTokenWithJti(refreshPayload)
   ]);
 
   return {
     accessToken,
-    refreshToken,
+    refreshToken: refresh.token,
+    refreshJti: refresh.jti,
     expiresInSeconds: e2eMode ? 24 * 60 * 60 : 15 * 60
   };
 }

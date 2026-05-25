@@ -143,6 +143,10 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // the same system-scope OR branch so the account-deletion admin queue
   // (runWithSystemDbAccess) can read/process the queue.
   'account_deletion_requests',
+  // refresh_token_families: OAuth 2.1 refresh-token chain records, scoped to
+  // the token owner via breeze_current_user_id(). System-initiated revocation
+  // (reuse detection in /auth/refresh) uses withSystemDbAccessContext.
+  'refresh_token_families',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
