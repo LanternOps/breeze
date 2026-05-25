@@ -985,7 +985,13 @@ automationWebhookRoutes.post('/:id', async (c) => {
   const eventIdHeader = c.req.header('x-breeze-event-id') ?? c.req.header('x-breeze-nonce');
   const headerSecret = c.req.header('x-automation-secret')
     ?? c.req.header('x-webhook-secret');
-  const querySecret = c.req.query('secret');
+
+  // `?secret=` query-string authentication has been removed unconditionally.
+  // The value would end up in every proxy/load-balancer/CDN access log on the
+  // request path and remain replayable forever. There is no flag to re-enable it.
+  if (c.req.query('secret')) {
+    return c.json({ error: 'Query-string webhook secrets are no longer accepted; use HMAC signing (x-breeze-signature + x-breeze-timestamp)' }, 401);
+  }
 
   if (signatureHeader || timestampHeader) {
     const signatureCheck = await verifyAutomationWebhookSignature({
@@ -1000,27 +1006,23 @@ automationWebhookRoutes.post('/:id', async (c) => {
       return c.json({ error: signatureCheck.error }, signatureCheck.status);
     }
   } else {
-    if (querySecret && !envFlag('AUTOMATION_WEBHOOK_ALLOW_QUERY_SECRET')) {
-      return c.json({ error: 'Query-string webhook secrets are no longer accepted' }, 401);
-    }
-    if (!headerSecret && !querySecret) {
+    if (!headerSecret) {
       return c.json({ error: 'Missing signed webhook verification' }, 401);
     }
-    // Default to TRUE for one release after HMAC was introduced so existing
-    // third-party webhook senders that pass the secret as a header keep working.
-    // Operators can opt into HMAC-only by setting AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET=false.
-    // Next release flips the default to false.
-    if (!envFlag('AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET', true)) {
-      return c.json({ error: 'Signed webhook verification is required' }, 401);
+    // Default is HMAC-only. Operators may set AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET=true
+    // as a short-term emergency rollback while migrating legacy senders to HMAC, but the
+    // plain x-webhook-secret in transit is replayable forever. This flag will be removed
+    // in a future release.
+    if (!envFlag('AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET', false)) {
+      return c.json({ error: 'Signed webhook verification is required (HMAC: x-breeze-signature + x-breeze-timestamp)' }, 401);
     }
     console.warn(
       `[automations] Webhook ${automationId} accepted via legacy header secret. ` +
-      'Migrate sender to HMAC (x-breeze-signature + x-breeze-timestamp) before AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET defaults to false in the next release.'
+      'AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET is enabled — migrate sender to HMAC (x-breeze-signature + x-breeze-timestamp) and unset the flag.'
     );
 
-    const providedSecret = headerSecret ?? querySecret;
     const expected = Buffer.from(trigger.secret, 'utf8');
-    const provided = Buffer.from(providedSecret ?? '', 'utf8');
+    const provided = Buffer.from(headerSecret, 'utf8');
     if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
       return c.json({ error: 'Invalid webhook secret' }, 401);
     }

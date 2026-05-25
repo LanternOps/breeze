@@ -571,7 +571,7 @@ A small set of environment flags exist as one-release migration aids during cros
 | Flag | Behavior | Status |
 |---|---|---|
 | `ENROLLMENT_SECRET_ENFORCEMENT_MODE` | When set to `warn`, the enrollment endpoint logs a warning instead of rejecting requests that lack a configured `AGENT_ENROLLMENT_SECRET` (or per-key secret). Default is `enforce`. Use only for the single release immediately following the upgrade, then remove. | Deprecation aid — to be removed after operators migrate |
-| `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` | When `true` (current default), inbound automation webhooks may authenticate with the legacy shared-secret header instead of the new HMAC `x-breeze-signature` + `x-breeze-timestamp` scheme. Will default to `false` in the next release. | Senders must migrate to HMAC |
+| `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` | Defaults to `false`. Inbound automation webhooks require HMAC signing (`x-breeze-signature` + `x-breeze-timestamp`). Set to `true` as a short-term emergency rollback while migrating legacy `x-automation-secret` / `x-webhook-secret` senders; the flag will be removed in a future release. The `?secret=` query-string path has been removed entirely — no flag re-enables it. | HMAC-only by default; legacy header is opt-in escape hatch |
 | `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` | Defaults to `false`: the SSO exchange endpoint delivers the refresh token only via the HttpOnly `breeze_refresh_token` cookie. Set to `true` to also include `refreshToken` in the JSON body for legacy external SSO clients that read it directly. The flag (and the JSON field) will be removed entirely after the Sunset date (2026-08-01). | Opt-in only; removal scheduled |
 
 ### Secret Rotation

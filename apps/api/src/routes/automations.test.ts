@@ -101,7 +101,6 @@ describe('automations routes', () => {
 	  beforeEach(() => {
 	    vi.clearAllMocks();
 	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
-	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_QUERY_SECRET;
 	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LOCAL_REPLAY_FALLBACK;
 	    vi.mocked(getRedis).mockReturnValue(null);
 	    app = new Hono();
@@ -620,7 +619,36 @@ describe('automations routes', () => {
 	    );
 	  });
 
-	  it('allows legacy header secret only behind explicit compatibility flag', async () => {
+	  it('rejects header-secret-only request by default (HMAC-only)', async () => {
+	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' },
+	            actions: [{ type: 'execute_command', command: 'echo ok' }]
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-automation-secret': 'secret-123'
+	      },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('accepts header-secret when explicitly enabled (legacy escape hatch)', async () => {
 	    process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET = 'true';
 	    vi.mocked(db.select).mockReturnValue({
 	      from: vi.fn().mockReturnValue({
@@ -649,8 +677,33 @@ describe('automations routes', () => {
 	    expect(res.status).toBe(202);
 	  });
 
-	  it('rejects query-string webhook secrets without explicit compatibility flag', async () => {
+	  it('rejects ?secret= query path unconditionally (even when ALLOW_LEGACY_SECRET=true)', async () => {
 	    process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET = 'true';
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1?secret=secret-123', {
+	      method: 'POST',
+	      headers: { 'Content-Type': 'application/json' },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('rejects ?secret= query path when ALLOW_LEGACY_SECRET is not set (default)', async () => {
+	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
 	    vi.mocked(db.select).mockReturnValue({
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({

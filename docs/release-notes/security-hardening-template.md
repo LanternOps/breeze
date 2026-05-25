@@ -38,7 +38,7 @@ The full review tracker is at `docs/security-reports/security_review_tracker_202
 Several flags default to legacy behavior for one release so existing deployments aren't stranded. Each emits a warning when the legacy path runs — fix it before the next release:
 
 - `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` — **default flipped to `false` this release.** SSO exchange now delivers the refresh token only via the HttpOnly `breeze_refresh_token` cookie; the JSON `refreshToken` field is omitted. The web app already reads the cookie and is unaffected. If you have an external SSO client that reads `response.refreshToken` directly, set `SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true` explicitly while you migrate it. The flag and JSON field will be removed entirely after Sunset (2026-08-01).
-- `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET=true` (default) — flips to `false` next release. Migrate webhook senders to HMAC.
+- `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` — **default flipped to `false` this release.** Inbound automation webhooks now require HMAC signing. Set to `true` only as a short-term emergency rollback while migrating legacy senders; the flag will be removed in a future release. The `?secret=` query-string path has been removed entirely (no flag re-enables it).
 - `ENROLLMENT_SECRET_ENFORCEMENT_MODE=warn` — opt-in, accepted only in this release. Set `AGENT_ENROLLMENT_SECRET` (or per-key secrets) before upgrading further.
 - Legacy enrollment-key pepper fallback — removed once you re-hash existing keys.
 - Legacy `enc:v1:` decrypt fallback — removed once `pnpm tsx scripts/re-encrypt-secrets.ts` has run.
