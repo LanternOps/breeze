@@ -21,9 +21,49 @@ export interface BulkCommandFailed {
   message: string;
 }
 
+export interface BulkCommandSkipped {
+  deviceId: string;
+  code: 'ALREADY_PENDING';
+  commandId: string;
+}
+
 export interface BulkCommandResponse {
   commands: CommandResult[];
   failed: BulkCommandFailed[];
+  // Present for refresh_inventory dedup; older API responses may omit it.
+  skipped?: BulkCommandSkipped[];
+}
+
+/**
+ * Render a one-line failure-code summary suitable for the bulk-command
+ * toast, grouping by code so a 50-device bulk doesn't spam the user.
+ * Returns an empty string when there are no failures.
+ */
+export function summarizeBulkCommandFailures(failed: BulkCommandFailed[]): string {
+  if (failed.length === 0) return '';
+  const buckets: Record<string, number> = {};
+  for (const f of failed) {
+    const label = bulkCommandFailureLabel(f.code);
+    buckets[label] = (buckets[label] ?? 0) + 1;
+  }
+  return Object.entries(buckets)
+    .map(([label, count]) => `${count} ${label}`)
+    .join('; ');
+}
+
+function bulkCommandFailureLabel(code: BulkCommandFailureCode): string {
+  switch (code) {
+    case 'TARGET_NOT_FOUND':
+      return 'not found or access denied';
+    case 'SITE_ACCESS_DENIED':
+      return 'in a site you cannot access';
+    case 'DECOMMISSIONED':
+      return 'decommissioned';
+    case 'INSERT_FAILED':
+      return 'could not be queued (server error)';
+    default:
+      return `with error ${code}`;
+  }
 }
 
 async function getErrorMessage(response: Response, fallback: string): Promise<string> {

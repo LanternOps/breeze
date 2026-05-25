@@ -67,9 +67,17 @@ async function main() {
 
   const sql = postgres(process.env.DATABASE_URL!, { max: 1 });
   try {
+    // Treat "undefined_table" (Postgres 42P01) as "migrations have not been
+    // applied" and surface the actionable hint. Any other error (auth,
+    // connection drop, permission denied) must propagate to the top-level
+    // crash handler so the operator sees the real cause rather than a
+    // misleading "table not found".
     const ledger = await sql<{ filename: string }[]>`
       SELECT filename FROM breeze_migrations ORDER BY filename
-    `.catch(() => null);
+    `.catch((err) => {
+      if (err?.code === '42P01') return null;
+      throw err;
+    });
 
     if (!ledger) {
       console.error(

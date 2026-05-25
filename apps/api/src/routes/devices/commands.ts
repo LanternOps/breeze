@@ -139,6 +139,11 @@ commandsRoutes.post(
       | 'DECOMMISSIONED'
       | 'INSERT_FAILED';
     const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
+    // Devices that completed successfully on a prior call and would queue
+    // a duplicate now (currently only the refresh_inventory dedup path).
+    // Surfaced separately from `failed` so the caller can say "N queued,
+    // M already pending" without misreporting deduped devices as failures.
+    const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
 
     for (const deviceId of deviceIds) {
       const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -146,20 +151,23 @@ commandsRoutes.post(
         failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
         continue;
       }
-      if (device.status === 'decommissioned') {
-        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
-        continue;
-      }
+      // Site denial must win over device-state denials: returning
+      // `DECOMMISSIONED` to a site-restricted caller would confirm the
+      // device exists, is in a reachable org, and is decommissioned.
+      // Keep this in the same order as the wake/single/maintenance paths.
       if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
         failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
         continue;
       }
+      if (device.status === 'decommissioned') {
+        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
+        continue;
+      }
 
-      // Same dedup #856 added to /:id/commands. The bulk path was
-      // missed — caught by @xxiaoxiong on #831. Skip the device
-      // silently when one is already pending (already-queued isn't an
-      // error in bulk context; nothing actionable for the caller to
-      // retry, and adding to `failed` would falsely imply a problem).
+      // Same dedup #856 added to /:id/commands. The bulk path was missed
+      // — caught by @xxiaoxiong on #831. Record into `skipped` (not
+      // `failed`) so the caller can show an accurate "N queued, M already
+      // pending" without misreporting it as an error.
       if (data.type === 'refresh_inventory') {
         const [existingPending] = await db
           .select({ id: deviceCommands.id })
@@ -172,21 +180,41 @@ commandsRoutes.post(
             ),
           )
           .limit(1);
-        if (existingPending) continue;
+        if (existingPending) {
+          skipped.push({ deviceId, code: 'ALREADY_PENDING', commandId: existingPending.id });
+          continue;
+        }
       }
 
-      const [command] = await db
-        .insert(deviceCommands)
-        .values({
+      // Wrap the insert so a constraint violation, pool exhaustion, or
+      // other postgres error on one device records as INSERT_FAILED for
+      // that device instead of throwing out of the whole loop and
+      // 500-ing the entire batch (losing every prior success).
+      let command: typeof deviceCommands.$inferSelect | undefined;
+      try {
+        [command] = await db
+          .insert(deviceCommands)
+          .values({
+            deviceId,
+            type: data.type,
+            payload: data.payload || {},
+            status: 'pending',
+            createdBy: auth.user.id
+          })
+          .returning();
+      } catch (err) {
+        failed.push({
           deviceId,
-          type: data.type,
-          payload: data.payload || {},
-          status: 'pending',
-          createdBy: auth.user.id
-        })
-        .returning();
+          code: 'INSERT_FAILED',
+          message: err instanceof Error ? err.message : 'Failed to queue command.',
+        });
+        continue;
+      }
 
       if (!command) {
+        // `returning()` on a successful insert always yields ≥1 row, so
+        // this branch is defensive against a future driver change rather
+        // than a path that fires in practice.
         failed.push({ deviceId, code: 'INSERT_FAILED', message: 'Failed to queue command.' });
         continue;
       }
@@ -213,7 +241,7 @@ commandsRoutes.post(
       });
     }
 
-    return c.json({ commands: commandList, failed }, 201);
+    return c.json({ commands: commandList, failed, skipped }, 201);
   }
 );
 
@@ -406,13 +434,13 @@ commandsRoutes.post(
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
-
-    if (device.status === 'decommissioned') {
-      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-    }
-
+    // Site denial must win over device-state denials — see bulk-generic
+    // for rationale.
     if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (device.status === 'decommissioned') {
+      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
     }
 
     const [command] = await db

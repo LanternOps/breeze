@@ -184,8 +184,13 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.commands).toHaveLength(1);
       expect(body.commands[0].deviceId).toBe(deviceB);
-      // A was skipped silently — NOT in failed (already-pending isn't a failure).
-      expect(body.failed).not.toContain(deviceA);
+      // A was deduped — surfaced via `skipped` (NOT `failed`) so the caller
+      // can say "1 queued, 1 already pending" instead of treating it as a
+      // failure.
+      expect(body.failed).toEqual([]);
+      expect(body.skipped).toEqual([
+        { deviceId: deviceA, code: 'ALREADY_PENDING', commandId: 'cmd-existing-a' },
+      ]);
       // Insert was called exactly once (for B), not twice.
       expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
     });
@@ -308,6 +313,120 @@ describe('device commands routes', () => {
       // Exactly one insert — the denial short-circuited before insert for the
       // second device, but did NOT abort the batch.
       expect(db.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('mixed batch with denied FIRST: subsequent allowed device still gets queued (defends against early-abort refactor)', async () => {
+      // Reverse-order companion to the test above. A future refactor that
+      // does `if (anyDenied) return early` would pass the [allowed, denied]
+      // case but fail this one — the allowed device is processed AFTER the
+      // denial, so it would never reach the insert.
+      const deniedId = '11111111-1111-1111-1111-111111111111';
+      const allowedId = '22222222-2222-2222-2222-222222222222';
+
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({
+          id: deniedId,
+          orgId: 'org-123',
+          hostname: 'denied-host',
+          siteId: 'site-denied',
+          status: 'online',
+        } as never)
+        .mockResolvedValueOnce({
+          id: allowedId,
+          orgId: 'org-123',
+          hostname: 'allowed-host',
+          siteId: 'site-allowed',
+          status: 'online',
+        } as never);
+
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-allowed',
+            deviceId: allowedId,
+            type: 'reboot',
+            status: 'pending',
+            createdAt: new Date(),
+          }]),
+        }),
+      } as never);
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-site-restricted': 'true',
+        },
+        body: JSON.stringify({
+          deviceIds: [deniedId, allowedId],
+          type: 'reboot',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.commands).toHaveLength(1);
+      expect(body.commands[0].deviceId).toBe(allowedId);
+      expect(body.failed).toEqual([
+        { deviceId: deniedId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' },
+      ]);
+      expect(db.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('records INSERT_FAILED per-device when the insert throws and the batch continues', async () => {
+      // Defends against a refactor that drops the try/catch around insert
+      // and lets one device's DB error 500 the whole batch (losing every
+      // prior success).
+      const failingId = '11111111-1111-1111-1111-111111111111';
+      const succeedingId = '22222222-2222-2222-2222-222222222222';
+
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({ id: failingId, orgId: 'org-123', hostname: 'host-fail', status: 'online' } as never)
+        .mockResolvedValueOnce({ id: succeedingId, orgId: 'org-123', hostname: 'host-ok', status: 'online' } as never);
+
+      // First insert throws (constraint violation, pool exhaustion, etc.),
+      // second succeeds.
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockRejectedValue(new Error('duplicate key value violates unique constraint')),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'cmd-ok',
+              deviceId: succeedingId,
+              type: 'reboot',
+              status: 'pending',
+              createdAt: new Date(),
+            }]),
+          }),
+        } as never);
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          deviceIds: [failingId, succeedingId],
+          type: 'reboot',
+        }),
+      });
+
+      // Status is still 201; INSERT_FAILED is a per-device failure, not a
+      // batch-level error.
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.commands).toHaveLength(1);
+      expect(body.commands[0].deviceId).toBe(succeedingId);
+      expect(body.failed).toEqual([
+        {
+          deviceId: failingId,
+          code: 'INSERT_FAILED',
+          message: 'duplicate key value violates unique constraint',
+        },
+      ]);
     });
 
     describe('bulk-wake (type=wake)', () => {

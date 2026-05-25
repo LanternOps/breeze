@@ -12,7 +12,7 @@ import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
@@ -467,12 +467,21 @@ export default function DevicesPage() {
           const result = await sendBulkCommand(deviceIds, action);
           const successCount = result.commands?.length ?? 0;
           const failedCount = result.failed?.length ?? 0;
+          const skippedCount = result.skipped?.length ?? 0;
           const bulkLabel = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
+          const skippedTail = skippedCount > 0 ? `, ${skippedCount} already pending` : '';
 
           if (failedCount === 0) {
-            showToast({ type: 'success', message: `${bulkLabel} command sent to ${successCount} devices` });
+            showToast({
+              type: 'success',
+              message: `${bulkLabel} command sent to ${successCount} device${successCount === 1 ? '' : 's'}${skippedTail}`,
+            });
           } else {
-            showToast({ type: 'error', message: `${bulkLabel} sent to ${successCount} devices, ${failedCount} failed` });
+            const failureSummary = summarizeBulkCommandFailures(result.failed ?? []);
+            showToast({
+              type: 'error',
+              message: `${bulkLabel} sent to ${successCount} device${successCount === 1 ? '' : 's'}${skippedTail}; ${failedCount} failed: ${failureSummary}.`,
+            });
           }
           break;
         }
