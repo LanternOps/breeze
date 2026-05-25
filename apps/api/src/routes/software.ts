@@ -1275,16 +1275,32 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
 
-    // Get devices for org, then filter inventory
-    const orgDevices = await db.select({ id: devices.id }).from(devices)
+    // Get devices for org, narrowed by the caller's site allowlist when set.
+    // Site is an app-layer concept only — RLS doesn't defend it — so a
+    // partner-scope user restricted to one site must not see inventory for
+    // devices in other sites within the same org. See PR #864/#868.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const orgDevices = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
       .where(eq(devices.orgId, orgId));
-    const orgDeviceIds = orgDevices.map(d => d.id);
+    const allowedDeviceIds = orgDevices
+      .filter((device) => !permissions?.allowedSiteIds
+        || (typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId)))
+      .map((device) => device.id);
 
-    if (orgDeviceIds.length === 0) {
+    if (allowedDeviceIds.length === 0) {
       return c.json({ data: [], total: 0 });
     }
 
-    const conditions = [inArray(softwareInventory.deviceId, orgDeviceIds)];
+    // If caller filtered to a specific deviceId, verify it's in the allowed set
+    // — otherwise return 403 (do NOT silently return empty, which would be
+    // ambiguous with "device exists but has no inventory rows").
+    if (query.deviceId && !allowedDeviceIds.includes(query.deviceId)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+
+    const conditions = [inArray(softwareInventory.deviceId, allowedDeviceIds)];
     if (query.deviceId) {
       conditions.push(eq(softwareInventory.deviceId, query.deviceId));
     }
@@ -1314,10 +1330,18 @@ softwareRoutes.get(
 
     const { deviceId } = c.req.valid('param');
 
-    // Verify device belongs to org
-    const [device] = await db.select().from(devices)
+    // Verify device belongs to org AND caller's site allowlist (when set).
+    const [device] = await db.select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
       .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)));
     if (!device) return c.json({ error: 'Device not found' }, 404);
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      if (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
 
     const items = await db.select().from(softwareInventory)
       .where(eq(softwareInventory.deviceId, deviceId))

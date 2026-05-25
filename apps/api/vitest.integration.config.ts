@@ -20,6 +20,11 @@ export default defineConfig({
       // tables on beforeEach — see vitest.config.rls-coverage.ts for its
       // dedicated runner.
       'src/__tests__/integration/rls-coverage.integration.test.ts',
+      // site-scope-coverage.integration.test.ts is a static-analysis scan
+      // of `src/routes/**/*.ts` — it never touches the database. Excluded
+      // here so it doesn't spin up the integration setup; see
+      // vitest.config.site-scope-coverage.ts for its dedicated runner.
+      'src/__tests__/integration/site-scope-coverage.integration.test.ts',
       // auth.integration.test.ts has multiple pre-existing broken tests
       // that only surfaced now that setup.ts actually applies schema
       // via autoMigrate. The legacy /auth/register endpoint is a no-op,
