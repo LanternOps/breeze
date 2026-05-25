@@ -168,8 +168,12 @@ vi.mock('../../services/clientIp', () => ({
 }));
 
 // Stub authMiddleware to short-circuit; the test injects its own auth context.
+// `requireMfa` is referenced by `tenantErasureRoutes` which is now mounted on
+// adminRoutes — provide a noop pass-through so the import resolves.
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
+  requireMfa: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
+  hasSatisfiedMfa: vi.fn(() => true),
 }));
 
 import { Hono } from 'hono';
