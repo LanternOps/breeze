@@ -116,18 +116,53 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       // deciding so the click always uses fresh state.
       let liveDesktopAccess: DesktopAccessState | null = desktopAccess ?? null;
       let hasRemoteAccessLauncher = false;
+      // Populated when the partner HAS a launcher configured but it can't fire
+      // for THIS device (most often `missing_device_identifier`). We toast and
+      // continue to WebRTC so the user understands why the third-party tool
+      // didn't launch, rather than wondering why their RustDesk/ScreenConnect
+      // default was silently ignored.
+      let launcherSkipReason: string | null = null;
       try {
         const devRes = await fetchWithAuth(`/devices/${deviceId}`);
         if (devRes.ok) {
           const devBody = await devRes.json() as {
             desktopAccess?: DesktopAccessState | null;
             hasRemoteAccessLauncher?: boolean;
+            remoteAccessLaunchSkipReason?: string | null;
           };
           liveDesktopAccess = devBody.desktopAccess ?? null;
           hasRemoteAccessLauncher = devBody.hasRemoteAccessLauncher === true;
+          launcherSkipReason = devBody.remoteAccessLaunchSkipReason ?? null;
         }
       } catch {
         // Network blip — fall back to the prop so the connect flow still runs.
+      }
+
+      // The partner has a launcher configured but this specific device can't
+      // use it. Toast the reason and fall through to WebRTC so the user
+      // doesn't silently get the wrong remote tool. `no_provider_configured`
+      // is intentionally NOT toasted — that's the expected-empty case.
+      // `scheme_not_allowed` would be a 422 on the launch POST, so it's
+      // surfaced loudly there rather than here.
+      if (!hasRemoteAccessLauncher && launcherSkipReason && launcherSkipReason !== 'no_provider_configured') {
+        const friendly =
+          launcherSkipReason === 'missing_device_identifier'
+            ? 'This device is missing the per-device identifier the partner-configured remote tool needs (e.g. the RustDesk peer ID). Falling back to built-in remote desktop. Set the identifier in Device Settings → Custom Fields.'
+            : launcherSkipReason === 'provider_disabled'
+              ? 'The partner-configured remote tool for this device is currently disabled. Falling back to built-in remote desktop.'
+              : launcherSkipReason === 'empty_url_template'
+                ? 'The partner-configured remote tool has no URL template set. Falling back to built-in remote desktop.'
+                : launcherSkipReason === 'config_error'
+                  ? 'Could not resolve the partner-configured remote tool (config error). Falling back to built-in remote desktop.'
+                  : null;
+        if (friendly) {
+          // 'error' type matches the loud-failure styling the other launcher
+          // paths in this component use (422 / 500). The Toast component
+          // currently only supports success | error | undo (Toast.tsx:7);
+          // 'error' is the closest match for "your preferred remote tool
+          // didn't fire — here's why" without being a hard blocker.
+          showToast({ type: 'error', message: friendly });
+        }
       }
 
       // If the partner has configured a third-party remote-tool provider
