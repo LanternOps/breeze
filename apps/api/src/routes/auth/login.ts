@@ -67,6 +67,43 @@ function getDummyPasswordHash(): Promise<string> {
   return dummyPasswordHashPromise;
 }
 
+// Task 11: floor-the-clock timing equalizer for /login (audit finding H-4).
+//
+// The dummy-argon2 verify above equalizes the *password-check phase*. But
+// the slowest legitimate denial path (real user with SSO-only enforcement
+// or inactive tenant) ALSO runs resolveCurrentUserTokenContext(), which
+// does multiple DB joins across partner_users / organization_users /
+// organizations / sso_providers — adding ~30-80ms over the cheap
+// "unknown email" branch. That delta is observable by a remote attacker
+// and lets them distinguish "real user with SSO enforced" from "no such
+// user" by measuring response latency.
+//
+// Rather than try to dummy-resolve a sentinel context on the miss branch
+// (fragile — any new denial branch added later silently regresses the
+// equalization), we floor the entire handler's wall-clock latency at a
+// fixed budget. Every response (success, 401, 429, MFA-required) waits
+// until at least LOGIN_RESPONSE_FLOOR_MS has elapsed.
+//
+// Budget calibration: argon2id default params take ~100-200ms on prod
+// hardware; tenant-context DB joins add ~30-80ms; rate-limit Redis ops
+// add ~5-10ms. 350ms is a safe upper bound that comfortably exceeds the
+// slowest legitimate path while staying well below interactive-feel
+// thresholds (200ms = "instant", 500ms+ = "sluggish").
+//
+// Test/E2E mode skips the floor so the test suite stays fast — the unit
+// tests don't measure timing, only state.
+const LOGIN_RESPONSE_FLOOR_MS = 350;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function loginResponseFloorPromise(): Promise<void> {
+  if (process.env.NODE_ENV === 'test') return Promise.resolve();
+  if (process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true') return Promise.resolve();
+  return delay(LOGIN_RESPONSE_FLOOR_MS);
+}
+
 // Task 10 helper: bump the per-account failure counter, and if THIS
 // attempt is the one that crossed the lockout threshold, fire a security
 // notification email + audit event exactly once. Pulled into a helper so
@@ -140,6 +177,15 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const rateLimitClient = getClientRateLimitKey(c);
   const normalizedEmail = email.toLowerCase();
 
+  // Task 11: kick off the timing-floor promise at the very top so every
+  // branch below — including the cheap "no Redis" 503 we deliberately
+  // exclude from flooring, and the cheap "unknown email" 401 — is
+  // measured against the same starting line. We Promise.all this with
+  // the actual decision logic before returning each response. The 503
+  // path below is the one exception: it bypasses the floor because
+  // Redis being down is an ops state, not a privacy concern.
+  const floorPromise = loginResponseFloorPromise();
+
   // Rate limit by IP + email combination - fail closed for security
   // In E2E mode, skip rate limiting entirely
   const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
@@ -160,6 +206,12 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     const ipRateKey = `login:ip:${ip}`;
     const ipRateCheck = await rateLimiter(redis, ipRateKey, 10, 5 * 60);
     if (!ipRateCheck.allowed) {
+      // Task 11: floor rate-limit responses too. Without this, the
+      // attacker can detect whether they've crossed the per-IP bucket
+      // (cheap rate-limit 429, ~5ms) vs the per-(IP,email) bucket
+      // (cheap, ~5ms) vs a real password check (~200ms). Flooring keeps
+      // all 4xx responses indistinguishable.
+      await floorPromise;
       return c.json({
         error: 'Too many login attempts. Please try again later.',
         retryAfter: Math.ceil((ipRateCheck.resetAt.getTime() - Date.now()) / 1000)
@@ -170,6 +222,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
     if (!rateCheck.allowed) {
+      await floorPromise;
       return c.json({
         error: 'Too many login attempts. Please try again later.',
         retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
@@ -206,6 +259,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
         details: { method: 'password' }
       });
     }
+    await floorPromise;
     return c.json(genericAuthError(), 401);
   }
 
@@ -229,6 +283,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
         result: 'denied',
         details: { method: 'password' }
       });
+      await floorPromise;
       return c.json({
         error: 'Account temporarily locked due to repeated failed sign-ins. Try again in 15 minutes or reset your password.',
         retryAfter: ACCOUNT_LOCKOUT_WINDOW_SECONDS
@@ -255,6 +310,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       reason: 'invalid_password',
       details: { method: 'password' }
     });
+    await floorPromise;
     return c.json(genericAuthError(), 401);
   }
 
@@ -272,6 +328,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       result: 'denied',
       details: { accountStatus: user.status, method: 'password' }
     });
+    await floorPromise;
     return c.json(genericAuthError(), 401);
   }
 
@@ -290,6 +347,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       result: 'denied',
       details: { method: 'password' }
     });
+    await floorPromise;
     return c.json(genericAuthError(), 401);
   }
 
@@ -314,6 +372,12 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       });
     }
 
+    // Task 11: floor the MFA-required response too. Otherwise "your
+    // password was right, MFA is next" returns measurably faster than
+    // any 401 path, leaking which emails have valid creds without MFA
+    // enrolled vs with — useful intel for an attacker pivoting from a
+    // password-stuffing list.
+    await floorPromise;
     return c.json({
       mfaRequired: true,
       tempToken,
@@ -387,6 +451,12 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 
   const requiresSetup = userRequiresSetup(user);
 
+  // Task 11: floor the success response too. If success returned faster
+  // than every 401 branch, an attacker could observe "correct credentials"
+  // by latency alone even though the response body is the same JSON
+  // shape. The floor is calibrated above the slowest legitimate denial
+  // path so a successful login is no faster than any other outcome.
+  await floorPromise;
   return c.json({
     user: {
       id: user.id,

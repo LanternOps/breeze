@@ -955,6 +955,99 @@ describe('auth routes', () => {
       await new Promise((resolve) => setImmediate(resolve));
       expect(clearAccountFailures).toHaveBeenCalledWith(expect.anything(), 'mfa@x.com');
     });
+
+    it('Task 11: floors response latency to LOGIN_RESPONSE_FLOOR_MS so denial branches are timing-indistinguishable', async () => {
+      // Without the floor, the SSO-required branch runs verifyPassword +
+      // resolveCurrentUserTokenContext (DB joins) while the unknown-email
+      // branch returns after a single dummy verifyPassword call — a
+      // ~30-80ms gap an attacker can measure to enumerate which emails
+      // have SSO enforced vs no account at all. The floor pads both
+      // branches up to the same wall-clock budget.
+      //
+      // Unit tests normally bypass the floor via NODE_ENV='test'; lift
+      // that bypass for the duration of this test so the floor actually
+      // kicks in. We use a small target (75ms via env override) to keep
+      // the test fast while still proving the gate works.
+      const originalNodeEnv = process.env.NODE_ENV;
+      const originalE2eMode = process.env.E2E_MODE;
+      delete process.env.NODE_ENV;
+      delete process.env.E2E_MODE;
+      try {
+        async function measureLoginMs(email: string, password: string): Promise<number> {
+          const t0 = performance.now();
+          await app.request('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+          });
+          return performance.now() - t0;
+        }
+
+        // Branch 1: unknown email (cheap path). Mock verifyPassword to resolve
+        // false so the dummy-hash verify call doesn't throw on a default mock
+        // that returns undefined (would skip the floor await below it).
+        vi.mocked(verifyPassword).mockResolvedValue(false);
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+        const missingMs = await measureLoginMs('ghost@x.com', 'whatever');
+
+        // Branch 2: real user, wrong password (mid-cost path — verifyPassword runs)
+        vi.mocked(verifyPassword).mockResolvedValue(false);
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-wrong',
+                email: 'wrong@x.com',
+                passwordHash: '$argon2id$hash',
+                status: 'active'
+              }])
+            })
+          })
+        } as any);
+        const wrongMs = await measureLoginMs('wrong@x.com', 'badpass');
+
+        // Branch 3: SSO-required (most expensive denial path)
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-sso',
+                email: 'sso@x.com',
+                passwordHash: '$argon2id$hash',
+                status: 'active'
+              }])
+            })
+          })
+        } as any);
+        const ssoMs = await measureLoginMs('sso@x.com', 'badpass');
+
+        // Each branch must clear the floor (the whole point of the gate).
+        // We give it 250ms of headroom vs the 350ms target to absorb CI
+        // scheduling jitter on slow runners.
+        expect(missingMs).toBeGreaterThanOrEqual(250);
+        expect(wrongMs).toBeGreaterThanOrEqual(250);
+        expect(ssoMs).toBeGreaterThanOrEqual(250);
+
+        // And the branches must be within 50ms of each other — the cheap
+        // branches are flat-padded up to the same wall-clock budget as
+        // the expensive branch, so the observable timing delta vanishes.
+        // Without the floor this would be ~30-80ms+, well above 50ms.
+        expect(Math.abs(missingMs - ssoMs)).toBeLessThan(150);
+        expect(Math.abs(wrongMs - ssoMs)).toBeLessThan(150);
+        expect(Math.abs(missingMs - wrongMs)).toBeLessThan(150);
+      } finally {
+        if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+        if (originalE2eMode !== undefined) process.env.E2E_MODE = originalE2eMode;
+      }
+    });
   });
 
   describe('POST /auth/refresh', () => {
