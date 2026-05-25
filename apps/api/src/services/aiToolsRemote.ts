@@ -2,11 +2,16 @@
  * AI Remote Tools
  *
  * Tools for remote device control and session management.
- * - take_screenshot (Tier 2): Capture a screenshot of the device screen
- * - analyze_screen (Tier 2): Take a screenshot and analyze what is visible
+ * - take_screenshot (Tier 3): Capture a screenshot of the device screen (allowlist-gated)
+ * - analyze_screen (Tier 3): Take a screenshot and analyze what is visible (allowlist-gated)
  * - computer_control (Tier 3): Control a device by sending mouse/keyboard input
  * - list_remote_sessions (Tier 1): List active and recent remote sessions
  * - create_remote_session (Tier 3): Create a new remote session
+ *
+ * Screen-capture tools are Tier 3 because screen contents are the most sensitive
+ * RMM output (credentials, customer data on display, etc). Tier 3 requires
+ * `ai:execute` scope AND, in production, an explicit entry in
+ * `MCP_EXECUTE_TOOL_ALLOWLIST`. See `apps/api/src/routes/mcpServer.ts`.
  */
 
 import { db } from '../db';
@@ -43,11 +48,11 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
   }
 
   // ============================================
-  // take_screenshot - Tier 2 (auto-execute + audit)
+  // take_screenshot - Tier 3 (requires ai:execute + allowlist in prod)
   // ============================================
 
   registerTool({
-    tier: 2 as AiToolTier,
+    tier: 3 as AiToolTier,
     definition: {
       name: 'take_screenshot',
       description: 'Capture a screenshot of the device screen. Returns the image for visual analysis. Use this when you need to see what is displayed on the device screen.',
@@ -99,11 +104,11 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // analyze_screen - Tier 2 (auto-execute + audit)
+  // analyze_screen - Tier 3 (requires ai:execute + allowlist in prod)
   // ============================================
 
   registerTool({
-    tier: 2 as AiToolTier,
+    tier: 3 as AiToolTier,
     definition: {
       name: 'analyze_screen',
       description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees.',

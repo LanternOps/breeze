@@ -81,8 +81,10 @@ export const TOOL_TIERS = {
   query_audit_log: 1,
   query_change_log: 1,
   network_discovery: 3,
-  take_screenshot: 2,
-  analyze_screen: 2,
+  // Screen-capture tools are Tier 3 (sensitive: may expose credentials,
+  // customer data on display, etc.). See aiToolsRemote.ts.
+  take_screenshot: 3,
+  analyze_screen: 3,
   computer_control: 3,
   // Fleet orchestration tools
   manage_deployments: 1,     // Action-level escalation in guardrails
