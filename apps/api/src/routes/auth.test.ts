@@ -122,6 +122,11 @@ vi.mock('./auth/ssoPolicy', () => ({
   assertPasswordAuthAllowedBySso: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock('../services/passwordResetEligibility', () => ({
+  getPasswordResetEligibility: vi.fn().mockResolvedValue({ allowed: false, reason: 'unknown_user' }),
+  getPasswordResetEligibilityForUser: vi.fn().mockResolvedValue({ allowed: true, userId: 'user-123', email: 'test@example.com' }),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -152,6 +157,10 @@ import {
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './auth/ssoPolicy';
+import {
+  getPasswordResetEligibility,
+  getPasswordResetEligibilityForUser,
+} from '../services/passwordResetEligibility';
 import { db } from '../db';
 
 describe('auth routes', () => {
@@ -162,6 +171,12 @@ describe('auth routes', () => {
     vi.clearAllMocks();
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
     vi.mocked(assertPasswordAuthAllowedBySso).mockResolvedValue(undefined);
+    vi.mocked(getPasswordResetEligibility).mockResolvedValue({ allowed: false, reason: 'unknown_user' });
+    vi.mocked(getPasswordResetEligibilityForUser).mockResolvedValue({
+      allowed: true,
+      userId: 'user-123',
+      email: 'test@example.com',
+    });
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
@@ -975,42 +990,18 @@ describe('auth routes', () => {
         remaining: 2,
         resetAt: new Date()
       });
-      vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+      vi.mocked(getPasswordResetEligibility).mockResolvedValue({
+        allowed: false,
+        reason: 'sso_required',
+        userId: 'user-123',
+        email: 'test@example.com',
+      });
       const mockRedis = {
         get: vi.fn(),
         del: vi.fn(),
         setex: vi.fn()
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com' }])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ orgId: 'org-sso', roleId: 'role-1' }])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
-            })
-          })
-        } as any);
 
       const res = await app.request('/auth/forgot-password', {
         method: 'POST',
@@ -1095,7 +1086,11 @@ describe('auth routes', () => {
 
     it('rejects reset token redemption when organization SSO policy disables passwords', async () => {
       vi.mocked(isPasswordStrong).mockReturnValue({ valid: true, errors: [] });
-      vi.mocked(assertPasswordAuthAllowedBySso).mockRejectedValue(new SsoPasswordAuthRequiredError('SSO required'));
+      vi.mocked(getPasswordResetEligibilityForUser).mockResolvedValue({
+        allowed: false,
+        reason: 'sso_required',
+        userId: 'user-123',
+      });
       const mockRedis = {
         getdel: vi.fn().mockResolvedValue('user-123'),
         del: vi.fn().mockResolvedValue(1),
