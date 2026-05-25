@@ -26,6 +26,13 @@ const importApp = async (
   rateLimiter: ReturnType<typeof vi.fn> = vi.fn(async () => ({ allowed: true, remaining: 1, resetAt })),
 ) => {
   process.env.MCP_OAUTH_ENABLED = 'true';
+  // DCR defaults to OFF in every environment (Task 21). Most tests in this
+  // file exercise registration-endpoint metadata + rate-limit policy, which
+  // requires DCR enabled. Tests that exercise the "DCR disabled" path set
+  // OAUTH_DCR_ENABLED=false explicitly before calling importApp.
+  if (process.env.OAUTH_DCR_ENABLED === undefined && process.env.NODE_ENV !== 'production') {
+    process.env.OAUTH_DCR_ENABLED = 'true';
+  }
   vi.doMock('../services/redis', () => ({
     getRedis: vi.fn(() => null),
   }));

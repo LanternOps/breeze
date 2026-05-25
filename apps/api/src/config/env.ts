@@ -20,7 +20,14 @@ export function isHosted(): boolean {
 // the internal service-to-service base URL used by breezeBillingClient.ts.
 export const BILLING_URL = process.env.BILLING_URL ?? '';
 
-export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', process.env.NODE_ENV !== 'production');
+// DCR (Dynamic Client Registration) defaults OFF in all environments.
+// Production deployments must explicitly opt in by setting OAUTH_DCR_ENABLED=true,
+// AND must also set OAUTH_DCR_REQUIRE_IAT=true (boot-refused otherwise — see
+// config/validate.ts). The IAT (initial-access-token) requirement closes the
+// public-spam vector: without it, anyone on the internet can POST /oauth/reg
+// and create clients with deceptive client_name strings.
+export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', false);
+export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 // Optional override for the consent UI base. Defaults to '' (relative path)

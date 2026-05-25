@@ -4,6 +4,7 @@ import {
   OAUTH_COOKIE_SECRET,
   OAUTH_CONSENT_URL_BASE,
   OAUTH_DCR_ENABLED,
+  OAUTH_DCR_REQUIRE_IAT,
   OAUTH_ISSUER,
   OAUTH_RESOURCE_URL,
 } from '../config/env';
@@ -56,15 +57,15 @@ export const OAUTH_LIFECYCLE_ROW_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * Returns the number of rows deleted. Safe to call concurrently — the
  * SELECT-then-DELETE is a single SQL statement, no locks held across calls.
  *
- * SCHEDULING TODO: this helper is currently NOT wired into the BullMQ
- * worker registry in apps/api/src/index.ts. Adding the worker is a
- * separate, scheduled change because it touches index.ts (out of scope
- * for the security-fixes worktree). Operators can call this manually via
- * an admin script or a cron in the meantime.
+ * Scheduling: wired via `jobs/oauthCleanup.ts` as a daily BullMQ cron at
+ * 03:00 UTC. `initializeOauthCleanupWorker` is registered in the API
+ * worker registry (`apps/api/src/index.ts`). Multi-replica safe via a
+ * fixed `jobId`. Disable in an emergency with `OAUTH_CLEANUP_ENABLED=false`.
  *
- * Skipped from this PR (per audit guidance): flipping
- * `initialAccessToken: true` would require building a dashboard UI for
- * issuing IATs to partners.
+ * Hardening (Task 21, May 2026): the registration endpoint now defaults
+ * OFF (`OAUTH_DCR_ENABLED=false`). When ON in production, an initial-
+ * access-token is required (`OAUTH_DCR_REQUIRE_IAT=true`) so anonymous
+ * clients can no longer create rows via POST /oauth/reg.
  */
 export async function cleanupStaleOauthClients(
   now: Date = new Date(),
@@ -371,7 +372,12 @@ export async function getProvider(): Promise<Provider> {
       client.grantTypeAllowed('refresh_token'),
     features: {
       devInteractions: { enabled: false },
-      registration: { enabled: OAUTH_DCR_ENABLED, initialAccessToken: false },
+      // When OAUTH_DCR_REQUIRE_IAT=true, oidc-provider requires a valid
+      // InitialAccessToken (issued out-of-band, e.g. via the dashboard) for
+      // every POST /oauth/reg. This closes the public-spam vector that
+      // ungated DCR opens up. validateConfig refuses boot in production if
+      // DCR is enabled without IAT (see config/validate.ts).
+      registration: { enabled: OAUTH_DCR_ENABLED, initialAccessToken: OAUTH_DCR_REQUIRE_IAT },
       registrationManagement: { enabled: OAUTH_DCR_ENABLED },
       revocation: { enabled: true },
       introspection: { enabled: true },

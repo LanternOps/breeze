@@ -622,4 +622,74 @@ describe('validateConfig', () => {
       }
     });
   });
+
+  // ---- OAuth DCR (Dynamic Client Registration) hardening (Task 21) -------
+  // When DCR is on in production, every client registration is anonymous and
+  // self-asserting. Without an initial-access-token gate, the registration
+  // endpoint is open to public spam (deceptive client_name strings, etc.).
+  // Boot must refuse the misconfig.
+  describe('OAuth DCR config validation', () => {
+    it('refuses boot in production when OAUTH_DCR_ENABLED=true without OAUTH_DCR_REQUIRE_IAT=true', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        OAUTH_DCR_ENABLED: 'true',
+        OAUTH_DCR_REQUIRE_IAT: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/OAUTH_DCR_REQUIRE_IAT/i);
+      });
+    });
+
+    it('boots in production when OAUTH_DCR_ENABLED=true and OAUTH_DCR_REQUIRE_IAT=true', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        OAUTH_DCR_ENABLED: 'true',
+        OAUTH_DCR_REQUIRE_IAT: 'true',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots in production when OAUTH_DCR_ENABLED is unset (default false)', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        OAUTH_DCR_ENABLED: '',
+        OAUTH_DCR_REQUIRE_IAT: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots in production when OAUTH_DCR_ENABLED=false (IAT not required)', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        OAUTH_DCR_ENABLED: 'false',
+        OAUTH_DCR_REQUIRE_IAT: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots in development with OAUTH_DCR_ENABLED=true and no IAT (dev exception)', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'development',
+        OAUTH_DCR_ENABLED: 'true',
+        OAUTH_DCR_REQUIRE_IAT: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
 });

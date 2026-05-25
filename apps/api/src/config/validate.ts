@@ -349,6 +349,13 @@ const envSchema = z
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
 
+    // OAuth Dynamic Client Registration (DCR) hardening. Both default OFF.
+    // See env.ts and provider.ts for the runtime read-paths; the
+    // production-only validation in superRefine refuses boot when
+    // OAUTH_DCR_ENABLED=true without OAUTH_DCR_REQUIRE_IAT=true.
+    OAUTH_DCR_ENABLED: z.string().optional(),
+    OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
+
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
     REDIS_URL: z.string().default('redis://localhost:6379'),
@@ -670,6 +677,25 @@ const envSchema = z
             'IS_HOSTED must be explicitly set in production to true/false (or 1/0, yes/no, on/off). Hosted SaaS deployments set true; self-hosted deployments set false.',
         });
       }
+
+      // OAuth DCR (Dynamic Client Registration) hardening (Task 21).
+      // When DCR is enabled in production, an initial-access-token is also
+      // required — without it, POST /oauth/reg is anonymous and any actor
+      // on the internet can create OAuth clients with deceptive
+      // client_name strings (logos, brand mimicry, etc.). Boot-refuse the
+      // misconfig so a "DCR=true, IAT unset" deploy never reaches prod.
+      const dcrEnabledRaw = (data.OAUTH_DCR_ENABLED ?? '').trim().toLowerCase();
+      const dcrRequireIatRaw = (data.OAUTH_DCR_REQUIRE_IAT ?? '').trim().toLowerCase();
+      const dcrEnabled = ['true', '1', 'yes', 'on'].includes(dcrEnabledRaw);
+      const dcrRequireIat = ['true', '1', 'yes', 'on'].includes(dcrRequireIatRaw);
+      if (dcrEnabled && !dcrRequireIat) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['OAUTH_DCR_REQUIRE_IAT'],
+          message:
+            'OAUTH_DCR_REQUIRE_IAT=true is required when OAUTH_DCR_ENABLED=true in production. Without an initial-access-token gate, POST /oauth/reg is anonymous and any actor can create OAuth clients with deceptive client_name strings.',
+        });
+      }
     }
   });
 
@@ -791,6 +817,8 @@ export function validateConfig(): AppConfig {
     RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
     IS_HOSTED: env.IS_HOSTED,
+    OAUTH_DCR_ENABLED: env.OAUTH_DCR_ENABLED,
+    OAUTH_DCR_REQUIRE_IAT: env.OAUTH_DCR_REQUIRE_IAT,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,
