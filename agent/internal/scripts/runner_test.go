@@ -213,7 +213,14 @@ func TestRunCleansUpTempFile(t *testing.T) {
 		t.Skip("skipping bash test on Windows")
 	}
 
-	r := NewRunner()
+	// Isolate workDir to a per-test temp dir. NewRunner() uses a shared
+	// `os.TempDir()/breeze-scripts` path which any sibling test/process can
+	// write to. With the shared path the file-count assertion below
+	// occasionally trips with `before=0, after=1 files` on CI even though
+	// `defer os.Remove(scriptFile)` in Run() is fine — the "after" file came
+	// from a sibling, not from r.Run. Per-test t.TempDir makes the check
+	// observe only this test's effect.
+	r := &ScriptRunner{workDir: t.TempDir()}
 
 	// List files before
 	beforeFiles, _ := os.ReadDir(r.workDir)
