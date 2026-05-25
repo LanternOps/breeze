@@ -37,7 +37,7 @@ overrides:
   yaml@>=2.0.0 <2.8.3: '>=2.8.3'
   is-generator-function@>=1.1.0: 1.0.10
   js-cookie@<3.0.7: '>=3.0.7'
-  ip@<=2.0.1: '>=2.0.1'
+  ip@<=2.0.1: npm:neoip@^3.1.0
   '@xmldom/xmldom@<0.8.13': '>=0.8.13'
   postcss@<8.5.10: '>=8.5.10'
   vite@<6.4.2: '>=6.4.2'
@@ -7213,9 +7213,6 @@ packages:
     resolution: {integrity: sha512-HuEDBTI70aYdx1v6U97SbNx9F1+svQKBDo30o0b9fw055LMepzpOOd0Ccg9Q6tbqmBSJaMuY0fB7yw9/vjBYCA==}
     engines: {node: '>=12.22.0'}
 
-  ip@2.0.1:
-    resolution: {integrity: sha512-lJUL9imLTNi1ZfXT+DU6rBBdbiKGBuay9B6xGSPVjUeQwaH1RIGqef8RZkUtHioLmSNpPR5M4HVKJGm1j8FWVQ==}
-
   iron-webcrypto@1.2.1:
     resolution: {integrity: sha512-feOM6FaSr6rEABp/eDfVseKyTMDt+KGpeB35SkVn9Tyn0CqvVsY3EwI0v5i8nMHyJnzCIQf7nsy3p41TPkJZhg==}
 
@@ -8310,6 +8307,9 @@ packages:
   negotiator@1.0.0:
     resolution: {integrity: sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==}
     engines: {node: '>= 0.6'}
+
+  neoip@3.1.0:
+    resolution: {integrity: sha512-KtkXRRp1XK2BzJpLF7PRHyndphWn/bU5XkQFUJtAdm6rdUenkJZwQDpxifG+Q/7PLpxhc+wdcZiE15L/cZhnXA==}
 
   neotraverse@0.6.18:
     resolution: {integrity: sha512-Z4SmBUweYa09+o6pG+eASabEpP6QkQ70yHj351pQoEXIs8uHbaU2DWVmzBANKgflPa47A50PtB2+NgRpQvr7vA==}
@@ -13875,7 +13875,7 @@ snapshots:
       envinfo: 7.21.0
       execa: 5.1.1
       hermes-profile-transformer: 0.0.6
-      ip: 2.0.1
+      ip: neoip@3.1.0
       node-stream-zip: 1.15.0
       ora: 5.4.1
       semver: 7.8.0
@@ -13892,7 +13892,7 @@ snapshots:
       '@react-native-community/cli-tools': 12.1.1
       chalk: 4.1.2
       hermes-profile-transformer: 0.0.6
-      ip: 2.0.1
+      ip: neoip@3.1.0
     transitivePeerDependencies:
       - encoding
     optional: true
@@ -18743,9 +18743,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  ip@2.0.1:
-    optional: true
-
   iron-webcrypto@1.2.1: {}
 
   is-alphabetical@2.0.1: {}
@@ -20479,6 +20476,9 @@ snapshots:
   negotiator@0.6.4: {}
 
   negotiator@1.0.0: {}
+
+  neoip@3.1.0:
+    optional: true
 
   neotraverse@0.6.18: {}
 
