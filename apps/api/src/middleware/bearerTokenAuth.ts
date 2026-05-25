@@ -39,7 +39,7 @@ export function _resetJwksCacheForTests() {
  * additively keep the original mcp:* scopes so future code paths can branch
  * on the OAuth vocabulary if needed.
  *
- * Mapping intent (target state):
+ * Mapping (target state — in effect since 2026-05-15 per Task 24 / MCP MED-4):
  *   mcp:read    → ai:read       (tools/list, read-only tool calls)
  *   mcp:write   → ai:read, ai:write
  *   mcp:execute → ai:read, ai:write, ai:execute
@@ -47,51 +47,38 @@ export function _resetJwksCacheForTests() {
  * `ai:execute_admin` is intentionally NOT granted via OAuth — it gates the
  * most destructive operations and remains API-key-only by policy.
  *
- * Migration note: live 14-day refresh tokens were issued with `mcp:write`
- * back when that scope expanded to ai:read+ai:write+ai:execute. Splitting
- * `mcp:write` and the new `mcp:execute` cleanly would silently strip
- * `ai:execute` from those in-flight tokens and break MCP tool calls until
- * the user re-consented. To keep that release boundary clean, `mcp:write`
- * continues to grant `ai:execute` for one release while we emit a warning
- * per (process, client_id) — flip the legacy expansion off after
- * 2026-05-15 once the longest-lived legacy refresh tokens have rotated.
+ * Historical note: through 2026-05-15 we also expanded `mcp:write` to grant
+ * `ai:execute` so pre-split refresh tokens (issued before `mcp:execute`
+ * existed) didn't silently lose tool execution mid-lifetime. The 14-day
+ * refresh-token TTL means every pre-split token has now expired, so the
+ * legacy expansion was removed. Tokens that still present only `mcp:write`
+ * must re-consent to obtain `mcp:execute` for tool execution. We emit a
+ * one-time warn-log per client_id when this happens so operators can see
+ * who's still on a pre-split token.
  */
 const LEGACY_MCP_WRITE_WARNED_CLIENT_IDS = new Set<string>();
 
-function warnLegacyMcpWriteExpansion(clientId: string | undefined): void {
+function warnLegacyMcpWriteSeen(clientId: string | undefined): void {
   const key = clientId ?? '<no-client-id>';
   if (LEGACY_MCP_WRITE_WARNED_CLIENT_IDS.has(key)) return;
   LEGACY_MCP_WRITE_WARNED_CLIENT_IDS.add(key);
-  // Lazy import keeps the bearer middleware free of an `oauth/log` dep
-  // chain in the hot path; only loaded the first time a legacy token hits.
-  void import('../oauth/log').then(({ ERROR_IDS, logOauthError }) => {
-    logOauthError({
-      errorId: ERROR_IDS.OAUTH_LEGACY_MCP_WRITE_SCOPE_GRANTED_EXECUTE,
-      message: 'Legacy mcp:write scope granted ai:execute (remove after 2026-05-15)',
-      context: { clientId },
-    });
-  }).catch(() => {
-    // log import failure is non-fatal — silent dedupe still applies.
-  });
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[oauth] mcp:write presented without mcp:execute — ai:execute denied (client_id=${key}). Re-consent required for tool execution.`,
+  );
 }
 
-// TODO(2026-05-15): drop the `ai:execute` line below — by then any live
-// refresh token issued before the scope split will have aged out beyond
-// the 14-day RefreshToken TTL.
 function expandOAuthScopes(oauthScopes: string[], clientId?: string): string[] {
   const out = new Set<string>(oauthScopes);
-  let legacyMcpWriteExpansion = false;
+  let sawLegacyMcpWriteOnly = false;
   for (const s of oauthScopes) {
     if (s === 'mcp:read') {
       out.add('ai:read');
     } else if (s === 'mcp:write') {
       out.add('ai:read');
       out.add('ai:write');
-      // Backwards-compat for tokens minted before the scope split — see
-      // file-level migration note.
       if (!oauthScopes.includes('mcp:execute')) {
-        out.add('ai:execute');
-        legacyMcpWriteExpansion = true;
+        sawLegacyMcpWriteOnly = true;
       }
     } else if (s === 'mcp:execute') {
       out.add('ai:read');
@@ -99,7 +86,7 @@ function expandOAuthScopes(oauthScopes: string[], clientId?: string): string[] {
       out.add('ai:execute');
     }
   }
-  if (legacyMcpWriteExpansion) warnLegacyMcpWriteExpansion(clientId);
+  if (sawLegacyMcpWriteOnly) warnLegacyMcpWriteSeen(clientId);
   return Array.from(out);
 }
 

@@ -376,12 +376,15 @@ describe('bearerTokenAuthMiddleware', () => {
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'tenant inactive');
   });
 
-  it('maps legacy mcp:write to read/write/execute (back-compat through 2026-05-15)', async () => {
-    // Pre-split refresh tokens carried mcp:write expecting ai:execute. We
-    // continue granting ai:execute when mcp:execute is NOT also present so
-    // 14-day live refresh tokens don't silently lose tool execution.
+  it('mcp:write no longer implicitly grants ai:execute (Task 24 / MCP MED-4 — legacy cutoff 2026-05-15 has passed)', async () => {
+    // Pre-2026-05-15 the bearer middleware expanded `mcp:write` to also
+    // include `ai:execute` so 14-day live refresh tokens issued before the
+    // scope split kept working without re-consent. That migration window has
+    // closed: any token still presenting only `mcp:write` must now be denied
+    // ai:execute and re-consent to obtain `mcp:execute` for tool execution.
     const { _resetLegacyMcpWriteWarningsForTests } = await import('./bearerTokenAuth');
     _resetLegacyMcpWriteWarningsForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const token = await mintToken({
       sub: userId,
       partner_id: partnerId,
@@ -394,13 +397,15 @@ describe('bearerTokenAuthMiddleware', () => {
 
     await bearerTokenAuthMiddleware(c, next);
 
+    // ai:write is still granted (mcp:write → ai:read + ai:write).
+    // ai:execute is NOT granted — that now requires mcp:execute.
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:org-token-jti',
       orgId,
       partnerId,
       name: 'OAuth bearer',
       keyPrefix: 'oauth',
-      scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write', 'ai:execute'],
+      scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write'],
       rateLimit: 1000,
       createdBy: userId,
     });
@@ -416,6 +421,10 @@ describe('bearerTokenAuthMiddleware', () => {
       expect.any(Function)
     );
     expect(next).toHaveBeenCalledOnce();
+    // One-time deprecation warning is emitted per client_id so operators can
+    // see who still holds pre-split tokens. The grant itself is denied.
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('maps mcp:execute to internal execute scope', async () => {
