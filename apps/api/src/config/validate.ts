@@ -217,18 +217,31 @@ function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: 
     .filter(Boolean);
 
   if (entries.length === 0) {
-    // Don't fail startup. Operators upgrading from a release that didn't require
-    // this would otherwise crash on first boot behind their existing reverse proxy.
-    // Default to loopback-only (effectively: trust no upstream proxy) and warn.
-    // Real IP detection downstream falls back to the socket-level remote address,
-    // which is correct for direct connections and conservative for proxied ones.
-    if (process.env.NODE_ENV !== 'test') {
-      console.warn(
-        '[config] TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS is empty. ' +
-        'Defaulting to loopback only (127.0.0.1/32, ::1/128). ' +
-        'Set TRUSTED_PROXY_CIDRS to your reverse-proxy IPs to restore real-IP detection.'
-      );
-    }
+    // CRIT-1 / Task 25: boot-refuse instead of warn-and-default-to-loopback.
+    //
+    // Previous behavior was to fall back to loopback-only (127.0.0.1/32, ::1/128)
+    // when TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS was empty. In a
+    // real reverse-proxy deploy, the upstream proxy is never on loopback, so
+    // isTrustedProxySource() rejects every request and getTrustedClientIp()
+    // returns the proxy's own socket address for every connection. Per-IP
+    // rate limits then collapse onto a single fingerprint and the login
+    // rate-limit's secondary "UA + lang + XFF" fingerprint key — which the
+    // attacker fully controls — becomes the only barrier. That is
+    // exploitable for unlimited credential stuffing against any self-host
+    // deployment one env-var typo away from this state.
+    //
+    // Hosted droplets already set TRUSTED_PROXY_CIDRS correctly; this change
+    // closes the self-host footgun without affecting them. Operators who do
+    // NOT run behind a proxy should set TRUST_PROXY_HEADERS=false instead.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['TRUSTED_PROXY_CIDRS'],
+      message:
+        'TRUSTED_PROXY_CIDRS must be a non-empty CIDR list when TRUST_PROXY_HEADERS is enabled in production '
+        + '(e.g. "172.30.0.11/32" for a local Caddy hop, or "10.0.0.0/8,172.16.0.0/12" for a wider trusted range). '
+        + 'Without it, every upstream proxy is rejected and per-IP rate limits collapse onto a spoofable fingerprint. '
+        + 'If the API is NOT behind a reverse proxy, set TRUST_PROXY_HEADERS=false instead.',
+    });
     return;
   }
 

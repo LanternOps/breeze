@@ -353,8 +353,14 @@ describe('validateConfig', () => {
     });
   });
 
-  it('warns and defaults to loopback when TRUSTED_PROXY_CIDRS is empty in production (does not crash)', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // CRIT-1 / Task 25: when TRUST_PROXY_HEADERS=true in production, missing
+  // TRUSTED_PROXY_CIDRS used to fall back to loopback-only with a warning.
+  // That fallback means `isTrustedProxySource` rejects every upstream — the
+  // API then returns the socket IP (the proxy itself), so every request
+  // collapses to one fingerprint and per-IP rate limits stop functioning.
+  // Boot-refuse the misconfig so a single env-var typo can't enable
+  // unlimited credential stuffing against a self-hosted deploy.
+  it('refuses boot when TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS is empty in production', () => {
     withEnv({
       ...validEnv,
       NODE_ENV: 'production',
@@ -362,14 +368,8 @@ describe('validateConfig', () => {
       TRUST_PROXY_HEADERS: 'true',
       TRUSTED_PROXY_CIDRS: '',
     }, () => {
-      // Should NOT throw — operators upgrading without setting the new env var
-      // would otherwise crash on first boot. Runtime falls back to loopback-only.
-      expect(() => validateConfig()).not.toThrow();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('TRUSTED_PROXY_CIDRS is empty')
-      );
+      expect(() => validateConfig()).toThrow(/TRUSTED_PROXY_CIDRS/i);
     });
-    warnSpy.mockRestore();
   });
 
   it('rejects broad private trusted proxy CIDRs in production', () => {
@@ -687,6 +687,112 @@ describe('validateConfig', () => {
         NODE_ENV: 'development',
         OAUTH_DCR_ENABLED: 'true',
         OAUTH_DCR_REQUIRE_IAT: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  // ---- TRUST_PROXY_HEADERS / TRUSTED_PROXY_CIDRS hardening (CRIT-1, Task 25) ----
+  // When the API runs behind a reverse proxy in production, both
+  //   TRUST_PROXY_HEADERS=true AND a non-empty TRUSTED_PROXY_CIDRS
+  // are required. Without TRUSTED_PROXY_CIDRS, the proxy-trust path falls
+  // back to loopback-only — which means `isTrustedProxySource` rejects the
+  // real upstream proxy and `getTrustedClientIp` returns the proxy's own
+  // socket address for every request. Per-IP rate limits then collapse onto
+  // a single fingerprint and credential stuffing becomes unbounded.
+  describe('TRUST_PROXY_HEADERS validation', () => {
+    it('refuses to boot in production when TRUST_PROXY_HEADERS is missing', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/TRUST_PROXY_HEADERS/i);
+      });
+    });
+
+    it('refuses to boot when TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS is empty', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        TRUSTED_PROXY_CIDRS: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/TRUSTED_PROXY_CIDRS/i);
+      });
+    });
+
+    it('refuses to boot when TRUST_PROXY_HEADERS=true but TRUSTED_PROXY_CIDRS is whitespace-only', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        TRUSTED_PROXY_CIDRS: '   ',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/TRUSTED_PROXY_CIDRS/i);
+      });
+    });
+
+    it.each(['true', '1', 'yes', 'on'])(
+      'refuses to boot when TRUST_PROXY_HEADERS=%j but TRUSTED_PROXY_CIDRS is empty',
+      (truthy) => {
+        withEnv({
+          ...validEnv,
+          NODE_ENV: 'production',
+          CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+          TRUST_PROXY_HEADERS: truthy,
+          TRUSTED_PROXY_CIDRS: '',
+        }, () => {
+          expect(() => validateConfig()).toThrow(/TRUSTED_PROXY_CIDRS/i);
+        });
+      },
+    );
+
+    it('boots when both TRUST_PROXY_HEADERS=true and TRUSTED_PROXY_CIDRS are set in production', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        TRUSTED_PROXY_CIDRS: '172.30.0.11/32',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots when TRUST_PROXY_HEADERS=false (proxy headers explicitly distrusted) regardless of CIDRs', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'false',
+        TRUSTED_PROXY_CIDRS: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('does not require TRUSTED_PROXY_CIDRS in development when TRUST_PROXY_HEADERS is unset', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'development',
+        TRUST_PROXY_HEADERS: '',
+        TRUSTED_PROXY_CIDRS: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('does not require TRUSTED_PROXY_CIDRS in development even when TRUST_PROXY_HEADERS=true', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'development',
+        TRUST_PROXY_HEADERS: 'true',
+        TRUSTED_PROXY_CIDRS: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });
