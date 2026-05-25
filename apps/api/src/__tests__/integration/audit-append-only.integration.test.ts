@@ -55,12 +55,14 @@ describe('audit_logs append-only enforcement', () => {
     }
     expect(caught).toBeDefined();
     // Drizzle wraps PG errors as `Failed query: ...` with the real message on
-    // `cause.message`. Either the trigger fires ("audit log is append-only")
-    // OR PG's permission check fires first ("permission denied for table"),
-    // depending on which layer the REVOKE/trigger pair resolves first. Both
-    // are valid append-only enforcement.
+    // `cause.message`. Postgres checks table privileges BEFORE evaluating
+    // BEFORE-row triggers, so with `ensureAppRole`'s re-REVOKE in place the
+    // privilege layer fires first ("permission denied for table audit_logs")
+    // and the trigger never runs. The trigger is still the last line of
+    // defense if a future engineer adds a new GRANT path that misses
+    // audit_logs — verified end-to-end by the privilege test below.
     const cause = (caught as { cause?: { message?: string } } | undefined)?.cause;
-    expect(cause?.message).toMatch(/audit log is append-only|permission denied/i);
+    expect(cause?.message).toMatch(/permission denied/i);
 
     // Defense-in-depth: confirm the row still exists (was not deleted).
     const remaining = await getTestDb().execute(
@@ -79,13 +81,35 @@ describe('audit_logs append-only enforcement', () => {
       caught = err;
     }
     expect(caught).toBeDefined();
+    // See note above on DELETE: privilege check fires before BEFORE-row trigger.
     const cause = (caught as { cause?: { message?: string } } | undefined)?.cause;
-    expect(cause?.message).toMatch(/audit log is append-only|permission denied/i);
+    expect(cause?.message).toMatch(/permission denied/i);
 
     // Defense-in-depth: confirm the row's action was not mutated.
     const rows = (await getTestDb().execute(
       sql`SELECT action FROM audit_logs WHERE id = ${auditId}`
     )) as unknown as Array<{ action: string }>;
     expect(rows[0]?.action).toBe('test.action');
+  });
+
+  // Regression test for the gap closed in `ensureAppRole.ts` — the blanket
+  // GRANT in step 4 silently re-permitted UPDATE/DELETE on audit_logs, undoing
+  // the migration's REVOKE. The trigger still blocked mutations, but the
+  // privilege-layer half of the belt-and-suspenders pair was decorative.
+  // This test asserts the privilege is actually absent after ensureAppRole
+  // runs (which the test setup does via autoMigrate -> ensureAppRole).
+  it('breeze_app has no UPDATE or DELETE privilege on audit_logs after ensureAppRole runs', async () => {
+    const rows = (await db.execute(sql`
+      SELECT
+        has_table_privilege('breeze_app', 'audit_logs', 'UPDATE') AS can_update,
+        has_table_privilege('breeze_app', 'audit_logs', 'DELETE') AS can_delete,
+        has_table_privilege('breeze_app', 'audit_logs', 'INSERT') AS can_insert,
+        has_table_privilege('breeze_app', 'audit_logs', 'SELECT') AS can_select
+    `)) as unknown as Array<{ can_update: boolean; can_delete: boolean; can_insert: boolean; can_select: boolean }>;
+    const r = rows[0];
+    expect(r.can_update).toBe(false);
+    expect(r.can_delete).toBe(false);
+    expect(r.can_insert).toBe(true);
+    expect(r.can_select).toBe(true);
   });
 });
