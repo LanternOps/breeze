@@ -5,7 +5,7 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { getDeviceWithOrgCheck, getPagination } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination } from './helpers';
 import { deviceIdParamSchema, pidParamSchema, paginationQuerySchema } from './schemas';
 
 const processListQuerySchema = z.object({
@@ -27,7 +27,10 @@ processesRoutes.get(
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -74,7 +77,10 @@ processesRoutes.get(
     const { deviceId, pid } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -112,7 +118,10 @@ processesRoutes.post(
     const auth = c.get('auth');
     const force = c.req.valid('query').force === 'true';
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }

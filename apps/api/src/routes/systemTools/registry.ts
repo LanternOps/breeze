@@ -4,7 +4,7 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { getDeviceWithOrgCheck, asRecord, asString, asNumber } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, asRecord, asString, asNumber } from './helpers';
 import {
   deviceIdParamSchema,
   registryQuerySchema,
@@ -187,7 +187,10 @@ registryRoutes.get(
     const { hive, path } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -226,7 +229,10 @@ registryRoutes.get(
     const { hive, path } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -265,7 +271,10 @@ registryRoutes.get(
     const { hive, path, name } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -317,7 +326,10 @@ registryRoutes.put(
     const { hive, path, name, type, data } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -383,7 +395,10 @@ registryRoutes.delete(
     const { hive, path, name } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -437,7 +452,10 @@ registryRoutes.post(
     const { hive, path } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -493,7 +511,10 @@ registryRoutes.delete(
     const { hive, path } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }

@@ -104,37 +104,6 @@ const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
   'routes/snmp.ts:GET /metrics/:deviceId/history',
   'routes/snmp.ts:GET /thresholds/:deviceId',
 
-  // -- routes/systemTools ----------------------------------------------------
-  // System-tools handlers (event logs, file browser, processes, registry,
-  // scheduled tasks, services) all gate via `getDeviceWithOrgCheck` (org only)
-  // rather than `getDeviceWithOrgAndSiteCheck`. Pre-existing site-scope miss
-  // — these are high-impact (RCE-class capabilities) and should be the next
-  // sweep after Task 12.
-  'routes/systemTools/eventLogs.ts:GET /devices/:deviceId/eventlogs',
-  'routes/systemTools/eventLogs.ts:GET /devices/:deviceId/eventlogs/:name',
-  'routes/systemTools/eventLogs.ts:GET /devices/:deviceId/eventlogs/:name/events',
-  'routes/systemTools/eventLogs.ts:GET /devices/:deviceId/eventlogs/:name/events/:recordId',
-  'routes/systemTools/processes.ts:GET /devices/:deviceId/processes',
-  'routes/systemTools/processes.ts:GET /devices/:deviceId/processes/:pid',
-  'routes/systemTools/processes.ts:POST /devices/:deviceId/processes/:pid/kill',
-  'routes/systemTools/registry.ts:DELETE /devices/:deviceId/registry/key',
-  'routes/systemTools/registry.ts:DELETE /devices/:deviceId/registry/value',
-  'routes/systemTools/registry.ts:GET /devices/:deviceId/registry/keys',
-  'routes/systemTools/registry.ts:GET /devices/:deviceId/registry/value',
-  'routes/systemTools/registry.ts:GET /devices/:deviceId/registry/values',
-  'routes/systemTools/registry.ts:POST /devices/:deviceId/registry/key',
-  'routes/systemTools/registry.ts:PUT /devices/:deviceId/registry/value',
-  'routes/systemTools/scheduledTasks.ts:GET /devices/:deviceId/tasks',
-  'routes/systemTools/scheduledTasks.ts:GET /devices/:deviceId/tasks/:path',
-  'routes/systemTools/scheduledTasks.ts:GET /devices/:deviceId/tasks/:path/history',
-  'routes/systemTools/scheduledTasks.ts:POST /devices/:deviceId/tasks/:path/disable',
-  'routes/systemTools/scheduledTasks.ts:POST /devices/:deviceId/tasks/:path/enable',
-  'routes/systemTools/scheduledTasks.ts:POST /devices/:deviceId/tasks/:path/run',
-  'routes/systemTools/services.ts:GET /devices/:deviceId/services',
-  'routes/systemTools/services.ts:GET /devices/:deviceId/services/:name',
-  'routes/systemTools/services.ts:POST /devices/:deviceId/services/:name/restart',
-  'routes/systemTools/services.ts:POST /devices/:deviceId/services/:name/start',
-  'routes/systemTools/services.ts:POST /devices/:deviceId/services/:name/stop',
 ]);
 
 function formatOffender(o: RouteInfo): string {

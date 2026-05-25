@@ -5,7 +5,7 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { getDeviceWithOrgCheck, getPagination, asRecord, asString, asOptionalNumber } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination, asRecord, asString, asOptionalNumber } from './helpers';
 import {
   deviceIdParamSchema,
   taskPathParamSchema,
@@ -156,7 +156,10 @@ scheduledTasksRoutes.get(
     const search = query.search || '';
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -205,7 +208,10 @@ scheduledTasksRoutes.get(
     const { deviceId, path } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -245,7 +251,10 @@ scheduledTasksRoutes.get(
     const { limit: limitRaw } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -294,7 +303,10 @@ scheduledTasksRoutes.post(
     const { deviceId, path } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -339,7 +351,10 @@ scheduledTasksRoutes.post(
     const { deviceId, path } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -384,7 +399,10 @@ scheduledTasksRoutes.post(
     const { deviceId, path } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
