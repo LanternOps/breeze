@@ -106,33 +106,45 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function maybeReencryptString(value: string, force: boolean): string {
+// Gate AAD-binding rollout behind an env var so this branch can ship the
+// machinery without forcing a v2 -> v3 rewrite across all production secrets
+// at the same time. Flip to default-on once the rotation script has been run
+// at least once with ENABLE_AAD_V3=true.
+function aadV3Enabled(): boolean {
+  return process.env.ENABLE_AAD_V3 === 'true';
+}
+
+function maybeReencryptString(value: string, force: boolean, aad?: string): string {
+  const withAad = aad && aadV3Enabled() ? aad : undefined;
+  const opts = withAad ? { aad: withAad } : undefined;
   if (isEncryptedSecret(value)) {
-    return shouldReencryptSecret(value) ? reencryptSecret(value) ?? value : value;
+    return shouldReencryptSecret(value, { targetWithAad: Boolean(withAad) })
+      ? reencryptSecret(value, opts) ?? value
+      : value;
   }
   if (!force) {
     return value;
   }
-  return reencryptSecret(value) ?? value;
+  return reencryptSecret(value, opts) ?? value;
 }
 
-function transformJsonSecrets(value: unknown, key?: string): unknown {
+function transformJsonSecrets(value: unknown, key?: string, aad?: string): unknown {
   if (typeof value === 'string') {
     if (isEncryptedSecret(value) || (key && SECRET_JSON_KEYS.has(key) && value.length > 0)) {
-      return maybeReencryptString(value, Boolean(key && SECRET_JSON_KEYS.has(key)));
+      return maybeReencryptString(value, Boolean(key && SECRET_JSON_KEYS.has(key)), aad);
     }
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => transformJsonSecrets(entry, key));
+    return value.map((entry) => transformJsonSecrets(entry, key, aad));
   }
 
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
         entryKey,
-        transformJsonSecrets(entryValue, entryKey),
+        transformJsonSecrets(entryValue, entryKey, aad),
       ])
     );
   }
@@ -141,17 +153,22 @@ function transformJsonSecrets(value: unknown, key?: string): unknown {
 }
 
 export function transformEncryptedColumnValue(spec: EncryptedColumnSpec, value: unknown): unknown {
+  // AAD binds the ciphertext to its schema location so a blob from one column
+  // cannot be silently swapped into another. Only written for new v3 rows
+  // (gated by ENABLE_AAD_V3); existing v2 rows continue to decrypt unchanged.
+  const aad = `${spec.table}.${spec.column}`;
+
   if (spec.kind === 'text') {
-    return typeof value === 'string' ? maybeReencryptString(value, true) : value;
+    return typeof value === 'string' ? maybeReencryptString(value, true, aad) : value;
   }
 
   if (spec.kind === 'text-array') {
     return Array.isArray(value)
-      ? value.map((entry) => typeof entry === 'string' ? maybeReencryptString(entry, true) : entry)
+      ? value.map((entry) => typeof entry === 'string' ? maybeReencryptString(entry, true, aad) : entry)
       : value;
   }
 
-  return transformJsonSecrets(value);
+  return transformJsonSecrets(value, undefined, aad);
 }
 
 async function tableExists(executor: SecretReencryptionExecutor, table: string): Promise<boolean> {
