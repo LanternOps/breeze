@@ -272,17 +272,64 @@ describe('validateConfig', () => {
     });
   });
 
-  it('does not require a release artifact manifest public key for local production binaries', () => {
+  // Task 27 / audit HIGH-2: previously the validator only required
+  // RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS when BINARY_SOURCE=github. A
+  // self-hosted deploy that switched to BINARY_SOURCE=local without the
+  // trust key would silently fall back to unsigned manifest acceptance —
+  // agents would then trust update manifests with no signature verification.
+  // The check now fires for BOTH github and local in production.
+  it('refuses BINARY_SOURCE=local without RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS in production', () => {
     withEnv({
       ...validEnv,
       NODE_ENV: 'production',
       BINARY_SOURCE: 'local',
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS/i);
+    });
+  });
+
+  it('boots when BINARY_SOURCE=local AND the manifest pubkey is set in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      BINARY_SOURCE: 'local',
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'prod-test-release-manifest-public-key',
       CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
       TRUST_PROXY_HEADERS: 'true',
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('accepts BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS as a fallback when BINARY_SOURCE=local', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      BINARY_SOURCE: 'local',
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'prod-test-release-manifest-public-key',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('does not require manifest pubkey for BINARY_SOURCE=local outside production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'development',
+      BINARY_SOURCE: 'local',
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+      BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
     });
   });
 

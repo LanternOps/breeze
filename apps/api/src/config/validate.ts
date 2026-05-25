@@ -642,13 +642,29 @@ const envSchema = z
       validateProductionPepper('ENROLLMENT_KEY_PEPPER', data.ENROLLMENT_KEY_PEPPER, ctx);
       validateProductionPepper('MFA_RECOVERY_CODE_PEPPER', data.MFA_RECOVERY_CODE_PEPPER, ctx);
 
-      const binarySource = (data.BINARY_SOURCE ?? 'github').trim().toLowerCase();
-      if (binarySource === 'github' && !hasReleaseArtifactManifestPublicKey(data)) {
+      // Task 27 (audit HIGH-2): require the manifest trust root in
+      // production for BOTH BINARY_SOURCE=github AND BINARY_SOURCE=local.
+      // - github mode: installer fallback assets are downloaded from the
+      //   GitHub release page; the manifest signature is the only thing
+      //   tying the asset bytes back to a release we built.
+      // - local mode: per-deployment manifests are signed by a key minted
+      //   into manifest_signing_keys (see services/manifestSigning.ts), but
+      //   agents only verify those signatures when a trust root has been
+      //   published to them via RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS. With
+      //   the env var unset, releaseArtifactManifest.ts has no keys to
+      //   verify against and the verification path silently falls back to
+      //   accepting unsigned manifests — defeating the whole agent-update
+      //   trust chain.
+      // The previous `binarySource === 'github'` gate was the bug: a
+      // self-host operator who switched to BINARY_SOURCE=local without
+      // also wiring RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS would boot clean
+      // and trust unsigned update manifests.
+      if (!hasReleaseArtifactManifestPublicKey(data)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
           message:
-            'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production when BINARY_SOURCE=github so installer fallback assets are verified against the signed release manifest.',
+            'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production for both BINARY_SOURCE=github (verifies installer fallback assets against the signed release manifest) and BINARY_SOURCE=local (anchors per-deployment update manifests; without a trust root, agents accept unsigned manifests).',
         });
       }
 
