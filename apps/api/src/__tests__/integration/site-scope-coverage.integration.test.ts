@@ -45,56 +45,17 @@ import { findRoutesTouchingDevices, type RouteInfo } from '../helpers/routeScan'
 // tracked for a follow-up sweep; see the audit narrative referenced by the
 // SP2 launch-readiness plan.
 const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
-  // -- routes/backup ---------------------------------------------------------
-  // Dashboard status route reads backup health for a specific device.
-  // Pre-existing site-scope miss — deferred (follow-up sweep).
-  'routes/backup/dashboard.ts:GET /status/:deviceId',
-
-  // -- routes/browserSecurity ------------------------------------------------
-  // Inventory update for browser extensions on a single device. Pre-existing
-  // site-scope miss — deferred.
-  'routes/browserSecurity.ts:PUT /inventory/:deviceId',
-
-  // -- routes/configurationPolicies -----------------------------------------
-  // Policy resolution for a specific device. Org-scope only; pre-existing
-  // site-scope miss — deferred.
-  'routes/configurationPolicies/patchJobs.ts:GET /:id/resolve-patch-config/:deviceId',
-  'routes/configurationPolicies/resolution.ts:GET /effective/:deviceId',
-  'routes/configurationPolicies/resolution.ts:POST /effective/:deviceId/diff',
-
-  // -- routes/deployments ----------------------------------------------------
-  // Retry a deployment for a single device. The deployment row itself is
-  // org-scoped; device-level site-scope is not currently checked here.
-  // Pre-existing site-scope miss — deferred.
-  'routes/deployments.ts:POST /:id/devices/:deviceId/retry',
-
-  // -- routes/groups ---------------------------------------------------------
-  // Device-group membership endpoints: add/remove/pin a device to/from a
-  // dynamic group. The group itself is access-checked; site-scope on the
-  // device is a pre-existing miss — deferred.
-  'routes/groups.ts:DELETE /:id/devices/:deviceId',
-  'routes/groups.ts:DELETE /:id/devices/:deviceId/pin',
-  'routes/groups.ts:POST /:id/devices/:deviceId/pin',
-
-  // -- routes/maintenance ----------------------------------------------------
-  // Maintenance-window status for a specific device. Pre-existing site-scope
-  // miss — deferred.
-  'routes/maintenance.ts:GET /device/:deviceId/status',
-
-  // -- routes/monitoring -----------------------------------------------------
-  // Monitoring results summary / device status. Pre-existing site-scope
-  // miss — deferred.
-  'routes/monitoring.ts:GET /results/:deviceId/summary',
-  'routes/monitoring.ts:GET /status/:deviceId',
-
   // -- routes/snmp -----------------------------------------------------------
-  // SNMP metric/threshold endpoints for a single device. Pre-existing
-  // site-scope miss — deferred.
+  // Deprecated SNMP metric/threshold endpoints — every handler is a 4-line
+  // stub that returns the deprecation payload (HTTP 410) and never reaches a
+  // device row, so a site-scope gate would be dead code. Kept here so the
+  // contract test's static scanner stops flagging them. The new SNMP metrics
+  // surface lives under `/monitoring/assets/:id` (which DOES apply org+site
+  // gates via the standard chokepoint).
   'routes/snmp.ts:GET /metrics/:deviceId',
   'routes/snmp.ts:GET /metrics/:deviceId/:oid',
   'routes/snmp.ts:GET /metrics/:deviceId/history',
   'routes/snmp.ts:GET /thresholds/:deviceId',
-
 ]);
 
 function formatOffender(o: RouteInfo): string {

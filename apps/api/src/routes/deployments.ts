@@ -14,7 +14,7 @@ import {
   incrementRetryCount
 } from '../services/deploymentEngine';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const deploymentRoutes = new Hono();
 const requireDeploymentRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -837,6 +837,23 @@ deploymentRoutes.post(
 
     if (!deploymentDevice) {
       return c.json({ error: 'Device not found in this deployment' }, 404);
+    }
+
+    // Site-scope gate: `requireDeploymentExecute` populated permissions in
+    // context; enforce `allowedSiteIds` so a partner-scope user restricted to
+    // a subset of sites cannot retry deployments against devices in other
+    // sites within the same org. RLS does not defend the site axis. Mirrors
+    // PR #864/#868 (SP2 launch-readiness sweep).
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds) {
+      const [device] = await db
+        .select({ siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (!device || typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
     }
 
     if (deploymentDevice.status !== 'failed') {

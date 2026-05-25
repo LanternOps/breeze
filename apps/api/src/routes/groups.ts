@@ -9,11 +9,30 @@ import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } fr
 import { evaluateGroupMembership, pinDeviceToGroup } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const groupRoutes = new Hono();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireGroupWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+
+/**
+ * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
+ * not add/remove/pin a device in a site they cannot access, even when the
+ * group itself is org-scoped. RLS does not defend the site axis — mirrors
+ * PR #864/#868 (SP2 launch-readiness sweep).
+ * Returns true when access is granted, false when site-denied.
+ */
+async function canAccessDeviceSite(c: { get(key: 'permissions'): UserPermissions | undefined }, deviceId: string): Promise<boolean> {
+  const userPerms = c.get('permissions');
+  if (!userPerms?.allowedSiteIds) return true;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  if (!device || typeof device.siteId !== 'string') return false;
+  return canAccessSite(userPerms, device.siteId);
+}
 
 type DeviceGroup = {
   id: string;
@@ -716,6 +735,10 @@ groupRoutes.delete(
       return c.json({ error: 'Cannot manually remove devices from a dynamic group' }, 400);
     }
 
+    if (!(await canAccessDeviceSite(c, deviceId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     const [membership] = await db
       .select()
       .from(deviceGroupMemberships)
@@ -829,13 +852,18 @@ groupRoutes.post(
 
     // Verify device exists and belongs to the same org
     const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1);
 
     if (!device || device.orgId !== group.orgId) {
       return c.json({ error: 'Device not found or belongs to a different organization' }, 404);
+    }
+
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     await pinDeviceToGroup(id, deviceId, true, group.orgId);
@@ -880,6 +908,10 @@ groupRoutes.delete(
 
     if (group.type !== 'dynamic') {
       return c.json({ error: 'Unpinning is only supported for dynamic groups' }, 400);
+    }
+
+    if (!(await canAccessDeviceSite(c, deviceId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Check if device is a member of this group

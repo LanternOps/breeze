@@ -56,6 +56,17 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => next())
 }));
 
+vi.mock('../services/permissions', () => ({
+  // Returning `undefined` matches the production behavior when the user has no
+  // permissions row — the site-scope gate skips the check and lets org gating
+  // alone govern access. Tests in this file exercise org-only paths.
+  getUserPermissions: vi.fn(async () => undefined),
+  canAccessSite: vi.fn(
+    (permissions: { allowedSiteIds?: string[] } | undefined, siteId: string) =>
+      !permissions?.allowedSiteIds || permissions.allowedSiteIds.includes(siteId),
+  ),
+}));
+
 import { db } from '../db';
 import { queueCommand } from '../services/commandQueue';
 import {

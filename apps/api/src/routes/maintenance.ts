@@ -8,7 +8,7 @@ import { devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isDeviceInMaintenance } from '../services/maintenanceService';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const maintenanceRoutes = new Hono();
 const requireMaintenanceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -242,13 +242,23 @@ maintenanceRoutes.get(
     const deviceId = c.req.param('deviceId')!;
 
     // Verify the caller has access to this device's org
-    const [device] = await db.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, deviceId)).limit(1);
+    const [device] = await db.select({ orgId: devices.orgId, siteId: devices.siteId }).from(devices).where(eq(devices.id, deviceId)).limit(1);
     if (!device) return c.json({ error: 'Device not found' }, 404);
     if (auth.scope === 'organization' && auth.orgId !== device.orgId) {
       return c.json({ error: 'Access denied' }, 403);
     }
     if (auth.scope === 'partner' && !auth.canAccessOrg(device.orgId)) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    // Site-scope gate: `requireMaintenanceRead` populated `permissions` in
+    // context; enforce `allowedSiteIds` so a partner-scope user restricted to
+    // a subset of sites cannot read maintenance status for devices in other
+    // sites within the same org. RLS does not defend the site axis. Mirrors
+    // PR #864/#868 (SP2 launch-readiness sweep).
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const status = await isDeviceInMaintenance(deviceId);

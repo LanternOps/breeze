@@ -12,7 +12,7 @@ import { devices } from '../db/schema/devices';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { triggerBrowserPolicyEvaluation } from '../jobs/browserSecurityJobs';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const browserSecurityRoutes = new Hono();
 
@@ -275,6 +275,23 @@ browserSecurityRoutes.put(
     const auth = c.get('auth') as AuthContext;
     const deviceId = c.req.param('deviceId')!;
     if (!auth.orgId) return c.json({ error: 'Organization context required' }, 400);
+
+    // Verify device belongs to caller's org, and gate on site-scope so a
+    // partner-scope user with `allowedSiteIds` cannot write inventory for a
+    // device outside their site allowlist. RLS does not defend the site axis.
+    // Mirrors the SP2 launch-readiness sweep (PR #864/#868).
+    const [device] = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(and(eq(devices.id, deviceId), eq(devices.orgId, auth.orgId)))
+      .limit(1);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const body = await c.req.json();
     const extensions = Array.isArray(body.extensions) ? body.extensions : [];

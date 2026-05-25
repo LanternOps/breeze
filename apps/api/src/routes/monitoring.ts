@@ -7,7 +7,7 @@ import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isRedisAvailable } from '../services/redis';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
 
 type AuthContext = {
@@ -795,12 +795,22 @@ monitoringRoutes.get(
 
     // Verify device access before querying results
     const [device] = await db
-      .select({ orgId: devices.orgId })
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1);
     if (!device) return c.json({ error: 'Device not found' }, 404);
     if (!auth.canAccessOrg(device.orgId)) return c.json({ error: 'Access denied' }, 403);
+
+    // Site-scope gate: `requireMonitoringRead` populated `permissions` in
+    // context; enforce `allowedSiteIds` since RLS does not defend the site
+    // axis. Mirrors PR #864/#868 (SP2 launch-readiness sweep).
+    {
+      const userPerms = c.get('permissions') as UserPermissions | undefined;
+      if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
 
     // Get all distinct watch names, then latest result for each
     const allResults = await db
@@ -848,12 +858,20 @@ monitoringRoutes.get(
 
     // Verify device access before querying results
     const [device] = await db
-      .select({ orgId: devices.orgId })
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1);
     if (!device) return c.json({ error: 'Device not found' }, 404);
     if (!auth.canAccessOrg(device.orgId)) return c.json({ error: 'Access denied' }, 403);
+
+    // Site-scope gate: see /results/:deviceId/summary above for rationale.
+    {
+      const userPerms = c.get('permissions') as UserPermissions | undefined;
+      if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
 
     // Get recent results and deduplicate to latest per (watchType, name)
     const allResults = await db

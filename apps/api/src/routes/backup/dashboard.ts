@@ -9,7 +9,7 @@ import {
   backupSnapshots,
   devices,
 } from '../../db/schema';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
@@ -237,13 +237,21 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
   const deviceId = c.req.param('deviceId')!;
 
   const [device] = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
     .limit(1);
 
   if (!device) {
     return c.json({ error: 'Device not found' }, 404);
+  }
+
+  // Site-scope gate: `requirePermission` populated `permissions` in context;
+  // enforce `allowedSiteIds` here since RLS does not defend the site axis.
+  // Mirrors the SP2 launch-readiness sweep (PR #864/#868).
+  const userPerms = c.get('permissions') as UserPermissions | undefined;
+  if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   // Resolve backup config via configuration policy system

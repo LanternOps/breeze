@@ -239,7 +239,21 @@ describe('browserSecurity routes', () => {
 
   // ────────────────────── PUT /inventory/:deviceId ──────────────────────
   describe('PUT /inventory/:deviceId', () => {
+    // The site-scope gate added in Task 35 does a `db.select(...)` against
+    // `devices` to read the row's siteId. Mock it to return a device in the
+    // caller's org with a siteId that won't trigger site denial.
+    const mockDeviceLookup = (device: { id: string; siteId: string | null } | null = { id: DEVICE_ID, siteId: 'site-1' }) => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(device ? [device] : []),
+          }),
+        }),
+      } as any);
+    };
+
     it('upserts browser extension inventory', async () => {
+      mockDeviceLookup();
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
           onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
@@ -288,6 +302,7 @@ describe('browserSecurity routes', () => {
     });
 
     it('handles empty extensions array', async () => {
+      mockDeviceLookup();
       const res = await app.request(`/browser-security/inventory/${DEVICE_ID}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -297,6 +312,16 @@ describe('browserSecurity routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.upserted).toBe(0);
+    });
+
+    it('returns 404 when device is not in the caller org', async () => {
+      mockDeviceLookup(null);
+      const res = await app.request(`/browser-security/inventory/${DEVICE_ID}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extensions: [] }),
+      });
+      expect(res.status).toBe(404);
     });
   });
 
