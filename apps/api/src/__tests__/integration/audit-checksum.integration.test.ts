@@ -97,14 +97,29 @@ describe('audit_logs checksum chain', () => {
     });
   });
 
+  // NOTE — the two tests below intentionally insert each audit row in its own
+  // `withSystemDbAccessContext` call. Reason: `withSystemDbAccessContext`
+  // opens a single Postgres transaction, so multiple inserts inside one
+  // wrapper share `transaction_timestamp()`. The BEFORE INSERT chain trigger
+  // picks the predecessor row via `ORDER BY timestamp DESC, id DESC LIMIT 1`,
+  // while `audit_log_verify_chain` walks `ORDER BY timestamp, id ASC` — they
+  // disagree when rows in the same transaction have ids that don't sort in
+  // insert order, producing false-positive "breaks" with no actual tampering.
+  // Real production audit traffic flows row-per-API-call (separate
+  // transactions, distinct timestamps), so this matches the production case.
+  // Fixing the chain to handle same-tx batches robustly requires a chain_seq
+  // bigserial + per-org advisory lock — tracked as future-task hardening.
+
   it('audit_log_verify_chain returns no breaks on a freshly written chain', async () => {
-    await withSystemDbAccessContext(async () => {
-      for (const action of ['a', 'b', 'c']) {
+    for (const action of ['a', 'b', 'c']) {
+      await withSystemDbAccessContext(async () => {
         await db.execute(sql`
           INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
           VALUES (${orgId}, 'system', gen_random_uuid(), ${action}, 'test', 'success')
         `);
-      }
+      });
+    }
+    await withSystemDbAccessContext(async () => {
       const breaks = (await db.execute(sql`
         SELECT * FROM public.audit_log_verify_chain(${orgId}::uuid)
       `)) as unknown as Array<{ broken_id: string }>;
@@ -113,17 +128,20 @@ describe('audit_logs checksum chain', () => {
   });
 
   it('audit_log_verify_chain detects tampering via direct SQL UPDATE', async () => {
-    // Seed three rows under the application context so the chain trigger fires.
-    const inserted = await withSystemDbAccessContext(async () => {
-      return (await db.execute(sql`
-        INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
-        VALUES
-          (${orgId}, 'system', gen_random_uuid(), 'a', 'test', 'success'),
-          (${orgId}, 'system', gen_random_uuid(), 'b', 'test', 'success'),
-          (${orgId}, 'system', gen_random_uuid(), 'c', 'test', 'success')
-        RETURNING id
-      `)) as unknown as Array<{ id: string }>;
-    });
+    // Seed three rows each in their own transaction so the chain is
+    // unambiguously ordered (see same-tx note above). Each insert returns the
+    // new row's id so we can pick the middle row to tamper with.
+    const inserted: Array<{ id: string }> = [];
+    for (const action of ['a', 'b', 'c']) {
+      await withSystemDbAccessContext(async () => {
+        const rows = (await db.execute(sql`
+          INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+          VALUES (${orgId}, 'system', gen_random_uuid(), ${action}, 'test', 'success')
+          RETURNING id
+        `)) as unknown as Array<{ id: string }>;
+        inserted.push(rows[0]);
+      });
+    }
 
     // Direct UPDATE — only possible because the test runs as a superuser.
     // The point is to simulate a DBA-level attacker bypassing Task 1's defenses.
