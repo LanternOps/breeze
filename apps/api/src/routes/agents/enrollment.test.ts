@@ -362,6 +362,110 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     const body = await resp.json();
     expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
   });
+
+  it('allows re-enrollment without the existing-device token when the existing row is decommissioned', async () => {
+    // Real-world scenario (Trevor-Legion, 2026-05-25):
+    // 1. Admin calls DELETE /api/v1/devices/<id> — soft-deletes, status=decommissioned
+    // 2. Operator uninstalls Breeze on the endpoint and re-runs the installer
+    // 3. Fresh agent has no prior token; re-enrolls
+    // Pre-fix: hostname-collision check returned 409 even for decommissioned
+    // rows, leaving the host permanently un-enrollable without a hand-rename
+    // in SQL. Post-fix: decommissioned rows are treated as authenticated for
+    // re-enrollment, and the existing row is restored/updated in-place so
+    // history (agent_logs etc.) survives.
+    mockKeyLookup({
+      id: 'key-decom',
+      orgId: 'org-decom',
+      siteId: 'site-decom',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    // Claim the enrollment key
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'key-decom',
+            orgId: 'org-decom',
+            siteId: 'site-decom',
+          }]),
+        })),
+      })),
+    } as any);
+
+    mockSelectRows([{ partnerId: 'partner-decom' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    // Existing row is DECOMMISSIONED — no token attached to the request
+    mockSelectRows([{
+      id: 'device-decom-existing',
+      status: 'decommissioned',
+      agentTokenHash: 'old-decom-hash',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+    }]);
+
+    // Auto-restore: db.update flipping status decommissioned -> offline
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn().mockResolvedValue(undefined),
+      })),
+    } as any);
+
+    // Transaction: device is existing, so the inner branch is tx.update().returning()
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                id: 'device-decom-existing',
+                orgId: 'org-decom',
+                siteId: 'site-decom',
+                hostname: 'host-1',
+              }]),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-decom-existing');
+    // Importantly: no 409 audit event was written for hostname_collision
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'hostname_collision_requires_existing_device_token',
+        }),
+      })
+    );
+  });
 });
 
 describe('POST /agents/enroll — ENROLLMENT_SECRET_ENFORCEMENT_MODE', () => {

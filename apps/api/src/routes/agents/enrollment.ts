@@ -377,17 +377,48 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     let existingDeviceAuthenticated = false;
     if (existingDevice) {
-      const now = new Date();
-      const existingDeviceToken = getProvidedExistingDeviceToken(c);
-      // Task 18: a suspended token cannot be used to re-authenticate an
-      // existing-device collision and silently rotate to a new token.
       const tokenSuspended = !!existingDevice.agentTokenSuspendedAt;
-      existingDeviceAuthenticated =
-        !tokenSuspended &&
-        (tokenHashMatches(existingDevice.agentTokenHash, existingDeviceToken, now) ||
-          tokenHashMatches(existingDevice.previousTokenHash, existingDeviceToken, now, existingDevice.previousTokenExpiresAt));
+
+      if (tokenSuspended) {
+        // Suspension trumps decommission. Task 18 added a suspend-on-probe
+        // mechanism; the maintainer's explicit intent (commit 2669ea43) is
+        // that unsuspending is manual — "the reconnect-loop on a single
+        // device is the desired ops alarm signal." An admin DELETE of a
+        // probe-suspended device must NOT silently auto-restore the slot:
+        // the operator has to clear `agent_token_suspended_at` deliberately
+        // (SQL or future admin endpoint), which leaves an audit trail of
+        // the "yes, I cleared a security suspension" decision. Without
+        // this, the decom-bypass below would let the same hostname re-
+        // enroll with fresh tokens after the suspend alarm fired.
+        existingDeviceAuthenticated = false;
+      } else if (existingDevice.status === 'decommissioned') {
+        // Decommission-bypass: admin explicitly DELETE'd the device. The
+        // prior agent's tokens are irrelevant; the slot is freed for fresh
+        // enrollment. The auto-restore block below flips status back to
+        // 'online' and the transaction below re-uses the existing device
+        // id so audit history (agent_logs etc.) survives. Without this
+        // branch, uninstall+reinstall on the same hostname is permanently
+        // broken — observed 2026-05-25 on Trevor-Legion: agent re-enroll
+        // loops on 409 until an operator hand-renames the decommissioned
+        // row in SQL to free the hostname.
+        existingDeviceAuthenticated = true;
+      } else {
+        const now = new Date();
+        const existingDeviceToken = getProvidedExistingDeviceToken(c);
+        existingDeviceAuthenticated =
+          tokenHashMatches(existingDevice.agentTokenHash, existingDeviceToken, now) ||
+          tokenHashMatches(existingDevice.previousTokenHash, existingDeviceToken, now, existingDevice.previousTokenExpiresAt);
+      }
 
       if (!existingDeviceAuthenticated) {
+        const isSuspendedDecom = tokenSuspended && existingDevice.status === 'decommissioned';
+        const reason = isSuspendedDecom
+          ? 'existing_decommissioned_row_has_suspended_token'
+          : 'hostname_collision_requires_existing_device_token';
+        const errorMessage = isSuspendedDecom
+          ? 'Re-enrollment refused: existing device is decommissioned but its agent token was suspended (cross-tenant probe alarm). Clear agent_token_suspended_at on the device row before re-enrolling.'
+          : 'Enrollment attempted to replace an existing hostname without the existing device token';
+
         writeAuditEvent(c, {
           orgId: key.orgId,
           actorType: 'system',
@@ -396,15 +427,17 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           resourceId: existingDevice.id,
           resourceName: data.hostname,
           details: {
-            reason: 'hostname_collision_requires_existing_device_token',
+            reason,
             siteId,
           },
           result: 'denied',
-          errorMessage: 'Enrollment attempted to replace an existing hostname without the existing device token',
+          errorMessage,
         });
         return c.json({
-          error: 'A device with this hostname already exists and re-enrollment requires the existing device token or an admin-approved replacement workflow',
-          reason: 'hostname_collision_requires_existing_device_token',
+          error: isSuspendedDecom
+            ? 'Re-enrollment refused: existing device row is decommissioned and has a suspended agent token. An operator must clear the suspension flag before re-enrollment.'
+            : 'A device with this hostname already exists and re-enrollment requires the existing device token or an admin-approved replacement workflow',
+          reason,
         }, 409);
       }
     }
