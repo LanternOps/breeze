@@ -42,12 +42,31 @@ vi.mock('../services', () => ({
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
   mfaLimiter: { limit: 5, windowSeconds: 300 },
+  // Task 10: per-account lockout helpers. Default mocks mirror the
+  // "no failures, not locked" happy path so existing tests keep working.
+  recordAccountFailure: vi.fn().mockResolvedValue({ count: 1, locked: false, newlyLocked: false }),
+  clearAccountFailures: vi.fn().mockResolvedValue(undefined),
+  isAccountLocked: vi.fn().mockResolvedValue(false),
+  ACCOUNT_LOCKOUT_MAX: 5,
+  ACCOUNT_LOCKOUT_WINDOW_SECONDS: 15 * 60,
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => ({
     setex: vi.fn(),
     get: vi.fn(),
     del: vi.fn()
   }))
+}));
+
+const sendAccountLockedMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../services/email', () => ({
+  getEmailService: vi.fn(() => ({
+    sendAccountLocked: sendAccountLockedMock,
+    sendPasswordReset: vi.fn().mockResolvedValue(undefined),
+    sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+    sendInvite: vi.fn().mockResolvedValue(undefined),
+    sendAlertNotification: vi.fn().mockResolvedValue(undefined),
+    sendEmail: vi.fn().mockResolvedValue(undefined)
+  })),
 }));
 
 vi.mock('../services/twilio', () => ({
@@ -153,7 +172,10 @@ import {
   revokeRefreshTokenJti,
   getTrustedClientIp,
   rateLimiter,
-  getRedis
+  getRedis,
+  recordAccountFailure,
+  clearAccountFailures,
+  isAccountLocked
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './auth/ssoPolicy';
@@ -181,6 +203,12 @@ describe('auth routes', () => {
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
+    // Task 10: reset lockout-helper mocks to the "not locked" happy path so
+    // each test starts from a clean baseline.
+    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(recordAccountFailure).mockResolvedValue({ count: 1, locked: false, newlyLocked: false });
+    vi.mocked(clearAccountFailures).mockResolvedValue(undefined);
+    sendAccountLockedMock.mockClear();
     app = new Hono();
     app.route('/auth', authRoutes);
   });
@@ -677,6 +705,255 @@ describe('auth routes', () => {
       expect(body.mfaRequired).toBe(true);
       expect(body.tempToken).toBeDefined();
       expect(body.tokens).toBeNull();
+    });
+
+    // ============================================================
+    // Task 10 — per-account lockout + tighter per-IP login limit
+    // ============================================================
+
+    it('Task 10: tightens per-IP login limit to 10 attempts per 5 minutes', async () => {
+      // Drain 10 attempts that all return 401 (wrong password). The 11th
+      // attempt mocks the IP bucket exceeded, returning 429.
+      vi.mocked(verifyPassword).mockResolvedValue(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-rate',
+              email: 'rate@x.com',
+              passwordHash: '$argon2id$hash',
+              status: 'active',
+              mfaEnabled: false
+            }])
+          })
+        })
+      } as any);
+      // First 10 calls: allowed
+      vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 0, resetAt: new Date() });
+      for (let i = 0; i < 10; i++) {
+        const res = await app.request('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'rate@x.com', password: 'wrong' })
+        });
+        expect(res.status).toBe(401);
+      }
+      // The IP bucket is checked first — making the next call return not-allowed simulates the 11th attempt blowing the bucket.
+      vi.mocked(rateLimiter).mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 60_000)
+      });
+      const blocked = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'rate@x.com', password: 'wrong' })
+      });
+      expect(blocked.status).toBe(429);
+
+      // Confirm the IP limiter was called with limit=10, not 30.
+      const ipCalls = vi.mocked(rateLimiter).mock.calls.filter(
+        (call) => typeof call[1] === 'string' && (call[1] as string).startsWith('login:ip:')
+      );
+      expect(ipCalls.length).toBeGreaterThan(0);
+      // 3rd positional arg is the limit
+      expect(ipCalls[0]?.[2]).toBe(10);
+    });
+
+    it('Task 10: returns 429 with locked message when isAccountLocked is true (even on correct password)', async () => {
+      vi.mocked(isAccountLocked).mockResolvedValue(true);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-locked',
+              email: 'victim@x.com',
+              name: 'Victim User',
+              passwordHash: '$argon2id$hash',
+              status: 'active',
+              mfaEnabled: false
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'victim@x.com', password: 'right-password' })
+      });
+
+      expect(res.status).toBe(429);
+      const body = await res.json();
+      expect(body.error).toMatch(/locked/i);
+      // Correct password verified but we MUST NOT mint tokens for a locked account.
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('Task 10: bad password bumps the per-account failure counter and triggers a lockout email exactly once on newlyLocked', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-lock',
+              email: 'victim@x.com',
+              name: 'Victim User',
+              passwordHash: '$argon2id$hash',
+              status: 'active',
+              mfaEnabled: false
+            }])
+          })
+        })
+      } as any);
+
+      // Simulate the threshold-crossing attempt.
+      vi.mocked(recordAccountFailure).mockResolvedValueOnce({ count: 5, locked: true, newlyLocked: true });
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'victim@x.com', password: 'wrong' })
+      });
+
+      // The user still sees a generic 401 — we don't tell them they just got locked
+      // out (that would help an attacker time their attempts).
+      expect(res.status).toBe(401);
+
+      // Wait for the fire-and-forget helper to settle.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(recordAccountFailure).toHaveBeenCalledWith(expect.anything(), 'victim@x.com');
+      expect(sendAccountLockedMock).toHaveBeenCalledTimes(1);
+      expect(sendAccountLockedMock).toHaveBeenCalledWith(expect.objectContaining({
+        to: 'victim@x.com',
+        lockoutMinutes: 15,
+        resetUrl: expect.stringContaining('/reset-password?token=')
+      }));
+    });
+
+    it('Task 10: does NOT re-send the lockout email on subsequent attempts inside the same window', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-lock',
+              email: 'victim@x.com',
+              name: 'Victim User',
+              passwordHash: '$argon2id$hash',
+              status: 'active',
+              mfaEnabled: false
+            }])
+          })
+        })
+      } as any);
+
+      // Already-locked attempts (count above threshold, newlyLocked=false).
+      // In a real flow these would hit the early lockout check first, but
+      // the contract for the helper is "no email on already-locked".
+      vi.mocked(recordAccountFailure).mockResolvedValue({ count: 7, locked: true, newlyLocked: false });
+
+      await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'victim@x.com', password: 'wrong' })
+      });
+
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(sendAccountLockedMock).not.toHaveBeenCalled();
+    });
+
+    it('Task 10: clears the failure counter on a successful login', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-recover',
+              email: 'recover@x.com',
+              name: 'Recover User',
+              passwordHash: '$argon2id$hash',
+              status: 'active',
+              mfaEnabled: false
+            }])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'recover@x.com', password: 'right-pw' })
+      });
+
+      expect(res.status).toBe(200);
+      // The fire-and-forget clear may run after the response. Drain microtasks.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(clearAccountFailures).toHaveBeenCalledWith(expect.anything(), 'recover@x.com');
+    });
+
+    it('Task 10: does NOT bump the per-account counter when the email is unknown (DoS guard)', async () => {
+      // User-not-found branch — the lockout MUST NOT fire here, otherwise
+      // an attacker could lock any email they know out of the system just
+      // by spraying garbage passwords at it.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]) // no user found
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'ghost@x.com', password: 'whatever' })
+      });
+
+      expect(res.status).toBe(401);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(recordAccountFailure).not.toHaveBeenCalled();
+      expect(sendAccountLockedMock).not.toHaveBeenCalled();
+    });
+
+    it('Task 10: clears the failure counter when the password is correct on the MFA branch', async () => {
+      // Password verified successfully — even though MFA still has to
+      // happen, the per-account failure counter measures *password*
+      // attempts and should reset.
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-mfa',
+              email: 'mfa@x.com',
+              passwordHash: '$argon2id$hash',
+              status: 'active',
+              mfaEnabled: true,
+              mfaSecret: 'secret'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'mfa@x.com', password: 'right-pw' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mfaRequired).toBe(true);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(clearAccountFailures).toHaveBeenCalledWith(expect.anything(), 'mfa@x.com');
     });
   });
 

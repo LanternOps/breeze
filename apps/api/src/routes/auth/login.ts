@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
@@ -19,8 +19,14 @@ import {
   isFamilyRevoked,
   touchFamilyLastUsed,
   mintRefreshTokenFamily,
-  bindRefreshJtiToFamily
+  bindRefreshJtiToFamily,
+  recordAccountFailure,
+  clearAccountFailures,
+  isAccountLocked,
+  ACCOUNT_LOCKOUT_WINDOW_SECONDS
 } from '../../services';
+import { getEmailService } from '../../services/email';
+import { createHash } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
@@ -61,6 +67,70 @@ function getDummyPasswordHash(): Promise<string> {
   return dummyPasswordHashPromise;
 }
 
+// Task 10 helper: bump the per-account failure counter, and if THIS
+// attempt is the one that crossed the lockout threshold, fire a security
+// notification email + audit event exactly once. Pulled into a helper so
+// the login handler stays readable; called fire-and-forget so the user
+// still gets their 401 promptly.
+async function recordAccountFailureAndMaybeNotify(
+  c: Context,
+  user: { id: string; email: string; name?: string | null },
+  normalizedEmail: string
+): Promise<void> {
+  try {
+    const result = await recordAccountFailure(getRedis(), normalizedEmail);
+    if (!result.newlyLocked) return;
+
+    // Audit the lockout itself (separate from the normal `user.login.failed`
+    // audit row that the caller already emits). Lets ops correlate the
+    // lockout event with the surrounding failure pattern.
+    void auditUserLoginFailure(c, {
+      userId: user.id,
+      email: user.email,
+      name: user.name ?? undefined,
+      reason: 'account_locked',
+      result: 'denied',
+      details: {
+        method: 'password',
+        consecutiveFailures: result.count,
+        action: 'auth.login.account_locked',
+        lockoutWindowSeconds: ACCOUNT_LOCKOUT_WINDOW_SECONDS
+      }
+    });
+
+    // Mint a single-use password-reset token + URL so the email gives the
+    // user a path back in without waiting out the lockout window. Reuses
+    // the same `reset:<hash>` Redis convention as /forgot-password. 1h TTL
+    // matches that endpoint.
+    const resetToken = nanoid(48);
+    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
+    const redis = getRedis();
+    if (redis) {
+      await redis.setex(`reset:${tokenHash}`, 3600, user.id);
+    }
+    const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+    const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+    const emailService = getEmailService();
+    if (emailService) {
+      try {
+        await emailService.sendAccountLocked({
+          to: user.email,
+          name: user.name ?? undefined,
+          resetUrl,
+          lockoutMinutes: Math.round(ACCOUNT_LOCKOUT_WINDOW_SECONDS / 60)
+        });
+      } catch (err) {
+        console.error('[auth] Failed to send account-locked email:', err);
+      }
+    } else {
+      console.warn('[auth] Email service not configured; account-locked email was not sent');
+    }
+  } catch (err) {
+    console.error('[auth] recordAccountFailureAndMaybeNotify failed:', err);
+  }
+}
+
 export const loginRoutes = new Hono();
 
 // Login
@@ -81,10 +151,14 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 
     // First, IP-only bucket — guards against credential stuffing where the
     // attacker rotates email each attempt to keep the per-(IP,email) bucket
-    // fresh. 30 attempts per 5min per IP is well above any legitimate SSO
-    // landing page, but cuts a stuffing run from thousands/min to a trickle.
+    // fresh. Tightened in Task 10 from 30 to 10 attempts per 5min per IP:
+    // an RMM admin console has no legitimate use-case for double-digit
+    // login attempts in 5 minutes from one IP, and against a moderate
+    // botnet (50 IPs × 10/5min = 6,000/hr vs the prior 18,000/hr) this
+    // is a meaningful cut. Real shared-NAT users still get 10 attempts
+    // before they're forced to wait — well above any human's miss rate.
     const ipRateKey = `login:ip:${ip}`;
-    const ipRateCheck = await rateLimiter(redis, ipRateKey, 30, 5 * 60);
+    const ipRateCheck = await rateLimiter(redis, ipRateKey, 10, 5 * 60);
     if (!ipRateCheck.allowed) {
       return c.json({
         error: 'Too many login attempts. Please try again later.',
@@ -118,7 +192,10 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   if (!user || !user.passwordHash) {
     // Constant-time response: run one argon2 verify against a dummy hash
     // so the handler's latency matches the found-user branch. This blunts
-    // email enumeration via timing side-channel.
+    // email enumeration via timing side-channel. We deliberately do NOT
+    // bump the per-account failure counter here — that would let an
+    // attacker lock arbitrary emails out of the system just by knowing
+    // them, turning a security control into a DoS amplifier.
     await verifyPassword(await getDummyPasswordHash(), password).catch(() => false);
     if (user) {
       void auditUserLoginFailure(c, {
@@ -132,9 +209,45 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     return c.json(genericAuthError(), 401);
   }
 
+  // Task 10: per-account lockout check. Runs AFTER the user lookup so
+  // a locked vs unlocked email isn't observable via timing — the timing
+  // already says "this email exists" since we ran a real argon2 verify
+  // above on the user-found branch, so an additional Redis GET here
+  // doesn't leak any new information. Important: returning 429 even
+  // when the password is correct is the whole point — a locked account
+  // means "we don't trust this session right now", not "your password
+  // is wrong". The lockout window expires automatically; the user can
+  // also unblock themselves by completing a password reset.
+  if (!e2eMode) {
+    const redisForLock = getRedis();
+    if (await isAccountLocked(redisForLock, normalizedEmail)) {
+      void auditUserLoginFailure(c, {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        reason: 'account_locked',
+        result: 'denied',
+        details: { method: 'password' }
+      });
+      return c.json({
+        error: 'Account temporarily locked due to repeated failed sign-ins. Try again in 15 minutes or reset your password.',
+        retryAfter: ACCOUNT_LOCKOUT_WINDOW_SECONDS
+      }, 429);
+    }
+  }
+
   // Verify password
   const validPassword = await verifyPassword(user.passwordHash, password);
   if (!validPassword) {
+    // Task 10: bump the per-account failure counter. If THIS attempt is
+    // the one that crosses the threshold, fire the lockout-notice email
+    // exactly once (newlyLocked flag). The audit log records the
+    // `account_locked` event so ops can correlate lockouts with the
+    // surrounding failed-login pattern. Fire-and-forget — never blocks
+    // the response (we still want the generic 401 to come back fast).
+    if (!e2eMode) {
+      void recordAccountFailureAndMaybeNotify(c, user, normalizedEmail);
+    }
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
@@ -189,6 +302,17 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       userId: user.id,
       mfaMethod
     }));
+
+    // Task 10: the password was verified correctly — clear the per-account
+    // failure counter even though MFA still has to succeed. This keeps the
+    // counter honestly measuring "consecutive failed *password* attempts",
+    // which is the threat the lockout is designed to mitigate. MFA brute
+    // force is gated separately by mfaLimiter.
+    if (!e2eMode) {
+      void clearAccountFailures(getRedis(), normalizedEmail).catch((err) => {
+        console.error('[auth] clear failures failed (mfa branch):', err);
+      });
+    }
 
     return c.json({
       mfaRequired: true,
@@ -245,6 +369,17 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     .update(users)
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id));
+
+  // Task 10: clear the per-account failure counter on successful login so
+  // a real user with one fat-finger doesn't slowly approach a lockout over
+  // weeks of normal usage. Best-effort — a Redis error here logs but
+  // doesn't fail the login (the counter expires naturally at the end of
+  // the 15-minute window anyway).
+  if (!e2eMode) {
+    void clearAccountFailures(getRedis(), normalizedEmail).catch((err) => {
+      console.error('[auth] clear failures failed:', err);
+    });
+  }
 
   auditLogin(c, { orgId: orgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
 

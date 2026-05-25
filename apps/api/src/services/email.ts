@@ -39,6 +39,21 @@ export interface InviteEmailParams {
   supportEmail?: string;
 }
 
+export interface AccountLockedEmailParams {
+  to: string | string[];
+  name?: string;
+  // Reset link is required (not optional) — the whole point of this email is
+  // to give the user a path back in if they're the legitimate owner and the
+  // attacker is still firing wrong passwords every few seconds. Without a
+  // reset link the user just has to wait 15 minutes hoping nobody tries
+  // again, which is a bad experience and bad security.
+  resetUrl: string;
+  // 15 minutes in this rollout, but pass it explicitly so we can tune the
+  // policy in one place (rate-limit.ts) and the email stays in sync.
+  lockoutMinutes: number;
+  supportEmail?: string;
+}
+
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export interface AlertNotificationEmailParams {
@@ -207,6 +222,16 @@ export class EmailService {
 
   async sendAlertNotification(params: AlertNotificationEmailParams): Promise<void> {
     const template = buildAlertNotificationTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text
+    });
+  }
+
+  async sendAccountLocked(params: AccountLockedEmailParams): Promise<void> {
+    const template = buildAccountLockedTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -616,6 +641,38 @@ function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): E
     params.deviceName ? `Device: ${params.deviceName}` : undefined,
     timestamp ? `Detected: ${timestamp}` : undefined,
     params.dashboardUrl ? `View details: ${params.dashboardUrl}` : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
+function buildAccountLockedTemplate(params: AccountLockedEmailParams): EmailTemplate {
+  const name = params.name?.trim() || 'there';
+  const subject = 'Your Breeze account was temporarily locked';
+  const preheader = `We locked sign-ins for ${params.lockoutMinutes} minutes after repeated failed attempts.`;
+  const body = `
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">We blocked sign-ins to your Breeze account after 5 unsuccessful attempts. You can try again in ${params.lockoutMinutes} minutes, or reset your password using the button below.</p>
+      ${renderButton('Reset password', params.resetUrl)}
+      <p style="${MUTED_PARA}"><strong>If this wasn't you</strong>, someone may be trying to guess your password. Reset your password immediately and review recent activity. If MFA isn't already enabled on your account, turn it on after you sign back in.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: 'Account temporarily locked',
+    body,
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    `Hi ${name},`,
+    `We blocked sign-ins to your Breeze account after 5 unsuccessful attempts. Try again in ${params.lockoutMinutes} minutes, or reset your password.`,
+    `Reset your password: ${params.resetUrl}`,
+    "If this wasn't you, someone may be trying to guess your password. Reset your password immediately and review recent activity.",
+    support ? `Need help? Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');
