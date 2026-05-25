@@ -85,7 +85,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  users: { id: 'id', email: 'email', name: 'name', status: 'status' },
+  users: { id: 'id', email: 'email', name: 'name', status: 'status', mfaEnabled: 'mfaEnabled' },
   devices: { id: 'id', orgId: 'orgId' },
   deviceCommands: { deviceId: 'deviceId', status: 'status', createdAt: 'createdAt' },
   alerts: { deviceId: 'deviceId', status: 'status', triggeredAt: 'triggeredAt' },
@@ -94,6 +94,7 @@ vi.mock('../db/schema', () => ({
   organizations: {},
   partnerUsers: {},
   organizationUsers: {},
+  roles: { id: 'roles.id', forceMfa: 'roles.forceMfa' },
   deviceHardware: {},
   deviceNetwork: {},
   deviceMetrics: {},

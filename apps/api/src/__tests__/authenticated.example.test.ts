@@ -53,12 +53,13 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  users: { id: 'id', email: 'email', name: 'name', status: 'status' },
+  users: { id: 'id', email: 'email', name: 'name', status: 'status', mfaEnabled: 'mfaEnabled' },
   devices: {},
   organizations: {},
   partners: {},
   partnerUsers: {},
-  organizationUsers: {}
+  organizationUsers: {},
+  roles: { id: 'roles.id', forceMfa: 'roles.forceMfa' }
 }));
 
 // Bypass tenant active-status checks (queries organizations/partners tables

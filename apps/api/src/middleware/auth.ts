@@ -4,11 +4,12 @@ import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
+import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { writeAuditEvent } from '../services/auditEvents';
 
 export interface AuthContext {
   user: {
@@ -177,6 +178,76 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
 }
 
 /**
+ * Resolve whether the user's effective role for the current request has
+ * `force_mfa=true`. Returns false for system scope (platform admin is a
+ * user flag, not a role) and for any user whose membership row is missing.
+ *
+ * Runs under system scope because the request's RLS context isn't set yet.
+ */
+async function userRoleRequiresMfa(
+  scope: 'system' | 'partner' | 'organization',
+  partnerId: string | null,
+  orgId: string | null,
+  userId: string
+): Promise<boolean> {
+  if (scope === 'system') return false;
+
+  return withSystemDbAccessContext(async () => {
+    if (scope === 'organization' && orgId) {
+      const [row] = await db
+        .select({ forceMfa: roles.forceMfa })
+        .from(organizationUsers)
+        .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
+        .where(
+          and(
+            eq(organizationUsers.userId, userId),
+            eq(organizationUsers.orgId, orgId)
+          )
+        )
+        .limit(1);
+      return row?.forceMfa === true;
+    }
+
+    if (scope === 'partner' && partnerId) {
+      const [row] = await db
+        .select({ forceMfa: roles.forceMfa })
+        .from(partnerUsers)
+        .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
+        .where(
+          and(
+            eq(partnerUsers.userId, userId),
+            eq(partnerUsers.partnerId, partnerId)
+          )
+        )
+        .limit(1);
+      return row?.forceMfa === true;
+    }
+
+    return false;
+  });
+}
+
+/**
+ * Paths the user is permitted to hit while in the mfa_enrollment_required
+ * state. Without this they couldn't enroll MFA — the same gate would
+ * bounce them off the setup endpoints. Kept intentionally tight.
+ *
+ * Path is the API path *after* the `/api/v1` mount, e.g. `/auth/mfa/setup`.
+ */
+function isMfaEnrollmentExemptPath(path: string): boolean {
+  // Strip the /api/v1 prefix if present so the check works whether Hono
+  // gives us the absolute path or a sub-app path.
+  const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
+
+  if (rel === '/auth/logout') return true;
+  if (rel === '/users/me') return true;
+  if (rel.startsWith('/auth/mfa/')) return true;
+  // Phone verification is part of the MFA setup flow (SMS factor).
+  if (rel.startsWith('/auth/phone/')) return true;
+  return false;
+}
+
+/**
  * Compute which org IDs a user can access based on their scope.
  * Called once per request in authMiddleware.
  */
@@ -287,7 +358,7 @@ function computeAccessiblePartnerIds(
   return [];
 }
 
-export async function authMiddleware(c: Context, next: Next) {
+export async function authMiddleware(c: Context, next: Next): Promise<void | Response> {
   // Avoid double-verification when authMiddleware is applied both globally and per-route.
   const existing = c.get('auth') as AuthContext | undefined;
   if (existing) {
@@ -326,6 +397,7 @@ export async function authMiddleware(c: Context, next: Next) {
         email: users.email,
         name: users.name,
         status: users.status,
+        mfaEnabled: users.mfaEnabled,
         isPlatformAdmin: users.isPlatformAdmin
       })
       .from(users)
@@ -352,6 +424,41 @@ export async function authMiddleware(c: Context, next: Next) {
       throw new HTTPException(403, { message: 'Tenant is not active' });
     }
     throw err;
+  }
+
+  // Role-level MFA gate. If the user's role requires MFA and they
+  // haven't enabled it, short-circuit to 428 Precondition Required.
+  // Allow a tight set of routes through (logout, the user's own
+  // profile, MFA setup endpoints) so they can complete enrollment.
+  if (ENABLE_2FA && !user.mfaEnabled) {
+    const requiresMfa = await userRoleRequiresMfa(
+      payload.scope,
+      payload.partnerId,
+      payload.orgId,
+      user.id
+    );
+
+    if (requiresMfa && !isMfaEnrollmentExemptPath(c.req.path)) {
+      // Fire-and-forget audit. Lets ops see when forced-enrollment is
+      // bouncing users — useful for diagnosing onboarding friction or
+      // a misconfigured role flag.
+      writeAuditEvent(c, {
+        orgId: payload.orgId ?? null,
+        action: 'auth.mfa.enrollment.required',
+        resourceType: 'user',
+        resourceId: user.id,
+        actorType: 'user',
+        actorId: user.id,
+        actorEmail: user.email,
+        result: 'denied',
+        details: { path: c.req.path, scope: payload.scope }
+      });
+
+      return c.json(
+        { error: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+        428
+      );
+    }
   }
 
   // Pre-compute accessible org IDs

@@ -350,6 +350,25 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     }
   }
 
+  // 428 Precondition Required → role-level force_mfa gate fired. The user
+  // must enroll MFA before they can hit any protected endpoint (except
+  // the small allowlist on the API side: logout, /users/me, MFA setup).
+  // Bounce them to the forced-enrollment page unless they're already on it.
+  if (response.status === 428 && typeof window !== 'undefined') {
+    try {
+      const cloned = response.clone();
+      const body = await cloned.json();
+      if (body?.error === 'mfa_enrollment_required') {
+        const path = window.location.pathname;
+        if (path !== '/auth/mfa/setup') {
+          window.location.href = '/auth/mfa/setup?forced=1';
+        }
+      }
+    } catch {
+      // Not JSON or parse failed — surface as a normal 428 to caller
+    }
+  }
+
   return response;
 }
 

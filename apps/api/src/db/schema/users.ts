@@ -48,6 +48,12 @@ export const roles = pgTable('roles', {
   name: varchar('name', { length: 100 }).notNull(),
   description: text('description'),
   isSystem: boolean('is_system').notNull().default(false),
+  // When true, members of this role must have MFA enabled — the auth
+  // middleware short-circuits to 428 Precondition Required until they
+  // complete enrollment. Used to satisfy the cyber-insurance baseline
+  // "MFA enforced on admin accounts." Seeded true for the privileged
+  // partner-admin slug.
+  forceMfa: boolean('force_mfa').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
