@@ -113,9 +113,22 @@ vi.mock('../services/email', () => ({
   }))
 }));
 
+vi.mock('../services/tokenRevocation', () => ({
+  revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock('../services/userSuspension', () => ({
+  revokeUserAccess: vi.fn().mockResolvedValue({
+    grantsRevoked: 0,
+    refreshTokensRevoked: 0,
+    jtisRevoked: 0,
+  })
+}));
+
 import { db } from '../db';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
+import { revokeAllUserTokens } from '../services/tokenRevocation';
 
 describe('user routes', () => {
   let app: Hono;
@@ -542,6 +555,94 @@ describe('user routes', () => {
 
       expect(res.status).toBe(403);
       expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /users/:id (Task 14: JWT revocation on removal)', () => {
+    it('removes a partner user and revokes their JWTs', async () => {
+      // partner_users delete returns a row → 200, and we expect Redis revoke
+      // to fire so the ex-member's ≤15min-TTL access token stops granting
+      // partner-scoped reads/writes on the very next request.
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
+        })
+      } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
+      expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    it('does not revoke JWTs when no row was deleted (404)', async () => {
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([])
+        })
+      } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(404);
+      expect(revokeAllUserTokens).not.toHaveBeenCalled();
+    });
+
+    it('still 200s when token revocation fails (best-effort)', async () => {
+      // Redis outage during revoke — the partner_users row already deleted,
+      // we must not roll the response back. The ≤15min-TTL natural expiry
+      // is the fallback. Operator visibility comes from the log line.
+      vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
+        })
+      } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    it('removes an organization user and revokes their JWTs', async () => {
+      // Same shape for organization-scope removals — org-scoped JWTs also
+      // carry an accessibleOrgIds claim that must be invalidated.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-456',
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'link-2' }])
+        })
+      } as any);
+
+      const res = await app.request('/users/22222222-2222-2222-2222-222222222222', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
+      expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -22,6 +22,7 @@ import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, userRequiresSetup } from './auth/helpers';
 import { revokeUserAccess } from '../services/userSuspension';
+import { revokeAllUserTokens } from '../services/tokenRevocation';
 
 export const userRoutes = new Hono();
 
@@ -1017,6 +1018,14 @@ userRoutes.delete(
         details: { scope: 'partner' }
       });
       await clearPermissionCache(userId);
+      // Task 14: revoke the removed user's JWTs so the existing access
+      // token can't keep granting partner-scoped reads/writes for up to 15
+      // minutes (access-TTL). Best-effort: a Redis failure here leaves the
+      // DB row deleted and the JWT will expire on its own — we log and
+      // continue so the remove still succeeds.
+      await revokeAllUserTokens(userId).catch((err) => {
+        console.error('[users] token revoke failed after partner-user removal:', err);
+      });
 
       return c.json({ success: true });
     }
@@ -1036,6 +1045,10 @@ userRoutes.delete(
       details: { scope: 'organization' }
     });
     await clearPermissionCache(userId);
+    // Task 14: see comment above — same rationale for org-scope users.
+    await revokeAllUserTokens(userId).catch((err) => {
+      console.error('[users] token revoke failed after org-user removal:', err);
+    });
 
     return c.json({ success: true });
   }

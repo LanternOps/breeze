@@ -65,9 +65,14 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (c: any, next: any) => next())
 }));
 
+vi.mock('../services/tokenRevocation', () => ({
+  revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
+}));
+
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { clearPermissionCache } from '../services/permissions';
+import { revokeAllUserTokens } from '../services/tokenRevocation';
 
 describe('access review routes', () => {
   let app: Hono;
@@ -418,6 +423,66 @@ describe('access review routes', () => {
       expect(body.revokedCount).toBe(2);
       expect(clearPermissionCache).toHaveBeenCalledWith('user-1');
       expect(clearPermissionCache).toHaveBeenCalledWith('user-2');
+      // Task 14: every revoked user must have their JWTs killed in Redis
+      // so the ≤15min access-token TTL window can't keep their tenant
+      // claim alive after the access review completes.
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-2');
+      expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
+    });
+
+    it('still completes the review when token revocation fails (best-effort)', async () => {
+      // Redis outage: revocation throws. The DB delete already committed,
+      // so we must not block the review on the cache write — log + continue.
+      vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
+
+      const updatedReview = {
+        id: 'review-1',
+        status: 'completed',
+        completedAt: new Date()
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'in_progress' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ userId: 'user-1' }])
+          })
+        } as any);
+
+      const txDelete = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined)
+      });
+      const txUpdate = vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([updatedReview])
+          })
+        })
+      });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => {
+        return fn({ delete: txDelete, update: txUpdate } as any);
+      });
+
+      const res = await app.request('/access-reviews/review-1/complete', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
     });
 
     it('should reject completion with pending items', async () => {
