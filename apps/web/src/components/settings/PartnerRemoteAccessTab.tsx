@@ -9,7 +9,10 @@ type Props = {
 };
 
 function makeProviderId(): string {
-  return `provider-${Math.random().toString(36).slice(2, 10)}`;
+  // crypto.randomUUID is widely supported in the browsers Breeze targets and
+  // gives a 122-bit-entropy id; Math.random().toString(36).slice(2,10) gave
+  // ~48 bits and is collidable on large provider lists (issue #714).
+  return `provider-${crypto.randomUUID()}`;
 }
 
 function emptyProvider(): RemoteAccessProvider {
