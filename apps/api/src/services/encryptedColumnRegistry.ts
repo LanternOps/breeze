@@ -63,6 +63,8 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'dns_filter_integrations', column: 'api_secret', kind: 'text', description: 'DNS filter API secret' },
   { table: 'storage_encryption_keys', column: 'encrypted_private_key', kind: 'text', description: 'backup private key material' },
   { table: 'organizations', column: 'settings', kind: 'json', description: 'organization settings with encrypted log-forwarding secrets' },
+  { table: 'partners', column: 'settings', kind: 'json', description: 'partner settings with encrypted remote-access launcher passwords (#716)' },
+  { table: 'sites', column: 'settings', kind: 'json', description: 'site-level settings with encrypted overrides' },
 ];
 
 const SECRET_JSON_KEYS = new Set([

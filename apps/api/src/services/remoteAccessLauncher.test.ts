@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { buildRemoteAccessLaunchUrl, resolveRemoteAccessLaunch } from './remoteAccessLauncher';
+import { encryptSecret } from './secretCrypto';
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
 
 const baseProvider: RemoteAccessProvider = {
@@ -191,6 +192,56 @@ describe('buildRemoteAccessLaunchUrl', () => {
     expect(r.scheme).toBe('rustdesk');
     expect(r.providerId).toBe('rustdesk');
     expect(r.skipReason).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // Encryption-at-rest for the provider password (#716).
+  //
+  // `partners.settings` is registered in encryptedColumnRegistry.ts so the
+  // password lives on disk as an `enc:v2:...` blob. The launcher must
+  // decrypt before URL substitution, and must remain backwards-compatible
+  // with pre-migration plaintext (decryptSecret is a no-op for non-`enc:`
+  // values).
+  // -----------------------------------------------------------------------
+  describe('encryption-at-rest (#716)', () => {
+    beforeAll(() => {
+      // Force a deterministic 32-byte encryption key for the test process so
+      // encryptSecret/decryptSecret round-trip without depending on the
+      // global env config.
+      if (!process.env.APP_ENCRYPTION_KEY) {
+        process.env.APP_ENCRYPTION_KEY = 'test-only-app-encryption-key-32chars!';
+      }
+    });
+
+    it('decrypts an enc:v2 password before substituting into the URL template', () => {
+      const encrypted = encryptSecret('s3cret#1')!;
+      expect(encrypted).toMatch(/^enc:/);
+
+      const settings: InheritableRemoteAccessSettings = {
+        defaultProviderId: 'rustdesk',
+        providers: [{ ...baseProvider, password: encrypted }],
+      };
+      const url = buildRemoteAccessLaunchUrl(
+        { customFields: { rustdesk_id: '42' } },
+        settings,
+      );
+      // The encrypted blob must never reach the URL; the plaintext password
+      // (with reserved characters percent-encoded) must be present.
+      expect(url).toBe('rustdesk://42?password=s3cret%231');
+      expect(url).not.toContain('enc:');
+    });
+
+    it('passes plaintext password through unchanged (backwards-compat for unmigrated rows)', () => {
+      const settings: InheritableRemoteAccessSettings = {
+        defaultProviderId: 'rustdesk',
+        providers: [{ ...baseProvider, password: 'still-plaintext' }],
+      };
+      const url = buildRemoteAccessLaunchUrl(
+        { customFields: { rustdesk_id: '42' } },
+        settings,
+      );
+      expect(url).toBe('rustdesk://42?password=still-plaintext');
+    });
   });
 
   it('refuses templates whose substituted URL resolves to a disallowed scheme', () => {
