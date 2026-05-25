@@ -15,6 +15,7 @@
  *   - resources/read
  */
 
+import { randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { z } from 'zod';
@@ -565,34 +566,128 @@ mcpServerRoutes.post(
 // session (no-op here — sessions are stateless).
 //
 // Session ID, when present, comes from the `Mcp-Session-Id` request header.
-// On `initialize` we mint a new session ID and return it in the same header
-// on the response so the client can include it on subsequent requests.
+// On `initialize` we mint a server-side ID (prefixed `mcp-`), persist
+// `(sessionId → principalKey)` in Redis, and return it in the same header.
+// Subsequent calls MUST present that server-minted ID and the stored
+// principalKey must match the caller's principalKey — otherwise the request
+// is rejected. This prevents an attacker from stamping arbitrary
+// `Mcp-Session-Id` values to muddy audit triage or merge their activity
+// into another principal's session (audit finding MCP MED-1).
+//
+// The minted-session map is keyed in Redis under MCP_SESSION_PREFIX with a
+// short TTL (matches OAuth access-token lifetime plus a small buffer).
+const MCP_SESSION_REDIS_PREFIX = 'mcp-session:';
+const MCP_SERVER_SESSION_PREFIX = 'mcp-';
+const MCP_SESSION_TTL_SECONDS = envInt('MCP_SESSION_TTL_SECONDS', 11 * 60);
+
+function mintMcpSessionId(): string {
+  return `${MCP_SERVER_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
+}
 
 mcpServerRoutes.post(
   '/sse',
   async (c) => {
     const sessionIdFromHeader = c.req.header('Mcp-Session-Id') || undefined;
-    const pre = await preflightMcpRequest(c, sessionIdFromHeader);
+    // NOTE: we do NOT pass the client-supplied header into preflight as a
+    // trusted sessionId — the resolved sessionId is determined below after
+    // body parsing and after we know whether this is an `initialize` call.
+    const pre = await preflightMcpRequest(c, undefined);
     if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
+
+    const apiKey = c.get('apiKey') as McpApiKeyContext & {
+      scopes: string[];
+      name: string;
+      createdBy: string;
+    };
+    const principalKey = mcpPrincipalKey(apiKey);
+    const isInitialize = pre.body.method === 'initialize';
+    const redis = getRedis();
+
+    let trustedSessionId: string | undefined;
+    if (isInitialize) {
+      // Ignore any client-supplied Mcp-Session-Id on initialize. The server
+      // mints the canonical id and (best-effort) persists ownership.
+      trustedSessionId = mintMcpSessionId();
+      if (redis) {
+        try {
+          await redis.setex(
+            `${MCP_SESSION_REDIS_PREFIX}${trustedSessionId}`,
+            MCP_SESSION_TTL_SECONDS,
+            principalKey,
+          );
+        } catch (err) {
+          // If Redis is unreachable we still mint the id — subsequent calls
+          // will fail closed (no stored principal → 403), which is the
+          // correct safety behavior.
+          console.warn('[MCP] Failed to persist Mcp-Session-Id mapping:', err);
+        }
+      }
+    } else {
+      // Non-initialize: require a server-prefixed Mcp-Session-Id header.
+      if (!sessionIdFromHeader || !sessionIdFromHeader.startsWith(MCP_SERVER_SESSION_PREFIX)) {
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32600, message: 'Mcp-Session-Id header required (must be server-minted on initialize)' },
+          },
+          400,
+        );
+      }
+      // If Redis is configured, look up ownership and require principal match.
+      // If Redis is unavailable we cannot verify ownership; fail closed.
+      if (!redis) {
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32000, message: 'MCP session store unavailable' },
+          },
+          503,
+        );
+      }
+      let storedPrincipal: string | null = null;
+      try {
+        storedPrincipal = await redis.get(`${MCP_SESSION_REDIS_PREFIX}${sessionIdFromHeader}`);
+      } catch (err) {
+        console.warn('[MCP] Failed to read Mcp-Session-Id mapping:', err);
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32000, message: 'MCP session store unavailable' },
+          },
+          503,
+        );
+      }
+      if (!storedPrincipal || storedPrincipal !== principalKey) {
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32001, message: 'Mcp-Session-Id principal mismatch' },
+          },
+          403,
+        );
+      }
+      trustedSessionId = sessionIdFromHeader;
+    }
+
+    // Echo the server-trusted session id back to the client so they can
+    // include it on subsequent requests (and so clients can observe the
+    // server-minted value on initialize).
+    c.header('Mcp-Session-Id', trustedSessionId);
 
     // JSON-RPC notifications (no `id`) — process for side effects, return 202
     // with empty body per Streamable HTTP spec; do not emit a response body.
     if (pre.body.id === undefined) {
-      void dispatchAndAudit(c, pre.body, pre.sessionId).catch((err) => {
+      void dispatchAndAudit(c, pre.body, trustedSessionId).catch((err) => {
         console.error('[MCP] notification handler error:', err);
       });
       return c.body(null, 202);
     }
 
-    const response = await dispatchAndAudit(c, pre.body, pre.sessionId);
-
-    // Mint a session ID on initialize so clients can correlate subsequent
-    // requests. Server state is not currently kept per session — the header
-    // exists purely so spec-compliant clients can use it.
-    if (pre.body.method === 'initialize' && !pre.sessionId) {
-      c.header('Mcp-Session-Id', crypto.randomUUID());
-    }
-
+    const response = await dispatchAndAudit(c, pre.body, trustedSessionId);
     return c.json(response);
   }
 );

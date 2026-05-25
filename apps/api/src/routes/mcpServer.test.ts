@@ -987,4 +987,255 @@ describe('MCP bootstrap carve-out', () => {
 
     delete process.env.MCP_MAX_SSE_SESSIONS_PER_KEY;
   });
+
+  // ===========================================================================
+  // MED-1: Mcp-Session-Id is server-minted and bound to the calling principal
+  // ===========================================================================
+  //
+  // Audit finding: the streamable HTTP handler (POST /sse) previously echoed
+  // the client-supplied `Mcp-Session-Id` header straight into the audit row
+  // (resourceId) and tool-execution ledger (transportSessionId). An attacker
+  // could stamp arbitrary UUIDs per call to muddy audit triage or merge their
+  // activity into another principal's session.
+  //
+  // Fix: on `initialize` we ignore any client-supplied value and mint
+  // `mcp-<hex>` server-side, persisting `(sessionId → principalKey)` to Redis.
+  // On every subsequent JSON-RPC method we require the server-prefixed
+  // `Mcp-Session-Id` header AND principal-equality, else 403.
+
+  it('MED-1 initialize: ignores client-supplied Mcp-Session-Id, mints server-prefixed value', async () => {
+    delete process.env.IS_HOSTED;
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-med1-init',
+          orgId: 'org-1',
+          partnerId: 'partner-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    const sessionStore = new Map<string, string>();
+    vi.doMock('../services/redis', () => ({
+      getRedis: () => ({
+        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+          sessionStore.set(k, v);
+          return 'OK';
+        }),
+        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
+      }),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const res = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-API-Key': 'brz_test',
+        'Mcp-Session-Id': 'attacker-chose-this',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+    const sessionId = res.headers.get('Mcp-Session-Id');
+    expect(sessionId).not.toBe('attacker-chose-this');
+    expect(sessionId).toMatch(/^mcp-[a-f0-9]{20,}$/);
+  });
+
+  it('MED-1 reuse: rejects subsequent calls with a session-id owned by a different principal', async () => {
+    delete process.env.IS_HOSTED;
+
+    let activeApiKey: any = null;
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', activeApiKey);
+        c.set('apiKeyOrgId', activeApiKey.orgId);
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    const sessionStore = new Map<string, string>();
+    vi.doMock('../services/redis', () => ({
+      getRedis: () => ({
+        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+          sessionStore.set(k, v);
+          return 'OK';
+        }),
+        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
+      }),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+
+    const keyA = {
+      id: 'key-med1-A',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      name: 'A',
+      keyPrefix: 'brz_a',
+      scopes: ['ai:read'],
+      rateLimit: 1000,
+      createdBy: 'user-A',
+    };
+    const keyB = {
+      id: 'key-med1-B',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      name: 'B',
+      keyPrefix: 'brz_b',
+      scopes: ['ai:read'],
+      rateLimit: 1000,
+      createdBy: 'user-B',
+    };
+
+    activeApiKey = keyA;
+    const initA = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_a' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
+    });
+    expect(initA.status).toBe(200);
+    const sessionId = initA.headers.get('Mcp-Session-Id');
+    expect(sessionId).toMatch(/^mcp-[a-f0-9]{20,}$/);
+
+    // Principal B tries to ride principal A's session.
+    activeApiKey = keyB;
+    const stolen = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-API-Key': 'brz_b',
+        'Mcp-Session-Id': sessionId!,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
+    });
+    expect(stolen.status).toBe(403);
+    const stolenBody = await stolen.json();
+    expect(stolenBody.error?.message).toMatch(/session/i);
+  });
+
+  it('MED-1 same-principal: originating caller can reuse the minted session id', async () => {
+    delete process.env.IS_HOSTED;
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-med1-same',
+          orgId: 'org-1',
+          partnerId: 'partner-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    const sessionStore = new Map<string, string>();
+    vi.doMock('../services/redis', () => ({
+      getRedis: () => ({
+        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+          sessionStore.set(k, v);
+          return 'OK';
+        }),
+        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
+      }),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+    const initRes = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
+    });
+    expect(initRes.status).toBe(200);
+    const sessionId = initRes.headers.get('Mcp-Session-Id');
+    expect(sessionId).toMatch(/^mcp-[a-f0-9]{20,}$/);
+
+    const followUp = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-API-Key': 'brz_test',
+        'Mcp-Session-Id': sessionId!,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
+    });
+    expect(followUp.status).toBe(200);
+    const followUpBody = await followUp.json();
+    expect(followUpBody.error).toBeUndefined();
+    expect(followUpBody.result).toBeDefined();
+  });
+
+  it('MED-1 missing-or-malformed session id on non-initialize → 400', async () => {
+    delete process.env.IS_HOSTED;
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-med1-noid',
+          orgId: 'org-1',
+          partnerId: 'partner-1',
+          name: 'test',
+          keyPrefix: 'brz_test',
+          scopes: ['ai:read'],
+          rateLimit: 1000,
+          createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+
+    const sessionStore = new Map<string, string>();
+    vi.doMock('../services/redis', () => ({
+      getRedis: () => ({
+        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+          sessionStore.set(k, v);
+          return 'OK';
+        }),
+        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
+      }),
+    }));
+
+    const { mcpServerRoutes } = await import('./mcpServer');
+
+    // No Mcp-Session-Id at all.
+    const noHeader = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 }),
+    });
+    expect(noHeader.status).toBe(400);
+    const noHeaderBody = await noHeader.json();
+    expect(noHeaderBody.error?.message).toMatch(/session/i);
+
+    // Client-shaped id without the `mcp-` server prefix.
+    const badPrefix = await mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-API-Key': 'brz_test',
+        'Mcp-Session-Id': 'attacker-chose-this',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
+    });
+    expect(badPrefix.status).toBe(400);
+  });
 });

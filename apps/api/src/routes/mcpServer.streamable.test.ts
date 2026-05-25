@@ -81,7 +81,18 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
   requestLikeFromSnapshot: vi.fn(),
 }));
-vi.mock('../services/redis', () => ({ getRedis: () => null }));
+// Session ownership store used by the in-memory Redis mock — shared across
+// requests inside a single test so initialize→subsequent-call flows work.
+const __sessionStore = new Map<string, string>();
+vi.mock('../services/redis', () => ({
+  getRedis: () => ({
+    setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+      __sessionStore.set(k, v);
+      return 'OK';
+    }),
+    get: vi.fn(async (k: string) => __sessionStore.get(k) ?? null),
+  }),
+}));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
 }));
@@ -101,6 +112,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     process.env.OAUTH_ISSUER = 'https://us.example.com';
     vi.resetModules();
     vi.clearAllMocks();
+    __sessionStore.clear();
     mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
       setApiKeyContext(c);
       return next();
@@ -124,7 +136,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     expect(body).toMatchObject({ jsonrpc: '2.0', id: 1, result: expect.objectContaining({ protocolVersion: expect.any(String) }) });
   });
 
-  it('mints Mcp-Session-Id header on initialize when client did not send one', async () => {
+  it('mints server-prefixed Mcp-Session-Id header on initialize', async () => {
     const { app } = await appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
@@ -132,10 +144,11 @@ describe('Streamable HTTP transport (POST /sse)', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get('mcp-session-id')).toMatch(/^[0-9a-f-]{36}$/i);
+    // Server-minted ids are prefixed with `mcp-` (audit finding MED-1).
+    expect(res.headers.get('mcp-session-id')).toMatch(/^mcp-[a-f0-9]{20,}$/);
   });
 
-  it('does not mint session id when client already provided one', async () => {
+  it('ignores client-supplied Mcp-Session-Id on initialize and mints a server-prefixed value', async () => {
     const { app } = await appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
@@ -147,14 +160,29 @@ describe('Streamable HTTP transport (POST /sse)', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get('mcp-session-id')).toBeNull();
+    const minted = res.headers.get('mcp-session-id');
+    expect(minted).not.toBe('client-supplied-id');
+    expect(minted).toMatch(/^mcp-[a-f0-9]{20,}$/);
   });
 
-  it('returns 202 with empty body for notifications (no id)', async () => {
+  it('returns 202 with empty body for notifications (no id) when carrying a valid session', async () => {
     const { app } = await appWithMcpRoutes();
-    const res = await app.request('/mcp/sse', {
+    // Initialize first so we have a server-minted session id to present.
+    const init = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    expect(sessionId).toMatch(/^mcp-/);
+
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
     });
     expect(res.status).toBe(202);
