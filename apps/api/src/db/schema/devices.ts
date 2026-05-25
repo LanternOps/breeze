@@ -38,6 +38,12 @@ export const devices = pgTable('devices', {
   // token fail at the auth gate until an operator clears these columns.
   agentTokenSuspendedAt: timestamp('agent_token_suspended_at'),
   agentTokenSuspendedReason: varchar('agent_token_suspended_reason', { length: 100 }),
+  // Task 19: Track the last source IP seen on an authenticated agent request.
+  // A sudden change (legit agent → different IP) is a strong compromise signal.
+  // We audit-log the transition (once per IP per device per 24h via Redis
+  // dedup) and update this column fire-and-forget so the next request can
+  // compare.
+  lastSeenIp: varchar('last_seen_ip', { length: 45 }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),

@@ -24,12 +24,22 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     agentTokenSuspendedAt: 'agentTokenSuspendedAt',
     agentTokenSuspendedReason: 'agentTokenSuspendedReason',
+    hostname: 'hostname',
+    lastSeenIp: 'lastSeenIp',
   },
 }));
 
 vi.mock('../services', () => ({
   getRedis: vi.fn(),
   rateLimiter: vi.fn(),
+}));
+
+vi.mock('../services/auditService', () => ({
+  createAuditLogAsync: vi.fn(async () => undefined),
+}));
+
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIp: vi.fn(() => 'unknown'),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -43,6 +53,8 @@ import { createHash } from 'crypto';
 
 import { db } from '../db';
 import { getRedis, rateLimiter } from '../services';
+import { createAuditLogAsync } from '../services/auditService';
+import { getTrustedClientIp } from '../services/clientIp';
 import {
   agentAuthMiddleware,
   isAgentTokenRotationDue,
@@ -181,6 +193,8 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
     previousWatchdogTokenHash: null,
     previousWatchdogTokenExpiresAt: null,
     status: 'active',
+    hostname: 'box-1',
+    lastSeenIp: null,
     ...overrides,
   };
 }
@@ -453,6 +467,193 @@ describe('Task 18 — suspendAgentToken helper', () => {
     expect(errSpy).toHaveBeenCalledWith(
       '[agentAuth] suspendAgentToken failed',
       expect.objectContaining({ deviceId: 'device-1' })
+    );
+    errSpy.mockRestore();
+  });
+});
+
+// Task 19: per-source-IP rate limit + IP-change audit.
+describe('Task 19 — per-source-IP rate limit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRedis).mockReturnValue({
+      set: vi.fn(async () => 'OK'),
+    } as any);
+    vi.mocked(getTrustedClientIp).mockReturnValue('203.0.113.5');
+    // db.update is invoked fire-and-forget for last_seen_ip persistence;
+    // mock it so the chain doesn't throw.
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+  });
+
+  it('rejects with 429 when the per-IP bucket is exhausted (before per-agent and per-org)', async () => {
+    buildSelectMock([makeDevice({ lastSeenIp: '203.0.113.5' })]);
+
+    // The first rateLimiter call is the per-IP check — make it fail.
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 45_000),
+    });
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 429,
+      message: 'Agent per-source-IP rate limit exceeded',
+    });
+
+    // Only the per-IP limiter should have been called — per-agent + per-org
+    // are skipped so the stolen-IP source can't burn the legit budgets.
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(),
+      'agent_rate_ip:device-1:203.0.113.5',
+      30,
+      60,
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('checks the per-IP bucket BEFORE the per-agent + per-org buckets', async () => {
+    buildSelectMock([makeDevice({ lastSeenIp: '203.0.113.5' })]);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 29, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(rateLimiter).toHaveBeenCalledTimes(3);
+    expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'agent_rate_ip:device-1:203.0.113.5', 30, 60);
+    expect(rateLimiter).toHaveBeenNthCalledWith(2, expect.anything(), 'agent_rate:agent-1', 120, 60);
+    expect(rateLimiter).toHaveBeenNthCalledWith(3, expect.anything(), 'agent_org_rate:org-1', 600, 60);
+  });
+
+  it('skips the per-IP check entirely when the trusted client IP is unknown', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValue('unknown');
+    buildSelectMock([makeDevice()]);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(rateLimiter).toHaveBeenCalledTimes(2);
+    expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'agent_rate:agent-1', 120, 60);
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe('Task 19 — agent source-IP change audit', () => {
+  let redisMock: { set: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisMock = { set: vi.fn(async () => 'OK') };
+    vi.mocked(getRedis).mockReturnValue(redisMock as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    // Allow all rate limiters in this block.
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 99,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  it('does NOT audit when source IP matches lastSeenIp', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValue('203.0.113.1');
+    buildSelectMock([makeDevice({ lastSeenIp: '203.0.113.1' })]);
+
+    const c = createContext({ token: VALID_TOKEN });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  it('does NOT audit on first sighting (lastSeenIp is NULL) but still records the IP', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValue('203.0.113.7');
+    buildSelectMock([makeDevice({ lastSeenIp: null })]);
+
+    const c = createContext({ token: VALID_TOKEN });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    // last_seen_ip update is fire-and-forget — verify db.update was called.
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it('audits ONCE when the IP changes (Redis SET NX returns OK)', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValue('198.51.100.7');
+    buildSelectMock([makeDevice({ lastSeenIp: '203.0.113.1' })]);
+
+    const c = createContext({ token: VALID_TOKEN });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(redisMock.set).toHaveBeenCalledWith(
+      'agent_ip_change:device-1:198.51.100.7',
+      '1',
+      'EX',
+      24 * 60 * 60,
+      'NX',
+    );
+    expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'org-1',
+        actorType: 'agent',
+        actorId: 'device-1',
+        action: 'agent.source.ip.changed',
+        resourceType: 'device',
+        resourceId: 'device-1',
+        details: { previousIp: '203.0.113.1', newIp: '198.51.100.7' },
+        ipAddress: '198.51.100.7',
+        result: 'success',
+      }),
+    );
+  });
+
+  it('dedupes audit events when the same (device, IP) pair is seen again within 24h (Redis SET NX returns null)', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValue('198.51.100.7');
+    redisMock.set.mockResolvedValueOnce(null); // dedup HIT — already logged
+    buildSelectMock([makeDevice({ lastSeenIp: '203.0.113.1' })]);
+
+    const c = createContext({ token: VALID_TOKEN });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(redisMock.set).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+  });
+
+  it('skips audit silently if Redis dedup write throws', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValue('198.51.100.7');
+    redisMock.set.mockRejectedValueOnce(new Error('redis down'));
+    buildSelectMock([makeDevice({ lastSeenIp: '203.0.113.1' })]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const c = createContext({ token: VALID_TOKEN });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(
+      '[agentAuth] ip-change dedup lookup failed:',
+      expect.anything(),
     );
     errSpy.mockRestore();
   });
