@@ -14,6 +14,7 @@ import {
 } from '../../db/schema';
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
+import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 
@@ -173,8 +174,29 @@ abuseRoutes.post(
       }
     });
 
+    // Task 13 — MCP H-1: revoke OAuth grants + refresh tokens so any active
+    // 3rd-party-app bearer (Claude.ai, etc.) stops working on the next API
+    // call rather than surviving until natural expiry (~10min access /
+    // ~14d refresh). This MUST happen on the suspend path; the umbrella
+    // PATCH /partners/:id route (orgs.ts) already does it for non-active
+    // status transitions, but suspend-for-abuse uses its own bespoke tx.
+    // Same partial-failure semantics as the user-JWT revocation above: a
+    // Redis cache write failure leaves the DB committed but a grant
+    // window open — surface 500 + audit failure so the operator
+    // fail-closes manually.
+    let oauthRevocationResult: { grantsRevoked: number; refreshTokensRevoked: number; jtisRevoked: number } | null = null;
+    let oauthRevocationError: string | null = null;
+    try {
+      oauthRevocationResult = await revokeAllPartnerOauthArtifacts(partnerId);
+    } catch (err) {
+      oauthRevocationError = err instanceof Error ? err.message : String(err);
+      captureException(err, c);
+    }
+
     const auditResult: 'success' | 'failure' =
-      tokenRevocationFailures.length === 0 ? 'success' : 'failure';
+      tokenRevocationFailures.length === 0 && oauthRevocationError === null
+        ? 'success'
+        : 'failure';
 
     try {
       await createAuditLog({
@@ -191,8 +213,13 @@ abuseRoutes.post(
           userCount: result.userCount,
           apiKeyCount: result.apiKeyCount,
           requestedBy: callerId,
+          oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
+          oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
           ...(tokenRevocationFailures.length > 0
             ? { tokenRevocationFailures }
+            : {}),
+          ...(oauthRevocationError !== null
+            ? { oauthRevocationError }
             : {}),
         },
         ipAddress: getTrustedClientIpOrUndefined(c),
@@ -211,14 +238,18 @@ abuseRoutes.post(
       captureException(auditErr, c);
     }
 
-    if (tokenRevocationFailures.length > 0) {
+    if (tokenRevocationFailures.length > 0 || oauthRevocationError !== null) {
       return c.json(
         {
           error: 'partial_suspend',
           partnerId,
           status: 'suspended' as const,
-          tokenRevocationFailed: true,
-          tokenRevocationFailures,
+          ...(tokenRevocationFailures.length > 0
+            ? { tokenRevocationFailed: true, tokenRevocationFailures }
+            : {}),
+          ...(oauthRevocationError !== null
+            ? { oauthRevocationFailed: true, oauthRevocationError }
+            : {}),
           deviceCount: result.deviceCount,
           userCount: result.userCount,
           apiKeyCount: result.apiKeyCount,
@@ -235,6 +266,8 @@ abuseRoutes.post(
       userCount: result.userCount,
       apiKeyCount: result.apiKeyCount,
       queuedUninstalls: result.deviceCount,
+      oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
+      oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
     });
   }
 );

@@ -155,6 +155,14 @@ vi.mock('../../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../oauth/grantRevocation', () => ({
+  revokeAllPartnerOauthArtifacts: vi.fn(async () => ({
+    grantsRevoked: 0,
+    refreshTokensRevoked: 0,
+    jtisRevoked: 0,
+  })),
+}));
+
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
@@ -168,6 +176,7 @@ import { Hono } from 'hono';
 import { adminRoutes } from './index';
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
+import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -419,5 +428,86 @@ describe('admin/abuse — suspend mutation behavior', () => {
     // We still report success so the operator UI doesn't go red on something
     // that already happened.
     expect(res.status).toBe(200);
+  });
+
+  // Task 13 — MCP H-1: OAuth grants/refresh tokens must be revoked on
+  // partner status transitions away from `active`. Without this, an active
+  // OAuth bearer (Claude.ai, etc.) keeps working for up to 14 days after
+  // a partner is suspended for abuse — silent compromise window.
+  it('revokes all OAuth grants and refresh tokens for the suspended partner', async () => {
+    vi.mocked(revokeAllPartnerOauthArtifacts).mockResolvedValueOnce({
+      grantsRevoked: 2,
+      refreshTokensRevoked: 5,
+      jtisRevoked: 5,
+    });
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'oauth revocation regression coverage' }),
+    });
+    expect(res.status).toBe(200);
+
+    // Revoke must be called exactly once with the suspended partner id.
+    expect(revokeAllPartnerOauthArtifacts).toHaveBeenCalledTimes(1);
+    expect(revokeAllPartnerOauthArtifacts).toHaveBeenCalledWith('partner-1');
+
+    // Audit log details surface the revoked counts so the operator sees
+    // that OAuth artifacts were touched as part of the suspend.
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.details).toMatchObject({
+      oauthGrantsRevoked: 2,
+      oauthRefreshTokensRevoked: 5,
+    });
+  });
+
+  it('returns 500 with partial_suspend when OAuth revocation cache fails', async () => {
+    // If Redis is down, the OAuth revocation cache write throws. Treat the
+    // same way as a JWT revocation failure: DB suspend committed but a
+    // grant/refresh-token window remains open — operator MUST know.
+    vi.mocked(revokeAllPartnerOauthArtifacts).mockRejectedValueOnce(
+      new Error('redis revocation cache write failed'),
+    );
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'redis-down oauth revocation regression' }),
+    });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as {
+      error: string;
+      oauthRevocationFailed?: boolean;
+      oauthRevocationError?: string;
+    };
+    expect(body.error).toBe('partial_suspend');
+    expect(body.oauthRevocationFailed).toBe(true);
+    expect(body.oauthRevocationError).toContain('redis revocation cache write failed');
+
+    // Audit log is still written, but with result='failure'.
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.result).toBe('failure');
+  });
+
+  it('still calls OAuth revocation even when there are no partner users to revoke JWTs for', async () => {
+    // A partner that has issued OAuth grants but currently has no logged-in
+    // first-party user sessions (or all users are platform admins skipped by
+    // the self-suspend guard) must still get OAuth artifacts revoked.
+    txMockState.partnerUserRows = [];
+    txMockState.disabledUsers = [];
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'oauth-only revocation path coverage' }),
+    });
+    expect(res.status).toBe(200);
+
+    // No user JWTs to revoke — but OAuth revocation MUST still run.
+    expect(revokeAllUserTokens).not.toHaveBeenCalled();
+    expect(revokeAllPartnerOauthArtifacts).toHaveBeenCalledWith('partner-1');
   });
 });
