@@ -73,17 +73,50 @@ export async function getActiveOrgTenant(orgId: string): Promise<{ orgId: string
   });
 }
 
-export async function assertActiveTenantContext(context: {
-  scope: 'system' | 'partner' | 'organization';
-  partnerId: string | null;
-  orgId: string | null;
-}): Promise<void> {
+/**
+ * Options for tightening the tenant-status gate when the caller is NOT a
+ * first-party dashboard session.
+ *
+ * `strictForOauth` (Task 15 / MCP H-1): when true, require partners.status
+ * === 'active' for partner-scope contexts (instead of admitting `pending`).
+ * The lax behavior is correct for first-party JWTs — a `pending` partner
+ * needs to authenticate so partnerGuard can redirect them to billing — but
+ * is WRONG for OAuth bearer tokens: a `pending` partner should never have
+ * an OAuth grant honored, and any flip to suspended/churned post-issuance
+ * must invalidate already-minted access tokens at request time (proactive
+ * revoke + this request-time check are belt-and-suspenders). Org-scope is
+ * unaffected — `getActiveOrgTenant` already cascades through
+ * `getActivePartner` which is strict.
+ */
+export interface AssertActiveTenantOptions {
+  strictForOauth?: boolean;
+}
+
+export async function assertActiveTenantContext(
+  context: {
+    scope: 'system' | 'partner' | 'organization';
+    partnerId: string | null;
+    orgId: string | null;
+  },
+  options: AssertActiveTenantOptions = {},
+): Promise<void> {
   if (context.scope === 'system') return;
 
   if (context.scope === 'partner') {
+    if (!context.partnerId) {
+      throw new TenantInactiveError('Partner is not active');
+    }
+    if (options.strictForOauth) {
+      // OAuth bearer / non-session caller: require strictly active.
+      // Rejects pending, suspended, churned, soft-deleted.
+      if (!(await getActivePartner(context.partnerId))) {
+        throw new TenantInactiveError('Partner is not active');
+      }
+      return;
+    }
     // Session gate, not feature gate: admit `pending` (partnerGuard
     // handles the billing redirect). Strictly-dead tenants still rejected.
-    if (!context.partnerId || !(await getSessionAllowedPartner(context.partnerId))) {
+    if (!(await getSessionAllowedPartner(context.partnerId))) {
       throw new TenantInactiveError('Partner is not active');
     }
     return;

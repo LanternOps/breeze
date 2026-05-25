@@ -323,6 +323,59 @@ describe('bearerTokenAuthMiddleware', () => {
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'tenant inactive');
   });
 
+  it('asserts tenant context in strictForOauth mode (Task 15 / MCP H-1)', async () => {
+    // Pin the contract: OAuth bearer auth MUST call assertActiveTenantContext
+    // with { strictForOauth: true } so partners in `pending`/`suspended`/
+    // `churned` status are rejected at request time — even though first-party
+    // session JWTs (auth.ts) admit `pending` so partnerGuard can redirect to
+    // billing. The lax behavior is correct for the dashboard cookie path but
+    // wrong for OAuth bearers; this guards against future refactors that
+    // accidentally drop the flag.
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: null,
+      scope: 'mcp:read',
+      jti: 'strict-flag-partner-jti',
+    });
+    dbState.rows = [
+      [{ orgAccess: 'all', orgIds: null }],
+      [],
+    ];
+
+    await bearerTokenAuthMiddleware(createContext({ Authorization: `Bearer ${token}` }), vi.fn());
+
+    expect(assertActiveTenantContext).toHaveBeenCalledWith(
+      {
+        scope: 'partner',
+        partnerId,
+        orgId: null,
+      },
+      { strictForOauth: true },
+    );
+  });
+
+  it('rejects bearer when partner status is pending (strictForOauth mode)', async () => {
+    // Semantic test: a `pending` partner — which a first-party session JWT
+    // would admit — must be rejected when authenticating via OAuth bearer.
+    // The strict variant of the helper enforces this; here we simulate it
+    // by having the mocked helper reject as it would for any non-`active`
+    // status under `{ strictForOauth: true }`.
+    vi.mocked(assertActiveTenantContext).mockImplementation(async (_ctx, opts) => {
+      if (opts?.strictForOauth) {
+        throw new TenantInactiveError('Partner is not active');
+      }
+    });
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      jti: 'pending-partner-jti',
+    });
+
+    await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'tenant inactive');
+  });
+
   it('maps legacy mcp:write to read/write/execute (back-compat through 2026-05-15)', async () => {
     // Pre-split refresh tokens carried mcp:write expecting ai:execute. We
     // continue granting ai:execute when mcp:execute is NOT also present so

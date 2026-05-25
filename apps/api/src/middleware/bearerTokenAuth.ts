@@ -252,11 +252,22 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'token missing required claims' });
   }
   try {
-    await assertActiveTenantContext({
-      scope: payload.org_id ? 'organization' : 'partner',
-      partnerId: payload.partner_id,
-      orgId: payload.org_id ?? null,
-    });
+    // OAuth bearers run with `strictForOauth: true` — pending/suspended/churned
+    // partners are rejected here even though first-party session JWTs would
+    // admit `pending` (so partnerGuard can redirect them to billing). An OAuth
+    // grant for a pending partner should never have been issued (consent in
+    // oauthInteraction.ts blocks it), and a partner flipped to
+    // suspended/churned post-issuance must lose access at request time —
+    // belt-and-suspenders with the proactive revoke in
+    // /admin/partners/:id/suspend-for-abuse.
+    await assertActiveTenantContext(
+      {
+        scope: payload.org_id ? 'organization' : 'partner',
+        partnerId: payload.partner_id,
+        orgId: payload.org_id ?? null,
+      },
+      { strictForOauth: true },
+    );
   } catch (err) {
     if (err instanceof TenantInactiveError) {
       throw new HTTPException(401, { message: 'tenant inactive' });
