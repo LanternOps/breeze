@@ -16,8 +16,13 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
+import { generate, generateSecret } from 'otplib';
 import { authRoutes } from '../../routes/auth';
+import { encryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
+import { users } from '../../db/schema';
 import { createPartner, createUser } from './db-utils';
+import { getTestDb } from './setup';
 
 // Import setup to initialize database connection
 import './setup';
@@ -159,6 +164,76 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
 
     // Cookie C — the freshest legit token — must also be dead.
     const followup = await refreshWithCookies(app, cookiesC);
+    expect(followup.status).toBe(401);
+  });
+
+  it('MFA verify path produces a family-tagged refresh token (reuse detection covers MFA cohort)', async () => {
+    // Seed an MFA-enabled user with a known TOTP secret so we can drive
+    // /mfa/verify deterministically. We then assert family revocation via
+    // the same reuse-replay mechanism as the password-only test above —
+    // proving the MFA branch attaches a `fam` claim without needing to
+    // decode the JWT directly.
+    const password = 'MfaFamilyPass123!';
+    const email = 'mfafam@example.com';
+    const user = await createUser({
+      partnerId: testPartnerId,
+      email,
+      password,
+      mfaEnabled: true,
+    });
+
+    // Provision MFA secret + method directly. Uses the same encryption path
+    // /mfa/enable writes through, so /mfa/verify's decryptMfaSecretForMigration
+    // can read it back.
+    const mfaSecret = generateSecret({ length: 20 });
+    const db = getTestDb() as any;
+    await db
+      .update(users)
+      .set({
+        mfaSecret: encryptMfaTotpSecret(mfaSecret),
+        mfaMethod: 'totp',
+      })
+      .where(eq(users.id, user.id));
+
+    // Step 1: /login → mfaRequired=true + tempToken
+    const loginRes = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    expect(loginRes.status).toBe(200);
+    const loginBody = (await loginRes.json()) as { mfaRequired: boolean; tempToken: string };
+    expect(loginBody.mfaRequired).toBe(true);
+    expect(loginBody.tempToken).toBeTruthy();
+
+    // Step 2: /mfa/verify → emits the real refresh cookie
+    const totpCode = await generate({ secret: mfaSecret });
+    const mfaRes = await app.request('/auth/mfa/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: loginBody.tempToken, code: totpCode }),
+    });
+    expect(mfaRes.status).toBe(200);
+    const mfaSetCookie = mfaRes.headers.get('set-cookie') ?? '';
+    const cookiesA = extractCookies(mfaSetCookie);
+    expect(cookiesA).not.toBeNull();
+
+    // Step 3: rotate once → cookie B issued, A revoked
+    const r2 = await refreshWithCookies(app, cookiesA!);
+    expect(r2.status).toBe(200);
+    expect(r2.nextCookies).not.toBeNull();
+    const cookiesB = r2.nextCookies!;
+
+    // Step 4: replay A → reuse-detection must kill the entire family.
+    // If /mfa/verify hadn't tagged the token with `fam`, this would only
+    // revoke A's jti and B would survive — the exact bug this test guards
+    // against.
+    const replay = await refreshWithCookies(app, cookiesA!);
+    expect(replay.status).toBe(401);
+
+    // Step 5: B must now also be dead — proof that the MFA-minted token
+    // carried a family id.
+    const followup = await refreshWithCookies(app, cookiesB);
     expect(followup.status).toBe(401);
   });
 

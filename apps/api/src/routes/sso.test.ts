@@ -34,9 +34,14 @@ vi.mock('../services', () => ({
   createTokenPair: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
+    refreshJti: 'sso-jti-mock',
     expiresInSeconds: 900
   }),
-  createSession: vi.fn()
+  createSession: vi.fn(),
+  // Task 7 follow-up: SSO callback now mints a refresh-token family for
+  // every completed sign-in so reuse-detection covers SSO sessions.
+  mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
+  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('../db', () => ({

@@ -8,7 +8,9 @@ import {
   isPasswordStrong,
   createTokenPair,
   rateLimiter,
-  getRedis
+  getRedis,
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
 import { isHosted } from '../../config/env';
@@ -233,6 +235,12 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       // Token creation outside tx (doesn't need rollback)
       // MFA is vacuously satisfied when the user hasn't enrolled in MFA
       const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
+
+      // Auto-login from partner signup: mint a fresh refresh-token family so
+      // the first session inherits the same reuse-detection chain as a real
+      // /login. Skipping it here would leave brand-new partners' tokens
+      // outside the family-revocation envelope until their next manual login.
+      const registerFamilyId = await mintRefreshTokenFamily(newUser.id);
       const tokens = await createTokenPair({
         sub: newUser.id,
         email: newUser.email,
@@ -241,7 +249,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         partnerId: newPartner.id,
         scope: 'partner',
         mfa: mfaSatisfied
-      });
+      }, { refreshFam: registerFamilyId });
+
+      await bindRefreshJtiToFamily(tokens.refreshJti, registerFamilyId);
 
       setRefreshTokenCookie(c, tokens.refreshToken);
 

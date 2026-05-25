@@ -28,7 +28,7 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { decryptSecret, encryptSecret } from '../services/secretCrypto';
@@ -971,7 +971,16 @@ ssoRoutes.get('/callback', async (c) => {
       mfa: false
     };
 
-    const { accessToken, refreshToken, expiresInSeconds } = await createTokenPair(tokenPayload);
+    // Mint a fresh refresh-token family for the SSO-completed session so
+    // SSO logins get the same reuse-detection coverage as password/MFA
+    // logins. Without this, SSO-issued tokens would silently bypass RFC
+    // 9700 §4.13.2 protection.
+    const ssoFamilyId = await mintRefreshTokenFamily(user.id);
+    const { accessToken, refreshToken, refreshJti, expiresInSeconds } = await createTokenPair(
+      tokenPayload,
+      { refreshFam: ssoFamilyId }
+    );
+    await bindRefreshJtiToFamily(refreshJti, ssoFamilyId);
 
     await createSession({
       userId: user.id,

@@ -1,9 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
-import { randomUUID } from 'crypto';
 import * as dbModule from '../../db';
-import { users, refreshTokenFamilies } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   createTokenPair,
   verifyToken,
@@ -15,11 +14,12 @@ import {
   isRefreshTokenJtiRevoked,
   revokeAllUserTokens,
   revokeRefreshTokenJti,
-  rememberJtiFamily,
   getFamilyForJti,
   revokeFamily,
   isFamilyRevoked,
-  touchFamilyLastUsed
+  touchFamilyLastUsed,
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily
 } from '../../services';
 import { authMiddleware } from '../../middleware/auth';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -215,13 +215,11 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   // (every descendant + the current valid token) gets revoked, not just the
   // replayed jti — closing the OAuth 2.1 token-reuse race described in
   // RFC 9700 §4.13.2.
-  const familyId = randomUUID();
-  await withSystemDbAccessContext(async () =>
-    db.insert(refreshTokenFamilies).values({
-      familyId,
-      userId: user.id,
-    })
-  );
+  //
+  // The helper is shared by every authenticated token-mint path (login,
+  // mfa-verify, register-partner, accept-invite, sso) — one source of
+  // truth so no future path can quietly opt out of reuse-detection.
+  const familyId = await mintRefreshTokenFamily(user.id);
 
   const tokens = await createTokenPair({
     sub: user.id,
@@ -240,7 +238,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   // Record the jti → family mapping in Redis for hot-path /refresh lookup.
   // Best-effort: the family id is also encoded in the JWT, so a Redis miss
   // still works via the verified claim.
-  await rememberJtiFamily(tokens.refreshJti, familyId);
+  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
 
   // Update last login
   await db
@@ -446,7 +444,7 @@ loginRoutes.post('/refresh', async (c) => {
     // Map the newly-minted jti to the same family so a future replay of THIS
     // jti can also be detected via Redis. Best-effort; the JWT `fam` claim
     // is the primary record.
-    await rememberJtiFamily(tokens.refreshJti, familyId);
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
     // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
     // blocks the refresh.
     void touchFamilyLastUsed(familyId);

@@ -16,9 +16,14 @@ vi.mock('../../db/schema', () => ({
 vi.mock('../../services', () => ({
   hashPassword: vi.fn(async () => 'hashed'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
-  createTokenPair: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', expiresInSeconds: 900 })),
+  createTokenPair: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti-mock', expiresInSeconds: 900 })),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
   getRedis: vi.fn(() => ({})),
+  // Task 7 follow-up: shared family-mint helper. /register-partner now mints
+  // a fresh family for its auto-login, matching every other authenticated
+  // token-mint path.
+  mintRefreshTokenFamily: vi.fn(async () => 'family-id-mock'),
+  bindRefreshJtiToFamily: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/partnerCreate', () => ({

@@ -34,6 +34,10 @@ vi.mock('../services', () => ({
   revokeFamily: vi.fn().mockResolvedValue(undefined),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
+  // Task 7 follow-up: shared family-mint helper used by every authenticated
+  // token-mint path (login, mfa, register-partner, accept-invite, sso).
+  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-id-mock'),
+  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },

@@ -10,6 +10,8 @@ import {
   getRedis,
   createTokenPair,
   rateLimiter,
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
 } from '../../services';
 import { acceptInviteSchema, invitePreviewSchema } from './schemas';
 import {
@@ -194,6 +196,9 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
   try {
     const context = await resolveCurrentUserTokenContext(userId);
 
+    // Mint a fresh refresh-token family so invite-accept auto-login is
+    // covered by the same reuse-detection envelope as a normal /login.
+    const inviteFamilyId = await mintRefreshTokenFamily(user.id);
     const tokens = await createTokenPair({
       sub: user.id,
       email: user.email,
@@ -202,7 +207,9 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
       partnerId: context.partnerId,
       scope: context.scope,
       mfa: false,
-    });
+    }, { refreshFam: inviteFamilyId });
+
+    await bindRefreshJtiToFamily(tokens.refreshJti, inviteFamilyId);
 
     setRefreshTokenCookie(c, tokens.refreshToken);
 
