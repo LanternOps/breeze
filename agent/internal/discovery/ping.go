@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
+
+	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 var pingSequence uint32
@@ -51,6 +53,7 @@ func PingSweep(targets []net.IP, timeout time.Duration, workers int) []PingResul
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer observability.Recoverer("discovery.pingWorker")
 			conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
 			if err != nil {
 				slog.Error("ICMP listen failed for worker", "error", err)

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 // PortRange defines a range of ports to scan.
@@ -35,6 +37,7 @@ func ScanPorts(targets []net.IP, portRanges []PortRange, timeout time.Duration, 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer observability.Recoverer("discovery.portWorker")
 			for job := range jobs {
 				if scanPort(job.IP, job.Port, timeout) {
 					service := identifyService(job.Port)

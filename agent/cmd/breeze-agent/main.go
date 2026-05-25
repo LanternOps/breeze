@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
@@ -229,6 +230,24 @@ func init() {
 }
 
 func main() {
+	// Initialize Sentry as early as possible so panics during cobra
+	// command dispatch are still captured. Init is best-effort: when
+	// BREEZE_SENTRY_DSN is unset (self-host without telemetry), Init is
+	// a no-op and the agent runs unchanged. Any init error is logged
+	// and ignored — Sentry MUST NOT block agent startup.
+	if err := observability.Init(version); err != nil {
+		fmt.Fprintf(os.Stderr, "sentry init failed: %v\n", err)
+	}
+	defer observability.Flush(2 * time.Second)
+
+	// Smoke-test hook for staging verification of the Sentry pipeline.
+	// Operators set BREEZE_SMOKE_PANIC=1 on a staging agent to confirm a
+	// panic event reaches the configured DSN. The deferred Flush above
+	// ensures the event is transmitted before exit.
+	if os.Getenv("BREEZE_SMOKE_PANIC") == "1" {
+		panic("sentry-go-smoke: BREEZE_SMOKE_PANIC=1")
+	}
+
 	if filepath.Base(os.Args[0]) == "breeze-desktop-helper" {
 		for i := 1; i < len(os.Args)-1; i++ {
 			if os.Args[i] == "--context" {

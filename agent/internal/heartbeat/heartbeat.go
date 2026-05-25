@@ -37,6 +37,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -315,6 +316,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, nil)
 		h.mu.Unlock()
 		go func(sysInfo *collectors.SystemInfo) {
+			defer observability.Recoverer("heartbeat.hardwareCollect")
 			hwInfo, err := h.hardwareCol.CollectHardware()
 			if err != nil {
 				log.Warn("hardware collection failed in background; device role will use system-info-only classification", "error", err.Error())
@@ -776,6 +778,7 @@ func (h *Heartbeat) Start() {
 					if h.bootCol.ShouldCollect(uptimeSec, bt) {
 						h.bootCol.MarkCollected(bt)
 						go func() {
+							defer observability.Recoverer("heartbeat.bootPerformance")
 							log.Info("detected recent boot, collecting boot performance")
 							metrics, err := h.bootCol.Collect()
 							if err != nil {
@@ -933,6 +936,7 @@ func (h *Heartbeat) sendInventory() {
 		h.inventoryWg.Add(1)
 		go func(f func()) {
 			defer h.inventoryWg.Done()
+			defer observability.Recoverer("heartbeat.inventory")
 			f()
 		}(fn)
 	}
@@ -3006,6 +3010,7 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer observability.Recoverer("heartbeat.upgrade")
 		h.doUpgrade(targetVersion)
 	}()
 

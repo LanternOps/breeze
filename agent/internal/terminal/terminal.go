@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 var log = logging.L("terminal")
@@ -240,6 +241,7 @@ func (s *Session) close() error {
 // call it. This prevents the data race between the background Wait goroutine
 // spawned by start() and the close() method.
 func (s *Session) waitCmd() error {
+	defer observability.Recoverer("terminal.waitCmd")
 	var err error
 	s.waitOnce.Do(func() {
 		err = s.awaitProcess()
@@ -257,6 +259,7 @@ func (s *Session) notifyClosed(err error) {
 
 // readLoop reads output from the PTY and sends it to the callback
 func (s *Session) readLoop() {
+	defer observability.Recoverer("terminal.readLoop")
 	log.Info("readLoop started", "sessionId", s.ID)
 	buf := make([]byte, 4096)
 	firstRead := true

@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
@@ -258,6 +259,7 @@ func (c *Client) reconnectLoop() {
 }
 
 func (c *Client) readPump() {
+	defer observability.Recoverer("websocket.readPump")
 	c.connMu.RLock()
 	conn := c.conn
 	c.connMu.RUnlock()
@@ -321,6 +323,7 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
+	defer observability.Recoverer("websocket.writePump")
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 	defer close(exited)
@@ -380,6 +383,7 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 }
 
 func (c *Client) processCommand(cmd Command) {
+	defer observability.Recoverer("websocket.processCommand")
 	log.Info("processing command", "commandId", cmd.ID, "commandType", cmd.Type)
 
 	result := c.cmdHandler(cmd)
