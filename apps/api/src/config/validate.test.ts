@@ -798,4 +798,264 @@ describe('validateConfig', () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Task 26 (audit H-3): feature-flagged secrets must be present in production.
+  //
+  // Several "boot-or-die" secrets are read directly at first feature use and
+  // silently 500 the request rather than failing at boot. The validator now
+  // enforces them in production whenever the corresponding feature flag (or
+  // soft-enable indicator — see below) is set.
+  //
+  // Important: this codebase does NOT use a uniform `<FEATURE>_ENABLED` flag
+  // pattern. The actual indicators are:
+  //   - Billing (breeze-billing service-to-service):     BREEZE_BILLING_URL set
+  //   - Billing (AI cost tracking via partner service):  BILLING_SERVICE_URL set
+  //   - OAuth (MCP DCR + JWT):                           MCP_OAUTH_ENABLED=true
+  //   - S3 / object storage:                             S3_BUCKET set
+  //   - Email (Resend):                                  EMAIL_PROVIDER=resend
+  //                                                       OR (auto + RESEND_API_KEY)
+  //   - Cloudflare mTLS:                                 CLOUDFLARE_API_TOKEN set
+  //   - MSI signing:                                     MSI_SIGNING_URL set
+  //
+  // Stripe is NOT present in apps/api (it lives in the separate breeze-billing
+  // service). The audit plan listed STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
+  // speculatively; the API-side enforcement here covers BILLING_SERVICE_API_KEY
+  // and BREEZE_BILLING_URL's companion secrets instead.
+  describe('Feature-flagged production secrets (H-3)', () => {
+    const prodBase = {
+      ...validEnv,
+      NODE_ENV: 'production' as const,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+
+    // --- OAuth (MCP_OAUTH_ENABLED) ------------------------------------------
+    it('refuses to boot when MCP_OAUTH_ENABLED=true but OAUTH_JWKS_PRIVATE_JWK is missing', () => {
+      withEnv({
+        ...prodBase,
+        MCP_OAUTH_ENABLED: 'true',
+        OAUTH_JWKS_PRIVATE_JWK: '',
+        OAUTH_COOKIE_SECRET: 'a-strong-random-cookie-secret-32-chars-min',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/OAUTH_JWKS_PRIVATE_JWK/);
+      });
+    });
+
+    it('refuses to boot when MCP_OAUTH_ENABLED=true but OAUTH_COOKIE_SECRET is missing', () => {
+      withEnv({
+        ...prodBase,
+        MCP_OAUTH_ENABLED: 'true',
+        OAUTH_JWKS_PRIVATE_JWK: '{"keys":[{"kty":"OKP"}]}',
+        OAUTH_COOKIE_SECRET: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/OAUTH_COOKIE_SECRET/);
+      });
+    });
+
+    it('does not require OAuth secrets when MCP_OAUTH_ENABLED is false', () => {
+      withEnv({
+        ...prodBase,
+        MCP_OAUTH_ENABLED: 'false',
+        OAUTH_JWKS_PRIVATE_JWK: '',
+        OAUTH_COOKIE_SECRET: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots when MCP_OAUTH_ENABLED=true and both OAuth secrets are set', () => {
+      withEnv({
+        ...prodBase,
+        MCP_OAUTH_ENABLED: 'true',
+        OAUTH_JWKS_PRIVATE_JWK: '{"keys":[{"kty":"OKP"}]}',
+        OAUTH_COOKIE_SECRET: 'a-strong-random-cookie-secret-32-chars-min',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // --- Billing (BREEZE_BILLING_URL + BILLING_SERVICE_URL) -----------------
+    it('refuses to boot when BREEZE_BILLING_URL is set but BREEZE_BILLING_API_KEY is missing', () => {
+      withEnv({
+        ...prodBase,
+        BREEZE_BILLING_URL: 'https://billing.2breeze.app',
+        BREEZE_BILLING_API_KEY: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_BILLING_API_KEY/);
+      });
+    });
+
+    it('refuses to boot when BILLING_SERVICE_URL is set but BILLING_SERVICE_API_KEY is missing', () => {
+      withEnv({
+        ...prodBase,
+        BILLING_SERVICE_URL: 'https://billing.internal',
+        BILLING_SERVICE_API_KEY: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/BILLING_SERVICE_API_KEY/);
+      });
+    });
+
+    it('does not require billing secrets when billing URLs are unset', () => {
+      withEnv({
+        ...prodBase,
+        BREEZE_BILLING_URL: '',
+        BILLING_SERVICE_URL: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // --- S3 / object storage (S3_BUCKET) ------------------------------------
+    it('refuses to boot when S3_BUCKET is set but S3_SECRET_KEY is missing', () => {
+      withEnv({
+        ...prodBase,
+        S3_BUCKET: 'breeze-binaries',
+        S3_ACCESS_KEY: 'AKIAEXAMPLE',
+        S3_SECRET_KEY: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/S3_SECRET_KEY/);
+      });
+    });
+
+    it('refuses to boot when S3_BUCKET is set but S3_ACCESS_KEY is missing', () => {
+      withEnv({
+        ...prodBase,
+        S3_BUCKET: 'breeze-binaries',
+        S3_ACCESS_KEY: '',
+        S3_SECRET_KEY: 'shhh',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/S3_ACCESS_KEY/);
+      });
+    });
+
+    it('does not require S3 credentials when S3_BUCKET is unset', () => {
+      withEnv({
+        ...prodBase,
+        S3_BUCKET: '',
+        S3_ACCESS_KEY: '',
+        S3_SECRET_KEY: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // --- Email (EMAIL_PROVIDER=resend) --------------------------------------
+    it('refuses to boot when EMAIL_PROVIDER=resend but RESEND_API_KEY is missing', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_PROVIDER: 'resend',
+        RESEND_API_KEY: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/RESEND_API_KEY/);
+      });
+    });
+
+    it('refuses to boot when EMAIL_PROVIDER=smtp but SMTP_HOST is missing', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_PROVIDER: 'smtp',
+        SMTP_HOST: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/SMTP_HOST/);
+      });
+    });
+
+    it('refuses to boot when EMAIL_PROVIDER=mailgun but MAILGUN_API_KEY is missing', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_PROVIDER: 'mailgun',
+        MAILGUN_API_KEY: '',
+        MAILGUN_DOMAIN: 'mg.example.com',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/MAILGUN_API_KEY/);
+      });
+    });
+
+    it('does not require Resend key when EMAIL_PROVIDER is unset/auto', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_PROVIDER: '',
+        RESEND_API_KEY: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boots when EMAIL_PROVIDER=resend and RESEND_API_KEY is set', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_PROVIDER: 'resend',
+        RESEND_API_KEY: 're_test_strong_key_value',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // --- Cloudflare (CLOUDFLARE_API_TOKEN set) ------------------------------
+    it('refuses to boot when CLOUDFLARE_API_TOKEN is set but CLOUDFLARE_ZONE_ID is missing', () => {
+      withEnv({
+        ...prodBase,
+        CLOUDFLARE_API_TOKEN: 'cf-token-xxx',
+        CLOUDFLARE_ZONE_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/CLOUDFLARE_ZONE_ID/);
+      });
+    });
+
+    it('does not require Cloudflare zone id when token is unset', () => {
+      withEnv({
+        ...prodBase,
+        CLOUDFLARE_API_TOKEN: '',
+        CLOUDFLARE_ZONE_ID: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // --- MSI signing (MSI_SIGNING_URL set) ----------------------------------
+    it('refuses to boot when MSI_SIGNING_URL is set but MSI_SIGNING_CF_ACCESS_SECRET is missing', () => {
+      withEnv({
+        ...prodBase,
+        MSI_SIGNING_URL: 'https://sign.2breeze.app/sign-breeze-agent',
+        MSI_SIGNING_CF_ACCESS_ID: 'cf-access-id',
+        MSI_SIGNING_CF_ACCESS_SECRET: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/MSI_SIGNING_CF_ACCESS_SECRET/);
+      });
+    });
+
+    it('does not require MSI signing secrets when URL is unset', () => {
+      withEnv({
+        ...prodBase,
+        MSI_SIGNING_URL: '',
+        MSI_SIGNING_CF_ACCESS_SECRET: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // --- Dev mode never enforces ----------------------------------------------
+    it('does not enforce feature-flagged secrets in development', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'development',
+        MCP_OAUTH_ENABLED: 'true',
+        OAUTH_JWKS_PRIVATE_JWK: '',
+        OAUTH_COOKIE_SECRET: '',
+        BREEZE_BILLING_URL: 'https://billing.internal',
+        BREEZE_BILLING_API_KEY: '',
+        S3_BUCKET: 'breeze',
+        S3_SECRET_KEY: '',
+        EMAIL_PROVIDER: 'resend',
+        RESEND_API_KEY: '',
+        CLOUDFLARE_API_TOKEN: 'cf',
+        CLOUDFLARE_ZONE_ID: '',
+        MSI_SIGNING_URL: 'https://sign',
+        MSI_SIGNING_CF_ACCESS_SECRET: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
 });

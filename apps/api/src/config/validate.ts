@@ -210,6 +210,28 @@ function isPrivateOrLocalProxyNetwork(ip: string): boolean {
   );
 }
 
+/**
+ * Task 26 (audit H-3) helper. Fires a Zod issue when a feature is "soft-enabled"
+ * (its flag/URL is present) but a required companion secret is missing or
+ * whitespace-only. Production-only enforcement; callers must gate on
+ * `NODE_ENV === 'production'`.
+ */
+function requireIf(
+  condition: boolean,
+  name: string,
+  value: string | undefined,
+  hint: string,
+  ctx: z.RefinementCtx,
+): void {
+  if (!condition) return;
+  if (value && value.trim()) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: [name],
+    message: `${name} is required in production when ${hint}. Without it the feature 5xxs at first use instead of failing at boot.`,
+  });
+}
+
 function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: z.RefinementCtx): void {
   const entries = (value ?? '')
     .split(',')
@@ -368,6 +390,47 @@ const envSchema = z
     // OAUTH_DCR_ENABLED=true without OAUTH_DCR_REQUIRE_IAT=true.
     OAUTH_DCR_ENABLED: z.string().optional(),
     OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
+
+    // -- Feature-flagged secrets (Task 26 / audit H-3) -----------------------
+    // The validator only enforces these in production when the corresponding
+    // soft-enable indicator (flag or "URL is set") is present. See the
+    // matching superRefine block below for the exact pairing. None of these
+    // are required at boot in development/test.
+    //
+    // OAuth (MCP) — required when MCP_OAUTH_ENABLED=true:
+    MCP_OAUTH_ENABLED: z.string().optional(),
+    OAUTH_JWKS_PRIVATE_JWK: z.string().optional(),
+    OAUTH_COOKIE_SECRET: z.string().optional(),
+
+    // Billing — required when corresponding URL is set (the URL is the
+    // "soft-enable" indicator; without a key, the call silently 5xxs at first
+    // request rather than at boot).
+    BREEZE_BILLING_URL: z.string().optional(),
+    BREEZE_BILLING_API_KEY: z.string().optional(),
+    BILLING_SERVICE_URL: z.string().optional(),
+    BILLING_SERVICE_API_KEY: z.string().optional(),
+
+    // S3 / object storage — required when S3_BUCKET is set.
+    S3_BUCKET: z.string().optional(),
+    S3_ACCESS_KEY: z.string().optional(),
+    S3_SECRET_KEY: z.string().optional(),
+
+    // Email — required when EMAIL_PROVIDER explicitly selects a backend.
+    EMAIL_PROVIDER: z.string().optional(),
+    RESEND_API_KEY: z.string().optional(),
+    SMTP_HOST: z.string().optional(),
+    MAILGUN_API_KEY: z.string().optional(),
+    MAILGUN_DOMAIN: z.string().optional(),
+
+    // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
+    CLOUDFLARE_API_TOKEN: z.string().optional(),
+    CLOUDFLARE_ZONE_ID: z.string().optional(),
+
+    // MSI signing — when MSI_SIGNING_URL is set, CF Access secret is required
+    // (the signing tunnel rejects unauthenticated requests; without it every
+    // first installer-link request 5xxs).
+    MSI_SIGNING_URL: z.string().optional(),
+    MSI_SIGNING_CF_ACCESS_SECRET: z.string().optional(),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -709,6 +772,131 @@ const envSchema = z
             'OAUTH_DCR_REQUIRE_IAT=true is required when OAUTH_DCR_ENABLED=true in production. Without an initial-access-token gate, POST /oauth/reg is anonymous and any actor can create OAuth clients with deceptive client_name strings.',
         });
       }
+
+      // --- Task 26 / audit H-3: feature-flagged secrets -------------------
+      // Each soft-enabled feature must have its companion secret(s) present
+      // at boot. Without this, the API boots clean and 5xxs only on the
+      // first request that exercises the feature — which on a fresh prod
+      // deploy can be hours after Caddy's healthcheck passes.
+      //
+      // Indicator semantics:
+      //   - boolean flags  → MCP_OAUTH_ENABLED
+      //   - "URL is set"   → BREEZE_BILLING_URL, BILLING_SERVICE_URL,
+      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN, MSI_SIGNING_URL
+      //   - explicit value → EMAIL_PROVIDER=resend|smtp|mailgun
+      const truthyFlag = (raw: string | undefined): boolean =>
+        ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
+
+      // OAuth (MCP_OAUTH_ENABLED)
+      const mcpOauthEnabled = truthyFlag(data.MCP_OAUTH_ENABLED);
+      requireIf(
+        mcpOauthEnabled,
+        'OAUTH_JWKS_PRIVATE_JWK',
+        data.OAUTH_JWKS_PRIVATE_JWK,
+        'MCP_OAUTH_ENABLED=true (JWT signing material for /oauth/* endpoints)',
+        ctx,
+      );
+      requireIf(
+        mcpOauthEnabled,
+        'OAUTH_COOKIE_SECRET',
+        data.OAUTH_COOKIE_SECRET,
+        'MCP_OAUTH_ENABLED=true (oidc-provider session/interaction cookie signing)',
+        ctx,
+      );
+
+      // Billing (breeze-billing service-to-service)
+      const breezeBillingEnabled = Boolean(data.BREEZE_BILLING_URL?.trim());
+      requireIf(
+        breezeBillingEnabled,
+        'BREEZE_BILLING_API_KEY',
+        data.BREEZE_BILLING_API_KEY,
+        'BREEZE_BILLING_URL is set (service-to-service auth to breeze-billing)',
+        ctx,
+      );
+
+      // Billing (AI cost tracker — partner-credits API)
+      const partnerBillingEnabled = Boolean(data.BILLING_SERVICE_URL?.trim());
+      requireIf(
+        partnerBillingEnabled,
+        'BILLING_SERVICE_API_KEY',
+        data.BILLING_SERVICE_API_KEY,
+        'BILLING_SERVICE_URL is set (partner AI-credits check/deduct)',
+        ctx,
+      );
+
+      // S3 / object storage (S3_BUCKET as indicator)
+      const s3Enabled = Boolean(data.S3_BUCKET?.trim());
+      requireIf(
+        s3Enabled,
+        'S3_ACCESS_KEY',
+        data.S3_ACCESS_KEY,
+        'S3_BUCKET is set (object-storage uploads/presigned URLs)',
+        ctx,
+      );
+      requireIf(
+        s3Enabled,
+        'S3_SECRET_KEY',
+        data.S3_SECRET_KEY,
+        'S3_BUCKET is set (object-storage uploads/presigned URLs)',
+        ctx,
+      );
+
+      // Email — only enforced when EMAIL_PROVIDER explicitly picks a backend.
+      // 'auto' / unset leaves the system in best-effort mode (system.ts will
+      // mark email as `configured: false` and downstream code degrades).
+      const emailProvider = (data.EMAIL_PROVIDER ?? '').trim().toLowerCase();
+      requireIf(
+        emailProvider === 'resend',
+        'RESEND_API_KEY',
+        data.RESEND_API_KEY,
+        'EMAIL_PROVIDER=resend',
+        ctx,
+      );
+      requireIf(
+        emailProvider === 'smtp',
+        'SMTP_HOST',
+        data.SMTP_HOST,
+        'EMAIL_PROVIDER=smtp',
+        ctx,
+      );
+      requireIf(
+        emailProvider === 'mailgun',
+        'MAILGUN_API_KEY',
+        data.MAILGUN_API_KEY,
+        'EMAIL_PROVIDER=mailgun',
+        ctx,
+      );
+      requireIf(
+        emailProvider === 'mailgun',
+        'MAILGUN_DOMAIN',
+        data.MAILGUN_DOMAIN,
+        'EMAIL_PROVIDER=mailgun',
+        ctx,
+      );
+
+      // Cloudflare mTLS (CLOUDFLARE_API_TOKEN as indicator)
+      const cfMtlsEnabled = Boolean(data.CLOUDFLARE_API_TOKEN?.trim());
+      requireIf(
+        cfMtlsEnabled,
+        'CLOUDFLARE_ZONE_ID',
+        data.CLOUDFLARE_ZONE_ID,
+        'CLOUDFLARE_API_TOKEN is set (mTLS issuance against the configured zone)',
+        ctx,
+      );
+
+      // MSI signing (MSI_SIGNING_URL as indicator).
+      // The Cloudflare-fronted signing tunnel rejects unauthenticated requests.
+      // The signing service also accepts a per-account X-API-Key, but the
+      // CF Access service-token pair is mandatory in the current deploy —
+      // without it every /installer/link request 5xxs.
+      const msiSigningEnabled = Boolean(data.MSI_SIGNING_URL?.trim());
+      requireIf(
+        msiSigningEnabled,
+        'MSI_SIGNING_CF_ACCESS_SECRET',
+        data.MSI_SIGNING_CF_ACCESS_SECRET,
+        'MSI_SIGNING_URL is set (Cloudflare Access service-token auth to the signing tunnel)',
+        ctx,
+      );
     }
   });
 
@@ -832,6 +1020,26 @@ export function validateConfig(): AppConfig {
     IS_HOSTED: env.IS_HOSTED,
     OAUTH_DCR_ENABLED: env.OAUTH_DCR_ENABLED,
     OAUTH_DCR_REQUIRE_IAT: env.OAUTH_DCR_REQUIRE_IAT,
+    // Task 26 (H-3): feature-flagged production secrets.
+    MCP_OAUTH_ENABLED: env.MCP_OAUTH_ENABLED,
+    OAUTH_JWKS_PRIVATE_JWK: env.OAUTH_JWKS_PRIVATE_JWK,
+    OAUTH_COOKIE_SECRET: env.OAUTH_COOKIE_SECRET,
+    BREEZE_BILLING_URL: env.BREEZE_BILLING_URL,
+    BREEZE_BILLING_API_KEY: env.BREEZE_BILLING_API_KEY,
+    BILLING_SERVICE_URL: env.BILLING_SERVICE_URL,
+    BILLING_SERVICE_API_KEY: env.BILLING_SERVICE_API_KEY,
+    S3_BUCKET: env.S3_BUCKET,
+    S3_ACCESS_KEY: env.S3_ACCESS_KEY,
+    S3_SECRET_KEY: env.S3_SECRET_KEY,
+    EMAIL_PROVIDER: env.EMAIL_PROVIDER,
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    SMTP_HOST: env.SMTP_HOST,
+    MAILGUN_API_KEY: env.MAILGUN_API_KEY,
+    MAILGUN_DOMAIN: env.MAILGUN_DOMAIN,
+    CLOUDFLARE_API_TOKEN: env.CLOUDFLARE_API_TOKEN,
+    CLOUDFLARE_ZONE_ID: env.CLOUDFLARE_ZONE_ID,
+    MSI_SIGNING_URL: env.MSI_SIGNING_URL,
+    MSI_SIGNING_CF_ACCESS_SECRET: env.MSI_SIGNING_CF_ACCESS_SECRET,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,
