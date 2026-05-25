@@ -113,11 +113,9 @@ step "relay/edge hardening guard" bash scripts/security/check-relay-edge-hardeni
 # image. The CI workflow uses the aquasecurity/trivy-action GH Action, which
 # under the hood runs the same scan against the same severities — we mirror the
 # blocking step's flags here (HIGH,CRITICAL, exit-code 1).
-TRIVY_FS_RAN="0"
 if command -v trivy >/dev/null 2>&1; then
   step "trivy fs scan (HIGH,CRITICAL, blocking)" \
     trivy fs --severity HIGH,CRITICAL --exit-code 1 .
-  TRIVY_FS_RAN="1"
 elif command -v docker >/dev/null 2>&1; then
   # --ignorefile: container CWD is /, not /scan, so Trivy's default
   # .trivyignore auto-load doesn't fire. Pointing at the in-container
@@ -127,7 +125,6 @@ elif command -v docker >/dev/null 2>&1; then
     docker run --rm -v "$ROOT_DIR":/scan:ro aquasec/trivy:latest \
       fs --severity HIGH,CRITICAL --exit-code 1 \
       --ignorefile /scan/.trivyignore /scan
-  TRIVY_FS_RAN="1"
 else
   skip "trivy fs scan" "install: brew install trivy  OR start Docker/OrbStack"
 fi
