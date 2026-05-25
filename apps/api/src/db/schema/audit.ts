@@ -22,6 +22,7 @@ export const auditLogs = pgTable('audit_logs', {
   result: auditResultEnum('result').notNull(),
   errorMessage: text('error_message'),
   checksum: varchar('checksum', { length: 128 }),
+  prevChecksum: varchar('prev_checksum', { length: 128 }),
   initiatedBy: initiatedByEnum('initiated_by'),
 });
 
