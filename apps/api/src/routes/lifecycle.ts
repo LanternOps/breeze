@@ -313,7 +313,7 @@ lifecycleRoutes.get('/me/oauth-clients', async (c) => {
   });
 });
 
-async function revokeUserOauthClient(
+export async function revokeUserOauthClient(
   userId: string,
   clientId: string,
   revokedByUserId: string,

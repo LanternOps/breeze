@@ -28,13 +28,15 @@ vi.mock('../db/schema/ai', () => ({
   aiToolExecutions: { id: 'id' },
 }));
 
-vi.mock('../db/schema/oauth', () => ({
-  oauthGrants: { id: 'id', accountId: 'accountId', clientId: 'clientId' },
-  oauthRefreshTokens: { id: 'id', userId: 'userId', clientId: 'clientId' },
-}));
-
 vi.mock('../db/schema/audit', () => ({
   auditLogs: {},
+}));
+
+vi.mock('./lifecycle', () => ({
+  revokeUserOauthClient: vi.fn(async () => ({ grantsRevoked: 1, refreshTokensRevoked: 1 })),
+  // Not used by approvals.ts but exported from lifecycle.ts; mocked to avoid
+  // pulling in the full lifecycle module-init chain in this test surface.
+  isOauthClientBlockedForOrg: vi.fn(async () => false),
 }));
 
 const TEST_USER = {
@@ -399,47 +401,41 @@ describe('POST /approvals/:id/report-suspicious', () => {
       }),
     } as any);
 
-    // 2) update approval_requests (status=reported)
+    // 2) update approval_requests (status=reported) — the only remaining
+    //    direct db.update in this handler now that grant/refresh-token
+    //    revocation is delegated to lifecycle.revokeUserOauthClient.
     const approvalUpdateSet = vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
     });
-    // 3) update oauth_refresh_tokens
-    const tokenUpdateSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: 'rt-1' }]),
-      }),
-    });
-    vi.mocked(db.update)
-      .mockReturnValueOnce({ set: approvalUpdateSet } as any)
-      .mockReturnValueOnce({ set: tokenUpdateSet } as any);
-
-    // delete oauth_grants
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: 'grant-1' }]),
-      }),
-    } as any);
+    vi.mocked(db.update).mockReturnValueOnce({ set: approvalUpdateSet } as any);
 
     // insert audit log
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     } as any);
 
-    return { approvalUpdateSet, tokenUpdateSet };
+    return { approvalUpdateSet };
   }
 
-  it('happy path: 204, denies row, revokes grant + tokens, writes audit', async () => {
-    const { approvalUpdateSet, tokenUpdateSet } = wireRevocationStubs({ existing: baseRow });
+  it('happy path: 204, denies row, delegates OAuth client revocation to lifecycle helper, writes audit', async () => {
+    const { approvalUpdateSet } = wireRevocationStubs({ existing: baseRow });
 
     const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
     expect(res.status).toBe(204);
     expect(approvalUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'reported' }),
     );
-    expect(tokenUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ revokedAt: expect.any(Date) }),
+    // Revocation is the canonical lifecycle.ts soft-revoke path: stamps
+    // oauth_grants.revoked_at + revokes refresh-token JTIs + writes the
+    // grant-revocation cache marker so any in-flight access JWT is
+    // rejected before its natural expiry.
+    const { revokeUserOauthClient } = await import('./lifecycle');
+    expect(revokeUserOauthClient).toHaveBeenCalledWith(
+      TEST_USER.id,
+      baseRow.requestingClientId,
+      TEST_USER.id,
+      'self-reported suspicious approval',
     );
-    expect(db.delete).toHaveBeenCalled();
     expect(db.insert).toHaveBeenCalled();
   });
 
