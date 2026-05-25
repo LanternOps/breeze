@@ -8,6 +8,8 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { captureException } from '../services/sentry';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { getTrustedClientIp } from '../services/clientIp';
+import { createAuditLogAsync } from '../services/auditService';
 
 // Store active tunnel connections: Map<tunnelId, TunnelConnection>
 interface TunnelConnection {
@@ -171,20 +173,33 @@ export function isTunnelOwnedByAgent(tunnelId: string, agentId: string): boolean
  */
 async function validateTunnelAccess(
   tunnelId: string,
-  ticket: string | undefined
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
 ): Promise<{ valid: boolean; error?: string; session?: typeof tunnelSessions.$inferSelect; agentId?: string; userId?: string }> {
   if (!ticket) {
     return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const ticketRecord = await consumeWsTicket(ticket);
-  if (!ticketRecord) {
+  const consumed = await consumeWsTicket(ticket, caller);
+  if (!consumed.ok) {
+    void createAuditLogAsync({
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'ws.ticket.rejected',
+      resourceType: 'ws_ticket',
+      resourceName: ticket.slice(0, 8),
+      details: { reason: consumed.reason, sessionType: 'tunnel', tunnelId },
+      ipAddress: caller.ip,
+      userAgent: caller.userAgent,
+      result: 'denied',
+    });
     return { valid: false, error: 'Invalid or expired connection ticket' };
   }
 
-  if (ticketRecord.sessionId !== tunnelId || ticketRecord.sessionType !== 'tunnel') {
+  if (consumed.sessionId !== tunnelId || consumed.sessionType !== 'tunnel') {
     return { valid: false, error: 'Connection ticket does not match tunnel session' };
   }
+  const ticketRecord = consumed;
 
   // Ticket consumption is the entire auth boundary for tunnel WS — the
   // WS routes mount before auth middleware. Run lookups in system DB
@@ -286,9 +301,13 @@ async function closeTunnelLifecycle(tunnelId: string, options: { notifyAgent: bo
 /**
  * Create WebSocket handlers for a tunnel session.
  */
-function createTunnelWsHandlers(tunnelId: string, ticket: string | undefined) {
+function createTunnelWsHandlers(
+  tunnelId: string,
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
+) {
   let validationResult: Awaited<ReturnType<typeof validateTunnelAccess>> | null = null;
-  const validationPromise = validateTunnelAccess(tunnelId, ticket).then(result => {
+  const validationPromise = validateTunnelAccess(tunnelId, ticket, caller).then(result => {
     validationResult = result;
   });
 
@@ -517,7 +536,13 @@ export function createTunnelWsRoutes(upgradeWebSocket: (createEvents: () => Retu
       return c.json({ error: 'Missing tunnelId' }, 400);
     }
 
-    const wsHandler = upgradeWebSocket(() => createTunnelWsHandlers(tunnelId, ticket));
+    // Task 16: bind ticket consumption to issuer's IP + UA.
+    const caller = {
+      ip: getTrustedClientIp(c),
+      userAgent: c.req.header('user-agent') ?? '',
+    };
+
+    const wsHandler = upgradeWebSocket(() => createTunnelWsHandlers(tunnelId, ticket, caller));
     return wsHandler(c, c.req.raw);
   });
 

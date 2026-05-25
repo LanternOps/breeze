@@ -105,6 +105,7 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
       query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined),
     },
   };
   return capturedFactory(fakeContext);
@@ -113,6 +114,7 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
 function setupSuccessfulValidation() {
   const userId = nextUserId();
   vi.mocked(consumeWsTicket).mockResolvedValue({
+    ok: true,
     sessionId: SESSION_ID,
     sessionType: 'terminal' as const,
     userId,

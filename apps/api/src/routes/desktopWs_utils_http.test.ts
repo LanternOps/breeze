@@ -143,7 +143,8 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
-      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined))
+      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined)
     }
   };
 
@@ -158,6 +159,7 @@ function setupSuccessfulValidation() {
   const userId = nextUserId();
 
   const ticketRecord = {
+    ok: true as const,
     sessionId: SESSION_ID,
     sessionType: 'desktop' as const,
     userId,

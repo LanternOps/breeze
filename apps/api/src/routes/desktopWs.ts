@@ -15,6 +15,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
+import { createAuditLogAsync } from '../services/auditService';
 
 // Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
 // return the same token instead of 401 after the one-time code is consumed.
@@ -217,20 +218,33 @@ async function validateViewerSessionAccess(
  */
 async function validateDesktopAccess(
   sessionId: string,
-  ticket: string | undefined
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
 ): Promise<{ valid: boolean; error?: string; session?: typeof remoteSessions.$inferSelect; device?: typeof devices.$inferSelect; userId?: string }> {
   if (!ticket) {
     return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const ticketRecord = await consumeWsTicket(ticket);
-  if (!ticketRecord) {
+  const consumed = await consumeWsTicket(ticket, caller);
+  if (!consumed.ok) {
+    void createAuditLogAsync({
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'ws.ticket.rejected',
+      resourceType: 'ws_ticket',
+      resourceName: ticket.slice(0, 8),
+      details: { reason: consumed.reason, sessionType: 'desktop', sessionId },
+      ipAddress: caller.ip,
+      userAgent: caller.userAgent,
+      result: 'denied',
+    });
     return { valid: false, error: 'Invalid or expired connection ticket' };
   }
 
-  if (ticketRecord.sessionId !== sessionId || ticketRecord.sessionType !== 'desktop') {
+  if (consumed.sessionId !== sessionId || consumed.sessionType !== 'desktop') {
     return { valid: false, error: 'Connection ticket does not match desktop session' };
   }
+  const ticketRecord = consumed;
 
   // WS ticket auth bypasses JWT middleware so no RLS context is set.
   // Use system scope — the ticket already verified ownership.
@@ -315,9 +329,13 @@ export function unregisterDesktopFrameCallback(sessionId: string): void {
 /**
  * Create WebSocket handlers for desktop session
  */
-function createDesktopWsHandlers(sessionId: string, ticket: string | undefined) {
+function createDesktopWsHandlers(
+  sessionId: string,
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
+) {
   let validationResult: Awaited<ReturnType<typeof validateDesktopAccess>> | null = null;
-  const validationPromise = validateDesktopAccess(sessionId, ticket).then(result => {
+  const validationPromise = validateDesktopAccess(sessionId, ticket, caller).then(result => {
     validationResult = result;
   });
 
@@ -877,7 +895,11 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         const ticket = await createWsTicket({
           sessionId: access.session.id,
           sessionType: 'desktop',
-          userId: access.user.id
+          userId: access.user.id,
+          // Task 16: bind to issuer's trusted IP + UA so a stolen 60s
+          // ticket can't be opened from a different network position.
+          ip: getTrustedClientIp(c),
+          userAgent: c.req.header('user-agent') ?? '',
         });
         return c.json(ticket);
       } catch (error) {
@@ -989,10 +1011,21 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/desktop-ws/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
-    upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined } }) => {
+    upgradeWebSocket((c: {
+      req: {
+        param: (key: string) => string;
+        query: (key: string) => string | undefined;
+        header: (key: string) => string | undefined;
+      };
+    }) => {
       const sessionId = c.req.param('id');
       const ticket = c.req.query('ticket');
-      return createDesktopWsHandlers(sessionId, ticket);
+      // Task 16: bind ticket consumption to issuer IP + UA.
+      const caller = {
+        ip: getTrustedClientIp(c as Parameters<typeof getTrustedClientIp>[0]),
+        userAgent: c.req.header('user-agent') ?? '',
+      };
+      return createDesktopWsHandlers(sessionId, ticket, caller);
     })
   );
 

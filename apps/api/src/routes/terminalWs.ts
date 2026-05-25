@@ -10,6 +10,8 @@ import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { logSessionAudit } from './remote/helpers';
+import { getTrustedClientIp } from '../services/clientIp';
+import { createAuditLogAsync } from '../services/auditService';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -77,20 +79,36 @@ async function isUserTerminalWsRateLimited(userId: string): Promise<boolean> {
  */
 async function validateTerminalAccess(
   sessionId: string,
-  ticket: string | undefined
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
 ): Promise<{ valid: boolean; error?: string; session?: typeof remoteSessions.$inferSelect; device?: typeof devices.$inferSelect; userId?: string }> {
   if (!ticket) {
     return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const ticketRecord = await consumeWsTicket(ticket);
-  if (!ticketRecord) {
+  const consumed = await consumeWsTicket(ticket, caller);
+  if (!consumed.ok) {
+    // Audit-log the rejection reason for ops visibility. We log a prefix
+    // of the ticket (not the whole secret) for correlation with the issue
+    // log.
+    void createAuditLogAsync({
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'ws.ticket.rejected',
+      resourceType: 'ws_ticket',
+      resourceName: ticket.slice(0, 8),
+      details: { reason: consumed.reason, sessionType: 'terminal', sessionId },
+      ipAddress: caller.ip,
+      userAgent: caller.userAgent,
+      result: 'denied',
+    });
     return { valid: false, error: 'Invalid or expired connection ticket' };
   }
 
-  if (ticketRecord.sessionId !== sessionId || ticketRecord.sessionType !== 'terminal') {
+  if (consumed.sessionId !== sessionId || consumed.sessionType !== 'terminal') {
     return { valid: false, error: 'Connection ticket does not match terminal session' };
   }
+  const ticketRecord = consumed;
 
   // Ticket consumption is the entire auth boundary for terminal WS — the
   // WS routes mount before auth middleware. Run lookups in system DB
@@ -190,9 +208,13 @@ export function getActiveTerminalSession(sessionId: string): TerminalSession | u
 /**
  * Create WebSocket handlers for terminal session
  */
-function createTerminalWsHandlers(sessionId: string, ticket: string | undefined) {
+function createTerminalWsHandlers(
+  sessionId: string,
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
+) {
   let validationResult: Awaited<ReturnType<typeof validateTerminalAccess>> | null = null;
-  const validationPromise = validateTerminalAccess(sessionId, ticket).then(result => {
+  const validationPromise = validateTerminalAccess(sessionId, ticket, caller).then(result => {
     validationResult = result;
   });
 
@@ -613,10 +635,23 @@ export function createTerminalWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/remote/sessions/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
-    upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined } }) => {
+    upgradeWebSocket((c: {
+      req: {
+        param: (key: string) => string;
+        query: (key: string) => string | undefined;
+        header: (key: string) => string | undefined;
+      };
+    }) => {
       const sessionId = c.req.param('id');
       const ticket = c.req.query('ticket');
-      return createTerminalWsHandlers(sessionId, ticket);
+      // Bind ticket consumption to the upgrade request's trusted IP + UA
+      // (Task 16) — a stolen 60-second ticket consumed from a different
+      // network position is rejected.
+      const caller = {
+        ip: getTrustedClientIp(c as Parameters<typeof getTrustedClientIp>[0]),
+        userAgent: c.req.header('user-agent') ?? '',
+      };
+      return createTerminalWsHandlers(sessionId, ticket, caller);
     })
   );
 

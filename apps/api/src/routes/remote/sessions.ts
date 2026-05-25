@@ -13,7 +13,7 @@ import { requireScope } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
 import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
-import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { getTrustedClientIp, getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   createSessionSchema,
   listSessionsSchema,
@@ -588,7 +588,11 @@ sessionRoutes.post(
       const ticket = await createWsTicket({
         sessionId: session.id,
         sessionType: session.type,
-        userId: auth.user.id
+        userId: auth.user.id,
+        // Task 16: bind to issuer's trusted IP + UA so a stolen 60s
+        // ticket can't be redeemed from a different network position.
+        ip: getTrustedClientIp(c),
+        userAgent: c.req.header('user-agent') ?? '',
       });
       return c.json(ticket);
     } catch (error) {

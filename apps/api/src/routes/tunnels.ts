@@ -577,6 +577,9 @@ tunnelRoutes.post(
       sessionId: id,
       sessionType: 'tunnel',
       userId: auth.user.id,
+      // Task 16: bind to issuer's trusted IP + UA.
+      ip: getTrustedClientIp(c),
+      userAgent: c.req.header('user-agent') ?? '',
     });
 
     return c.json({ ticket });
@@ -703,6 +706,10 @@ vncExchangeRoutes.post(
       sessionId: record.tunnelId,
       sessionType: 'tunnel',
       userId: record.userId,
+      // Task 16: bind to the exchanging viewer's IP + UA — they will
+      // open the WS within seconds from the same browser.
+      ip: getTrustedClientIp(c),
+      userAgent: c.req.header('user-agent') ?? '',
     });
     const wsUrl = `${wsProtocol}//${baseUrl.host}/api/v1/tunnel-ws/${record.tunnelId}/ws?ticket=${wsTicketResult.ticket}`;
 
@@ -974,6 +981,9 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     sessionId: tunnel.id,
     sessionType: 'tunnel',
     userId: bound.userId,
+    // Task 16: bind to the requester's IP + UA.
+    ip: getTrustedClientIp(c),
+    userAgent: c.req.header('user-agent') ?? '',
   });
   const publicBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || '').replace(/\/$/, '');
   const baseUrl = publicBase ? new URL(publicBase) : new URL(c.req.url);

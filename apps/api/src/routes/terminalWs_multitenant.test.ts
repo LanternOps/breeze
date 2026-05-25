@@ -112,7 +112,8 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
-      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined))
+      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined)
     }
   };
 
@@ -132,6 +133,7 @@ describe('terminalWs — multi-tenant isolation', () => {
     const ticketUserId = 'user-org-a';
 
     vi.mocked(consumeWsTicket).mockResolvedValue({
+      ok: true,
       sessionId: SESSION_ID,
       sessionType: 'terminal',
       userId: ticketUserId,
@@ -169,6 +171,7 @@ describe('terminalWs — multi-tenant isolation', () => {
     const realSessionUserId = 'user-victim';
 
     vi.mocked(consumeWsTicket).mockResolvedValue({
+      ok: true,
       sessionId: SESSION_ID,
       sessionType: 'terminal',
       userId: ticketUserId,
