@@ -405,9 +405,13 @@ describe('desktopWs', () => {
       expect(body.expiresInSeconds).toBe(900);
     });
 
-    it('returns cached result for duplicate exchange within TTL', async () => {
-      const userId = 'user-cache';
-      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+    it('rejects a re-exchange of a consumed connect code (no re-exchange cache)', async () => {
+      // Security: the connect code is strictly single-use. There is no
+      // server-side cache that would let a second call within a TTL window
+      // return the same token. Clients must guard against React strict-mode
+      // double-fire on their own side (see DesktopViewer.tsx exchangeFiredRef).
+      const userId = 'user-no-cache';
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValueOnce({
         sessionId: SESSION_ID,
         userId,
         email: 'test@example.com',
@@ -427,7 +431,7 @@ describe('desktopWs', () => {
       const app = buildApp();
       const body = { sessionId: SESSION_ID, code: 'dup-code' };
 
-      // First call
+      // First call — consumes the code, issues a token.
       const res1 = await app.request('/connect/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -437,17 +441,19 @@ describe('desktopWs', () => {
       const json1 = await res1.json();
       expect(json1.accessToken).toBe('first-token');
 
-      // Second call — code already consumed, but cache should return same token
-      vi.mocked(consumeDesktopConnectCode).mockResolvedValue(null);
+      // Second call — `consumeDesktopConnectCode` is atomic, so a replay
+      // gets back `null` and the endpoint must return 401. No cache means
+      // a stolen one-time code is useless once the legit client used it.
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValueOnce(null);
 
       const res2 = await app.request('/connect/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      expect(res2.status).toBe(200);
+      expect(res2.status).toBe(401);
       const json2 = await res2.json();
-      expect(json2.accessToken).toBe('first-token');
+      expect(json2.error).toContain('Invalid or expired');
     });
 
     it('validates required fields via Zod', async () => {

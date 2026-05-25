@@ -17,11 +17,6 @@ import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import { createAuditLogAsync } from '../services/auditService';
 
-// Brief cache for exchange results so duplicate calls (e.g. React effect re-fire)
-// return the same token instead of 401 after the one-time code is consumed.
-const exchangeCache = new Map<string, { result: { accessToken: string; expiresInSeconds: number; hostname: string | null; osType: string | null }; expiresAt: number }>();
-const EXCHANGE_CACHE_TTL_MS = 30_000; // 30 seconds
-
 // Zod validation for desktop user messages
 const desktopInputEvent = z.object({
   type: z.enum(['mousemove', 'mousedown', 'mouseup', 'keydown', 'keyup', 'wheel', 'click', 'dblclick', 'mouse_move', 'mouse_down', 'mouse_up', 'key_down', 'key_up']),
@@ -87,16 +82,6 @@ const desktopFrameCallbacks = new Map<string, DesktopFrameCallback>();
 // Server-side ping/pong constants for stale connection detection
 const PING_INTERVAL_MS = 30_000;
 const PONG_TIMEOUT_MS = 10_000;
-
-// Exchange cache cleanup interval (Fix #33)
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of exchangeCache) {
-    if (now >= entry.expiresAt) {
-      exchangeCache.delete(key);
-    }
-  }
-}, 60_000);
 
 // E1: Redis-backed sliding window rate limiter for user WS upgrades.
 // Decision: fail closed on Redis outage (matches `rateLimiter` helper default).
@@ -760,19 +745,16 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
 
   // Exchange one-time deep-link connect code for an access token.
   // This keeps long-lived bearer credentials out of deep-link URLs.
+  //
+  // The connect code is strictly single-use: `consumeDesktopConnectCode` is
+  // atomic (Redis GETDEL / in-memory consume), so a second exchange attempt
+  // returns 401 even within the original code TTL. Clients must guard against
+  // React strict-mode double-fire on their side (e.g. a useRef one-shot guard).
   app.post(
     '/connect/exchange',
     zValidator('json', desktopConnectExchangeSchema),
     async (c) => {
       const { sessionId, code } = c.req.valid('json');
-
-      // Check cache first — handles duplicate calls from React effect re-fires
-      const cacheKey = `${sessionId}:${code}`;
-      const cached = exchangeCache.get(cacheKey);
-      if (cached && Date.now() < cached.expiresAt) {
-        return c.json(cached.result);
-      }
-      exchangeCache.delete(cacheKey);
 
       const codeRecord = await consumeDesktopConnectCode(code);
 
@@ -839,9 +821,6 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         hostname: hostname ?? null,
         osType: osType ?? null,
       };
-
-      // Cache the result briefly for duplicate requests
-      exchangeCache.set(cacheKey, { result, expiresAt: Date.now() + EXCHANGE_CACHE_TTL_MS });
 
       return c.json(result);
     }
