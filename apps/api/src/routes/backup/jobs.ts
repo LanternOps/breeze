@@ -10,11 +10,26 @@ import { removeQueuedBackupDispatch } from '../../jobs/backupEnqueue';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { queueBackupStopCommand } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
 
 export const jobsRoutes = new Hono();
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
+
+async function canAccessDeviceIdSite(orgId: string, deviceId: string, permissions: UserPermissions | undefined): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return true;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  return Boolean(device && canAccessDeviceSite(device, permissions));
+}
 
 async function markBackupJobDispatchFailed(jobId: string, error: string) {
   const now = new Date();
@@ -137,13 +152,16 @@ jobsRoutes.post(
 
   const deviceId = c.req.param('deviceId')!;
   const [targetDevice] = await db
-    .select({ id: devices.id, status: devices.status })
+    .select({ id: devices.id, status: devices.status, siteId: devices.siteId })
     .from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
     .limit(1);
 
   if (!targetDevice) {
     return c.json({ error: 'Device not found' }, 404);
+  }
+  if (!canAccessDeviceSite(targetDevice, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   if (targetDevice.status !== 'online') {
@@ -239,7 +257,7 @@ jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.
   }
 
   const onlineDevices = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
     .where(
       and(
@@ -248,7 +266,10 @@ jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.
         eq(devices.status, 'online')
       )
     );
-  const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  const onlineDeviceIds = new Set(
+    onlineDevices.filter((device) => canAccessDeviceSite(device, permissions)).map((device) => device.id)
+  );
 
   // Check which devices already have a running/pending job
   const activeJobs = await db
@@ -303,7 +324,7 @@ jobsRoutes.post(
   const failed: string[] = [];
   const deviceIds = Array.from(deviceConfigMap.keys());
   const onlineDevices = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
     .where(
       and(
@@ -312,7 +333,10 @@ jobsRoutes.post(
         eq(devices.status, 'online')
       )
     );
-  const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  const onlineDeviceIds = new Set(
+    onlineDevices.filter((device) => canAccessDeviceSite(device, permissions)).map((device) => device.id)
+  );
 
   for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
     if (!onlineDeviceIds.has(deviceId)) {
@@ -396,6 +420,9 @@ jobsRoutes.post(
 
   if (!current) {
     return c.json({ error: 'Job not found' }, 404);
+  }
+  if (!(await canAccessDeviceIdSite(orgId, current.deviceId, c.get('permissions') as UserPermissions | undefined))) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   if (current.status !== 'running' && current.status !== 'pending') {

@@ -16,7 +16,7 @@ import {
   partners,
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
@@ -287,11 +287,33 @@ coreRoutes.get(
       conditions.push(inArray(devices.orgId, query.orgIds));
     }
 
-    if (query.siteId) {
-      conditions.push(eq(devices.siteId, query.siteId));
-    }
-    if (query.siteIds && query.siteIds.length > 0) {
-      conditions.push(inArray(devices.siteId, query.siteIds));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const allowedSiteIds = permissions?.allowedSiteIds;
+    const requestedSiteIds = [
+      ...(query.siteId ? [query.siteId] : []),
+      ...(query.siteIds ?? []),
+    ];
+    const uniqueRequestedSiteIds = [...new Set(requestedSiteIds)];
+
+    if (allowedSiteIds) {
+      const requestedOutsideAllowlist = uniqueRequestedSiteIds.find((siteId) => !allowedSiteIds.includes(siteId));
+      if (requestedOutsideAllowlist) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+
+      const effectiveSiteIds = uniqueRequestedSiteIds.length > 0
+        ? uniqueRequestedSiteIds
+        : allowedSiteIds;
+      conditions.push(effectiveSiteIds.length > 0
+        ? inArray(devices.siteId, effectiveSiteIds)
+        : sql`false`);
+    } else {
+      if (query.siteId) {
+        conditions.push(eq(devices.siteId, query.siteId));
+      }
+      if (query.siteIds && query.siteIds.length > 0) {
+        conditions.push(inArray(devices.siteId, query.siteIds));
+      }
     }
 
     // Group membership filter — EXISTS subquery against the join table

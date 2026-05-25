@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, eq, desc, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
@@ -12,6 +12,7 @@ import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jw
 import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 export const tunnelRoutes = new Hono();
 
@@ -152,19 +153,20 @@ function getClientIp(c: any): string {
   return getTrustedClientIp(c, '127.0.0.1');
 }
 
-async function getDeviceForTunnel(deviceId: string, auth: AuthContext) {
-  const conditions = [eq(devices.id, deviceId)];
-
-  // Scope by org for non-system users
-  if (auth.orgId) {
-    conditions.push(eq(devices.orgId, auth.orgId));
-  }
-
+async function getDeviceForTunnel(c: Context, deviceId: string, auth: AuthContext) {
   const [device] = await db
     .select()
     .from(devices)
-    .where(and(...conditions))
+    .where(eq(devices.id, deviceId))
     .limit(1);
+
+  if (!device) return null;
+  if (!auth.canAccessOrg(device.orgId)) return null;
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return 'SITE_ACCESS_DENIED' as const;
+  }
 
   return device;
 }
@@ -187,13 +189,18 @@ async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
 tunnelRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', createTunnelSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const body = c.req.valid('json');
     const sourceIp = getClientIp(c);
 
-    const device = await getDeviceForTunnel(body.deviceId, auth);
+    const device = await getDeviceForTunnel(c, body.deviceId, auth);
+    if (device === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   getDeviceReliability,
   getDeviceReliabilityHistory,
@@ -57,6 +57,11 @@ const requireReliabilityRead = requirePermission(PERMISSIONS.DEVICES_READ.resour
 
 reliabilityRoutes.use('*', authMiddleware);
 
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
+
 reliabilityRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -81,9 +86,13 @@ reliabilityRoutes.get(
     }
 
     const offset = (query.page - 1) * query.limit;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds && query.siteId && !canAccessSite(permissions, query.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     const { total, rows } = await listReliabilityDevices({
       orgIds,
-      siteId: query.siteId,
+      siteId: query.siteId ?? (permissions?.allowedSiteIds?.length === 1 ? permissions.allowedSiteIds[0] : undefined),
       scoreRange: parseScoreRange(query.scoreRange),
       trendDirection: query.trendDirection,
       issueType: query.issueType,
@@ -92,23 +101,26 @@ reliabilityRoutes.get(
       limit: query.limit,
       offset,
     });
+    const visibleRows = permissions?.allowedSiteIds
+      ? rows.filter((row) => canAccessDeviceSite(row, permissions))
+      : rows;
 
-    const averageScore = rows.length > 0
-      ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)
+    const averageScore = visibleRows.length > 0
+      ? Math.round(visibleRows.reduce((sum, row) => sum + row.reliabilityScore, 0) / visibleRows.length)
       : 0;
 
     return c.json({
-      data: rows,
+      data: visibleRows,
       pagination: {
-        total,
+        total: permissions?.allowedSiteIds && !query.siteId ? visibleRows.length : total,
         page: query.page,
         limit: query.limit,
-        totalPages: Math.max(1, Math.ceil(total / query.limit)),
+        totalPages: Math.max(1, Math.ceil((permissions?.allowedSiteIds && !query.siteId ? visibleRows.length : total) / query.limit)),
       },
       summary: {
         averageScore,
-        criticalDevices: rows.filter((row) => row.reliabilityScore <= 50).length,
-        degradingDevices: rows.filter((row) => row.trendDirection === 'degrading').length,
+        criticalDevices: visibleRows.filter((row) => row.reliabilityScore <= 50).length,
+        degradingDevices: visibleRows.filter((row) => row.trendDirection === 'degrading').length,
       },
     });
   }
@@ -154,6 +166,9 @@ reliabilityRoutes.get(
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const points = await getDeviceReliabilityHistory(deviceId, days);
     return c.json({
@@ -176,6 +191,9 @@ reliabilityRoutes.get(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const [snapshot, history] = await Promise.all([

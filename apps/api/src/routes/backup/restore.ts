@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
@@ -7,7 +7,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 
@@ -24,6 +24,11 @@ function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
 
 function mapDispatchErrorStatus(error: string): number {
   return error.startsWith('Device is ') ? 409 : 502;
+}
+
+function isDeviceSiteDenied(c: Context, siteId: string | null | undefined): boolean {
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  return Boolean(permissions?.allowedSiteIds && (typeof siteId !== 'string' || !canAccessSite(permissions, siteId)));
 }
 
 function dispatchFailureReason(error: string): string {
@@ -189,13 +194,16 @@ restoreRoutes.post(
     const now = new Date();
     const targetDeviceId = payload.deviceId ?? snapshot.deviceId;
     const [targetDevice] = await db
-      .select({ id: devices.id, status: devices.status })
+      .select({ id: devices.id, status: devices.status, siteId: devices.siteId })
       .from(devices)
       .where(and(eq(devices.id, targetDeviceId), eq(devices.orgId, orgId)))
       .limit(1);
 
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
+    }
+    if (isDeviceSiteDenied(c, targetDevice.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (targetDevice.status !== 'online') {
@@ -356,6 +364,9 @@ restoreRoutes.post(
 
     if (!current) {
       return c.json({ error: 'Restore job not found' }, 404);
+    }
+    if (await isDeviceSiteDenied(c, current.deviceId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (current.status !== 'pending' && current.status !== 'running') {

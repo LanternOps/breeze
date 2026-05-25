@@ -17,7 +17,7 @@ import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
 import { publishEvent } from '../services/eventBus';
 import { resolveSensitiveDataKeySelection } from '../services/sensitiveDataKeys';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   recordSensitiveDataRemediationDecision,
   recordSensitiveDataScanQueued
@@ -146,6 +146,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function asIso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
+}
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
 }
 
 function normalizeDetectionClasses(input: unknown): Array<typeof dataTypeValues[number]> {
@@ -294,13 +299,21 @@ sensitiveDataRoutes.post(
         id: devices.id,
         orgId: devices.orgId,
         hostname: devices.hostname,
-        status: devices.status
+        status: devices.status,
+        siteId: devices.siteId
       })
       .from(devices)
       .where(and(...deviceConditions));
 
     if (availableDevices.length === 0) {
       return c.json({ error: 'No accessible devices found for scan request' }, 404);
+    }
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const siteDeniedDeviceIds = availableDevices
+      .filter((device) => !canAccessDeviceSite(device, permissions))
+      .map((device) => device.id);
+    if (siteDeniedDeviceIds.length > 0) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     const byId = new Map(availableDevices.map((device) => [device.id, device]));
@@ -382,6 +395,8 @@ sensitiveDataRoutes.get(
     const conditions: SQL[] = [];
     const orgCondition = auth.orgCondition(sensitiveDataScans.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -396,6 +411,7 @@ sensitiveDataRoutes.get(
         summary: sensitiveDataScans.summary,
         createdAt: sensitiveDataScans.createdAt,
         deviceName: devices.hostname,
+        deviceSiteId: devices.siteId,
       })
       .from(sensitiveDataScans)
       .innerJoin(devices, eq(devices.id, sensitiveDataScans.deviceId))
@@ -444,7 +460,8 @@ sensitiveDataRoutes.get(
         completedAt: sensitiveDataScans.completedAt,
         summary: sensitiveDataScans.summary,
         createdAt: sensitiveDataScans.createdAt,
-        deviceName: devices.hostname
+        deviceName: devices.hostname,
+        deviceSiteId: devices.siteId
       })
       .from(sensitiveDataScans)
       .innerJoin(devices, eq(devices.id, sensitiveDataScans.deviceId))
@@ -452,6 +469,9 @@ sensitiveDataRoutes.get(
       .limit(1);
 
     if (!scan) return c.json({ error: 'Scan not found' }, 404);
+    if (!canAccessDeviceSite({ siteId: scan.deviceSiteId }, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const summaryCounters = parseSummaryCounters(scan.summary);
     if (summaryCounters) {
@@ -528,12 +548,15 @@ sensitiveDataRoutes.get(
     if (query.dataType) conditions.push(eq(sensitiveDataFindings.dataType, query.dataType));
     if (query.deviceId) conditions.push(eq(sensitiveDataFindings.deviceId, query.deviceId));
     if (query.scanId) conditions.push(eq(sensitiveDataFindings.scanId, query.scanId));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [row] = await db
       .select({ count: sql<number>`count(*)` })
       .from(sensitiveDataFindings)
+      .innerJoin(devices, eq(devices.id, sensitiveDataFindings.deviceId))
       .where(whereClause);
     const count = row?.count ?? 0;
 

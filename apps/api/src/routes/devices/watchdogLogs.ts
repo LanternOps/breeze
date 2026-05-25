@@ -3,7 +3,7 @@ import { and, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { agentLogs } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
-import { getDeviceWithOrgCheck, getPagination } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, getPagination, SITE_ACCESS_DENIED } from './helpers';
 import { escapeLike } from '../../utils/sql';
 import { PERMISSIONS } from '../../services/permissions';
 import { redactAgentLogRow } from '../../services/logRedaction';
@@ -24,7 +24,10 @@ watchdogLogsRoutes.get(
     const deviceId = c.req.param('id')!;
     const query = c.req.query();
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

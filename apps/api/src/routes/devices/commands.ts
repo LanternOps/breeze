@@ -60,7 +60,7 @@ commandsRoutes.post(
       }> = [];
       const failed: Array<{
         deviceId: string;
-        code: WakeFailureCode | 'DECOMMISSIONED' | 'TARGET_NOT_FOUND';
+        code: WakeFailureCode | 'DECOMMISSIONED' | 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED';
         message: string;
       }> = [];
       const ipAddress = getTrustedClientIpOrUndefined(c);
@@ -78,13 +78,17 @@ commandsRoutes.post(
         for (;;) {
           const deviceId = queue.shift();
           if (!deviceId) return;
-          // Per-device authorization — partner-scope filtering happens in
-          // getDeviceWithOrgCheck (helpers.ts). dispatchWake itself does
-          // NOT independently authorize the caller, so this gate must run
-          // before the wake dispatches.
+          // Per-device authorization — org filtering happens in
+          // getDeviceWithOrgCheck and site filtering happens immediately
+          // below. dispatchWake itself does NOT independently authorize the
+          // caller, so these gates must run before the wake dispatches.
           const device = await getDeviceWithOrgCheck(deviceId, auth);
           if (!device) {
             failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
+            continue;
+          }
+          if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+            failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
             continue;
           }
           if (device.status === 'decommissioned') {
@@ -126,12 +130,28 @@ commandsRoutes.post(
       status: string;
       createdAt: Date;
     }> = [];
-    const failed: string[] = [];
+    // Typed per-device failures so the caller can distinguish "device gone"
+    // from "site denied" from "decommissioned" from "insert failed". Matches
+    // the wake worker shape above so the UI can render one summary toast.
+    type BulkFailureCode =
+      | 'TARGET_NOT_FOUND'
+      | 'SITE_ACCESS_DENIED'
+      | 'DECOMMISSIONED'
+      | 'INSERT_FAILED';
+    const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
 
     for (const deviceId of deviceIds) {
       const device = await getDeviceWithOrgCheck(deviceId, auth);
-      if (!device || device.status === 'decommissioned') {
-        failed.push(deviceId);
+      if (!device) {
+        failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
+        continue;
+      }
+      if (device.status === 'decommissioned') {
+        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
+        continue;
+      }
+      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+        failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
         continue;
       }
 
@@ -167,7 +187,7 @@ commandsRoutes.post(
         .returning();
 
       if (!command) {
-        failed.push(deviceId);
+        failed.push({ deviceId, code: 'INSERT_FAILED', message: 'Failed to queue command.' });
         continue;
       }
 
@@ -216,6 +236,9 @@ commandsRoutes.post(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Don't allow commands to decommissioned devices
@@ -328,6 +351,9 @@ commandsRoutes.post(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (device.status === 'decommissioned') {

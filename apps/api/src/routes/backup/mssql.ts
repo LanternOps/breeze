@@ -10,7 +10,7 @@ import {
   executeCommand,
   CommandTypes,
 } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -50,6 +50,25 @@ const mssqlRestoreSchema = z.object({
   noRecovery: z.boolean().default(false),
 });
 
+async function verifyDeviceAccessForBackup(c: any, deviceId: string, orgId: string) {
+  const [device] = await db
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device || device.orgId !== orgId) {
+    return { error: 'Device not found' as const, status: 404 as const };
+  }
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return { error: 'Access to this site denied' as const, status: 403 as const };
+  }
+
+  return { device };
+}
+
 // ── GET /mssql/instances — list all discovered instances (org-wide) ──
 
 mssqlRoutes.get('/mssql/instances', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
@@ -82,14 +101,9 @@ mssqlRoutes.get(
 
     const { deviceId } = c.req.valid('param');
 
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-
-    if (!device || device.orgId !== orgId) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDeviceAccessForBackup(c, deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const instances = await db
@@ -174,14 +188,9 @@ mssqlRoutes.post(
 
     const { deviceId } = c.req.valid('param');
 
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-
-    if (!device || device.orgId !== orgId) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDeviceAccessForBackup(c, deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const result = await executeCommand(
@@ -256,14 +265,9 @@ mssqlRoutes.post(
 
     const payload = c.req.valid('json');
 
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(eq(devices.id, payload.deviceId))
-      .limit(1);
-
-    if (!device || device.orgId !== orgId) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDeviceAccessForBackup(c, payload.deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const resolvedConfig = await resolveBackupConfigForDevice(payload.deviceId);
@@ -386,14 +390,9 @@ mssqlRoutes.post(
 
     const payload = c.req.valid('json');
 
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(eq(devices.id, payload.deviceId))
-      .limit(1);
-
-    if (!device || device.orgId !== orgId) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDeviceAccessForBackup(c, payload.deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const [snapshot] = await db
@@ -503,6 +502,11 @@ mssqlRoutes.post(
 
     if (!snapshot) {
       return c.json({ error: 'Snapshot not found' }, 404);
+    }
+
+    const access = await verifyDeviceAccessForBackup(c, snapshot.deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const metadata = (snapshot.metadata ?? {}) as Record<string, unknown>;

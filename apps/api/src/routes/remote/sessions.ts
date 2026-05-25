@@ -36,6 +36,7 @@ import {
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { normalizeRecordingUrl } from './recordingUrl';
+import type { UserPermissions } from '../../services/permissions';
 
 export const sessionRoutes = new Hono();
 
@@ -57,7 +58,10 @@ sessionRoutes.delete(
 
     // Scope by device if specified
     if (deviceId) {
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgCheck(deviceId, auth, c.get('permissions') as UserPermissions | undefined);
+      if (device === 'SITE_ACCESS_DENIED') {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found or access denied' }, 404);
       }
@@ -112,7 +116,10 @@ sessionRoutes.post(
     const data = c.req.valid('json');
 
     // Verify device access
-    const device = await getDeviceWithOrgCheck(data.deviceId, auth);
+    const device = await getDeviceWithOrgCheck(data.deviceId, auth, c.get('permissions') as UserPermissions | undefined);
+    if (device === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }

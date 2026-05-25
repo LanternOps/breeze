@@ -21,7 +21,7 @@ import { writeFile, unlink, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -177,6 +177,7 @@ async function getDeploymentStatusMap(deploymentIds: string[]) {
 
 async function resolveSoftwareTargetDeviceIds(
   orgId: string,
+  permissions: UserPermissions | undefined,
   payload: {
     targetType: 'devices' | 'groups' | 'sites' | 'all' | 'filter';
     targetIds?: string[];
@@ -203,8 +204,38 @@ async function resolveSoftwareTargetDeviceIds(
   if (deviceIds.length === 0) {
     return {
       error: 'No devices resolved for the selected target scope',
+      status: 400 as const,
       deviceIds,
     };
+  }
+
+  if (permissions?.allowedSiteIds) {
+    const rows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), inArray(devices.id, deviceIds)));
+
+    const allowedIds = rows
+      .filter((device) => typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId))
+      .map((device) => device.id);
+
+    if (payload.targetType === 'devices' && allowedIds.length !== deviceIds.length) {
+      return {
+        error: 'Access to one or more device sites denied',
+        status: 403 as const,
+        deviceIds: [] as string[],
+      };
+    }
+
+    if (allowedIds.length === 0) {
+      return {
+        error: 'No devices resolved for the selected target scope',
+        status: 400 as const,
+        deviceIds: allowedIds,
+      };
+    }
+
+    return { deviceIds: allowedIds };
   }
 
   return { deviceIds };
@@ -894,9 +925,9 @@ softwareRoutes.post(
       .where(and(eq(softwareCatalog.id, versionRecord.catalogId), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found or access denied' }, 404);
 
-    const resolvedTargets = await resolveSoftwareTargetDeviceIds(orgId, payload);
+    const resolvedTargets = await resolveSoftwareTargetDeviceIds(orgId, c.get('permissions') as UserPermissions | undefined, payload);
     if (resolvedTargets.error) {
-      const status = payload.targetType === 'sites' ? 400 : 400;
+      const status = resolvedTargets.status ?? 400;
       return c.json({ error: resolvedTargets.error }, status);
     }
     const targetDeviceIds = resolvedTargets.deviceIds;
@@ -1037,13 +1068,26 @@ softwareRoutes.post(
 
     if (!versionRecord) return c.json({ error: 'Version not found' }, 404);
 
-    const resolvedDeviceIds = await resolveDeploymentTargets({
+    let resolvedDeviceIds = await resolveDeploymentTargets({
       orgId,
       targetConfig: {
         type: 'devices',
         deviceIds: Array.isArray(deviceIds) ? deviceIds : [],
       },
     });
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds && resolvedDeviceIds.length > 0) {
+      const rows = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(and(eq(devices.orgId, orgId), inArray(devices.id, resolvedDeviceIds)));
+      resolvedDeviceIds = rows
+        .filter((device) => typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId))
+        .map((device) => device.id);
+      if (resolvedDeviceIds.length !== deviceIds.length) {
+        return c.json({ error: 'Access to one or more device sites denied' }, 403);
+      }
+    }
     if (resolvedDeviceIds.length === 0) {
       return c.json({ error: 'No devices resolved for the selected targets' }, 400);
     }

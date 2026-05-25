@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, test, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Authorization gate tests for the device routes hardened in
@@ -16,6 +16,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
+    execute: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: null,
       accessibleOrgIds: ['org-123'],
       canAccessOrg: (orgId: string) => orgId === 'org-123',
+      orgCondition: () => undefined,
       token: { mfa: false },
     });
     return next();
@@ -125,6 +127,18 @@ function rigDeviceLookup(device: unknown) {
   vi.mocked(db.select).mockReturnValue({ from } as never);
 }
 
+function rigDeviceListRows(rows: unknown[]) {
+  const offset = vi.fn().mockResolvedValue(rows);
+  const limit = vi.fn().mockReturnValue({ offset });
+  const orderBy = vi.fn().mockReturnValue({ limit });
+  const where = vi.fn().mockReturnValue({ orderBy });
+  const leftJoin = vi.fn().mockReturnValue({ where });
+  const from = vi.fn().mockReturnValue({ leftJoin });
+  vi.mocked(db.select).mockReturnValue({ from } as never);
+  vi.mocked(db.execute).mockResolvedValue([] as never);
+  return { where };
+}
+
 const ACCESSIBLE_DEVICE: Record<string, unknown> = {
   id: '11111111-1111-4111-8111-111111111111',
   orgId: 'org-123',
@@ -137,6 +151,8 @@ const ACCESSIBLE_DEVICE: Record<string, unknown> = {
 
 describe('Device routes — permission / site / MFA gates (security-launch-fixes)', () => {
   let app: Hono;
+  const allowedListSiteId = '55555555-5555-4555-8555-555555555555';
+  const deniedListSiteId = '66666666-6666-4666-8666-666666666666';
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -420,8 +436,133 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
     });
   });
 
-  // E.8: this gap is intentionally documented rather than fixed in this PR.
-  test.todo(
-    'GET /devices does not filter row results by allowedSiteIds — list endpoint shows hostnames cross-site, see open item in PR description',
-  );
+  describe('GET /devices list site filtering', () => {
+    it('lists only rows from allowed sites for a site-restricted caller', async () => {
+      rigDeviceListRows([
+        {
+          ...ACCESSIBLE_DEVICE,
+          id: '22222222-2222-4222-8222-222222222222',
+          siteId: allowedListSiteId,
+          agentId: 'agent-1',
+          displayName: null,
+          osType: 'linux',
+          deviceRole: 'workstation',
+          deviceRoleSource: 'manual',
+          osVersion: null,
+          osBuild: null,
+          architecture: null,
+          agentVersion: null,
+          watchdogStatus: null,
+          mainAgentSilentSince: null,
+          lastSeenAt: null,
+          enrolledAt: null,
+          tags: [],
+          customFields: null,
+          desktopAccess: null,
+          lastUser: null,
+          uptimeSeconds: null,
+          isHeadless: false,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          cpuModel: null,
+          cpuCores: null,
+          ramTotalMb: null,
+          diskTotalGb: null,
+        },
+      ]);
+
+      const res = await app.request('/devices?limit=50', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': allowedListSiteId },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((device: { siteId: string }) => device.siteId)).toEqual([allowedListSiteId]);
+    });
+
+    it('rejects an explicit siteId outside the caller allowlist', async () => {
+      const res = await app.request(`/devices?siteId=${deniedListSiteId}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': allowedListSiteId },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('does not apply a site allowlist for unrestricted callers', async () => {
+      rigDeviceListRows([
+        {
+          ...ACCESSIBLE_DEVICE,
+          id: '33333333-3333-4333-8333-333333333333',
+          siteId: allowedListSiteId,
+          agentId: 'agent-1',
+          displayName: null,
+          osType: 'linux',
+          deviceRole: 'workstation',
+          deviceRoleSource: 'manual',
+          osVersion: null,
+          osBuild: null,
+          architecture: null,
+          agentVersion: null,
+          watchdogStatus: null,
+          mainAgentSilentSince: null,
+          lastSeenAt: null,
+          enrolledAt: null,
+          tags: [],
+          customFields: null,
+          desktopAccess: null,
+          lastUser: null,
+          uptimeSeconds: null,
+          isHeadless: false,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          cpuModel: null,
+          cpuCores: null,
+          ramTotalMb: null,
+          diskTotalGb: null,
+        },
+        {
+          ...ACCESSIBLE_DEVICE,
+          id: '44444444-4444-4444-8444-444444444444',
+          siteId: deniedListSiteId,
+          agentId: 'agent-2',
+          displayName: null,
+          osType: 'linux',
+          deviceRole: 'workstation',
+          deviceRoleSource: 'manual',
+          osVersion: null,
+          osBuild: null,
+          architecture: null,
+          agentVersion: null,
+          watchdogStatus: null,
+          mainAgentSilentSince: null,
+          lastSeenAt: null,
+          enrolledAt: null,
+          tags: [],
+          customFields: null,
+          desktopAccess: null,
+          lastUser: null,
+          uptimeSeconds: null,
+          isHeadless: false,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          cpuModel: null,
+          cpuCores: null,
+          ramTotalMb: null,
+          diskTotalGb: null,
+        },
+      ]);
+
+      const res = await app.request('/devices?limit=50', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((device: { siteId: string }) => device.siteId)).toEqual([allowedListSiteId, deniedListSiteId]);
+    });
+  });
 });

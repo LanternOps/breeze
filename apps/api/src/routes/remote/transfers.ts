@@ -23,6 +23,7 @@ import {
   MAX_ACTIVE_TRANSFERS_PER_ORG,
   MAX_ACTIVE_TRANSFERS_PER_USER
 } from './helpers';
+import type { UserPermissions } from '../../services/permissions';
 
 export const transferRoutes = new Hono();
 
@@ -36,7 +37,10 @@ transferRoutes.post(
     const data = c.req.valid('json');
 
     // Verify device access
-    const device = await getDeviceWithOrgCheck(data.deviceId, auth);
+    const device = await getDeviceWithOrgCheck(data.deviceId, auth, c.get('permissions') as UserPermissions | undefined);
+    if (device === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }

@@ -57,6 +57,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
 const mockGetDeviceWithOrgCheck = vi.fn();
 vi.mock('./devices/helpers', () => ({
   getDeviceWithOrgCheck: (...args: any[]) => mockGetDeviceWithOrgCheck(...args),
+  getDeviceByAgentWithOrgCheck: (...args: any[]) => mockGetDeviceWithOrgCheck(...args),
 }));
 
 const mockSendCommandToAgent = vi.fn();

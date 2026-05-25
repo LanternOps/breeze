@@ -9,9 +9,21 @@ export interface CommandResult {
   createdAt: string;
 }
 
+export type BulkCommandFailureCode =
+  | 'TARGET_NOT_FOUND'
+  | 'SITE_ACCESS_DENIED'
+  | 'DECOMMISSIONED'
+  | 'INSERT_FAILED';
+
+export interface BulkCommandFailed {
+  deviceId: string;
+  code: BulkCommandFailureCode;
+  message: string;
+}
+
 export interface BulkCommandResponse {
   commands: CommandResult[];
-  failed: string[];
+  failed: BulkCommandFailed[];
 }
 
 async function getErrorMessage(response: Response, fallback: string): Promise<string> {

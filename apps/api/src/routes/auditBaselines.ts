@@ -15,6 +15,7 @@ import { CommandTypes, queueCommandForExecution } from '../services/commandQueue
 import { getTemplateSettings } from '../services/auditBaselineService';
 import { enqueueAuditDriftEvaluation } from '../jobs/auditBaselineJobs';
 import { resolveOrgId } from './networkShared';
+import { canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const auditBaselineRoutes = new Hono();
 
@@ -106,6 +107,16 @@ function mapApplyApprovalRow(row: ApplyApprovalRow) {
 
 function normalizeDeviceIds(deviceIds: string[]): string[] {
   return Array.from(new Set(deviceIds)).sort((left, right) => left.localeCompare(right));
+}
+
+function inaccessibleDeviceIdsForSites(
+  devicesToCheck: Array<{ id: string; siteId?: string | null }>,
+  permissions: UserPermissions | undefined,
+): string[] {
+  if (!permissions?.allowedSiteIds) return [];
+  return devicesToCheck
+    .filter((device) => typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))
+    .map((device) => device.id);
 }
 
 function sameDeviceSet(left: string[], right: string[]): boolean {
@@ -532,7 +543,7 @@ auditBaselineRoutes.post(
     }
 
     const targetDevices = await db
-      .select({ id: devices.id, osType: devices.osType, hostname: devices.hostname })
+      .select({ id: devices.id, osType: devices.osType, hostname: devices.hostname, siteId: devices.siteId })
       .from(devices)
       .where(and(
         eq(devices.orgId, baseline.orgId),
@@ -541,6 +552,9 @@ auditBaselineRoutes.post(
 
     if (targetDevices.length === 0) {
       return c.json({ error: 'No devices found for requested org/device IDs' }, 404);
+    }
+    if (inaccessibleDeviceIdsForSites(targetDevices, c.get('permissions') as UserPermissions | undefined).length > 0) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     const skipped = targetDevices
@@ -799,7 +813,7 @@ auditBaselineRoutes.post(
     }
 
     const targetDevices = await db
-      .select({ id: devices.id, osType: devices.osType, hostname: devices.hostname })
+      .select({ id: devices.id, osType: devices.osType, hostname: devices.hostname, siteId: devices.siteId })
       .from(devices)
       .where(and(
         eq(devices.orgId, baseline.orgId),
@@ -808,6 +822,9 @@ auditBaselineRoutes.post(
 
     if (targetDevices.length === 0) {
       return c.json({ error: 'No devices found for requested org/device IDs' }, 404);
+    }
+    if (inaccessibleDeviceIdsForSites(targetDevices, c.get('permissions') as UserPermissions | undefined).length > 0) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     const skipped = targetDevices

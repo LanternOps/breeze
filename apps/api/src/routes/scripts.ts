@@ -648,9 +648,14 @@ scriptRoutes.post(
 
     // Check access to each device's org
     const validDevices: typeof deviceRecords = [];
+    const siteDeniedDeviceIds: string[] = [];
     for (const device of deviceRecords) {
       const hasAccess = ensureOrgAccess(device.orgId, auth);
       if (hasAccess) {
+        if (!canAccessDeviceSite(device.siteId, c.get('permissions') as UserPermissions | undefined)) {
+          siteDeniedDeviceIds.push(device.id);
+          continue;
+        }
         // Also check OS compatibility
         if (script.osTypes.includes(device.osType)) {
           // Don't execute on decommissioned devices
@@ -659,6 +664,10 @@ scriptRoutes.post(
           }
         }
       }
+    }
+
+    if (siteDeniedDeviceIds.length > 0) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     if (validDevices.length === 0) {

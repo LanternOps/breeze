@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
+import { and, eq, like, desc, sql, gte, lte, or, inArray } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices, discoveredAssets } from '../db/schema';
@@ -9,7 +9,7 @@ import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { enqueueMonitorCheck } from '../jobs/monitorWorker';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 // --- Helpers ---
 
@@ -48,7 +48,26 @@ type AuthContext = {
   canAccessOrg: (orgId: string) => boolean;
 };
 
-async function requireMonitorAccess(auth: AuthContext, monitorId: string) {
+async function getMonitorSiteId(monitor: { orgId: string; assetId: string | null }): Promise<string | null> {
+  if (!monitor.assetId) return null;
+  const [asset] = await db
+    .select({ siteId: discoveredAssets.siteId })
+    .from(discoveredAssets)
+    .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
+    .limit(1);
+  return asset?.siteId ?? null;
+}
+
+async function hasMonitorSiteAccess(
+  monitor: { orgId: string; assetId: string | null },
+  permissions: UserPermissions | undefined,
+): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return true;
+  const siteId = await getMonitorSiteId(monitor);
+  return typeof siteId === 'string' && canAccessSite(permissions, siteId);
+}
+
+async function requireMonitorAccess(auth: AuthContext, monitorId: string, permissions?: UserPermissions) {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
     const [monitor] = await db
@@ -57,6 +76,9 @@ async function requireMonitorAccess(auth: AuthContext, monitorId: string) {
       .where(and(eq(networkMonitors.id, monitorId), eq(networkMonitors.orgId, auth.orgId)))
       .limit(1);
     if (!monitor) return { error: 'Monitor not found.', status: 404 } as const;
+    if (!(await hasMonitorSiteAccess(monitor, permissions))) {
+      return { error: 'Access to this site denied', status: 403 } as const;
+    }
     return { monitor } as const;
   }
 
@@ -67,6 +89,9 @@ async function requireMonitorAccess(auth: AuthContext, monitorId: string) {
     .limit(1);
   if (!monitor) return { error: 'Monitor not found.', status: 404 } as const;
   if (!auth.canAccessOrg(monitor.orgId)) return { error: 'Access denied', status: 403 } as const;
+  if (!(await hasMonitorSiteAccess(monitor, permissions))) {
+    return { error: 'Access to this site denied', status: 403 } as const;
+  }
   return { monitor } as const;
 }
 
@@ -112,16 +137,16 @@ function validateMonitorConfigForType(
 async function selectExecutionAgentForMonitor(monitor: {
   orgId: string;
   assetId: string | null;
-}): Promise<string | null> {
-  let assetSiteId: string | null = null;
+}, permissions?: UserPermissions): Promise<string | null | 'SITE_ACCESS_DENIED'> {
+  const assetSiteId = await getMonitorSiteId(monitor);
 
-  if (monitor.assetId) {
-    const [asset] = await db
-      .select({ siteId: discoveredAssets.siteId })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
-      .limit(1);
-    assetSiteId = asset?.siteId ?? null;
+  if (permissions?.allowedSiteIds) {
+    if (assetSiteId && !canAccessSite(permissions, assetSiteId)) {
+      return 'SITE_ACCESS_DENIED';
+    }
+    if (!assetSiteId && permissions.allowedSiteIds.length === 0) {
+      return 'SITE_ACCESS_DENIED';
+    }
   }
 
   if (assetSiteId) {
@@ -140,10 +165,17 @@ async function selectExecutionAgentForMonitor(monitor: {
     }
   }
 
+  const fallbackConditions = [
+    eq(devices.orgId, monitor.orgId),
+    eq(devices.status, 'online'),
+  ];
+  if (permissions?.allowedSiteIds) {
+    fallbackConditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
+  }
   const [orgAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
-    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.status, 'online')))
+    .where(and(...fallbackConditions))
     .limit(1);
 
   return orgAgent?.agentId ?? null;
@@ -267,11 +299,15 @@ monitorRoutes.get(
     let inferredOrgId = query.orgId;
     if (!inferredOrgId && query.assetId) {
       const [asset] = await db
-        .select({ orgId: discoveredAssets.orgId })
+        .select({ orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId })
         .from(discoveredAssets)
         .where(eq(discoveredAssets.id, query.assetId))
         .limit(1);
       if (!asset) return c.json({ error: 'Asset not found' }, 404);
+      const permissions = c.get('permissions') as UserPermissions | undefined;
+      if (permissions?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(permissions, asset.siteId))) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       inferredOrgId = asset.orgId;
     }
 
@@ -305,9 +341,16 @@ monitorRoutes.get(
       .select({ count: sql<number>`count(*)` })
       .from(networkMonitors)
       .where(where);
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const visibleResults = permissions?.allowedSiteIds
+      ? (await Promise.all(results.map(async (monitor) => ({
+          monitor,
+          allowed: await hasMonitorSiteAccess(monitor, permissions),
+        })))).filter((row) => row.allowed).map((row) => row.monitor)
+      : results;
 
     return c.json({
-      data: results.map((m) => ({
+      data: visibleResults.map((m) => ({
         id: m.id,
         orgId: m.orgId,
         assetId: m.assetId,
@@ -326,7 +369,7 @@ monitorRoutes.get(
         createdAt: m.createdAt.toISOString(),
         updatedAt: m.updatedAt.toISOString()
       })),
-      total: Number(total[0]?.count ?? 0)
+      total: permissions?.allowedSiteIds ? visibleResults.length : Number(total[0]?.count ?? 0)
     });
   }
 );
@@ -342,20 +385,26 @@ monitorRoutes.post(
     const payload = c.req.valid('json');
 
     let assetOrgId: string | null = null;
+    let assetSiteId: string | null = null;
     if (payload.assetId) {
       const [asset] = await db
-        .select({ orgId: discoveredAssets.orgId })
+        .select({ orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId })
         .from(discoveredAssets)
         .where(eq(discoveredAssets.id, payload.assetId))
         .limit(1);
       if (!asset) return c.json({ error: 'Asset not found' }, 404);
       assetOrgId = asset.orgId;
+      assetSiteId = asset.siteId ?? null;
     }
 
     const orgResult = resolveOrgId(auth, payload.orgId ?? assetOrgId ?? undefined, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     if (assetOrgId && orgResult.orgId !== assetOrgId) {
       return c.json({ error: 'Asset does not belong to the selected organization' }, 403);
+    }
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds && (typeof assetSiteId !== 'string' || !canAccessSite(permissions, assetSiteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const [monitor] = await db.insert(networkMonitors).values({
@@ -398,6 +447,31 @@ monitorRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const orgFilter = orgResult.orgId ? eq(networkMonitors.orgId, orgResult.orgId) : undefined;
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+
+    if (permissions?.allowedSiteIds) {
+      const monitors = await db
+        .select()
+        .from(networkMonitors)
+        .where(orgFilter);
+      const visibleMonitors = (await Promise.all(monitors.map(async (monitor) => ({
+        monitor,
+        allowed: await hasMonitorSiteAccess(monitor, permissions),
+      })))).filter((row) => row.allowed).map((row) => row.monitor);
+      const status: Record<string, number> = {};
+      const types: Record<string, number> = {};
+      for (const monitor of visibleMonitors) {
+        status[monitor.lastStatus] = (status[monitor.lastStatus] ?? 0) + 1;
+        types[monitor.monitorType] = (types[monitor.monitorType] ?? 0) + 1;
+      }
+      return c.json({
+        data: {
+          total: visibleMonitors.length,
+          status,
+          types,
+        },
+      });
+    }
 
     const [totalCount] = await db
       .select({ count: sql<number>`count(*)` })
@@ -450,7 +524,7 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
@@ -489,7 +563,7 @@ monitorRoutes.patch(
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
     const payload = c.req.valid('json');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     if (payload.config) {
@@ -538,7 +612,7 @@ monitorRoutes.delete(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const [removed] = await db.delete(networkMonitors)
@@ -569,7 +643,7 @@ monitorRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
@@ -599,11 +673,14 @@ monitorRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
-    const agentId = await selectExecutionAgentForMonitor(monitor);
+    const agentId = await selectExecutionAgentForMonitor(monitor, c.get('permissions') as UserPermissions | undefined);
+    if (agentId === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!agentId || !isAgentConnected(agentId)) {
       return c.json({
         data: { monitorId, status: 'failed', error: 'No online agent available', testedAt: new Date().toISOString() }
@@ -646,7 +723,7 @@ monitorRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
     const query = c.req.valid('query');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const resultConditions: ReturnType<typeof eq>[] = [eq(networkMonitorResults.monitorId, monitorId)];
@@ -678,7 +755,7 @@ monitorRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const payload = c.req.valid('json');
-    const monitorResult = await requireMonitorAccess(auth, payload.monitorId);
+    const monitorResult = await requireMonitorAccess(auth, payload.monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
@@ -714,7 +791,7 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId);
+    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const rules = await db.select().from(networkMonitorAlertRules)

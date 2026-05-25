@@ -10,9 +10,9 @@ import { db, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
-import { getDeviceWithOrgCheck } from './devices/helpers';
+import { getDeviceByAgentWithOrgCheck } from './devices/helpers';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 const TEMP_DIR = join(tmpdir(), 'breeze-dev-push');
 const TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -56,6 +56,21 @@ devPushRoutes.use('*', async (c, next) => {
 });
 
 const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB
+
+async function getDeviceByAgentWithAccess(
+  agentId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+  permissions?: UserPermissions,
+) {
+  const device = await getDeviceByAgentWithOrgCheck(agentId, auth);
+  if (!device) return null;
+
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return 'SITE_ACCESS_DENIED' as const;
+  }
+
+  return device;
+}
 
 // Auth middleware that accepts JWT (Authorization: Bearer) or API key (X-API-Key)
 async function devPushAuth(c: Context, next: Next) {
@@ -118,8 +133,11 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
     return c.json({ error: `Binary too large (max ${MAX_BINARY_SIZE / 1024 / 1024}MB)` }, 413);
   }
 
-  // Verify device access
-  const device = await getDeviceWithOrgCheck(agentId, auth);
+  // Verify device access. The request field is named `agentId`, not `deviceId`.
+  const device = await getDeviceByAgentWithAccess(agentId, auth, c.get('permissions') as UserPermissions | undefined);
+  if (device === 'SITE_ACCESS_DENIED') {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
   if (!device) {
     return c.json({ error: 'Device not found or access denied' }, 404);
   }

@@ -4,7 +4,7 @@ import { deviceBootMetrics } from '../../db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import {
   normalizeStartupItems,
   resolveStartupItem,
@@ -41,13 +41,17 @@ function parseActionBody(body: unknown): {
 bootMetricsRoutes.get(
   '/:id/boot-metrics',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
       const limit = Math.min(Number(c.req.query('limit')) || 30, 100);
 
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
@@ -101,7 +105,10 @@ bootMetricsRoutes.post(
     try {
       const auth = c.get('auth');
 
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
@@ -129,12 +136,16 @@ bootMetricsRoutes.post(
 bootMetricsRoutes.get(
   '/:id/startup-items',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const deviceId = c.req.param('id')!;
     try {
       const auth = c.get('auth');
 
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
@@ -184,7 +195,10 @@ bootMetricsRoutes.post(
         // Request body is optional for this endpoint.
       }
 
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
@@ -276,7 +290,10 @@ bootMetricsRoutes.post(
         // Request body is optional for this endpoint.
       }
 
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }

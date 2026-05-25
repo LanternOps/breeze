@@ -2,10 +2,11 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, desc, gte, lte } from 'drizzle-orm';
-import { authMiddleware, requireScope } from '../../middleware/auth';
-import { getDeviceWithOrgCheck } from './helpers';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { db } from '../../db';
 import { alerts, alertRules, alertTemplates } from '../../db/schema';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const alertsRoutes = new Hono();
 
@@ -22,13 +23,17 @@ const alertsQuerySchema = z.object({
 alertsRoutes.get(
   '/:id/alerts',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', alertsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id');
     const query = c.req.valid('query');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

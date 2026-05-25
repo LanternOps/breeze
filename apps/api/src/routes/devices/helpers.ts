@@ -73,6 +73,28 @@ export async function getDeviceWithOrgCheck(
   return device;
 }
 
+export async function getDeviceByAgentWithOrgCheck(
+  agentId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.agentId, agentId))
+    .limit(1);
+
+  if (!device) {
+    return null;
+  }
+
+  const hasAccess = await ensureOrgAccess(device.orgId, auth);
+  if (!hasAccess) {
+    return null;
+  }
+
+  return device;
+}
+
 /**
  * Sentinel returned by {@link getDeviceWithOrgAndSiteCheck} when the caller's
  * `allowedSiteIds` restriction excludes the device's site. Routes treat this

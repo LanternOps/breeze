@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { authMiddleware, requireMfa, requireScope } from '../../middleware/auth';
-import { getUserPermissions, hasPermission, PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
 import { processesRoutes } from './processes';
 import { servicesRoutes } from './services';
@@ -9,6 +9,7 @@ import { registryRoutes } from './registry';
 import { eventLogsRoutes } from './eventLogs';
 import { scheduledTasksRoutes } from './scheduledTasks';
 import { fileBrowserRoutes } from './fileBrowser';
+import { getDeviceWithOrgCheck } from './helpers';
 
 export const systemToolsRoutes = new Hono();
 
@@ -44,6 +45,32 @@ systemToolsRoutes.use(
   }
 );
 
+// Device chokepoint: every system tool executes against a live device, so org
+// and site restrictions must be checked before any policy lookup or command.
+systemToolsRoutes.use(
+  '/devices/:deviceId/*',
+  async (c, next) => {
+    const deviceId = c.req.param('deviceId');
+    if (!deviceId) {
+      await next();
+      return;
+    }
+
+    const auth = c.get('auth');
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      throw new HTTPException(404, { message: 'Device not found or access denied' });
+    }
+
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+      throw new HTTPException(403, { message: 'Access to this site denied' });
+    }
+
+    await next();
+  }
+);
+
 // Remote access policy enforcement — applies to all system tools routes
 systemToolsRoutes.use(
   '/devices/:deviceId/*',
@@ -66,4 +93,3 @@ systemToolsRoutes.route('/', registryRoutes);
 systemToolsRoutes.route('/', eventLogsRoutes);
 systemToolsRoutes.route('/', scheduledTasksRoutes);
 systemToolsRoutes.route('/', fileBrowserRoutes);
-

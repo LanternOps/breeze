@@ -4,7 +4,7 @@ import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { queueCommandForExecution } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   patches,
   devicePatches,
@@ -16,6 +16,11 @@ import { scanSchema, listJobsSchema, patchIdParamSchema, rollbackSchema } from '
 import { getPagination, writePatchAuditForOrgIds } from './helpers';
 
 export const operationsRoutes = new Hono();
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
 
 // POST /patches/scan - Trigger patch scan for devices
 operationsRoutes.post(
@@ -31,7 +36,8 @@ operationsRoutes.post(
     const requestedDevices = await db
       .select({
         id: devices.id,
-        orgId: devices.orgId
+        orgId: devices.orgId,
+        siteId: devices.siteId
       })
       .from(devices)
       .where(inArray(devices.id, data.deviceIds));
@@ -39,9 +45,12 @@ operationsRoutes.post(
     const foundDeviceIDs = new Set(requestedDevices.map((d) => d.id));
     const missingDeviceIDs = data.deviceIds.filter((id) => !foundDeviceIDs.has(id));
 
-    const accessibleDevices = requestedDevices.filter((device) => auth.canAccessOrg(device.orgId));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const accessibleDevices = requestedDevices.filter((device) =>
+      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions)
+    );
     const inaccessibleDeviceIDs = requestedDevices
-      .filter((device) => !auth.canAccessOrg(device.orgId))
+      .filter((device) => !auth.canAccessOrg(device.orgId) || !canAccessDeviceSite(device, permissions))
       .map((device) => device.id);
 
     const queueResults = await Promise.all(
@@ -187,14 +196,15 @@ operationsRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    let candidateDevices: Array<{ id: string; orgId: string }> = [];
+    let candidateDevices: Array<{ id: string; orgId: string; siteId: string | null }> = [];
     let missingDeviceIds: string[] = [];
 
     if (data.deviceIds && data.deviceIds.length > 0) {
       candidateDevices = await db
         .select({
           id: devices.id,
-          orgId: devices.orgId
+          orgId: devices.orgId,
+          siteId: devices.siteId
         })
         .from(devices)
         .where(inArray(devices.id, data.deviceIds));
@@ -205,7 +215,8 @@ operationsRoutes.post(
       candidateDevices = await db
         .select({
           id: devices.id,
-          orgId: devices.orgId
+          orgId: devices.orgId,
+          siteId: devices.siteId
         })
         .from(devicePatches)
         .innerJoin(devices, eq(devicePatches.deviceId, devices.id))
@@ -217,9 +228,12 @@ operationsRoutes.post(
         );
     }
 
-    const accessibleDevices = candidateDevices.filter((device) => auth.canAccessOrg(device.orgId));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const accessibleDevices = candidateDevices.filter((device) =>
+      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions)
+    );
     const inaccessibleDeviceIds = candidateDevices
-      .filter((device) => !auth.canAccessOrg(device.orgId))
+      .filter((device) => !auth.canAccessOrg(device.orgId) || !canAccessDeviceSite(device, permissions))
       .map((device) => device.id);
 
     if (accessibleDevices.length === 0) {

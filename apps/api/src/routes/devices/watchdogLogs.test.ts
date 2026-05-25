@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const { requirePermissionMock } = vi.hoisted(() => ({
-  requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermissionMock: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    c.set('permissions', {
+      permissions: [{ resource, action }],
+      allowedSiteIds: c.req.header('x-site-restricted') === 'true' ? ['site-allowed'] : undefined,
+    });
+    return next();
+  }),
 }));
 
 vi.mock('../../db', () => ({
@@ -15,6 +21,7 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
   },
   agentLogs: {
     deviceId: 'agentLogs.deviceId',
@@ -64,7 +71,7 @@ describe('watchdog log routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-1' }]),
+            limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-1', siteId: 'site-allowed' }]),
           }),
         }),
       } as any)
@@ -103,5 +110,21 @@ describe('watchdog log routes', () => {
       apiKey: '[REDACTED]',
       nested: { password: '[REDACTED]' },
     });
+  });
+
+  it('denies watchdog logs when site scope excludes the device', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-1', siteId: 'site-denied' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/devices/device-1/watchdog-logs', {
+      headers: { Authorization: 'Bearer token', 'x-site-restricted': 'true' },
+    });
+
+    expect(res.status).toBe(403);
   });
 });

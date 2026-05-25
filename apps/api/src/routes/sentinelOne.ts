@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1SiteMappings, s1Threats } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -12,7 +12,7 @@ import {
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -29,6 +29,42 @@ function withOrgCondition(conditions: SQL[], condition: SQL | undefined): void {
 
 function whereOrUndefined(conditions: SQL[]): SQL | undefined {
   return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
+
+async function hasDeniedDeviceSite(orgId: string, deviceIds: string[], permissions: UserPermissions | undefined): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  if (deviceIds.length === 0) return false;
+  const rows = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.orgId, orgId), inArray(devices.id, deviceIds)));
+  return rows.some((device) => !canAccessDeviceSite(device, permissions));
+}
+
+async function hasDeniedThreatDeviceSite(
+  orgId: string,
+  integrationId: string,
+  threatIds: string[],
+  permissions: UserPermissions | undefined,
+): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const internalIds = threatIds.filter((id) => uuidPattern.test(id));
+  const matchCondition: SQL = internalIds.length > 0
+    ? (or(inArray(s1Threats.id, internalIds), inArray(s1Threats.s1ThreatId, threatIds)) as SQL)
+    : inArray(s1Threats.s1ThreatId, threatIds);
+  const threats = await db
+    .select({ deviceId: s1Threats.deviceId })
+    .from(s1Threats)
+    .where(and(eq(s1Threats.integrationId, integrationId), eq(s1Threats.orgId, orgId), matchCondition));
+  if (threats.some((threat) => typeof threat.deviceId !== 'string')) return true;
+  const deviceIds = threats.map((threat) => threat.deviceId).filter((id): id is string => typeof id === 'string');
+  return hasDeniedDeviceSite(orgId, deviceIds, permissions);
 }
 
 function resolveOrgId(
@@ -465,6 +501,9 @@ sentinelOneRoutes.post(
     if (!integration) {
       return c.json({ error: 'No active SentinelOne integration found for this organization' }, 404);
     }
+    if (await hasDeniedDeviceSite(orgResult.orgId, body.deviceIds, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
+    }
     const result = await executeS1IsolationForOrg({
       orgId: orgResult.orgId,
       integrationId: integration.id,
@@ -528,6 +567,9 @@ sentinelOneRoutes.post(
 
     if (!isThreatAction(body.action)) {
       return c.json({ error: 'Unsupported threat action' }, 400);
+    }
+    if (await hasDeniedThreatDeviceSite(orgResult.orgId, integration.id, body.threatIds, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     const result = await executeS1ThreatActionForOrg({

@@ -3,11 +3,11 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../../db';
-import { localVaults } from '../../db/schema';
+import { devices, localVaults } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -19,6 +19,16 @@ import {
 export const vaultRoutes = new Hono();
 
 const vaultIdParam = z.object({ id: z.string().uuid() });
+
+async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: UserPermissions | undefined): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
+}
 
 // GET /vault — list vaults for org (optional ?deviceId filter)
 vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', vaultListSchema), async (c) => {
@@ -57,6 +67,9 @@ vaultRoutes.post(
   }
 
   const payload = c.req.valid('json');
+  if (await isDeviceSiteDenied(orgId, payload.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
   const now = new Date();
 
   const [row] = await db
@@ -201,6 +214,10 @@ vaultRoutes.post(
 
     if (!vault.isActive) {
       return c.json({ error: 'Vault is inactive' }, 400);
+    }
+
+    if (await isDeviceSiteDenied(orgId, vault.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Update sync status to pending

@@ -119,7 +119,13 @@ describe('device commands routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.commands).toHaveLength(1);
-      expect(body.failed).toEqual(['22222222-2222-2222-2222-222222222222']);
+      expect(body.failed).toEqual([
+        {
+          deviceId: '22222222-2222-2222-2222-222222222222',
+          code: 'DECOMMISSIONED',
+          message: 'Cannot send commands to a decommissioned device.',
+        },
+      ]);
     });
 
     it('bulk refresh_inventory dedups already-pending devices, skips silently (caught by @xxiaoxiong on #831)', async () => {
@@ -203,6 +209,105 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.error).toContain('scripts endpoint');
       expect(vi.mocked(getDeviceWithOrgCheck)).not.toHaveBeenCalled();
+    });
+
+    it('marks site-denied devices as failed for bulk generic commands', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: '11111111-1111-1111-1111-111111111111',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        siteId: 'site-denied',
+        status: 'online',
+      } as never);
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-site-restricted': 'true',
+        },
+        body: JSON.stringify({
+          deviceIds: ['11111111-1111-1111-1111-111111111111'],
+          type: 'reboot',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.commands).toHaveLength(0);
+      expect(body.failed).toEqual([
+        {
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          code: 'SITE_ACCESS_DENIED',
+          message: 'Access to this site denied.',
+        },
+      ]);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('mixed batch: succeeds for allowed device and reports per-device failure for site-denied device', async () => {
+      const allowedId = '11111111-1111-1111-1111-111111111111';
+      const deniedId = '22222222-2222-2222-2222-222222222222';
+
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({
+          id: allowedId,
+          orgId: 'org-123',
+          hostname: 'allowed-host',
+          siteId: 'site-allowed',
+          status: 'online',
+        } as never)
+        .mockResolvedValueOnce({
+          id: deniedId,
+          orgId: 'org-123',
+          hostname: 'denied-host',
+          siteId: 'site-denied',
+          status: 'online',
+        } as never);
+
+      // Insert only fires for the allowed device.
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-allowed',
+            deviceId: allowedId,
+            type: 'reboot',
+            status: 'pending',
+            createdAt: new Date(),
+          }]),
+        }),
+      } as never);
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-site-restricted': 'true',
+        },
+        body: JSON.stringify({
+          deviceIds: [allowedId, deniedId],
+          type: 'reboot',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      // The allowed device got a queued command.
+      expect(body.commands).toHaveLength(1);
+      expect(body.commands[0].deviceId).toBe(allowedId);
+      // The denied device got a typed failure entry, not silent drop.
+      expect(body.failed).toEqual([
+        {
+          deviceId: deniedId,
+          code: 'SITE_ACCESS_DENIED',
+          message: 'Access to this site denied.',
+        },
+      ]);
+      // Exactly one insert — the denial short-circuited before insert for the
+      // second device, but did NOT abort the batch.
+      expect(db.insert).toHaveBeenCalledTimes(1);
     });
 
     describe('bulk-wake (type=wake)', () => {
@@ -328,6 +433,40 @@ describe('device commands routes', () => {
           deviceId: '11111111-1111-1111-1111-111111111111',
           code: 'TARGET_NOT_FOUND',
         });
+        expect(vi.mocked(dispatchWake)).not.toHaveBeenCalled();
+      });
+
+      it('returns SITE_ACCESS_DENIED for site-denied wake targets without dispatching', async () => {
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+          id: '11111111-1111-1111-1111-111111111111',
+          orgId: 'org-123',
+          siteId: 'site-denied',
+          status: 'online',
+          hostname: 'host-1111',
+        } as never);
+
+        const res = await app.request('/devices/bulk/commands', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token',
+            'x-site-restricted': 'true',
+          },
+          body: JSON.stringify({
+            deviceIds: ['11111111-1111-1111-1111-111111111111'],
+            type: 'wake',
+          }),
+        });
+
+        expect(res.status).toBe(202);
+        const body = await res.json();
+        expect(body.failed).toEqual([
+          {
+            deviceId: '11111111-1111-1111-1111-111111111111',
+            code: 'SITE_ACCESS_DENIED',
+            message: 'Access to this site denied.',
+          },
+        ]);
         expect(vi.mocked(dispatchWake)).not.toHaveBeenCalled();
       });
 
@@ -561,6 +700,29 @@ describe('device commands routes', () => {
       expect(vi.mocked(getDeviceWithOrgCheck)).not.toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
     });
+
+    it('denies single generic commands when site scope excludes the device', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        siteId: 'site-denied',
+        status: 'online',
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-site-restricted': 'true',
+        },
+        body: JSON.stringify({ type: 'reboot' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /devices/:id/maintenance', () => {
@@ -611,6 +773,29 @@ describe('device commands routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('denies maintenance changes when site scope excludes the device', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        siteId: 'site-denied',
+        status: 'online'
+      } as never);
+
+      const res = await app.request('/devices/device-a/maintenance', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-site-restricted': 'true',
+        },
+        body: JSON.stringify({ enable: true })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 
@@ -743,6 +928,28 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.error).toContain('decommissioned');
 
+    });
+
+    it('denies auto-update commands when site scope excludes the device', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        siteId: 'site-denied',
+        status: 'online'
+      } as never);
+
+      const res = await app.request('/devices/device-a/auto-update', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+          'x-site-restricted': 'true',
+        },
+        body: JSON.stringify({ enabled: true })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

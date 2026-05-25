@@ -13,7 +13,7 @@ rationale, and a trigger for re-evaluation.
 ## GHSA-2p57-rm9w-gvfp — `ip` package SSRF via `isPublic`/`isPrivate` bypass
 
 - **First documented**: 2026-04-24
-- **Package**: `ip` (installed version in our tree: `1.1.9`, marked `optional: true`)
+- **Package**: `ip` (currently resolved in our tree as `2.0.1`)
 - **Advisory**: https://github.com/advisories/GHSA-2p57-rm9w-gvfp
 - **Upstream status**: maintainer has not shipped a fix. The GitHub advisory
   records "Patched versions: `<0.0.0`", i.e. there is no patched release and
@@ -21,39 +21,28 @@ rationale, and a trigger for re-evaluation.
 
 ### Dep chain
 
-All paths originate from `apps/mobile`, which is a React Native / Expo app:
+All paths originate from `apps/mobile`, which is a React Native / Expo app.
+The current `pnpm audit --prod --audit-level=high` path is:
 
 ```
 apps/mobile
   └── react-native@0.83.2
         └── @react-native/community-cli-plugin@0.83.2
               └── @react-native-community/cli@12.1.1
-                    ├── @react-native-community/cli-doctor@12.1.1      (no direct `require('ip')`)
-                    └── @react-native-community/cli-hermes@12.1.1      (requires `ip`)
-                          └── ip@1.1.9
+                    └── @react-native-community/cli-doctor@12.1.1
+                          └── ip@2.0.1
 ```
 
-`ip@1.1.9` is pulled in exclusively by `@react-native-community/cli-hermes`.
-`ip` is flagged `optional: true` in `pnpm-lock.yaml` — it is developer tooling
-that only materialises on platforms where Hermes profiling is possible.
+`pnpm why ip --recursive` also shows the same `ip@2.0.1` version reachable
+through `@react-native-community/cli-hermes@12.1.1`. Both are React Native CLI
+tooling dependencies, not Breeze API/web/agent runtime dependencies.
 
 ### How `ip` is used in our tree
 
-The only import site in any installed package is
-`@react-native-community/cli-hermes/build/profileHermes/sourcemapUtils.js`
-(source: `src/profileHermes/sourcemapUtils.ts`). The relevant excerpt:
-
-```ts
-import ip from 'ip';
-// ...
-const IP_ADDRESS = ip.address();
-const requestURL = `http://${IP_ADDRESS}:${port}/index.map?platform=...`;
-```
-
-This code runs on the **developer's laptop** when the developer invokes
-`react-native profile-hermes` to fetch a sourcemap from a locally-running
-Metro bundler. It uses `ip.address()` to discover the developer's own LAN IP
-so it can build a `http://<lan-ip>:<port>/index.map` URL.
+This is not imported by first-party Breeze code. The dependency is pulled by
+React Native CLI packages used for mobile development diagnostics/profiling.
+Those packages run on developer or CI machines during mobile development and
+are not shipped in the API, web app, portal/viewer/helper, or Go agent.
 
 ### Why the CVE is not exploitable in our deployment
 
@@ -67,17 +56,12 @@ The exploitation path requires:
 
 In Breeze's tree neither condition holds:
 
-- **Vulnerable API not used.** Our single call site uses `ip.address()`, which
-  reads `os.networkInterfaces()` on the local host. `isPublic` and `isPrivate`
-  are never called by `cli-hermes`, and `ip` is not imported anywhere else in
-  our workspace (verified by grep over `node_modules/.pnpm`).
-- **No user input.** The input to `ip.address()` is the developer's own OS
-  network configuration. There is no attacker-controlled string path.
+- **No first-party use.** Breeze code does not import `ip`, and the API/web/agent
+  launch surfaces do not depend on the React Native CLI packages that pull it.
 - **Build-time / developer-tooling only.** `@react-native-community/cli-hermes`
-  runs as part of `react-native` CLI commands on a developer machine. It is
-  not shipped inside the mobile app bundle that ends up on end-user devices.
-  An Expo production build of `apps/mobile` does not contain `ip` in the JS
-  bundle delivered to iOS/Android.
+  and `@react-native-community/cli-doctor` run as part of React Native CLI
+  workflows. They are not shipped inside the mobile app bundle that ends up on
+  end-user devices.
 - **Not on the API / web / agent path.** The `ip` package does not appear in
   the dependency graphs of `apps/api`, `apps/web`, `apps/agent`,
   `apps/helper`, `apps/portal`, or `apps/viewer`. The advisory therefore has
@@ -95,6 +79,11 @@ That is not a meaningfully-reachable attack path.
 
 ### Decision — Option D: document and accept
 
+- **Customer launch scope (2026-05-24):** `apps/mobile` is excluded from the
+  initial MSP customer launch artifact and from the customer-launch audit gate.
+  The shipping launch surfaces are API, web, portal/viewer/helper where
+  applicable, and the Go agent. Re-open this gate before mobile is offered to
+  customers, or when the React Native CLI chain drops `ip`.
 - We are **not** applying a `pnpm.overrides` alias: no vouched, drop-in safe
   fork of `ip` exists on npm. Redirecting a transitive dep to an unaudited
   third-party package would add more supply-chain risk than the CVE itself
@@ -125,7 +114,7 @@ That is not a meaningfully-reachable attack path.
 ### Verification commands
 
 ```bash
-# Confirm `ip` is still only pulled in via @react-native-community/cli-hermes:
+# Confirm `ip` is still only pulled in through the React Native CLI chain:
 pnpm audit --json | jq '.advisories | to_entries[]
   | select(.value.github_advisory_id == "GHSA-2p57-rm9w-gvfp")
   | .value.findings[].paths'

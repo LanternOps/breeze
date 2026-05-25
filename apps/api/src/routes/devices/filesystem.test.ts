@@ -39,7 +39,8 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('./helpers', () => ({
-  getDeviceWithOrgCheck: vi.fn()
+  getDeviceWithOrgAndSiteCheck: vi.fn(),
+  SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -68,7 +69,7 @@ vi.mock('../../services/auditEvents', () => ({
 
 import { db } from '../../db';
 import { filesystemRoutes } from './filesystem';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
   getLatestFilesystemSnapshot,
@@ -89,7 +90,7 @@ describe('device filesystem routes', () => {
   });
 
   it('returns latest filesystem snapshot', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({
       id: 'snap-1',
       deviceId,
@@ -116,7 +117,7 @@ describe('device filesystem routes', () => {
   });
 
   it('runs on-demand scan and persists snapshot', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
     vi.mocked(readHotDirectories).mockReturnValue([]);
     vi.mocked(readCheckpointPendingDirectories).mockReturnValue([]);
@@ -156,7 +157,7 @@ describe('device filesystem routes', () => {
   });
 
   it('returns cleanup preview and stores run', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({ id: 'snap-3', cleanupCandidates: [] } as never);
     vi.mocked(buildCleanupPreview).mockReturnValue({
       snapshotId: 'snap-3',
@@ -185,7 +186,7 @@ describe('device filesystem routes', () => {
   });
 
   it('executes cleanup only for selected valid candidates', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({ id: 'snap-4', cleanupCandidates: [] } as never);
     vi.mocked(buildCleanupPreview).mockReturnValue({
       snapshotId: 'snap-4',
@@ -223,5 +224,29 @@ describe('device filesystem routes', () => {
       { path: '/tmp/a.tmp', recursive: true },
       expect.objectContaining({ userId: 'user-123' })
     );
+  });
+
+  it('denies filesystem read when site scope excludes the device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(getLatestFilesystemSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('denies filesystem scan when site scope excludes the device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/scan`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/tmp' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 });

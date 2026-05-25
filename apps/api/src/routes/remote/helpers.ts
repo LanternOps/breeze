@@ -8,6 +8,7 @@ import {
   devices,
   auditLogs
 } from '../../db/schema';
+import { canAccessSite, type UserPermissions } from '../../services/permissions';
 
 // ============================================
 // TURN CREDENTIAL GENERATION (RFC 5389 time-limited HMAC)
@@ -108,7 +109,11 @@ export function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: str
   return auth.canAccessOrg(orgId);
 }
 
-export async function getDeviceWithOrgCheck(deviceId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+export async function getDeviceWithOrgCheck(
+  deviceId: string,
+  auth: { canAccessOrg: (orgId: string) => boolean },
+  permissions?: UserPermissions,
+) {
   const [device] = await db
     .select()
     .from(devices)
@@ -122,6 +127,10 @@ export async function getDeviceWithOrgCheck(deviceId: string, auth: { canAccessO
   const hasAccess = ensureOrgAccess(device.orgId, auth);
   if (!hasAccess) {
     return null;
+  }
+
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return 'SITE_ACCESS_DENIED' as const;
   }
 
   return device;
