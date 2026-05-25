@@ -128,6 +128,7 @@ import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
+import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
@@ -999,6 +1000,7 @@ async function initializeWorkers(): Promise<void> {
     ['reliabilityRetention', initializeReliabilityRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    ['auditRetention', initializeAuditRetentionWorker],
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['networkBaselineWorker', initializeNetworkBaselineWorker],
@@ -1162,6 +1164,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownReliabilityRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownAuditRetentionWorker,
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
