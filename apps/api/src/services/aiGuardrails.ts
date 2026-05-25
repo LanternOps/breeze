@@ -594,7 +594,11 @@ export async function checkToolPermission(
     const hint = redirectHints[toolName];
     return `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`;
   } else {
-    return null; // No action provided — allow (base tool permission applies)
+    // Action-multiplexed tool invoked without an `action` arg — deny (fail-closed).
+    // Each sub-operation has its own RBAC permission; without an action we can't
+    // resolve which one applies, so allowing here would let any caller bypass
+    // per-action checks. Zod schemas require `action` anyway; this is defense in depth.
+    return `Missing required "action" argument for tool "${toolName}"`;
   }
 
   const userPerms = await getUserPermissions(auth.user.id, {

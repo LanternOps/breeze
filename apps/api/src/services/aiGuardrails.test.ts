@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock dependencies before importing the module under test
 vi.mock('./aiTools', () => ({
@@ -293,6 +293,62 @@ describe('checkToolPermission — backup restore tools', () => {
     });
 
     const result = await checkToolPermission('restore_mssql_database', {}, auth);
+
+    expect(result).toBeNull();
+  });
+});
+
+describe('checkToolPermission — action-multiplexed tools require action arg', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'operator', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  beforeEach(() => {
+    vi.mocked(hasPermission).mockClear();
+    vi.mocked(getUserPermissions).mockClear();
+  });
+
+  it('denies action-multiplexed tools when action arg is missing (manage_groups)', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('manage_groups', {}, auth);
+
+    expect(result).toBe('Missing required "action" argument for tool "manage_groups"');
+    // RBAC permission lookup must NOT have been consulted — we fail closed before it.
+    expect(hasPermission).not.toHaveBeenCalled();
+  });
+
+  it('denies action-multiplexed tools when action arg is missing (manage_alerts)', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('manage_alerts', {}, auth);
+
+    expect(result).toBe('Missing required "action" argument for tool "manage_alerts"');
+    expect(hasPermission).not.toHaveBeenCalled();
+  });
+
+  it('permits action-multiplexed tools when action arg is present and permitted', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('manage_groups', { action: 'list' }, auth);
+
+    // Should not be the missing-action denial — the action path must run.
+    expect(result).not.toBe('Missing required "action" argument for tool "manage_groups"');
+    expect(result).toBeNull();
+  });
+
+  it('does not affect simple (non-multiplexed) tools called without action', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    // query_devices has a flat { resource, action } permDef — no action arg required.
+    const result = await checkToolPermission('query_devices', {}, auth);
 
     expect(result).toBeNull();
   });
