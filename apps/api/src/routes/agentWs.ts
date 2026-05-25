@@ -20,7 +20,9 @@ import { applyBackupCommandResultToJob } from '../services/backupResultPersisten
 import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
-import { matchRoleScopedAgentTokenHash, type AgentCredentialRole } from '../middleware/agentAuth';
+import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
+import { createAuditLogAsync } from '../services/auditService';
+import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
@@ -738,7 +740,8 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
         watchdogTokenHash: devices.watchdogTokenHash,
         previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
         previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
-        status: devices.status
+        status: devices.status,
+        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
       .from(devices)
       .where(eq(devices.agentId, agentId))
@@ -762,6 +765,12 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
   }
 
   if (device.status === 'quarantined') {
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  // Task 18: tokens auto-suspended for cross-tenant probing fail closed.
+  // The reconnect loop is the intended ops alarm signal.
+  if (device.agentTokenSuspendedAt) {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -2106,24 +2115,96 @@ const desktopCommandResultSchema = z.object({
   }).strict().optional(),
 }).passthrough();
 
-// M-D1: Cross-tenant probe detection. Increments per agentId on each
-// schema-passing-but-ownership-failing fast-path drop. After N drops in M
-// minutes we emit ONE warn + Sentry breadcrumb. Diagnostic only — never
-// auto-bans (legitimate session-rebalance races would false-positive).
-const CROSS_TENANT_DROP_THRESHOLD = 10;
+// M-D1 / Task 18: Cross-tenant probe detection.
+//
+// Increments per agentId on each schema-passing-but-ownership-failing
+// fast-path drop. Two thresholds:
+//
+//   1. SUSPEND_THRESHOLD (5) — first action. We persistently suspend the
+//      agent token in the DB (`agent_token_suspended_at`) and emit one
+//      audit row + one Sentry capture. Subsequent reconnects and REST
+//      calls fail at the auth gate with 401, producing a noisy reconnect
+//      loop that surfaces the suspension to ops. A flaky agent making one
+//      mistake every restart could never accumulate 5 in a 5-minute window
+//      on a single WS connection.
+//
+//   2. WARN_THRESHOLD (10) — legacy diagnostic breadcrumb retained for
+//      operators who watched for the M-D1 signal. Mostly redundant now
+//      that we suspend earlier, but cheap to keep.
+//
+// The window is per-agent-per-WS-process. A stolen token spraying probes
+// will hit threshold 1 within seconds; intentional separation from the
+// REST rate limiter avoids polluting the org budget on hostile traffic.
+const CROSS_TENANT_DROP_SUSPEND_THRESHOLD = 5;
+const CROSS_TENANT_DROP_WARN_THRESHOLD = 10;
 const CROSS_TENANT_DROP_WINDOW_MS = 5 * 60 * 1000;
-type ProbeCounter = { drops: number; firstAt: number; warned: boolean };
+type ProbeCounter = { drops: number; firstAt: number; warned: boolean; suspended: boolean };
 const crossTenantDrops = new Map<string, ProbeCounter>();
 
 function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, kind: string) {
   const now = Date.now();
   let counter = crossTenantDrops.get(agentId);
   if (!counter || now - counter.firstAt > CROSS_TENANT_DROP_WINDOW_MS) {
-    counter = { drops: 0, firstAt: now, warned: false };
+    counter = { drops: 0, firstAt: now, warned: false, suspended: false };
     crossTenantDrops.set(agentId, counter);
   }
   counter.drops += 1;
-  if (counter.drops >= CROSS_TENANT_DROP_THRESHOLD && !counter.warned) {
+
+  // Task 18: suspend the token at the lower threshold + emit one audit row.
+  if (
+    counter.drops >= CROSS_TENANT_DROP_SUSPEND_THRESHOLD &&
+    !counter.suspended &&
+    deviceId
+  ) {
+    counter.suspended = true;
+    console.warn(
+      `[AgentWs] auto-suspending agent token: agent=${agentId} device=${deviceId} ` +
+      `kind=${kind} drops=${counter.drops} window_ms=${now - counter.firstAt}`
+    );
+    // Fire-and-forget — the DB write must not block the message loop. The
+    // suspension is reconciled at the next auth gate, so a delayed write
+    // simply means one or two extra probes get through before the token
+    // becomes invalid.
+    void suspendAgentToken(deviceId, 'cross-tenant-probe');
+    void createAuditLogAsync({
+      orgId: null,
+      actorType: 'system',
+      actorId: ANONYMOUS_ACTOR_ID,
+      action: 'agent.token.suspended',
+      resourceType: 'device',
+      resourceId: deviceId,
+      details: {
+        reason: 'cross-tenant-probe',
+        kind,
+        dropsInWindow: counter.drops,
+        agentId,
+      },
+      result: 'denied',
+      initiatedBy: 'automation',
+    });
+    try {
+      captureException(
+        new Error(
+          `agent_ws auto-suspend (agent=${agentId}, device=${deviceId}, kind=${kind}, drops=${counter.drops})`
+        )
+      );
+    } catch {
+      // Sentry capture is best-effort.
+    }
+
+    // Close any active WS for this agent so it has to re-auth (and fail).
+    const activeWs = activeConnections.get(agentId);
+    if (activeWs) {
+      try {
+        activeWs.close(4001, 'Token suspended');
+      } catch {
+        // Connection may already be torn down.
+      }
+      activeConnections.delete(agentId);
+    }
+  }
+
+  if (counter.drops >= CROSS_TENANT_DROP_WARN_THRESHOLD && !counter.warned) {
     counter.warned = true;
     console.warn(
       `[AgentWs] cross-tenant probe pattern: agent=${agentId} device=${deviceId ?? 'unknown'} ` +
@@ -2139,6 +2220,12 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
 
 function clearCrossTenantDropCounter(agentId: string) {
   crossTenantDrops.delete(agentId);
+}
+
+// Test-only: reset the entire cross-tenant counter map so tests don't bleed
+// state across `it()` cases. Not exported for production use.
+export function __resetCrossTenantDropsForTest() {
+  crossTenantDrops.clear();
 }
 
 /**

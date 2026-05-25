@@ -225,7 +225,10 @@ devPushRoutes.get('/push/download/:token', async (c) => {
   const tokenHash = createHash('sha256').update(bearerToken).digest('hex');
   const agentDevice = await withSystemDbAccessContext(async () => {
     const [row] = await db
-      .select({ id: devices.id })
+      .select({
+        id: devices.id,
+        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
+      })
       .from(devices)
       .where(
         and(
@@ -238,6 +241,11 @@ devPushRoutes.get('/push/download/:token', async (c) => {
   });
 
   if (!agentDevice) {
+    return c.json({ error: 'Invalid agent credentials' }, 401);
+  }
+
+  // Task 18: auto-suspended tokens fail closed at every auth gate.
+  if (agentDevice.agentTokenSuspendedAt) {
     return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 

@@ -363,6 +363,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         agentTokenHash: devices.agentTokenHash,
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
+        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
       .from(devices)
       .where(
@@ -378,9 +379,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     if (existingDevice) {
       const now = new Date();
       const existingDeviceToken = getProvidedExistingDeviceToken(c);
+      // Task 18: a suspended token cannot be used to re-authenticate an
+      // existing-device collision and silently rotate to a new token.
+      const tokenSuspended = !!existingDevice.agentTokenSuspendedAt;
       existingDeviceAuthenticated =
-        tokenHashMatches(existingDevice.agentTokenHash, existingDeviceToken, now) ||
-        tokenHashMatches(existingDevice.previousTokenHash, existingDeviceToken, now, existingDevice.previousTokenExpiresAt);
+        !tokenSuspended &&
+        (tokenHashMatches(existingDevice.agentTokenHash, existingDeviceToken, now) ||
+          tokenHashMatches(existingDevice.previousTokenHash, existingDeviceToken, now, existingDevice.previousTokenExpiresAt));
 
       if (!existingDeviceAuthenticated) {
         writeAuditEvent(c, {

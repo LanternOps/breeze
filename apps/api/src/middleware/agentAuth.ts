@@ -1,7 +1,7 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
@@ -145,6 +145,37 @@ export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, 
 }
 
 /**
+ * Task 18: Persistently suspend an agent token. Called when the WS layer
+ * detects a cross-tenant probe pattern (token spraying foreign session IDs).
+ * Idempotent — only writes on the first call per device.
+ *
+ * Unsuspending requires manual operator action (clear the columns directly
+ * or via a future admin endpoint); the agent will retry forever and produce
+ * a loud reconnect-loop signal that surfaces the suspension to ops.
+ */
+export async function suspendAgentToken(deviceId: string, reason: string): Promise<void> {
+  try {
+    await withSystemDbAccessContext(async () => {
+      await db
+        .update(devices)
+        .set({
+          agentTokenSuspendedAt: new Date(),
+          agentTokenSuspendedReason: reason.slice(0, 100),
+        })
+        .where(and(eq(devices.id, deviceId), isNull(devices.agentTokenSuspendedAt)));
+    });
+  } catch (err) {
+    // Best-effort: the auth gate is the source of truth. A failed suspension
+    // write just means the next probe will try again.
+    console.error('[agentAuth] suspendAgentToken failed', {
+      deviceId,
+      reason,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
  * Enforces per-agent rate limiting via Redis.
@@ -185,6 +216,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
         previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
         status: devices.status,
+        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
       .from(devices)
       .where(eq(devices.agentId, agentId))
@@ -193,6 +225,13 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   });
 
   if (!device) {
+    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+  }
+
+  // Task 18: suspended tokens fail closed. We do NOT leak the suspension
+  // reason in the response — a compromised agent should see the same 401
+  // as a stale token.
+  if (device.agentTokenSuspendedAt) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 

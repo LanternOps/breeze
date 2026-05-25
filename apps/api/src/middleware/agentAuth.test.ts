@@ -3,6 +3,7 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
+    update: vi.fn(),
   },
   withDbAccessContext: vi.fn(async (_context: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -21,6 +22,8 @@ vi.mock('../db/schema', () => ({
     previousWatchdogTokenHash: 'previousWatchdogTokenHash',
     previousWatchdogTokenExpiresAt: 'previousWatchdogTokenExpiresAt',
     status: 'status',
+    agentTokenSuspendedAt: 'agentTokenSuspendedAt',
+    agentTokenSuspendedReason: 'agentTokenSuspendedReason',
   },
 }));
 
@@ -31,6 +34,8 @@ vi.mock('../services', () => ({
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((left, right) => ({ left, right })),
+  and: vi.fn((...args) => ({ and: args })),
+  isNull: vi.fn((col) => ({ isNull: col })),
 }));
 
 import type { Context } from 'hono';
@@ -38,7 +43,13 @@ import { createHash } from 'crypto';
 
 import { db } from '../db';
 import { getRedis, rateLimiter } from '../services';
-import { agentAuthMiddleware, isAgentTokenRotationDue, matchAgentTokenHash, matchRoleScopedAgentTokenHash } from './agentAuth';
+import {
+  agentAuthMiddleware,
+  isAgentTokenRotationDue,
+  matchAgentTokenHash,
+  matchRoleScopedAgentTokenHash,
+  suspendAgentToken,
+} from './agentAuth';
 
 function sha(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -326,5 +337,123 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
       siteId: 'site-1',
       role: 'watchdog',
     });
+  });
+});
+
+// Task 18: agent token auto-suspend (cross-tenant probe defense).
+describe('Task 18 — agentAuthMiddleware rejects suspended tokens', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+  });
+
+  it('returns 401 when the device has agentTokenSuspendedAt set', async () => {
+    buildSelectMock([
+      makeDevice({ agentTokenSuspendedAt: new Date('2026-05-25T10:00:00Z') }),
+    ]);
+    // Rate limiter must NOT be consulted — auth gate fails earlier.
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 119,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'Invalid agent credentials',
+    });
+    expect(next).not.toHaveBeenCalled();
+    // Auth gate fails before rate limiter is touched.
+    expect(rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it('does NOT leak the suspension reason in the 401 response', async () => {
+    buildSelectMock([
+      makeDevice({
+        agentTokenSuspendedAt: new Date('2026-05-25T10:00:00Z'),
+        agentTokenSuspendedReason: 'cross-tenant-probe',
+      }),
+    ]);
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn();
+
+    let thrown: unknown;
+    try {
+      await agentAuthMiddleware(c, next);
+    } catch (err) {
+      thrown = err;
+    }
+
+    const message = (thrown as { message?: string })?.message ?? '';
+    expect(message).not.toContain('cross-tenant-probe');
+    expect(message).not.toContain('suspended');
+    expect(message).toBe('Invalid agent credentials');
+  });
+
+  it('proceeds normally when agentTokenSuspendedAt is null', async () => {
+    buildSelectMock([makeDevice({ agentTokenSuspendedAt: null })]);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Task 18 — suspendAgentToken helper', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('writes agentTokenSuspendedAt + reason via UPDATE', async () => {
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+    await suspendAgentToken('device-1', 'cross-tenant-probe');
+
+    expect(setMock).toHaveBeenCalledTimes(1);
+    const arg = setMock.mock.calls[0]?.[0];
+    expect(arg).toMatchObject({ agentTokenSuspendedReason: 'cross-tenant-probe' });
+    expect(arg.agentTokenSuspendedAt).toBeInstanceOf(Date);
+  });
+
+  it('truncates reasons longer than 100 chars to fit the column', async () => {
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+    const longReason = 'x'.repeat(250);
+    await suspendAgentToken('device-1', longReason);
+
+    const arg = setMock.mock.calls[0]?.[0];
+    expect(arg.agentTokenSuspendedReason.length).toBe(100);
+  });
+
+  it('swallows DB errors so callers never crash', async () => {
+    vi.mocked(db.update).mockImplementation(() => {
+      throw new Error('connection refused');
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      suspendAgentToken('device-1', 'cross-tenant-probe')
+    ).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalledWith(
+      '[agentAuth] suspendAgentToken failed',
+      expect.objectContaining({ deviceId: 'device-1' })
+    );
+    errSpy.mockRestore();
   });
 });

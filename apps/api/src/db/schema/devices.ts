@@ -33,6 +33,11 @@ export const devices = pgTable('devices', {
   mtlsCertCfId: varchar('mtls_cert_cf_id', { length: 128 }),
   quarantinedAt: timestamp('quarantined_at'),
   quarantinedReason: varchar('quarantined_reason', { length: 255 }),
+  // Task 18: Auto-suspend agent tokens after repeated cross-tenant probe
+  // attempts. Suspension is sticky (DB-backed) — reconnects with the same
+  // token fail at the auth gate until an operator clears these columns.
+  agentTokenSuspendedAt: timestamp('agent_token_suspended_at'),
+  agentTokenSuspendedReason: varchar('agent_token_suspended_reason', { length: 100 }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),

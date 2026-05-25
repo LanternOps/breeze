@@ -139,8 +139,22 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
 }));
 
+vi.mock('../services/auditService', () => ({
+  createAuditLogAsync: vi.fn().mockResolvedValue(undefined),
+  createAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
+  writeAuditEvent: vi.fn(),
+}));
+
 import { db } from '../db';
-import { createAgentWsHandlers, createAgentWsRoutes } from './agentWs';
+import {
+  createAgentWsHandlers,
+  createAgentWsRoutes,
+  __resetCrossTenantDropsForTest,
+} from './agentWs';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
@@ -747,6 +761,7 @@ describe('agent websocket command results', () => {
 
   // M-D1: 10 cross-tenant drops within 5 min triggers warn
   it('emits cross-tenant probe warning after threshold drops (M-D1)', async () => {
+    __resetCrossTenantDropsForTest();
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
     const handlers = createAgentWsHandlers('agent-malicious', preValidatedAgent);
     const ws = wsMock();
@@ -782,6 +797,148 @@ describe('agent websocket command results', () => {
     expect(probeWarnings[0]?.[0]).toContain('agent=agent-malicious');
     expect(probeWarnings[0]?.[0]).toContain('drops=10');
     warnSpy.mockRestore();
+  });
+
+  // Task 18: 5 cross-tenant drops within 5 min auto-suspends the agent token.
+  describe('Task 18 — agent token auto-suspend on cross-tenant probe', () => {
+    it('suspends the agent token after SUSPEND_THRESHOLD (5) cross-tenant drops', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-abc', orgId: 'org-abc' };
+      const handlers = createAgentWsHandlers('agent-task18-suspend', preValidatedAgent);
+      const ws = wsMock();
+
+      // Owner mismatch: every terminal_output is for a session owned by
+      // somebody else, so each one increments the cross-tenant counter.
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+
+      // Capture the suspend UPDATE so we can assert it ran exactly once.
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Fire 5 probes — the 5th should trip the suspend.
+      for (let i = 0; i < 5; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+
+      // Let the fire-and-forget suspend microtask settle.
+      await new Promise((r) => setImmediate(r));
+
+      // The DB UPDATE fires once with the suspend columns set.
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      const updateArg = updateSet.mock.calls[0]?.[0];
+      expect(updateArg).toMatchObject({
+        agentTokenSuspendedReason: 'cross-tenant-probe',
+      });
+      expect(updateArg.agentTokenSuspendedAt).toBeInstanceOf(Date);
+
+      // Console log surfaced the suspension.
+      const suspendLogs = warnSpy.mock.calls.filter(call =>
+        typeof call[0] === 'string' && call[0].includes('auto-suspending agent token')
+      );
+      expect(suspendLogs.length).toBe(1);
+      expect(suspendLogs[0]?.[0]).toContain('device=device-abc');
+      expect(suspendLogs[0]?.[0]).toContain('drops=5');
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT suspend after only 4 drops (below the threshold)', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-not-yet', orgId: 'org-x' };
+      const handlers = createAgentWsHandlers('agent-task18-undercount', preValidatedAgent);
+      const ws = wsMock();
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      for (let i = 0; i < 4; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+
+      await new Promise((r) => setImmediate(r));
+
+      // No suspend yet — the counter is at 4, threshold is 5.
+      expect(updateSet).not.toHaveBeenCalled();
+      const suspendLogs = warnSpy.mock.calls.filter(call =>
+        typeof call[0] === 'string' && call[0].includes('auto-suspending agent token')
+      );
+      expect(suspendLogs.length).toBe(0);
+      warnSpy.mockRestore();
+    });
+
+    it('suspends only once even when probes continue past threshold', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-once', orgId: 'org-y' };
+      const handlers = createAgentWsHandlers('agent-task18-once', preValidatedAgent);
+      const ws = wsMock();
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // 15 probes — only the 5th should trip the suspend.
+      for (let i = 0; i < 15; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+
+      await new Promise((r) => setImmediate(r));
+
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
   });
 
   // H4: connection without Bearer header returns 401 (and rejects ?token=)

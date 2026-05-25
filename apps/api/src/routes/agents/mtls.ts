@@ -119,6 +119,7 @@ mtlsRoutes.post('/renew-cert', async (c) => {
         agentTokenHash: devices.agentTokenHash,
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
+        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         mtlsCertExpiresAt: devices.mtlsCertExpiresAt,
         mtlsCertCfId: devices.mtlsCertCfId,
       })
@@ -138,6 +139,12 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     : null;
 
   if (!device || !match) {
+    return c.json({ error: 'Invalid agent credentials' }, 401);
+  }
+
+  // Task 18: auto-suspended tokens fail closed at every auth gate. The
+  // suspended-reason is intentionally not surfaced to the caller.
+  if (device.agentTokenSuspendedAt) {
     return c.json({ error: 'Invalid agent credentials' }, 401);
   }
 
