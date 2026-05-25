@@ -39,3 +39,12 @@ export const OAUTH_CONSENT_URL_BASE = process.env.OAUTH_CONSENT_URL_BASE ?? '';
 export const OAUTH_JWKS_PRIVATE_JWK = process.env.OAUTH_JWKS_PRIVATE_JWK ?? '';
 export const OAUTH_JWKS_PUBLIC_JWK = process.env.OAUTH_JWKS_PUBLIC_JWK ?? '';
 export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';
+
+// Kill-switch for the role-level MFA gate (Task 8 of the launch-readiness
+// sprint). Defaults ON so the secure-by-default posture holds; ops can
+// flip it OFF without a code change to relieve an enrollment outage that
+// locks legitimate partner-admins out. Read at call time so tests and
+// runtime overrides don't need module re-evaluation.
+export function mfaForcePartnerAdmin(): boolean {
+  return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', true);
+}

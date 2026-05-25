@@ -483,6 +483,44 @@ describe('authMiddleware', () => {
 
     expect(res.status).toBe(200);
   });
+
+  // Kill-switch: MFA_FORCE_FOR_PARTNER_ADMIN=false disables the gate
+  // even for users in force_mfa roles, and short-circuits BEFORE the
+  // role lookup so a misconfigured DB can't fail the request either.
+  it('skips the gate entirely when MFA_FORCE_FOR_PARTNER_ADMIN=false', async () => {
+    const prev = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+    process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+    try {
+      const app = new Hono();
+      app.use(authMiddleware);
+      app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
+
+      vi.mocked(verifyToken).mockResolvedValue({
+        ...basePayload,
+        scope: 'partner',
+        orgId: null
+      });
+
+      vi.mocked(db.select)
+        // Only the user lookup — the role lookup must be skipped, so we
+        // intentionally do NOT mock selectWithJoinLimit. If the middleware
+        // calls db.select a second time the mock returns undefined and the
+        // test fails with a destructuring error, proving the short-circuit.
+        .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+        // computeAccessibleOrgIds (last select)
+        .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+      const res = await app.request('/api/v1/partner/me', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+    } finally {
+      if (prev === undefined) delete process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+      else process.env.MFA_FORCE_FOR_PARTNER_ADMIN = prev;
+    }
+  });
 });
 
 describe('requireScope', () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   rateLimiter,
   loginLimiter,
@@ -344,5 +344,99 @@ describe('rate-limit service', () => {
 
       expect(locked).toBe(true);
     });
+  });
+});
+
+// Env-driven overrides: covered separately because they require dynamic
+// re-import to pick up new process.env values. Setting MAX=0 disables the
+// feature entirely — the helpers must short-circuit BEFORE touching Redis
+// so a Redis outage during the disabled state can't fail requests closed.
+describe('rate-limit env overrides', () => {
+  const LOCKOUT_ENV_KEYS = [
+    'LOGIN_ACCOUNT_LOCKOUT_MAX',
+    'LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS'
+  ] as const;
+
+  const clearLockoutEnv = () => {
+    for (const k of LOCKOUT_ENV_KEYS) delete process.env[k];
+  };
+
+  beforeEach(() => {
+    clearLockoutEnv();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    clearLockoutEnv();
+  });
+
+  it('defaults ACCOUNT_LOCKOUT_MAX to 5 when unset', async () => {
+    const mod = await import('./rate-limit');
+    expect(mod.ACCOUNT_LOCKOUT_MAX).toBe(5);
+  });
+
+  it('defaults ACCOUNT_LOCKOUT_WINDOW_SECONDS to 900 when unset', async () => {
+    const mod = await import('./rate-limit');
+    expect(mod.ACCOUNT_LOCKOUT_WINDOW_SECONDS).toBe(15 * 60);
+  });
+
+  it('reads LOGIN_ACCOUNT_LOCKOUT_MAX from env', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_MAX = '10';
+    const mod = await import('./rate-limit');
+    expect(mod.ACCOUNT_LOCKOUT_MAX).toBe(10);
+  });
+
+  it('reads LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS from env', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS = '600';
+    const mod = await import('./rate-limit');
+    expect(mod.ACCOUNT_LOCKOUT_WINDOW_SECONDS).toBe(600);
+  });
+
+  it('falls back to default when env value is not a positive integer', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_MAX = 'abc';
+    process.env.LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS = '-1';
+    const mod = await import('./rate-limit');
+    expect(mod.ACCOUNT_LOCKOUT_MAX).toBe(5);
+    expect(mod.ACCOUNT_LOCKOUT_WINDOW_SECONDS).toBe(15 * 60);
+  });
+
+  it('disables recordAccountFailure when LOGIN_ACCOUNT_LOCKOUT_MAX=0 (no Redis call)', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_MAX = '0';
+    const mod = await import('./rate-limit');
+
+    const redis = {
+      get: vi.fn(),
+      incr: vi.fn(),
+      expire: vi.fn()
+    } as unknown as Redis;
+
+    const result = await mod.recordAccountFailure(redis, 'victim@example.com');
+
+    expect(result).toEqual({ count: 0, locked: false, newlyLocked: false });
+    expect((redis as any).get).not.toHaveBeenCalled();
+    expect((redis as any).incr).not.toHaveBeenCalled();
+  });
+
+  it('disables isAccountLocked when LOGIN_ACCOUNT_LOCKOUT_MAX=0 (no Redis call)', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_MAX = '0';
+    const mod = await import('./rate-limit');
+
+    const redis = { get: vi.fn() } as unknown as Redis;
+
+    const locked = await mod.isAccountLocked(redis, 'victim@example.com');
+
+    expect(locked).toBe(false);
+    expect((redis as any).get).not.toHaveBeenCalled();
+  });
+
+  it('returns disabled result on null redis when LOGIN_ACCOUNT_LOCKOUT_MAX=0 (no fail-closed)', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_MAX = '0';
+    const mod = await import('./rate-limit');
+
+    const failure = await mod.recordAccountFailure(null, 'victim@example.com');
+    expect(failure.locked).toBe(false);
+
+    const locked = await mod.isAccountLocked(null, 'victim@example.com');
+    expect(locked).toBe(false);
   });
 });

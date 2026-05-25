@@ -10,6 +10,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
+import { mfaForcePartnerAdmin } from '../config/env';
 
 export interface AuthContext {
   user: {
@@ -191,6 +192,9 @@ async function userRoleRequiresMfa(
   userId: string
 ): Promise<boolean> {
   if (scope === 'system') return false;
+  // Kill-switch: when off, skip the role lookup entirely so an enrollment
+  // outage can be relieved by ops with an env flag (no code deploy).
+  if (!mfaForcePartnerAdmin()) return false;
 
   return withSystemDbAccessContext(async () => {
     if (scope === 'organization' && orgId) {

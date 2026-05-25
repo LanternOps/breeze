@@ -85,8 +85,22 @@ export const loginLimiter: RateLimitConfig = {
 // the per-IP and per-(IP,email) limiters and survives the attacker rotating
 // IPs. Cleared on a successful login so a real user with one fat-finger
 // doesn't slowly approach a lockout over weeks of normal usage.
-export const ACCOUNT_LOCKOUT_MAX = 5;
-export const ACCOUNT_LOCKOUT_WINDOW_SECONDS = 15 * 60;
+//
+// Operator overrides: LOGIN_ACCOUNT_LOCKOUT_MAX (default 5) and
+// LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS (default 900). Setting MAX=0
+// disables the feature entirely — recordAccountFailure / isAccountLocked
+// short-circuit BEFORE touching Redis so a Redis outage during the
+// disabled state can't accidentally fail-closed and lock everyone out.
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
+}
+
+export const ACCOUNT_LOCKOUT_MAX = positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_MAX', 5);
+export const ACCOUNT_LOCKOUT_WINDOW_SECONDS = positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS', 15 * 60);
 
 function accountFailureKey(email: string): string {
   return `login:account-fail:${email.toLowerCase()}`;
@@ -114,6 +128,12 @@ export async function recordAccountFailure(
   redis: Redis | null,
   email: string
 ): Promise<AccountFailureResult> {
+  // Feature disabled (MAX=0): short-circuit before any Redis call so the
+  // null-Redis fail-closed branch below can't accidentally lock everyone
+  // out when ops have explicitly turned the feature off.
+  if (ACCOUNT_LOCKOUT_MAX <= 0) {
+    return { count: 0, locked: false, newlyLocked: false };
+  }
   if (!redis) {
     console.error('[rate-limit] Redis unavailable, failing closed on account failure for:', email);
     return { count: ACCOUNT_LOCKOUT_MAX, locked: true, newlyLocked: false };
@@ -166,6 +186,7 @@ export async function clearAccountFailures(redis: Redis | null, email: string): 
  * guessing during a Redis outage.
  */
 export async function isAccountLocked(redis: Redis | null, email: string): Promise<boolean> {
+  if (ACCOUNT_LOCKOUT_MAX <= 0) return false;
   if (!redis) {
     console.error('[rate-limit] Redis unavailable, treating account as locked for:', email);
     return true;
