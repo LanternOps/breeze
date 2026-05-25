@@ -315,6 +315,13 @@ const envSchema = z
       .string({ required_error: 'JWT_SECRET is required' })
       .min(1, 'JWT_SECRET must not be empty'),
 
+    // Optional: zero-downtime JWT signing key rotation via kid header.
+    // JSON map of kid → secret (each ≥32 chars). When set, JWT_ACTIVE_KID
+    // must select one of the kids to sign new tokens. JWT_SECRET is then
+    // retained as a verify-only fallback for legacy (no-kid) tokens.
+    JWT_SIGNING_KEYRING: z.string().optional(),
+    JWT_ACTIVE_KID: z.string().optional(),
+
     // -- E2E testing mode (must NEVER be enabled in production) ----------------
     E2E_MODE: z.string().optional(),
 
@@ -364,6 +371,76 @@ const envSchema = z
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
+
+    // --- JWT signing keyring (zero-downtime rotation) ---
+    // Validated in every environment: a malformed keyring would break auth
+    // regardless of NODE_ENV, and a silent fallback to JWT_SECRET could mask
+    // a misconfigured production deploy.
+    if (data.JWT_SIGNING_KEYRING && data.JWT_SIGNING_KEYRING.trim()) {
+      let parsed: unknown;
+      let parseOk = false;
+      try {
+        parsed = JSON.parse(data.JWT_SIGNING_KEYRING);
+        parseOk = true;
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JWT_SIGNING_KEYRING'],
+          message: 'JWT_SIGNING_KEYRING must be a JSON object of kid → secret.',
+        });
+      }
+
+      if (parseOk) {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['JWT_SIGNING_KEYRING'],
+            message: 'JWT_SIGNING_KEYRING must be a JSON object of kid → secret.',
+          });
+        } else {
+          const entries = Object.entries(parsed as Record<string, unknown>);
+          if (entries.length === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['JWT_SIGNING_KEYRING'],
+              message: 'JWT_SIGNING_KEYRING is empty. Either unset it or provide at least one kid.',
+            });
+          }
+          for (const [kid, secret] of entries) {
+            if (typeof secret !== 'string' || secret.length < 32) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['JWT_SIGNING_KEYRING'],
+                message: `JWT_SIGNING_KEYRING['${kid}'] must be a string of at least 32 characters.`,
+              });
+            }
+          }
+          if (!data.JWT_ACTIVE_KID && entries.length > 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['JWT_ACTIVE_KID'],
+              message: 'JWT_ACTIVE_KID must be set when JWT_SIGNING_KEYRING is configured.',
+            });
+          }
+          if (
+            data.JWT_ACTIVE_KID
+            && !(parsed as Record<string, unknown>)[data.JWT_ACTIVE_KID]
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['JWT_ACTIVE_KID'],
+              message: `JWT_ACTIVE_KID='${data.JWT_ACTIVE_KID}' is not present in JWT_SIGNING_KEYRING.`,
+            });
+          }
+        }
+      }
+    } else if (data.JWT_ACTIVE_KID) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_ACTIVE_KID'],
+        message: 'JWT_ACTIVE_KID is set but JWT_SIGNING_KEYRING is empty.',
+      });
+    }
 
     // MCP_LLM_PROVIDER openai-compatible: vLLM endpoint + auth + model id required at boot
     // (enforced in all environments, not just production)
@@ -696,6 +773,8 @@ export function validateConfig(): AppConfig {
     DATABASE_URL_APP: env.DATABASE_URL_APP,
     BREEZE_APP_DB_PASSWORD: env.BREEZE_APP_DB_PASSWORD,
     JWT_SECRET: env.JWT_SECRET,
+    JWT_SIGNING_KEYRING: env.JWT_SIGNING_KEYRING,
+    JWT_ACTIVE_KID: env.JWT_ACTIVE_KID,
     APP_ENCRYPTION_KEY: env.APP_ENCRYPTION_KEY,
     MFA_ENCRYPTION_KEY: env.MFA_ENCRYPTION_KEY,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,

@@ -1,6 +1,11 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SignJWT } from 'jose';
-import { createAccessToken, createRefreshToken, verifyToken, createTokenPair } from './jwt';
+import {
+  createAccessToken,
+  createRefreshToken,
+  verifyToken,
+  createTokenPair
+} from './jwt';
 
 describe('jwt service', () => {
   const testPayload = {
@@ -126,6 +131,119 @@ describe('jwt service', () => {
       expect(refreshDecoded?.type).toBe('refresh');
       expect(accessDecoded?.jti).toBeUndefined();
       expect(refreshDecoded?.jti).toBeDefined();
+    });
+  });
+
+  describe('signing keyring + kid header — zero-downtime rotation', () => {
+    let envBackup: Record<string, string | undefined>;
+    const k1Secret = 'k1-secret-must-be-at-least-32-characters-long-aaaaa';
+    const k2Secret = 'k2-secret-must-be-at-least-32-characters-long-bbbbb';
+
+    beforeEach(() => {
+      envBackup = {
+        JWT_SECRET: process.env.JWT_SECRET,
+        JWT_SIGNING_KEYRING: process.env.JWT_SIGNING_KEYRING,
+        JWT_ACTIVE_KID: process.env.JWT_ACTIVE_KID
+      };
+    });
+
+    afterEach(() => {
+      for (const [k, v] of Object.entries(envBackup)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    });
+
+    function decodeHeader(token: string): Record<string, unknown> {
+      const headerB64 = token.split('.')[0] ?? '';
+      return JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    }
+
+    it('signs with active kid in protected header', async () => {
+      delete process.env.JWT_SECRET;
+      process.env.JWT_SIGNING_KEYRING = JSON.stringify({ k1: k1Secret, k2: k2Secret });
+      process.env.JWT_ACTIVE_KID = 'k2';
+
+      const token = await createAccessToken(testPayload);
+      const header = decodeHeader(token);
+
+      expect(header.kid).toBe('k2');
+      expect(header.alg).toBe('HS256');
+
+      const decoded = await verifyToken(token);
+      expect(decoded?.sub).toBe(testPayload.sub);
+    });
+
+    it('verifies a token signed under a prior kid (rotation)', async () => {
+      process.env.JWT_SECRET = 'legacy-secret-must-be-at-least-32-chars-long-zzzz';
+      process.env.JWT_SIGNING_KEYRING = JSON.stringify({ k1: k1Secret, k2: k2Secret });
+      process.env.JWT_ACTIVE_KID = 'k1';
+
+      // Mint under k1
+      const oldToken = await createAccessToken(testPayload);
+      expect(decodeHeader(oldToken).kid).toBe('k1');
+
+      // Operator rotates: active flips to k2 (k1 stays in keyring for verify)
+      process.env.JWT_ACTIVE_KID = 'k2';
+
+      const decoded = await verifyToken(oldToken);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.sub).toBe(testPayload.sub);
+
+      const newToken = await createAccessToken(testPayload);
+      expect(decodeHeader(newToken).kid).toBe('k2');
+    });
+
+    it('rejects tokens whose kid is not in the keyring', async () => {
+      process.env.JWT_SECRET = 'legacy-secret-must-be-at-least-32-chars-long-zzzz';
+      process.env.JWT_SIGNING_KEYRING = JSON.stringify({ k1: k1Secret, k2: k2Secret });
+      process.env.JWT_ACTIVE_KID = 'k1';
+
+      // Manually craft a token with an unknown kid signed with k1's bytes —
+      // a verifier must reject it because its kid is not in the keyring.
+      const rogue = await new SignJWT({ ...testPayload, type: 'access' })
+        .setProtectedHeader({ alg: 'HS256', kid: 'unknown-kid' })
+        .setIssuedAt()
+        .setExpirationTime('15m')
+        .setIssuer('breeze')
+        .setAudience('breeze-api')
+        .sign(new TextEncoder().encode(k1Secret));
+
+      const decoded = await verifyToken(rogue);
+      expect(decoded).toBeNull();
+    });
+
+    it('verifies legacy JWT_SECRET tokens (no keyring set)', async () => {
+      delete process.env.JWT_SIGNING_KEYRING;
+      delete process.env.JWT_ACTIVE_KID;
+      // JWT_SECRET inherited from the test runner env.
+
+      const token = await createAccessToken(testPayload);
+      // Single-secret mode: no kid header.
+      expect(decodeHeader(token).kid).toBeUndefined();
+
+      const decoded = await verifyToken(token);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.sub).toBe(testPayload.sub);
+    });
+
+    it('verifies legacy-signed token after keyring is added (transition window)', async () => {
+      // Step 1: mint a token in legacy single-secret mode (no kid).
+      delete process.env.JWT_SIGNING_KEYRING;
+      delete process.env.JWT_ACTIVE_KID;
+      process.env.JWT_SECRET = 'legacy-secret-must-be-at-least-32-chars-long-zzzz';
+
+      const legacyToken = await createAccessToken(testPayload);
+      expect(decodeHeader(legacyToken).kid).toBeUndefined();
+
+      // Step 2: operator deploys keyring, keeps JWT_SECRET as fallback.
+      process.env.JWT_SIGNING_KEYRING = JSON.stringify({ k1: k1Secret });
+      process.env.JWT_ACTIVE_KID = 'k1';
+      // JWT_SECRET unchanged.
+
+      const decoded = await verifyToken(legacyToken);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.sub).toBe(testPayload.sub);
     });
   });
 });
