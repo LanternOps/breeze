@@ -611,6 +611,127 @@ describe("GET /s/:code", () => {
     const res = await app.request("/s/noplatform1");
     expect(res.status).toBe(404);
   });
+
+  // Task 32 (public HIGH-1): per-(short-code OR enrollment-key id) cap of
+  // 30/hour on the installer signing service. The per-IP 10/min cap by itself
+  // is bypassable via IP rotation; this cap binds the spend per enrollment
+  // link regardless of source IP.
+  it("returns 429 when per-short-code signing cap (30/hr) is reached, regardless of IP", async () => {
+    const shortLinkRow = makeKeyRow({
+      shortCode: "rlcode12345",
+      installerPlatform: "windows",
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+
+    // First rateLimiter call = per-short-code bucket. Block it.
+    const { rateLimiter } = await import("../services/rate-limit");
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 3_600_000),
+    });
+
+    const res = await app.request("/s/rlcode12345", {
+      headers: { "cf-connecting-ip": "198.51.100.99" },
+    });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.error).toMatch(/rate limit/i);
+
+    // Cap MUST be checked before atomic-claim — otherwise an attacker
+    // would burn usage slots even after being rate-limited.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+
+    // The bucket key must be derived from the short-code (not the IP),
+    // so IP rotation cannot reset the budget.
+    const calls = vi.mocked(rateLimiter).mock.calls;
+    const firstKey = calls[0]?.[1] as string;
+    expect(firstKey).toContain("rlcode12345");
+    expect(firstKey).not.toContain("198.51.100.99");
+  });
+
+  it("per-short-code cap uses windowed bucket (30/hour)", async () => {
+    const shortLinkRow = makeKeyRow({
+      shortCode: "rlcode22345",
+      installerPlatform: "windows",
+    });
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+
+    const { rateLimiter } = await import("../services/rate-limit");
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 29,
+      resetAt: new Date(Date.now() + 3_600_000),
+    });
+
+    await app.request("/s/rlcode22345", {
+      headers: { "cf-connecting-ip": "198.51.100.5" },
+    });
+
+    // First rateLimiter call must be the per-short-code 30/3600 bucket.
+    const calls = vi.mocked(rateLimiter).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const [, key, limit, windowSeconds] = calls[0] as [
+      unknown,
+      string,
+      number,
+      number,
+    ];
+    expect(key).toContain("rlcode22345");
+    expect(limit).toBe(30);
+    expect(windowSeconds).toBe(3600);
+  });
+
+  it("returns 503 when redis is unavailable for the per-short-code cap (fail closed)", async () => {
+    const shortLinkRow = makeKeyRow({
+      shortCode: "rlcode32345",
+      installerPlatform: "windows",
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+
+    mockGetRedis.mockReturnValueOnce(null as any);
+
+    const res = await app.request("/s/rlcode32345");
+    expect(res.status).toBe(503);
+    // No atomic claim, no child key insert.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================
@@ -837,15 +958,18 @@ describe("H6: public-installer rate limit hardening", () => {
       { headers: { "X-Forwarded-For": "5.6.7.8" } },
     );
 
-    // Both requests must use the SAME bucket key — spoofed XFF must NOT
-    // give the attacker a fresh limit per fake IP.
+    // Both requests must use the SAME per-IP bucket key — spoofed XFF must
+    // NOT give the attacker a fresh limit per fake IP.
     const calls = vi.mocked(rateLimiter).mock.calls;
     expect(calls.length).toBeGreaterThanOrEqual(2);
-    const keys = calls.map((c) => c[1] as string);
-    const distinct = new Set(keys);
+    const ipKeys = calls
+      .map((c) => c[1] as string)
+      .filter((k) => k.startsWith("public-installer:"));
+    expect(ipKeys.length).toBeGreaterThanOrEqual(2);
+    const distinct = new Set(ipKeys);
     expect(distinct.size).toBe(1);
     // Confirm we did NOT key off the spoofed IP.
-    for (const k of keys) {
+    for (const k of ipKeys) {
       expect(k).not.toContain("1.2.3.4");
       expect(k).not.toContain("5.6.7.8");
     }
@@ -887,6 +1011,60 @@ describe("H6: public-installer rate limit hardening", () => {
 
     const res = await app.request(
       `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+    expect(res.status).toBe(429);
+  });
+
+  // Task 32: per-(enrollment-key id) signing cap on the public-download path,
+  // so IP rotation cannot exhaust the signing-service budget for a single key.
+  it("checks a per-enrollment-key cap (30/hr) in addition to per-IP", async () => {
+    mockKeyLookup();
+    const { rateLimiter } = await import("../services/rate-limit");
+
+    await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    // Expect two distinct rateLimiter calls: one per-IP (10/60), one per-key
+    // (30/3600). Order isn't load-bearing — just that both buckets are hit.
+    const calls = vi.mocked(rateLimiter).mock.calls.map((c) => ({
+      key: c[1] as string,
+      limit: c[2] as number,
+      window: c[3] as number,
+    }));
+    const ipCall = calls.find(
+      (c) => c.limit === 10 && c.window === 60,
+    );
+    const keyCall = calls.find(
+      (c) => c.limit === 30 && c.window === 3600,
+    );
+    expect(ipCall).toBeDefined();
+    expect(keyCall).toBeDefined();
+    // The per-key bucket must NOT be IP-derived (so IP rotation doesn't
+    // create fresh buckets).
+    expect(keyCall!.key).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+  });
+
+  it("returns 429 when per-enrollment-key cap is reached even on a fresh IP", async () => {
+    mockKeyLookup();
+    const { rateLimiter } = await import("../services/rate-limit");
+    // Per-IP allowed, per-key blocked.
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({
+        allowed: true,
+        remaining: 9,
+        resetAt: new Date(Date.now() + 60_000),
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 3_600_000),
+      });
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+      // Spoofed IP irrelevant — production-strict mode ignores XFF.
+      { headers: { "X-Forwarded-For": "203.0.113.42" } },
     );
     expect(res.status).toBe(429);
   });

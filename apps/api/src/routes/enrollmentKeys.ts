@@ -1530,15 +1530,68 @@ enrollmentKeyRoutes.post(
 // Public routes (no auth middleware)
 // ============================================
 
+// checkInstallerSignSpend gates the (expensive) installer-signing path with
+// a per-(short-code OR enrollment-key id) bucket, on top of the per-IP cap
+// applied separately by callers. Without this, an attacker rotating source
+// IPs can exhaust the signing service / storage budget for a single key by
+// staying under the per-IP limit on each IP.
+//
+// Returns a Response on rate-limit hit or Redis failure (fail-closed), or
+// `null` to indicate "allowed — proceed with signing". 30 requests per hour
+// per bucket.
+export async function checkInstallerSignSpend(
+  c: Context,
+  bucketId: string,
+): Promise<Response | null> {
+  try {
+    const { getRedis } = await import("../services");
+    const { rateLimiter } = await import("../services/rate-limit");
+    const redis = getRedis();
+    if (!redis) {
+      console.error(
+        "[public-installer] sign-spend rate-limit unavailable: redis client missing",
+      );
+      return c.json({ error: "Service temporarily unavailable" }, 503);
+    }
+    const rateResult = await rateLimiter(
+      redis,
+      `install-sign:${bucketId}`,
+      30,
+      3600,
+    );
+    if (!rateResult.allowed) {
+      return c.json(
+        {
+          error:
+            "Installer signing rate limit reached for this enrollment link. Try again later.",
+        },
+        429,
+      );
+    }
+    return null;
+  } catch (err) {
+    console.error(
+      "[public-installer] sign-spend rate-limit check failed (failing closed):",
+      err instanceof Error ? err.message : err,
+    );
+    return c.json({ error: "Service temporarily unavailable" }, 503);
+  }
+}
+
 // serveInstaller is the shared helper for both public-download and short-link routes.
 // `rawToken` is the plaintext enrollment key to embed in the installer.
 // `keyRow`  is the already-resolved enrollment key row (for validation and usage tracking).
+// `signSpendBucketChecked` — when true, the caller has already debited the
+// per-(short-code OR enrollment-key id) signing budget (i.e. the /s/:code
+// path debited against the short code before the atomic claim). When false
+// (public-download path), we debit here using `keyRow.id` as the bucket key.
 async function serveInstaller(
   c: Context,
   keyRow: typeof enrollmentKeys.$inferSelect,
   platform: "windows" | "macos",
   rawToken: string,
   cleanupOnFailure = false,
+  signSpendBucketChecked = false,
 ): Promise<Response> {
   // Use getTrustedClientIp so spoofed `X-Forwarded-For` from untrusted
   // clients does not let an attacker open unlimited rate-limit buckets.
@@ -1577,6 +1630,13 @@ async function serveInstaller(
       err instanceof Error ? err.message : err,
     );
     return c.json({ error: "Service temporarily unavailable" }, 503);
+  }
+
+  // Per-enrollment-key signing-spend cap (30/hour). Skipped when the caller
+  // already debited the bucket against a short-code (see /s/:code).
+  if (!signSpendBucketChecked) {
+    const denied = await checkInstallerSignSpend(c, keyRow.id);
+    if (denied) return denied;
   }
 
   // Validate key is still usable
@@ -1811,6 +1871,17 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       return c.json({ error: "Not found" }, 404);
     }
 
+    // Per-short-code signing-spend cap (30/hour). Bound to the short code,
+    // not the source IP, so an attacker rotating IPs can NOT burn through
+    // the (expensive) signing-service budget for a single link.
+    //
+    // Placed AFTER the row lookup + platform validation (so requests for
+    // unknown / non-installer codes don't consume the bucket) and BEFORE the
+    // atomic usage-claim (so rate-limited requests don't burn enrollment
+    // slots either).
+    const signSpendDenied = await checkInstallerSignSpend(c, code);
+    if (signSpendDenied) return signSpendDenied;
+
     // Atomic claim: decrement usage budget with a combined WHERE that
     // includes the expiry check. If this matches zero rows, return 410
     // without ever inserting a child key.
@@ -1872,6 +1943,7 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       row.installerPlatform,
       rawToken,
       true,
+      true, // signSpendBucketChecked — debited against short code above
     );
   });
 });
