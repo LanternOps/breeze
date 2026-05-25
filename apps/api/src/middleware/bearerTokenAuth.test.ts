@@ -323,12 +323,11 @@ describe('bearerTokenAuthMiddleware', () => {
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'tenant inactive');
   });
 
-  it('maps legacy mcp:write to read/write/execute (back-compat through 2026-05-15)', async () => {
-    // Pre-split refresh tokens carried mcp:write expecting ai:execute. We
-    // continue granting ai:execute when mcp:execute is NOT also present so
-    // 14-day live refresh tokens don't silently lose tool execution.
-    const { _resetLegacyMcpWriteWarningsForTests } = await import('./bearerTokenAuth');
-    _resetLegacyMcpWriteWarningsForTests();
+  it('maps mcp:write to ai:read+ai:write only (mcp:execute is the separate scope for execute)', async () => {
+    // Post-split: mcp:write grants read+write only. Tools/list and read-only
+    // tool calls work; anything execute-shaped requires mcp:execute on the
+    // grant. (Legacy back-compat removed after 2026-05-15; live 14-day
+    // refresh tokens issued before the split have aged out.)
     const token = await mintToken({
       sub: userId,
       partner_id: partnerId,
@@ -347,7 +346,7 @@ describe('bearerTokenAuthMiddleware', () => {
       partnerId,
       name: 'OAuth bearer',
       keyPrefix: 'oauth',
-      scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write', 'ai:execute'],
+      scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write'],
       rateLimit: 1000,
       createdBy: userId,
     });
