@@ -5,10 +5,13 @@
  * per `ORG_CASCADE_DELETE_ORDER` entry that exists in this deployment,
  * plus a `manifest.json` with sha256 + rowCount per file.
  *
- * Auth: platform admin (adminRoutes middleware). MFA is NOT required
- * here — read-only access is a lower bar than destructive erasure.
- * platformAdminMiddleware already audited the request path; this
- * handler emits an additional row capturing the actual file counts.
+ * Auth: platform admin + requireMfa(). Reads the entire tenant's PII —
+ * the same blast radius as a 2-party-verified erasure for an attacker
+ * with a stolen long-lived platform-admin token. The MFA claim is set at
+ * mint and never refreshed, so requireMfa() at least proves the JWT
+ * actually carries `mfa:true` rather than being a downgraded API-only
+ * token. The fix is paired with the per-step-up flow on the roadmap;
+ * until that ships, requireMfa() is the strongest signal we can enforce.
  *
  * Buffers the whole ZIP into memory; see note in tenantExport.ts.
  */
@@ -19,10 +22,11 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema';
 import { buildOrgExportZip } from '../../services/tenantExport';
 import { captureException } from '../../services/sentry';
+import { requireMfa } from '../../middleware/auth';
 
 export const tenantExportRoutes = new Hono();
 
-tenantExportRoutes.get('/:orgId', async (c) => {
+tenantExportRoutes.get('/:orgId', requireMfa(), async (c) => {
   const orgId = c.req.param('orgId');
   // Cheap UUID guard before going to the DB.
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orgId)) {

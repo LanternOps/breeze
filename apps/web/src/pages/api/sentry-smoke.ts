@@ -3,20 +3,14 @@ import type { APIRoute } from 'astro';
 // Sentry smoke endpoint — intentionally throws so we can verify the SSR error
 // pipeline (sentry.server.config.ts) and any source-map upload after a deploy.
 //
-// Gated behind an explicit env flag in non-production so we don't accidentally
-// fire alerts from a CI smoke run or a curious dev's first `pnpm dev`. In
-// production, ops hits this once during deploy verification, sees the event in
-// Sentry, then forgets it exists.
-//
-// Disable rules:
-//   * `ENABLE_SENTRY_SMOKE=1` always enables.
-//   * Otherwise enabled only when `MODE === 'production'` (i.e. the built/served
-//     bundle), so `astro dev` returns 404 by default.
+// Strict opt-in: enabled ONLY when `ENABLE_SENTRY_SMOKE=1` is set in the
+// environment. Earlier this endpoint also auto-enabled in production builds,
+// which made it a publicly invokable unauth'd 500-on-GET endpoint by default
+// — a Sentry-quota DoS and alert-noise vector. Production verification now
+// requires ops to set the env var explicitly, hit it once, and unset it (or
+// leave it set, ack the risk, and lean on the Sentry rate limit).
 export const GET: APIRoute = async () => {
-  const enabled =
-    Boolean(import.meta.env.ENABLE_SENTRY_SMOKE) || import.meta.env.MODE === 'production';
-
-  if (!enabled) {
+  if (!import.meta.env.ENABLE_SENTRY_SMOKE) {
     return new Response('Sentry smoke endpoint disabled. Set ENABLE_SENTRY_SMOKE=1 to enable.', {
       status: 404
     });
