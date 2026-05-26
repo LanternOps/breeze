@@ -475,6 +475,12 @@ const listEnrollmentKeysSchema = z.object({
 // pending the partner-level cap (max ttl) that gates it.
 const MAX_TTL_MINUTES = 525_600;
 
+// `.strict()` on every write schema: unknown keys surface as a Zod
+// `unrecognized_keys` issue (HTTP 400 via zValidator) instead of being
+// silently dropped. A common foot-gun is a caller sending `maxUses` when
+// the canonical field is `maxUsage` — without strict mode the request
+// returned 201 with `maxUsage: 1` (the default), masking the typo.
+// Closes #945.
 const createEnrollmentKeySchema = z.object({
   orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
@@ -482,7 +488,7 @@ const createEnrollmentKeySchema = z.object({
   maxUsage: z.number().int().min(1).max(100000).optional(),
   expiresAt: z.string().datetime().optional(),
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
-}).refine(
+}).strict().refine(
   (data) => !(data.expiresAt !== undefined && data.ttlMinutes !== undefined),
   { message: 'Pass either ttlMinutes or expiresAt, not both', path: ['ttlMinutes'] }
 );
@@ -490,7 +496,7 @@ const createEnrollmentKeySchema = z.object({
 const rotateEnrollmentKeySchema = z.object({
   maxUsage: z.number().int().min(1).max(100000).nullable().optional(),
   expiresAt: z.string().datetime().optional(),
-});
+}).strict();
 
 // ttlMinutes here sets the lifetime of the *child* key — the downloaded
 // installer / shared short-link the admin actually distributes. Measured
@@ -505,7 +511,7 @@ const installerLinkSchema = z.object({
   platform: z.enum(["windows", "macos"]),
   count: z.number().int().min(1).max(100000).optional(),
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
-});
+}).strict();
 
 function sanitizeEnrollmentKey(
   enrollmentKey: typeof enrollmentKeys.$inferSelect,
@@ -1246,7 +1252,7 @@ enrollmentKeyRoutes.get(
 
 const bootstrapTokenBodySchema = z.object({
   maxUsage: z.number().int().min(1).max(1000).default(1),
-});
+}).strict();
 
 enrollmentKeyRoutes.post(
   "/:id/bootstrap-token",
