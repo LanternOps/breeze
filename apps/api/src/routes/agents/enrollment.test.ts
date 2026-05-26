@@ -226,8 +226,10 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
   });
 
   it('accepts a valid (unexpired, non-exhausted) row and does not return 401 at the lookup stage', async () => {
-    // Valid lookup → then downstream update fetch returns no row → race-lost branch.
-    // We just want to assert the 401 reason is NOT one of the three above.
+    // Valid lookup → the in-transaction claim UPDATE affects 0 rows → race-lost branch.
+    // #946: the increment used to live outside the transaction; it is now the
+    // last statement inside it, so we simulate the race by having the
+    // transaction's tx.update().returning() return [].
     mockKeyLookup({
       id: 'key-3',
       orgId: 'org-3',
@@ -238,14 +240,44 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       usageCount: 0,
     });
 
-    // Downstream update: return empty (race condition path) so we stop there
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: vi.fn().mockResolvedValue([]),
-        })),
-      })),
-    } as any);
+    mockSelectRows([{ partnerId: 'partner-3' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]); // no existing device
+
+    // Inside the transaction: device INSERT succeeds, then the consume-key
+    // UPDATE returns [] (race-lost). The route throws the sentinel and the
+    // transaction rolls back; outer catch surfaces the 401.
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-race-lost',
+              orgId: 'org-3',
+              siteId: 'site-3',
+              hostname: 'host-1',
+            }]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      return fn(fakeTx);
+    });
 
     const resp = await buildApp().request('/agents/enroll', {
       method: 'POST',
@@ -417,9 +449,11 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     // decommissioned and only its hostname is rewritten inside the
     // transaction. So we no longer queue a top-level db.update() here.
 
-    // Transaction: rename + INSERT-new. The decom-bypass-fresh-id path
-    // executes tx.update() once (to rename the old row's hostname) THEN
-    // tx.insert().returning() to create a fresh row with a new id.
+    // Transaction: rename + INSERT-new + consume-key. The decom-bypass-fresh-id
+    // path executes tx.update() to rename the old row's hostname, then
+    // tx.insert().returning() to create a fresh row with a new id, then
+    // tx.update(enrollmentKeys).set().where().returning() to consume the key
+    // (#946 — increment moved into the transaction, last statement).
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
       const fakeTx = {
         select: vi.fn().mockReturnValue({
@@ -429,7 +463,10 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
         }),
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue(undefined),
+            where: vi.fn(() => Object.assign(
+              Promise.resolve(undefined) as any,
+              { returning: vi.fn().mockResolvedValue([{ id: 'key-decom' }]) }
+            )),
           }),
         }),
         insert: vi.fn().mockReturnValue({
@@ -872,7 +909,10 @@ describe('POST /agents/enroll — manifestTrustKeys delivery (#639)', () => {
     // Step 5: existing-device lookup → empty (fresh enrollment)
     mockSelectRows([]);
 
-    // Step 6: db.transaction returns the inserted device row directly.
+    // Step 6: db.transaction runs device INSERT then the in-tx key-consume
+    // UPDATE (#946). The fake tx supports both chains:
+    //   - tx.insert(devices).values(...).returning() → new device row
+    //   - tx.update(enrollmentKeys).set(...).where(...).returning() → [{id}]
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
       const fakeTx = {
         select: vi.fn().mockReturnValue({
@@ -895,6 +935,13 @@ describe('POST /agents/enroll — manifestTrustKeys delivery (#639)', () => {
             onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
           }),
         }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'key-happy' }]),
+            }),
+          }),
+        }),
         delete: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined),
         }),
@@ -914,5 +961,269 @@ describe('POST /agents/enroll — manifestTrustKeys delivery (#639)', () => {
     expect(Array.isArray(body.manifestTrustKeys)).toBe(true);
     expect(body.manifestTrustKeys).toEqual(trustKeys);
     expect(manifestSigning.getActiveTrustKeyset).toHaveBeenCalled();
+  });
+});
+
+describe('POST /agents/enroll — enrollment key not consumed on failed device insert (#946)', () => {
+  // Issue #946: pre-fix, `enrollment_keys.usage_count` was incremented during
+  // key validation, before the device INSERT. Any post-validation failure
+  // (hostname collision, device-limit, suspended-decom-token, etc.) would
+  // silently burn a single-use key without ever creating a device — leaving
+  // the customer with an exhausted key and no enrolled host.
+  //
+  // Post-fix: the increment is the last statement inside the device
+  // transaction. Failures roll back the device INSERT *and* the increment
+  // atomically; a successful enrollment is the only path that bumps the
+  // counter.
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('does NOT call db.update(enrollment_keys) on the hostname-collision 409 path', async () => {
+    // maxUsage: 1, usageCount: 0 — a single-use key. The hostname-collision
+    // path returns 409 BEFORE the transaction opens. The buggy code path
+    // would have bumped usage_count to 1 here (now permanently exhausted).
+    // The fix never touches the row.
+    mockKeyLookup({
+      id: 'key-once',
+      orgId: 'org-once',
+      siteId: 'site-once',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-once' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    // Existing device row in a status that triggers a hostname-collision 409
+    mockSelectRows([{
+      id: 'device-collision',
+      status: 'online',
+      agentTokenHash: 'someone-elses-token',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+    }]);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(409);
+    const body = await resp.json();
+    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
+
+    // The fix: db.update was never invoked (no standalone pre-insert
+    // increment, no transaction opened). Pre-fix, db.update would have
+    // been called exactly once to bump usage_count.
+    expect(db.update).not.toHaveBeenCalled();
+    // And no transaction was opened, so the in-tx consume never ran either.
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call db.update(enrollment_keys) on the suspended-decom-token 409 path', async () => {
+    // Another failure path that previously consumed the key — a decommissioned
+    // row whose token was probe-suspended. The route returns 409 before any
+    // device write, and the fix means the counter is untouched.
+    mockKeyLookup({
+      id: 'key-suspended',
+      orgId: 'org-suspended',
+      siteId: 'site-suspended',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-suspended' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-suspended',
+      status: 'decommissioned',
+      agentTokenHash: 'old-hash',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: new Date('2026-05-25T12:00:00Z'),
+    }]);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(409);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('consumes the key ONLY inside the device transaction on the success path', async () => {
+    // Happy path: lookup → org/partner → no existing device → transaction
+    // opens → INSERT new device → consume key inside the same tx → 201.
+    // Asserts that the standalone pre-insert db.update is gone (it would
+    // have been called exactly once before the device write), and that the
+    // tx-internal update of enrollment_keys WAS called (the new location).
+    mockKeyLookup({
+      id: 'key-success',
+      orgId: 'org-success',
+      siteId: 'site-success',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-success' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]); // no existing device
+
+    let txUpdateCalls = 0;
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-success',
+              orgId: 'org-success',
+              siteId: 'site-success',
+              hostname: 'host-1',
+            }]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          }),
+        }),
+        update: vi.fn(() => {
+          txUpdateCalls += 1;
+          return {
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'key-success' }]),
+              }),
+            }),
+          };
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    // The standalone pre-insert UPDATE is gone — db.update (the top-level
+    // mock) is never called.
+    expect(db.update).not.toHaveBeenCalled();
+    // The transaction's tx.update WAS called exactly once: to consume the key.
+    expect(txUpdateCalls).toBe(1);
+  });
+
+  it('rolls back the key consume when the in-transaction claim loses the TOCTOU race', async () => {
+    // Race scenario: lookup observed maxUsage > usageCount, device INSERT
+    // succeeded, but a concurrent enrollment drained the last slot before
+    // we got to the consume step. The in-tx UPDATE returns 0 rows; the
+    // route throws the sentinel and the transaction rolls back. Device
+    // INSERT is undone; counter unchanged. Response is 401
+    // enrollment_key_race_lost (same wire-format as before the move).
+    mockKeyLookup({
+      id: 'key-race',
+      orgId: 'org-race',
+      siteId: 'site-race',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 1,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-race' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]); // no existing device
+
+    let txUpdateReturnedZero = false;
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-race',
+              orgId: 'org-race',
+              siteId: 'site-race',
+              hostname: 'host-1',
+            }]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn(() => {
+                txUpdateReturnedZero = true;
+                return Promise.resolve([]);
+              }),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      // The real Postgres transaction would re-throw the sentinel and
+      // rollback. We propagate the throw so the outer route handler
+      // catches it and surfaces the 401.
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(401);
+    const body = await resp.json();
+    expect(body.reason).toBe('enrollment_key_race_lost');
+    expect(txUpdateReturnedZero).toBe(true);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ reason: 'enrollment_key_race_lost' }),
+        result: 'denied',
+      })
+    );
+  });
+
+  it('does not increment for bogus keys — 401 enrollment_key_not_found writes nothing', async () => {
+    // Anti-goal guard: the validation itself must remain eager. A bogus
+    // key 401s without any DB write (no lookup-row, no update, no txn).
+    mockKeyLookup(undefined);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(401);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });
