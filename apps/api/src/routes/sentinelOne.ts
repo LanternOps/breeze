@@ -19,6 +19,12 @@ import {
   getActiveS1IntegrationForOrg
 } from '../services/sentinelOne/actions';
 import { escapeLike } from '../utils/sql';
+import { checkSsrfSafe } from '../services/ssrfGuard';
+
+// SentinelOne deploys as managed SaaS only. Per-tenant management consoles
+// use the .sentinelone.net suffix (e.g. usea1-partners.sentinelone.net).
+// Any tenant-supplied URL pointing elsewhere is treated as SSRF.
+const S1_HOSTNAME_ALLOWLIST = ['.sentinelone.net'] as const;
 
 export const sentinelOneRoutes = new Hono();
 sentinelOneRoutes.use('*', authMiddleware);
@@ -103,13 +109,18 @@ function resolveOrgId(
 const integrationUpsertSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
-  managementUrl: z.string().url().max(2_000).refine((value) => {
-    try {
-      return new URL(value).protocol === 'https:';
-    } catch {
-      return false;
+  managementUrl: z.string().url().max(2_000).superRefine((value, ctx) => {
+    const result = checkSsrfSafe(value, {
+      mode: 'strict-https',
+      hostnameAllowlist: S1_HOSTNAME_ALLOWLIST,
+    });
+    if (!result.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `managementUrl rejected: ${result.reason}`,
+      });
     }
-  }, { message: 'managementUrl must use HTTPS' }),
+  }),
   apiToken: z.string().max(10_000).optional(),
   isActive: z.boolean().optional()
 });

@@ -237,7 +237,7 @@ describe('admin/abuse — auth gate', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'long enough reason here' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'long enough reason here' }),
     });
     expect(res.status).toBe(403);
     expect(createAuditLog).not.toHaveBeenCalled();
@@ -249,7 +249,7 @@ describe('admin/abuse — auth gate', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'long enough reason here' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'long enough reason here' }),
     });
     expect(res.status).toBe(403);
   });
@@ -259,9 +259,36 @@ describe('admin/abuse — auth gate', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'short' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'short' }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('400s when confirmEmail is missing (anti-typo gate)', async () => {
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'cross-region account farming detected' }),
+    });
+    expect(res.status).toBe(400);
+    expect(revokeAllUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('400s when confirmEmail does not match the caller account', async () => {
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirmEmail: 'someone-else@breeze.test',
+        reason: 'cross-region account farming detected',
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('confirmEmail');
+    expect(revokeAllUserTokens).not.toHaveBeenCalled();
   });
 
   it('platform admin gate is enforced on /unsuspend as well', async () => {
@@ -281,7 +308,7 @@ describe('admin/abuse — auth gate', () => {
     const res = await app.request('/admin/partners/missing/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'this is a long enough reason' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'this is a long enough reason' }),
     });
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
@@ -313,7 +340,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'cross-region account farming detected' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'cross-region account farming detected' }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -381,7 +408,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'self-suspend prevention test case' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'self-suspend prevention test case' }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { userCount: number };
@@ -400,7 +427,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'redis-down silent failure regression' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'redis-down silent failure regression' }),
     });
     expect(res.status).toBe(500);
     const body = (await res.json()) as {
@@ -426,7 +453,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'audit failure must not undo suspend' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'audit failure must not undo suspend' }),
     });
     // Suspend committed, JWTs revoked — losing the audit row is recoverable.
     // We still report success so the operator UI doesn't go red on something
@@ -449,7 +476,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'oauth revocation regression coverage' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'oauth revocation regression coverage' }),
     });
     expect(res.status).toBe(200);
 
@@ -478,7 +505,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'redis-down oauth revocation regression' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'redis-down oauth revocation regression' }),
     });
     expect(res.status).toBe(500);
     const body = (await res.json()) as {
@@ -506,7 +533,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'oauth-only revocation path coverage' }),
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'oauth-only revocation path coverage' }),
     });
     expect(res.status).toBe(200);
 

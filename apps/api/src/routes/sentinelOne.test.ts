@@ -184,6 +184,34 @@ describe('sentinel one routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects management URLs not on the sentinelone.net allowlist (SSRF)', async () => {
+    const res = await app.request('/s1/integration', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'SentinelOne Prod',
+        managementUrl: 'https://internal-vault.cluster.local/',
+        apiToken: 'token'
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects management URLs pointing at cloud-metadata (SSRF)', async () => {
+    const res = await app.request('/s1/integration', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'SentinelOne Prod',
+        managementUrl: 'https://169.254.169.254/latest/meta-data/',
+        apiToken: 'token'
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it('requires token re-entry when changing the SentinelOne management host', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({

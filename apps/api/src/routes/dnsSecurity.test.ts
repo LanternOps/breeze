@@ -138,4 +138,70 @@ describe('dns security routes', () => {
 
     expect(res.status).toBe(403);
   });
+
+  it('rejects pihole apiEndpoint pointing at cloud-metadata (SSRF)', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'pihole',
+        name: 'Pi-hole',
+        apiKey: 'api-key-123',
+        config: { apiEndpoint: 'http://169.254.169.254/admin' }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects adguard_home apiEndpoint pointing at loopback (SSRF)', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'adguard_home',
+        name: 'AdGuard Home',
+        apiKey: 'admin',
+        apiSecret: 'pw',
+        config: { apiEndpoint: 'http://127.0.0.1:3000' }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects cloudflare apiEndpoint pointing off the cloudflare.com allowlist (SSRF)', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'cloudflare',
+        name: 'Cloudflare DNS',
+        apiKey: 'api-key-123',
+        config: { accountId: 'acct-123', apiEndpoint: 'https://internal-vault.cluster.local/' }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts pihole apiEndpoint on RFC1918 (legitimate on-prem)', async () => {
+    // We don't expect this to succeed end-to-end (the DB insert isn't mocked
+    // here) — just that validation doesn't reject the URL as SSRF.
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'pihole',
+        name: 'Pi-hole',
+        apiKey: 'api-key-123',
+        config: { apiEndpoint: 'http://192.168.1.50' }
+      })
+    });
+
+    // Anything other than 400 means the URL passed validation. The downstream
+    // DB layer isn't mocked, so a 500 is also acceptable here — the assertion
+    // is that we didn't reject at validation time.
+    expect(res.status).not.toBe(400);
+  });
 });

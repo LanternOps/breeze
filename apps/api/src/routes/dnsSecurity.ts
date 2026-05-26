@@ -21,6 +21,23 @@ import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
+import { checkSsrfSafe, type SsrfMode } from '../services/ssrfGuard';
+
+// Per-provider URL guard mode.
+//
+// - umbrella / cloudflare / dnsfilter accept apiEndpoint mostly as a no-op
+//   (they default to a known vendor URL) but a malicious override should
+//   still be vendor-shaped + HTTPS-only.
+// - pihole / adguard_home are on-prem appliances and tenants legitimately
+//   point them at RFC1918 addresses. We still block loopback/link-local/
+//   metadata to prevent self-targeting the API container.
+const SSRF_MODE_BY_PROVIDER: Record<string, { mode: SsrfMode; allowlist?: readonly string[] }> = {
+  umbrella: { mode: 'strict-https', allowlist: ['.umbrella.com', '.opendns.com', '.cisco.com'] },
+  cloudflare: { mode: 'strict-https', allowlist: ['.cloudflare.com'] },
+  dnsfilter: { mode: 'strict-https', allowlist: ['.dnsfilter.com'] },
+  pihole: { mode: 'on-prem-http' },
+  adguard_home: { mode: 'on-prem-http' },
+};
 
 const dnsSecurityRoutes = new Hono();
 
@@ -174,6 +191,26 @@ const createIntegrationSchema = z.object({
         path: ['apiSecret'],
         message: 'apiSecret (HTTP Basic auth password) is required for AdGuard Home'
       });
+    }
+  }
+
+  // SSRF guard — block tenant-supplied URLs that point at loopback,
+  // link-local (cloud metadata), or in strict-mode at private/RFC1918
+  // ranges. Per-provider mode is configured in SSRF_MODE_BY_PROVIDER.
+  if (data.config?.apiEndpoint) {
+    const guard = SSRF_MODE_BY_PROVIDER[data.provider];
+    if (guard) {
+      const result = checkSsrfSafe(data.config.apiEndpoint, {
+        mode: guard.mode,
+        hostnameAllowlist: guard.allowlist,
+      });
+      if (!result.ok) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['config', 'apiEndpoint'],
+          message: `apiEndpoint rejected: ${result.reason}`,
+        });
+      }
     }
   }
 });

@@ -59,7 +59,10 @@ provisionRoutes.post(
     const data = c.req.valid('json');
 
     // ----------- auth: caller must be able to see the target org -----------
-    if (typeof auth.canAccessOrg === 'function' && !auth.canAccessOrg(data.orgId)) {
+    // canAccessOrg is always populated by authMiddleware; the prior `typeof
+    // === 'function'` guard silently fell open if it were ever missing. We
+    // require it to be present and use it directly — fail-closed instead.
+    if (!auth.canAccessOrg(data.orgId)) {
       return c.json({ error: 'Caller does not have access to target organization' }, 403);
     }
 

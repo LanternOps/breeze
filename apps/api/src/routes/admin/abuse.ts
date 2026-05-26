@@ -17,8 +17,19 @@ import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
+import { requireMfa } from '../../middleware/auth';
 
 export const abuseRoutes = new Hono();
+
+// confirmEmail must match the caller's account email on suspend — same
+// anti-typo gate as POST /admin/tenant-erasure. Suspend queues
+// self_uninstall on every device under the partner; re-enrollment from
+// scratch is the only recovery path, so a fat-finger on /partners/:id
+// is catastrophic. Unsuspend is reversible — only the reason matters.
+const suspendSchema = z.object({
+  confirmEmail: z.string().email(),
+  reason: z.string().trim().min(10, 'reason must be at least 10 characters'),
+});
 
 const reasonSchema = z.object({
   reason: z.string().trim().min(10, 'reason must be at least 10 characters'),
@@ -26,11 +37,18 @@ const reasonSchema = z.object({
 
 abuseRoutes.post(
   '/partners/:id/suspend-for-abuse',
-  zValidator('json', reasonSchema),
+  requireMfa(),
+  zValidator('json', suspendSchema),
   async (c) => {
-    const partnerId = c.req.param('id');
-    const { reason } = c.req.valid('json');
     const auth = c.get('auth');
+    const { reason, confirmEmail } = c.req.valid('json');
+    if (confirmEmail.trim().toLowerCase() !== auth.user.email.trim().toLowerCase()) {
+      return c.json(
+        { error: 'confirmEmail must match your account email' },
+        400,
+      );
+    }
+    const partnerId = c.req.param('id');
     const callerId = auth.user.id;
 
     const result = await withSystemDbAccessContext(async () => {
