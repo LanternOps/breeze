@@ -25,7 +25,7 @@ vi.mock('../services', () => ({
   isUserTokenRevoked: vi.fn().mockResolvedValue(false),
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined),
   isRefreshTokenJtiRevoked: vi.fn().mockResolvedValue(false),
-  revokeRefreshTokenJti: vi.fn().mockResolvedValue(undefined),
+  revokeRefreshTokenJti: vi.fn().mockResolvedValue(true),
   // Task 7: refresh-token family revocation helpers. Default mock behaviour
   // mirrors a healthy "no reuse, no revocation" path so existing /refresh
   // tests continue to assert success on the happy path.
@@ -1178,6 +1178,48 @@ describe('auth routes', () => {
           'Content-Type': 'application/json',
           'x-breeze-csrf': 'test-csrf-token',
           Cookie: 'breeze_refresh_token=revoked-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects when a concurrent /refresh already claimed the jti (SET NX miss)', async () => {
+      // revokeRefreshTokenJti returning false means another caller won the
+      // atomic claim. The losing /refresh MUST NOT mint a new pair — exactly
+      // the TOCTOU the SET-NX wiring closes.
+      vi.mocked(revokeRefreshTokenJti).mockResolvedValueOnce(false);
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: null,
+        orgId: null,
+        partnerId: null,
+        scope: 'system',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-race'
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'test@example.com',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=racing-refresh-token; breeze_csrf_token=test-csrf-token'
         }
       });
 

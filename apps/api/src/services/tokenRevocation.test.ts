@@ -16,7 +16,7 @@ import {
 
 const mockGetRedis = vi.mocked(getRedis);
 
-function createMockRedis(overrides: Partial<Record<'get' | 'setex' | 'multi', unknown>> = {}) {
+function createMockRedis(overrides: Partial<Record<'get' | 'set' | 'setex' | 'multi', unknown>> = {}) {
   const mockMulti = {
     setex: vi.fn().mockReturnThis(),
     exec: vi.fn().mockResolvedValue([[null, 'OK'], [null, 'OK']])
@@ -25,6 +25,7 @@ function createMockRedis(overrides: Partial<Record<'get' | 'setex' | 'multi', un
   return {
     redis: {
       get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue('OK'),
       setex: vi.fn().mockResolvedValue('OK'),
       multi: vi.fn(() => mockMulti),
       ...overrides
@@ -330,22 +331,36 @@ describe('tokenRevocation', () => {
       );
     });
 
-    it('sets the revoked key with correct TTL', async () => {
+    it('claims the revocation atomically with SET NX EX', async () => {
       const { redis } = createMockRedis();
       mockGetRedis.mockReturnValue(redis);
 
-      await revokeRefreshTokenJti('jti-abc');
+      const won = await revokeRefreshTokenJti('jti-abc');
 
-      expect(redis.setex).toHaveBeenCalledWith(
+      expect(won).toBe(true);
+      expect(redis.set).toHaveBeenCalledWith(
         'token:refresh:revoked:jti-abc',
+        '1',
+        'EX',
         7 * 24 * 60 * 60, // REFRESH_TOKEN_REVOCATION_TTL_SECONDS
-        '1'
+        'NX'
       );
     });
 
-    it('re-throws when redis.setex() fails', async () => {
+    it('returns false when another caller already claimed the jti (NX miss)', async () => {
       const { redis } = createMockRedis({
-        setex: vi.fn().mockRejectedValue(new Error('READONLY'))
+        set: vi.fn().mockResolvedValue(null)
+      });
+      mockGetRedis.mockReturnValue(redis);
+
+      const won = await revokeRefreshTokenJti('jti-abc');
+
+      expect(won).toBe(false);
+    });
+
+    it('re-throws when redis.set() fails', async () => {
+      const { redis } = createMockRedis({
+        set: vi.fn().mockRejectedValue(new Error('READONLY'))
       });
       mockGetRedis.mockReturnValue(redis);
 

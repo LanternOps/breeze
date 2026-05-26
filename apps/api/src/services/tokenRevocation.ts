@@ -130,14 +130,38 @@ export async function isRefreshTokenJtiRevoked(jti: string): Promise<boolean> {
   }
 }
 
-export async function revokeRefreshTokenJti(jti: string): Promise<void> {
+/**
+ * Atomically claim revocation of a refresh-token jti.
+ *
+ * Returns `true` when this caller won the claim (the key did not exist and we
+ * just wrote it), `false` when another caller — typically a concurrent /refresh
+ * racing on the same cookie — already revoked the jti.
+ *
+ * The /refresh hot path MUST treat `false` as a concurrent-refresh signal and
+ * refuse to mint a new pair. An unconditional SETEX would let both racers
+ * believe they were the first to revoke, leaving two parallel valid descendant
+ * chains on the same family for up to the refresh TTL. This is exactly the
+ * TOCTOU the family-revocation scheme was meant to close.
+ *
+ * Throws only on Redis unavailability or write errors. Idempotent at the
+ * Redis-key level: re-claiming an already-claimed jti returns `false` without
+ * extending the TTL (`NX` skips writes for existing keys).
+ */
+export async function revokeRefreshTokenJti(jti: string): Promise<boolean> {
   const redis = getRedis();
   if (!redis) {
     throw new Error('[token-revocation] Redis unavailable — cannot revoke refresh token');
   }
 
   try {
-    await redis.setex(getRevokedRefreshKey(jti), REFRESH_TOKEN_REVOCATION_TTL_SECONDS, '1');
+    const result = await redis.set(
+      getRevokedRefreshKey(jti),
+      '1',
+      'EX',
+      REFRESH_TOKEN_REVOCATION_TTL_SECONDS,
+      'NX'
+    );
+    return result === 'OK';
   } catch (error) {
     console.error('[token-revocation] Failed to revoke refresh token:', error);
     throw error;

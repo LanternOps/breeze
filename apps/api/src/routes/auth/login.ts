@@ -618,12 +618,23 @@ loginRoutes.post('/refresh', async (c) => {
   // Task 7: revoke the OLD jti BEFORE minting the new token, not after. This
   // closes a TOCTOU window — a concurrent /refresh racing on the same cookie
   // would otherwise both see "jti not revoked" and both mint new pairs.
-  // Revocation failing means we must NOT issue a new cookie (the attacker's
-  // window stays open if revocation didn't stick).
+  // Revocation failing OR the claim being lost to a concurrent /refresh means
+  // we must NOT issue a new cookie. `revokeRefreshTokenJti` returns false when
+  // the jti was already claimed (NX failed) — that proves another /refresh
+  // raced us, so the legitimate path is to refuse and let the loser retry.
+  let claimedRevocation: boolean;
   try {
-    await revokeRefreshTokenJti(payload.jti);
+    claimedRevocation = await revokeRefreshTokenJti(payload.jti);
   } catch (error) {
     console.error('[auth] Refusing to mint refresh token — old jti revocation failed:', error);
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+  if (!claimedRevocation) {
+    // Another /refresh already revoked this jti. Either the legitimate client
+    // double-fired the same cookie (e.g. React strict-mode) or an attacker is
+    // racing us. Both branches must refuse — only one new token pair can exist
+    // per old jti, and we are not the winner.
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
