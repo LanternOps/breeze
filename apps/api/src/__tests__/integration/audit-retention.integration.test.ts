@@ -108,6 +108,49 @@ describe('audit-log retention pruning', () => {
     expect(second.errors).toBe(0);
   });
 
+  // Regression guard: pruning must re-anchor the surviving chain so the
+  // verifier still passes. Without the re-anchor, the new oldest row's
+  // prev_checksum still references a deleted row and the verifier flags
+  // it as a tamper.
+  it('re-anchors the hash chain after pruning so audit_log_verify_chain passes', async () => {
+    await getTestDb().execute(sql`
+      INSERT INTO audit_retention_policies (org_id, retention_days)
+      VALUES (${orgId}, 30)
+    `);
+
+    // Three rows: two old (will be pruned), one recent (will survive and
+    // become the new chain head).
+    await getTestDb().execute(sql`
+      INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
+      VALUES
+        (${orgId}, 'system', gen_random_uuid(), 'a', 'test', 'success', now() - interval '90 days'),
+        (${orgId}, 'system', gen_random_uuid(), 'b', 'test', 'success', now() - interval '60 days'),
+        (${orgId}, 'system', gen_random_uuid(), 'c', 'test', 'success', now() - interval '5 days')
+    `);
+
+    // Sanity: pre-prune the verifier sees a clean chain.
+    const preBreaks = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM audit_log_verify_chain(${orgId})`,
+    )) as unknown as Array<{ n: number }>;
+    expect(preBreaks[0]?.n).toBe(0);
+
+    const stats = await pruneExpiredAuditLogs();
+    expect(stats.rowsDeleted).toBe(2);
+    expect(stats.errors).toBe(0);
+
+    const survivors = (await getTestDb().execute(sql`
+      SELECT prev_checksum FROM audit_logs WHERE org_id = ${orgId}
+    `)) as unknown as Array<{ prev_checksum: string | null }>;
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]?.prev_checksum).toBeNull();
+
+    // The actual point of the test: the verifier must return zero breaks.
+    const postBreaks = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM audit_log_verify_chain(${orgId})`,
+    )) as unknown as Array<{ n: number }>;
+    expect(postBreaks[0]?.n).toBe(0);
+  });
+
   // Regression guard: the bypass GUC must default to off. Without
   // setting it, `breeze_app` (even with the audit_admin role membership)
   // must still see the trigger fire on DELETE.

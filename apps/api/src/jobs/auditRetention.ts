@@ -126,6 +126,38 @@ export async function pruneExpiredAuditLogs(): Promise<RetentionStats> {
           : typeof raw.count === 'number'
             ? raw.count
             : Array.isArray(result) ? (result as unknown[]).length : 0;
+
+        // Re-anchor the chain. After the DELETE the new oldest surviving
+        // row still carries prev_checksum pointing at the deleted row,
+        // which makes audit_log_verify_chain flag it as a break the next
+        // morning — defeating the entire tamper-detection signal.
+        //
+        // Find the new chain head per org and rewrite prev_checksum to
+        // NULL + checksum to the canonical hash with prev=NULL. The
+        // WHERE filter on the existing prev_checksum makes this a no-op
+        // when no rows were deleted (oldest row's prev_checksum already
+        // NULL) and avoids unnecessary writes on idempotent reruns.
+        if (count > 0) {
+          await dbModule.db.execute(sql`
+            WITH head AS (
+              SELECT a.*
+              FROM audit_logs a
+              WHERE a.org_id IS NOT DISTINCT FROM ${policy.org_id}
+              ORDER BY a.timestamp, a.id
+              LIMIT 1
+            )
+            UPDATE audit_logs
+            SET prev_checksum = NULL,
+                checksum = encode(
+                  sha256(audit_log_canonical_payload(head, NULL)::bytea),
+                  'hex'
+                )
+            FROM head
+            WHERE audit_logs.id = head.id
+              AND head.prev_checksum IS NOT NULL
+          `);
+        }
+
         return count;
       });
 
