@@ -88,13 +88,13 @@ importers:
         version: 9.3.2
       '@hono/node-server':
         specifier: ^1.19.14
-        version: 1.19.14(hono@4.12.19)
+        version: 1.19.14(hono@4.12.23)
       '@hono/node-ws':
         specifier: ^1.3.1
-        version: 1.3.1(@hono/node-server@1.19.14(hono@4.12.19))(hono@4.12.19)
+        version: 1.3.1(@hono/node-server@1.19.14(hono@4.12.23))(hono@4.12.23)
       '@hono/zod-validator':
         specifier: ^0.8.0
-        version: 0.8.0(hono@4.12.19)(zod@3.25.76)
+        version: 0.8.0(hono@4.12.23)(zod@3.25.76)
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
@@ -120,8 +120,8 @@ importers:
         specifier: ^13.7.0
         version: 13.7.0
       hono:
-        specifier: ^4.12.19
-        version: 4.12.19
+        specifier: ^4.12.23
+        version: 4.12.23
       ioredis:
         specifier: ^5.10.1
         version: 5.10.1
@@ -6182,8 +6182,8 @@ packages:
   dayjs@1.11.19:
     resolution: {integrity: sha512-t5EcLVS6QPBNqM2z8fakk/NKel+Xzshgt8FFKAn+qwlD1pzZWxh0nVCrvFK7ZDb6XucZeF9z8C7CBWTRIVApAw==}
 
-  dayjs@1.11.20:
-    resolution: {integrity: sha512-YbwwqR/uYpeoP4pu043q+LTDLFBLApUP6VxRihdfNTqu4ubqMlGDLd6ErXhEgsyvY0K6nCs7nggYumAN+9uEuQ==}
+  dayjs@1.11.21:
+    resolution: {integrity: sha512-98IT+HOahAisibz/yjKbzuOBwYcjJ7BCLPzARyHiyEBmRz4fatF+KPJszEHXsGYjUG234aH/cOjW1wwTbKUZlA==}
 
   debug@2.6.9:
     resolution: {integrity: sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==}
@@ -6346,8 +6346,8 @@ packages:
   dompurify@3.4.0:
     resolution: {integrity: sha512-nolgK9JcaUXMSmW+j1yaSvaEaoXYHwWyGJlkoCTghc97KgGDDSnpoU/PlEnw63Ah+TGKFOyY+X5LnxaWbCSfXg==}
 
-  dompurify@3.4.5:
-    resolution: {integrity: sha512-OrwIBKsdNSVEeubdJ1HBv/wNENRM9ytAVCv7YXt//A3vPdVMNuACRqK9mXCGCBW2ln7BT/A4X0jXHo2Gu89miA==}
+  dompurify@3.4.6:
+    resolution: {integrity: sha512-+7gzEI8trIIQkVCvQ3ucGtNfH3nOmDgVTzc62rAAOlMxLth78pwpPoZCPc7CyRzAQF89MqcfPdEWkDwnjgqktg==}
 
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
@@ -7274,8 +7274,8 @@ packages:
   hoist-non-react-statics@3.3.2:
     resolution: {integrity: sha512-/gGivxi8JPKWNm/W0jSmzcMPpfpPLc3dY/6GxhX2hQ9iGj3aDfklV4ET7NjKpSinLpJ5vafa9iiGIEZg10SfBw==}
 
-  hono@4.12.19:
-    resolution: {integrity: sha512-xa3eYXYXx68XTT4hZ7dRzsXBhaq85ToSrlUJNoR0gwz/1Ap/CNwX47wfvV7pc/xWhjKVVkLT7zBJy8chhNguqQ==}
+  hono@4.12.23:
+    resolution: {integrity: sha512-eIaZ9qDgu7XV0pxOCrg7/WhnQ6Ivm22UcxhXx/A3dcbqbbYgBEkc6e/J/s7j2tS96zoB0S9VBdLwQNCWwUo4LA==}
     engines: {node: '>=16.9.0'}
 
   hosted-git-info@7.0.2:
@@ -13710,22 +13710,22 @@ snapshots:
       '@hapi/hoek': 9.3.0
     optional: true
 
-  '@hono/node-server@1.19.14(hono@4.12.19)':
+  '@hono/node-server@1.19.14(hono@4.12.23)':
     dependencies:
-      hono: 4.12.19
+      hono: 4.12.23
 
-  '@hono/node-ws@1.3.1(@hono/node-server@1.19.14(hono@4.12.19))(hono@4.12.19)':
+  '@hono/node-ws@1.3.1(@hono/node-server@1.19.14(hono@4.12.23))(hono@4.12.23)':
     dependencies:
-      '@hono/node-server': 1.19.14(hono@4.12.19)
-      hono: 4.12.19
+      '@hono/node-server': 1.19.14(hono@4.12.23)
+      hono: 4.12.23
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.8.0(hono@4.12.19)(zod@3.25.76)':
+  '@hono/zod-validator@0.8.0(hono@4.12.23)(zod@3.25.76)':
     dependencies:
-      hono: 4.12.19
+      hono: 4.12.23
       zod: 3.25.76
 
   '@hookform/resolvers@5.2.2(react-hook-form@7.75.0(react@19.2.6))':
@@ -17748,7 +17748,7 @@ snapshots:
 
   dayjs@1.11.19: {}
 
-  dayjs@1.11.20:
+  dayjs@1.11.21:
     optional: true
 
   debug@2.6.9:
@@ -17867,7 +17867,7 @@ snapshots:
       '@types/trusted-types': 2.0.7
     optional: true
 
-  dompurify@3.4.5:
+  dompurify@3.4.6:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
@@ -19100,7 +19100,7 @@ snapshots:
     dependencies:
       react-is: 16.13.1
 
-  hono@4.12.19: {}
+  hono@4.12.23: {}
 
   hosted-git-info@7.0.2:
     dependencies:
@@ -19823,7 +19823,7 @@ snapshots:
   logkitty@0.7.1:
     dependencies:
       ansi-fragments: 0.2.1
-      dayjs: 1.11.20
+      dayjs: 1.11.21
       yargs: 15.4.1
     optional: true
 
@@ -20976,7 +20976,7 @@ snapshots:
 
   monaco-editor@0.55.1:
     dependencies:
-      dompurify: 3.4.5
+      dompurify: 3.4.6
       marked: 14.0.0
 
   mrmime@2.0.1: {}
