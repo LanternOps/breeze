@@ -6,6 +6,8 @@ import { authMiddleware, requirePermission } from '../middleware/auth';
 import { API_VERSION } from '../version';
 import { PERMISSIONS } from '../services/permissions';
 import { envFlag } from '../utils/envFlag';
+import { semverCompare } from '@breeze/shared';
+import { getLatestVersion } from '../services/latestVersion';
 
 export const systemRoutes = new Hono();
 const requireSystemConfigRead = requirePermission(
@@ -15,9 +17,17 @@ const requireSystemConfigRead = requirePermission(
 
 systemRoutes.use('*', authMiddleware);
 
-// GET /system/version — returns the current API version
 systemRoutes.get('/version', async (c) => {
-  return c.json({ version: API_VERSION });
+  const { latest, fetchedAt, source } = await getLatestVersion();
+  const cmp = latest ? semverCompare(API_VERSION, latest) : null;
+  const isStale = cmp !== null && cmp < 0;
+  return c.json({
+    version: API_VERSION,
+    latest,
+    isStale,
+    latestFetchedAt: fetchedAt.toISOString(),
+    latestSource: source,
+  });
 });
 
 // GET /system/config-status — read-only view of env-driven feature status (no secrets)

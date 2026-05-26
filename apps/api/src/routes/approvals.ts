@@ -7,9 +7,9 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { aiToolExecutions } from '../db/schema/ai';
-import { oauthGrants, oauthRefreshTokens } from '../db/schema/oauth';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
+import { revokeUserOauthClient } from './lifecycle';
 
 export const approvalRoutes = new Hono();
 
@@ -187,37 +187,28 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
   }
 
   // Revoke the requesting OAuth client (grant + refresh tokens) for this user.
-  // TODO(lifecycle): a parallel agent is adding a `revoked_at` column on
-  // `oauth_grants` for soft-revoke + audit history. Until that lands we delete
-  // the grant row outright (oidc-provider treats a missing grant as revoked)
-  // and mark refresh tokens as revoked via the existing column.
+  // Delegates to the canonical lifecycle.ts soft-revoke flow, which:
+  //   1. UPDATEs oauth_grants.revoked_at + revoked_by_user_id + revoked_reason
+  //      (was: DELETE — left audit-history empty AND skipped #2 below).
+  //   2. Stamps every active refresh token's revoked_at AND revokes the JTI
+  //      in the Redis access-token blocklist so any in-flight access JWT is
+  //      rejected by bearerTokenAuthMiddleware before its natural ~15-min
+  //      TTL expiry. The old delete-only path left a ~15-min window where
+  //      access tokens minted from the (now-revoked) grant would continue
+  //      working — a real gap for a user-initiated suspicious-report flow.
+  //   3. Writes belt-and-suspenders grant-revocation cache markers for
+  //      direct-authorize grants that don't have a refresh token row.
   const requestingClientId = existing.requestingClientId;
   let grantsRevoked = 0;
   let refreshTokensRevoked = 0;
   if (requestingClientId) {
     try {
-      const deleted = await db
-        .delete(oauthGrants)
-        .where(
-          and(
-            eq(oauthGrants.accountId, userId),
-            eq(oauthGrants.clientId, requestingClientId),
-          )
-        )
-        .returning({ id: oauthGrants.id });
-      grantsRevoked = deleted.length;
-
-      const tokenRes = await db
-        .update(oauthRefreshTokens)
-        .set({ revokedAt: new Date() })
-        .where(
-          and(
-            eq(oauthRefreshTokens.userId, userId),
-            eq(oauthRefreshTokens.clientId, requestingClientId),
-          )
-        )
-        .returning({ id: oauthRefreshTokens.id });
-      refreshTokensRevoked = tokenRes.length;
+      ({ grantsRevoked, refreshTokensRevoked } = await revokeUserOauthClient(
+        userId,
+        requestingClientId,
+        userId,
+        'self-reported suspicious approval',
+      ));
     } catch (err) {
       console.error('[approvals] report-suspicious: revocation failed:', err);
       // Non-fatal: the approval row + audit log are still authoritative; the

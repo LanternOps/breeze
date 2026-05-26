@@ -583,7 +583,6 @@ export interface EffectiveOrgSettings {
   defaults?: InheritableDefaultSettings;
   branding?: InheritableBrandingSettings;
   aiBudgets?: InheritableAiBudgetSettings;
-  remoteAccessProviders?: InheritableRemoteAccessSettings;
   locked: string[];
 }
 

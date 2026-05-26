@@ -66,7 +66,7 @@
   },
   "devDependencies": {
     "@types/archiver": "^7.0.0",
-    "@types/node": "^25.9.0",
+    "@types/node": "^25.9.1",
     "@types/nodemailer": "^7.0.11",
     "@types/oidc-provider": "^9.5.0",
     "@types/pg": "^8.11.10",
@@ -75,7 +75,7 @@
     "drizzle-kit": "^0.31.10",
     "jszip": "^3.10.1",
     "tsup": "^8.3.5",
-    "tsx": "^4.22.2",
+    "tsx": "^4.22.3",
     "typescript": "^5.7.2",
     "vitest": "^4.1.6"
   }

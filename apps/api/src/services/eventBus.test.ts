@@ -172,6 +172,36 @@ describe('eventBus service', () => {
     errorSpy.mockRestore();
   });
 
+  it('exports DNS_THREAT_BLOCKED = "dns.threat.blocked" so dnsSyncJob can emit and consumers can subscribe (#829)', async () => {
+    const { EVENT_TYPES, publishEvent } = eventBusModule;
+    expect(EVENT_TYPES.DNS_THREAT_BLOCKED).toBe('dns.threat.blocked');
+
+    // Smoke-check the new event type is wired into the EventType union too
+    // (publishEvent's signature would reject a string not in the union).
+    const eventId = await publishEvent(
+      EVENT_TYPES.DNS_THREAT_BLOCKED,
+      'org-1',
+      {
+        deviceId: 'dev-1',
+        domain: 'malware.example.com',
+        category: 'malware',
+        integrationId: 'int-1',
+        timestamp: new Date().toISOString(),
+      },
+      'dns-sync-job',
+      { priority: 'high' }
+    );
+    expect(eventId).toEqual(expect.any(String));
+
+    const xaddMock = mockRedis.xadd as ReturnType<typeof vi.fn>;
+    const lastCall = xaddMock.mock.calls[xaddMock.mock.calls.length - 1]!;
+    const eventJson = lastCall[lastCall.length - 1] as string;
+    const event = JSON.parse(eventJson);
+    expect(event.type).toBe('dns.threat.blocked');
+    expect(event.priority).toBe('high');
+    expect(event.payload.domain).toBe('malware.example.com');
+  });
+
   it('should unsubscribe handlers', async () => {
     const { getEventBus, EVENT_TYPES } = eventBusModule;
     const bus = getEventBus();

@@ -15,7 +15,8 @@
 #   - pnpm (matches packageManager field in package.json)
 #   - go install golang.org/x/vuln/cmd/govulncheck@latest
 #   - cargo install cargo-audit --locked
-#   - docker (or OrbStack/Colima) for the Trivy scans, OR `brew install trivy`
+#   - docker (or OrbStack/Colima) for the Trivy + Gitleaks scans, OR
+#     `brew install trivy gitleaks`
 #
 # Exit code: 0 if every required check passes, non-zero on any FAIL. Skipped
 # checks (missing tooling) are non-fatal unless --strict is passed.
@@ -108,16 +109,31 @@ fi
 step "supply-chain hardening guard" bash scripts/security/check-supply-chain-hardening.sh
 step "relay/edge hardening guard" bash scripts/security/check-relay-edge-hardening.sh
 
+# 4b) Gitleaks secret scan — CI: secret-scan.yml job gitleaks (separate
+# required PR check). Prefer the native binary if installed; fall back to
+# the official Docker image. The CI workflow runs:
+#   `gitleaks detect --source . --verbose`
+# We mirror those exact flags here so a clean local run gives the same
+# verdict as the CI check.
+if command -v gitleaks >/dev/null 2>&1; then
+  step "gitleaks detect (secret-scan.yml mirror)" \
+    gitleaks detect --source . --verbose
+elif command -v docker >/dev/null 2>&1; then
+  step "gitleaks detect via Docker (secret-scan.yml mirror)" \
+    docker run --rm -v "$ROOT_DIR":/scan:ro ghcr.io/gitleaks/gitleaks:latest \
+      detect --source /scan --verbose
+else
+  skip "gitleaks detect" "install: brew install gitleaks  OR start Docker/OrbStack"
+fi
+
 # 5) Trivy filesystem scan — CI: security.yml job trivy-fs-scan, blocking step
 # Prefer the native trivy binary if installed; fall back to the official Docker
 # image. The CI workflow uses the aquasecurity/trivy-action GH Action, which
 # under the hood runs the same scan against the same severities — we mirror the
 # blocking step's flags here (HIGH,CRITICAL, exit-code 1).
-TRIVY_FS_RAN="0"
 if command -v trivy >/dev/null 2>&1; then
   step "trivy fs scan (HIGH,CRITICAL, blocking)" \
     trivy fs --severity HIGH,CRITICAL --exit-code 1 .
-  TRIVY_FS_RAN="1"
 elif command -v docker >/dev/null 2>&1; then
   # --ignorefile: container CWD is /, not /scan, so Trivy's default
   # .trivyignore auto-load doesn't fire. Pointing at the in-container
@@ -127,7 +143,6 @@ elif command -v docker >/dev/null 2>&1; then
     docker run --rm -v "$ROOT_DIR":/scan:ro aquasec/trivy:latest \
       fs --severity HIGH,CRITICAL --exit-code 1 \
       --ignorefile /scan/.trivyignore /scan
-  TRIVY_FS_RAN="1"
 else
   skip "trivy fs scan" "install: brew install trivy  OR start Docker/OrbStack"
 fi

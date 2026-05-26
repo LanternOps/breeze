@@ -64,6 +64,7 @@
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <Property Id="BREEZE_KILL_CMD" Secure="yes" />
     <Property Id="BREEZE_ACL_CMD" Secure="yes" />
+    <Property Id="BREEZE_SC_FAILURE_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
 
     <!-- Kill any running Breeze processes before InstallValidate so upgrades
@@ -90,6 +91,28 @@
       ExeCommand="/c (if not exist &quot;[ProgramDataBreezeDir].&quot; mkdir &quot;[ProgramDataBreezeDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDataDir].&quot; mkdir &quot;[ProgramDataBreezeDataDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeLogsDir].&quot; mkdir &quot;[ProgramDataBreezeLogsDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
       Execute="immediate"
       Return="check" />
+
+    <!-- Set SCM failure-action recovery on both services after they're
+         installed. Mirrors agent/cmd/breeze-agent/service_cmd_windows.go:72-79
+         and agent/cmd/breeze-watchdog/service_cmd_windows.go:63-67 (5s/10s/30s
+         restart escalation with 24-hour counter reset).
+
+         Without this, MSI-installed services have no SCM-driven auto-restart;
+         only `breeze-agent.exe service install` (the manual subcommand)
+         applied the recovery actions before. So every MSI deployment was
+         missing this hardening.
+
+         `sc failure` syntax: spaces after each `=` are mandatory; actions are
+         a slash-separated list of (actionType/delayMs) pairs. exit /b 0 at
+         the end so a transient sc-error doesn't roll back the install. -->
+    <SetProperty Id="BREEZE_SC_FAILURE_CMD" Value="[System64Folder]cmd.exe" Before="ConfigureBreezeFailureActions" Sequence="execute" />
+    <CustomAction
+      Id="ConfigureBreezeFailureActions"
+      Property="BREEZE_SC_FAILURE_CMD"
+      ExeCommand="/c &quot;sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000&quot;"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Breeze">
@@ -256,6 +279,10 @@
            gate skipped repair, leaving repaired installs with stale task
            pointers. -->
       <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT REMOVE" />
+      <!-- Apply SCM recovery actions immediately after the services are
+           registered. Deferred + non-impersonated so it runs as LocalSystem
+           (which sc.exe needs for SERVICE_CHANGE_CONFIG). -->
+      <Custom Action="ConfigureBreezeFailureActions" After="InstallServices" Condition="NOT REMOVE" />
       <!-- Enrollment runs after file copy but before InstallServices.
 
            Return="check" on the EnrollAgent CA means a non-zero exit

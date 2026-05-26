@@ -119,7 +119,10 @@ export const createRoleSchema = z.object({
 // ============================================
 
 export const updateDeviceSchema = z.object({
-  displayName: z.string().max(255).optional(),
+  // Nullable so callers can explicitly clear the display name; the
+  // devices.display_name column is nullable. Keep in sync with the route
+  // schema in apps/api/src/routes/devices/schemas.ts.
+  displayName: z.string().max(255).nullable().optional(),
   siteId: z.string().uuid().optional(),
   tags: z.array(z.string().max(50)).max(20).optional()
 });

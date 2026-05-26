@@ -68,7 +68,9 @@ export const listDevicesSchema = z.object({
 });
 
 export const updateDeviceSchema = z.object({
-  displayName: z.string().min(1).max(255).optional(),
+  // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
+  // can unset the name; the devices.display_name column is nullable. See PR #787.
+  displayName: z.string().max(255).nullable().optional(),
   siteId: z.string().uuid().optional(),
   tags: z.array(z.string()).optional(),
   customFields: z.record(

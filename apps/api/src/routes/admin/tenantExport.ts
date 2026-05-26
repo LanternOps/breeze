@@ -29,7 +29,7 @@ export const tenantExportRoutes = new Hono();
 tenantExportRoutes.get('/:orgId', requireMfa(), async (c) => {
   const orgId = c.req.param('orgId');
   // Cheap UUID guard before going to the DB.
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orgId)) {
+  if (!orgId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orgId)) {
     return c.json({ error: 'invalid orgId' }, 400);
   }
 

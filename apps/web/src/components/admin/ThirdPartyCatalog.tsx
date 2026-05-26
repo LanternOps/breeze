@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2, Play } from 'lucide-react';
+import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2, Play, Lock } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import ThirdPartyCatalogEditor, { type CatalogEditorInitial } from './ThirdPartyCatalogEditor';
 
@@ -50,6 +50,7 @@ export default function ThirdPartyCatalog() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [requiresPlatformAdmin, setRequiresPlatformAdmin] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [search, setSearch] = useState('');
   const [showOnlyTested, setShowOnlyTested] = useState(false);
@@ -67,7 +68,23 @@ export default function ThirdPartyCatalog() {
       if (search.trim()) params.set('search', search.trim());
       if (showOnlyTested) params.set('breezeTested', 'true');
       const response = await fetchWithAuth(`/third-party-catalog?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to load catalog');
+      if (!response.ok) {
+        // The third-party catalog endpoint is platform-admin-gated end-to-
+        // end (`apps/api/src/routes/thirdPartyCatalog/list.ts` uses
+        // platformAdminMiddleware), so any 403 here is platform-admin
+        // denial. Match the sibling pattern in
+        // AccountDeletionRequestsList.tsx:42-45 — status-only check, no
+        // body sniff (a backend rewording of the error string would
+        // silently break the UI without test coverage). (#721 Case 1)
+        if (response.status === 403) {
+          setRequiresPlatformAdmin(true);
+          setItems([]);
+          setTotal(0);
+          return;
+        }
+        throw new Error('Failed to load catalog');
+      }
+      setRequiresPlatformAdmin(false);
       const data = await response.json();
       setItems(data.items ?? []);
       setTotal(data.total ?? 0);
@@ -189,6 +206,31 @@ export default function ThirdPartyCatalog() {
           homepageUrl: editor.entry.homepageUrl,
         }
       : undefined;
+
+  if (requiresPlatformAdmin) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold flex items-center gap-2 mb-6">
+          <Package className="w-6 h-6" /> Third-Party Package Catalog
+        </h1>
+        <div
+          data-testid="catalog-requires-platform-admin"
+          className="bg-blue-50 border border-blue-200 text-blue-900 px-6 py-8 rounded flex items-start gap-4"
+        >
+          <Lock className="w-6 h-6 flex-shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold mb-1">Platform-admin access required</div>
+            <div className="text-sm">
+              The third-party catalog is managed by Breeze platform admins. Your account
+              ({/* role-aware text intentionally not surfaced — server-side identity is the source of truth */}
+              an org/partner admin) can view the curated catalog through normal patch flows but
+              cannot edit it directly.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6">

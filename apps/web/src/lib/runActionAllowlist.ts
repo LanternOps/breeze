@@ -16,7 +16,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/devices/DeviceBootPerformanceTab.tsx',
   'apps/web/src/components/devices/DeviceFilesystemTab.tsx',
   'apps/web/src/components/devices/DeviceGroupsPage.tsx',
-  'apps/web/src/components/devices/DeviceInfoTab.tsx',
   'apps/web/src/components/devices/DeviceList.tsx',
   'apps/web/src/components/devices/DevicePatchStatusTab.tsx',
   'apps/web/src/components/devices/DeviceSecurityTab.tsx',

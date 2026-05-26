@@ -5,6 +5,12 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // Mirrors the `@breeze/shared` path in apps/web/tsconfig.json so vitest
+      // can resolve workspace imports without a build step. Required for
+      // testing any component that imports from `@breeze/shared`.
+      '@breeze/shared': fileURLToPath(
+        new URL('../../packages/shared/src/index.ts', import.meta.url)
+      ),
       'astro:transitions/client': fileURLToPath(
         new URL('./src/__mocks__/astro-transitions-client.ts', import.meta.url)
       ),
