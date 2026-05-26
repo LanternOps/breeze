@@ -533,19 +533,59 @@ mcpServerRoutes.post(
     const pre = await preflightMcpRequest(c, sessionIdFromQuery);
     if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
 
-    const response = await dispatchAndAudit(c, pre.body, pre.sessionId);
+    const apiKey = c.get('apiKey') as McpApiKeyContext & {
+      scopes: string[];
+      name: string;
+      createdBy: string;
+    };
+    const principalKey = mcpPrincipalKey(apiKey);
 
-    // Legacy SSE transport: if the request carries a sessionId pointing at an
-    // active SSE stream, push the response into that stream and return 202.
-    // Streamable HTTP clients don't reach this branch (they POST to /sse).
+    // MED-1 follow-through: the streamable POST /sse handler hardens
+    // Mcp-Session-Id binding, but /message also accepts a sessionId via the
+    // query string and used to pass it straight into dispatchAndAudit. That
+    // let an OAuth client POST /message?sessionId=<anything> and have the
+    // attacker-supplied string land in audit_logs.resource_id and the tool
+    // ledger transport_session_id — even though the response delivery path
+    // below still required principal ownership. Validate the sessionId
+    // BEFORE dispatch so the audit row never reflects a forged value.
+    let trustedSessionId: string | undefined;
     if (pre.sessionId) {
-      const apiKey = c.get('apiKey') as McpApiKeyContext & {
-    scopes: string[];
-    name: string;
-    createdBy: string;
-  };
-      const principalKey = mcpPrincipalKey(apiKey);
-      const session = sseSessionQueues.get(pre.sessionId);
+      if (pre.sessionId.startsWith(MCP_SERVER_SESSION_PREFIX)) {
+        // Server-minted (Streamable HTTP) id — verify ownership in Redis.
+        const redis = getRedis();
+        if (!redis) {
+          // Cannot verify; refuse to attach the id rather than fail the call
+          // outright (legacy SSE clients aren't expected here, but a missing
+          // Redis shouldn't bubble up as a hard 503 either).
+          trustedSessionId = undefined;
+        } else {
+          try {
+            const stored = await redis.get(`${MCP_SESSION_REDIS_PREFIX}${pre.sessionId}`);
+            if (stored === principalKey) {
+              trustedSessionId = pre.sessionId;
+            }
+          } catch (err) {
+            console.warn('[MCP] /message session lookup failed:', err);
+          }
+        }
+      } else {
+        // Legacy SSE sessionId (UUID from GET /sse). Only honor it if the
+        // in-memory map confirms the caller owns the stream.
+        const session = sseSessionQueues.get(pre.sessionId);
+        if (session && session.principalKey === principalKey) {
+          trustedSessionId = pre.sessionId;
+        }
+      }
+    }
+
+    const response = await dispatchAndAudit(c, pre.body, trustedSessionId);
+
+    // Legacy SSE transport: if the request carries a verified-owned sessionId
+    // pointing at an active SSE stream, push the response into that stream
+    // and return 202. Streamable HTTP clients don't reach this branch (they
+    // POST to /sse).
+    if (trustedSessionId) {
+      const session = sseSessionQueues.get(trustedSessionId);
       if (session && session.principalKey === principalKey) {
         session.queue.push(response);
         return c.json({ status: 'accepted' }, 202);

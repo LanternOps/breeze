@@ -629,7 +629,11 @@ describe('MCP bootstrap carve-out', () => {
     }));
 
     const { mcpServerRoutes } = await import('./mcpServer');
-    const res = await mcpServerRoutes.request('/message?sessionId=sse-1', {
+    // Pass an attacker-forged ?sessionId=. With MED-1 follow-through the
+    // server now drops sessionIds the caller doesn't own — the audit row
+    // MUST NOT echo `mcp-attacker-forged`. The sanitization assertions
+    // below still pass because they don't depend on session id routing.
+    const res = await mcpServerRoutes.request('/message?sessionId=mcp-attacker-forged', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
       body: JSON.stringify({
@@ -664,7 +668,6 @@ describe('MCP bootstrap carve-out', () => {
         details: expect.objectContaining({
           toolName: 'execute_command',
           tier: 3,
-          sessionId: 'sse-1',
           oauthGrantId: 'grant-1',
           target: expect.objectContaining({ deviceId: 'device-1' }),
           arguments: expect.objectContaining({ token: '[REDACTED]' }),
@@ -678,6 +681,10 @@ describe('MCP bootstrap carve-out', () => {
     );
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-token');
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-secret');
+    // MED-1 regression: the attacker-forged sessionId must not have landed
+    // in the audit or ledger payloads.
+    expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('mcp-attacker-forged');
+    expect(JSON.stringify(ledgerInsertValues)).not.toContain('mcp-attacker-forged');
     expect(ledgerInsertValues[1]).toMatchObject({
       toolName: 'execute_command',
       status: 'executing',
