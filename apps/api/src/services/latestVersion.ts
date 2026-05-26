@@ -1,4 +1,8 @@
+import { captureException } from './sentry';
+
 const GITHUB_URL = 'https://api.github.com/repos/LanternOps/breeze/releases/latest';
+// 1h keeps us well under GitHub's 60 req/hr unauthenticated rate limit while
+// letting self-hosters see a new release within an hour.
 const TTL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5000;
 const TAG_RE = /^\d+\.\d+\.\d+$/;
@@ -54,7 +58,14 @@ export async function getLatestVersion(): Promise<LatestVersionResult> {
     cache = { value, expiresAt: now + TTL_MS };
     return value;
   } catch (err) {
-    console.warn('[latestVersion] failed:', err instanceof Error ? err.message : err);
+    if (isUnexpectedError(err)) {
+      captureException(err);
+      console.error('[latestVersion] unexpected error:', err);
+    } else {
+      console.warn('[latestVersion] failed:', err instanceof Error ? err.message : err);
+    }
+    // Cache error results for the full TTL so flaky GitHub / air-gapped installs
+    // don't trigger retry storms.
     const value: LatestVersionResult = {
       latest: null,
       fetchedAt: new Date(now),
@@ -65,4 +76,16 @@ export async function getLatestVersion(): Promise<LatestVersionResult> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isUnexpectedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return true;
+  // Network / abort / parse / our own thrown errors are all expected operational failures.
+  if (err.name === 'AbortError' || err.name === 'TypeError' || err.name === 'SyntaxError') {
+    return false;
+  }
+  if (err.message.startsWith('GitHub returned HTTP') || err.message.startsWith('Rejected tag:')) {
+    return false;
+  }
+  return true;
 }

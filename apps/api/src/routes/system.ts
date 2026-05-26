@@ -17,7 +17,6 @@ const requireSystemConfigRead = requirePermission(
 
 systemRoutes.use('*', authMiddleware);
 
-// GET /system/version — returns the current API version + latest available release
 systemRoutes.get('/version', async (c) => {
   const { latest, fetchedAt, source } = await getLatestVersion();
   const cmp = latest ? semverCompare(API_VERSION, latest) : null;

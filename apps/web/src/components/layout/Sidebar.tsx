@@ -258,23 +258,28 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
 
-  // Fetch API version + latest release info once
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   useEffect(() => {
+    let cancelled = false;
     fetchWithAuth('/system/version')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((data: { version: string; latest: string | null }) => {
+        if (cancelled) return;
         setApiVersion(data.version);
         setLatestVersion(data.latest);
       })
       .catch((err) => {
+        if (cancelled) return;
         console.warn('[Sidebar] Failed to fetch API version:', err);
         setApiVersion('unavailable');
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Fetch partner branding for the top-left header. Skipped when the JWT identifies
