@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -326,7 +327,7 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
-	if runtime.GOOS != "windows" && si.UID > 0 {
+	if runtime.GOOS != "windows" && si.UID > 0 && si.UID <= math.MaxInt32 {
 		_ = os.Chown(dir, int(si.UID), -1)
 	}
 
