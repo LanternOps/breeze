@@ -150,12 +150,11 @@ curl http://localhost:3001/health/ready
 
 ### "Generate Link" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`
 
-The API container can't see a `PUBLIC_API_URL` or `API_URL` env var, so it has no base URL to mint the installer share link against.
+**Cause**: The API container can't see a `PUBLIC_API_URL` or `API_URL` env var, so it has no base URL to mint the installer share link against. The bundled `docker-compose.yml` derives this from `BREEZE_DOMAIN` (since [#613](https://github.com/LanternOps/breeze/pull/613) / v0.65.7+), so this only bites custom or older compose files.
 
-Fix:
-
+**Fix**:
 1. Set `PUBLIC_API_URL=https://<your-domain>` in `/opt/breeze/.env` (or wherever your compose `.env` lives).
-2. If you use a custom compose file (anything other than the bundled `docker-compose.yml` shipped in the repo), explicitly map the variable into the `api` service. Docker Compose only forwards env vars to a container when they appear in that service's `environment:` block — having the value in `.env` is necessary but not sufficient.
+2. If you use a custom compose file, explicitly map the variable into the `api` service. Docker Compose only forwards env vars to a container when they appear in that service's `environment:` block — having the value in `.env` is necessary but not sufficient.
 
    ```yaml
    api:
@@ -164,13 +163,11 @@ Fix:
    ```
 3. `docker compose up -d api` to recreate the container.
 
-The bundled `docker-compose.yml` already wires this up from `BREEZE_DOMAIN`, so this only bites custom / pre-v0.65.6 compose files.
-
 ### "Generate Link" fails with `MSI build pipeline not reachable. Retry`
 
-The release-manifest verifier is rejecting the live MSI because the manifest's `repository` field is `LanternOps/breeze` but the code default expects `lanternops/breeze` (case mismatch). Fix is on `main` ([#867](https://github.com/LanternOps/breeze/pull/867)) and will ship in the next release after v0.67.0.
+**Cause**: The release-manifest verifier is rejecting the live MSI because the manifest's `repository` field is `LanternOps/breeze` but the code default expects `lanternops/breeze` (case mismatch). Fix is on `main` ([#867](https://github.com/LanternOps/breeze/pull/867)) and will ship in the next release after v0.67.0.
 
-Workaround on v0.67.0 — add to `.env` and map into the `api` service:
+**Fix** (workaround on v0.67.0): add to `.env` and map into the `api` service.
 
 ```
 BINARY_GITHUB_REPOSITORY=LanternOps/breeze

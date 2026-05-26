@@ -56,7 +56,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `API_PORT` | `3001` | | API server port |
 | `WEB_PORT` | `4321` | | Web dashboard port |
 | `PUBLIC_API_URL` | `https://${BREEZE_DOMAIN}` (bundled compose only) | | Public API URL used for generated agent installers and shareable links. The bundled `docker-compose.yml` derives this from `BREEZE_DOMAIN`. If you use a custom compose file, you must set `PUBLIC_API_URL` in `.env` **and** map it into the `api` service `environment:` block, or **Generate Link** / **Download Installer** will fail with `Server URL not configured`. |
-| `API_URL` | — | | Legacy fallback for `PUBLIC_API_URL` (same semantics). Set one or the other. |
+| `API_URL` | — | | Legacy fallback for `PUBLIC_API_URL`, honored only by enrollment, installer, and MCP-invite code paths. Auto-update, dev-push, and a few other routes read `PUBLIC_API_URL` only — prefer setting `PUBLIC_API_URL`. |
 | `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning |
 | `ACME_EMAIL` | — | Yes (prod) | Email for Let's Encrypt certificate notifications |
 | `CORS_ALLOWED_ORIGINS` | — | | Comma-separated allowed CORS origins |
