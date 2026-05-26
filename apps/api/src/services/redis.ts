@@ -7,11 +7,20 @@ let redisAvailable = true;
 let warnedAboutInsecureProdRedis = false;
 
 function isProductionEnv(): boolean {
-  return (process.env.NODE_ENV ?? 'development') === 'production';
+  // Tolerant match: `Production`, `prod`, `PRODUCTION` all count.
+  // The pre-2026-05 exact-string match against `production` silently
+  // downgraded misconfigured deploys to dev gates without surfacing
+  // anything — a foot-gun for self-hosters.
+  const raw = (process.env.NODE_ENV ?? 'development').trim().toLowerCase();
+  return raw === 'production' || raw === 'prod';
 }
 
 function isHostedSaas(): boolean {
   return (process.env.IS_HOSTED ?? '').toLowerCase() === 'true';
+}
+
+function allowUnauthenticatedRedisOverride(): boolean {
+  return (process.env.BREEZE_ALLOW_UNAUTH_REDIS ?? '').toLowerCase() === 'true';
 }
 
 function hasPasswordInRedisUrl(url: string): boolean {
@@ -26,20 +35,34 @@ function hasPasswordInRedisUrl(url: string): boolean {
 const INSECURE_REDIS_GUIDANCE =
   'Set REDIS_PASSWORD (openssl rand -hex 32) and ensure REDIS_URL is redis://:<password>@host:port. See https://breezermm.com/deploy/production#redis-authentication';
 
+const SELF_HOSTED_OPT_OUT_GUIDANCE =
+  'If your deployment intentionally runs Redis on a private network without auth, set BREEZE_ALLOW_UNAUTH_REDIS=true to acknowledge the risk.';
+
 function failOrWarnAboutInsecureRedis(reason: string): void {
   if (!isProductionEnv()) {
     return;
   }
 
+  // Hosted SaaS: always fail-closed.
   if (isHostedSaas()) {
     throw new Error(`[Redis] ${reason}. ${INSECURE_REDIS_GUIDANCE}`);
+  }
+
+  // Self-hosted prod: fail-closed by default. An explicit opt-out env
+  // (`BREEZE_ALLOW_UNAUTH_REDIS=true`) downgrades to warn-once for
+  // private-network deployments where the operator owns the risk. Mirrors
+  // the `ENROLLMENT_SECRET_ENFORCEMENT_MODE=warn` pattern.
+  if (!allowUnauthenticatedRedisOverride()) {
+    throw new Error(`[Redis] ${reason}. ${INSECURE_REDIS_GUIDANCE} ${SELF_HOSTED_OPT_OUT_GUIDANCE}`);
   }
 
   if (warnedAboutInsecureProdRedis) {
     return;
   }
   warnedAboutInsecureProdRedis = true;
-  console.warn(`[Redis] ${reason}. ${INSECURE_REDIS_GUIDANCE}`);
+  console.warn(
+    `[Redis] ${reason} (allowed via BREEZE_ALLOW_UNAUTH_REDIS=true). ${INSECURE_REDIS_GUIDANCE}`
+  );
 }
 
 function readRedisPasswordFile(): string | undefined {
