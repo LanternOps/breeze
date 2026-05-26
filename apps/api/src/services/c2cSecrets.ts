@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { c2cConnections } from '../db/schema';
-import { decryptSecret, encryptSecret, isEncryptedSecret } from './secretCrypto';
+import { decryptForColumn, encryptSecret, isEncryptedSecret } from './secretCrypto';
 
 type SecretValue = string | null | undefined;
 
@@ -24,11 +24,11 @@ function encryptOptionalSecret(value: SecretValue): string | null | undefined {
   return encryptSecret(value);
 }
 
-function decryptOptionalSecret(value: SecretValue): string | null | undefined {
+function decryptOptionalSecretFor(column: 'client_secret' | 'refresh_token' | 'access_token', value: SecretValue): string | null | undefined {
   if (value === undefined) {
     return undefined;
   }
-  return decryptSecret(value);
+  return decryptForColumn('c2c_connections', column, value);
 }
 
 export function encryptC2cConnectionSecrets<T extends C2cSecretFields>(input: T): T {
@@ -43,9 +43,9 @@ export function encryptC2cConnectionSecrets<T extends C2cSecretFields>(input: T)
 export function decryptC2cConnectionSecrets<T extends C2cPersistedSecretFields>(input: T): T {
   return {
     ...input,
-    clientSecret: decryptOptionalSecret(input.clientSecret) ?? null,
-    refreshToken: decryptOptionalSecret(input.refreshToken) ?? null,
-    accessToken: decryptOptionalSecret(input.accessToken) ?? null,
+    clientSecret: decryptOptionalSecretFor('client_secret', input.clientSecret) ?? null,
+    refreshToken: decryptOptionalSecretFor('refresh_token', input.refreshToken) ?? null,
+    accessToken: decryptOptionalSecretFor('access_token', input.accessToken) ?? null,
   };
 }
 

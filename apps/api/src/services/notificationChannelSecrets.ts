@@ -1,4 +1,4 @@
-import { decryptSecret, encryptSecret } from './secretCrypto';
+import { decryptForColumn, encryptSecret } from './secretCrypto';
 
 const MASKED_SECRET = '********';
 
@@ -29,9 +29,15 @@ function encryptValue(value: unknown, existing: unknown): unknown {
   return encryptSecret(value);
 }
 
-function decryptValue(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  return decryptSecret(value);
+// Channel configs live in notification_channels.config (JSON); webhook headers
+// live in webhooks.headers (JSON). Pass the column-level AAD so AAD-bound
+// ciphertext written by the registry walker decrypts under the matching tag.
+function decryptValueFor(aadColumn: 'notification_channels.config' | 'webhooks.headers') {
+  const [table, column] = aadColumn.split('.') as [string, string];
+  return (value: unknown): unknown => {
+    if (typeof value !== 'string') return value;
+    return decryptForColumn(table, column, value);
+  };
 }
 
 function redactValue(value: unknown): unknown {
@@ -120,7 +126,8 @@ export function encryptNotificationChannelConfig(type: string, config: unknown, 
 }
 
 export function decryptNotificationChannelConfig(type: string, config: unknown): unknown {
-  return transformSecretKeys(config, undefined, secretKeysForType(type), (value) => decryptValue(value));
+  const decrypt = decryptValueFor('notification_channels.config');
+  return transformSecretKeys(config, undefined, secretKeysForType(type), (value) => decrypt(value));
 }
 
 export function redactNotificationChannelConfig(type: string, config: unknown): unknown {
@@ -128,7 +135,8 @@ export function redactNotificationChannelConfig(type: string, config: unknown): 
 }
 
 export function decryptWebhookHeaders(headers: unknown): unknown {
-  return transformHeaderValues(headers, undefined, (value) => decryptValue(value));
+  const decrypt = decryptValueFor('webhooks.headers');
+  return transformHeaderValues(headers, undefined, (value) => decrypt(value));
 }
 
 export function encryptWebhookHeaders(headers: unknown, existing?: unknown): unknown {

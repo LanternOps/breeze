@@ -104,6 +104,7 @@ vi.mock('../jobs/huntressSync', () => ({
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string | undefined) => `enc:${value ?? ''}`),
   decryptSecret: vi.fn(() => 'webhook-secret'),
+  decryptForColumn: vi.fn(() => 'webhook-secret'),
 }));
 
 vi.mock('../services/auditEvents', () => ({

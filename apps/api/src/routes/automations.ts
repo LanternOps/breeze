@@ -13,7 +13,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
 import { getRedis } from '../services/redis';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import {
   AutomationValidationError,
   createAutomationRunRecord,
@@ -69,7 +69,10 @@ function decryptAutomationTriggerSecret(trigger: unknown): unknown {
   const output: Record<string, unknown> = { ...trigger };
   const value = output.secret ?? output.webhookSecret;
   if (typeof value === 'string') {
-    output.secret = decryptSecret(value);
+    // The secret lives inside automations.trigger (JSON column). AAD is
+    // bound at the parent column so the registry walker and this helper
+    // produce matching tags.
+    output.secret = decryptForColumn('automations', 'trigger', value);
   }
   delete output.webhookSecret;
   return output;

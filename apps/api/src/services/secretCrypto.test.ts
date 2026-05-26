@@ -337,6 +337,50 @@ describe('secretCrypto', () => {
       expect(encryptSecret(encrypted, { aad: 'webhooks.secret' })).toBe(encrypted);
     });
 
+    it('strict mode refuses to decrypt v2 ciphertext', async () => {
+      const { encryptSecret, decryptSecret } = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+      });
+
+      // v2 ciphertext (no aad on encrypt path)
+      const v2 = encryptSecret('hello');
+      expect(v2).toMatch(/^enc:v2:/);
+
+      // Without strict, v2 decrypts even when caller passes aad (AAD ignored).
+      expect(decryptSecret(v2, { aad: 'webhooks.secret' })).toBe('hello');
+
+      // With strict, v2 is refused — closes the downgrade-swap window for
+      // columns that have completed the v2→v3 rotation.
+      expect(() => decryptSecret(v2, { aad: 'webhooks.secret', strict: true })).toThrow(
+        /Strict v3 requested but ciphertext is v2/i,
+      );
+    });
+
+    it('strict mode does not affect v3 ciphertext', async () => {
+      const { encryptSecret, decryptSecret } = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+      });
+
+      const v3 = encryptSecret('hello', { aad: 'webhooks.secret' });
+      expect(decryptSecret(v3, { aad: 'webhooks.secret', strict: true })).toBe('hello');
+    });
+
+    it('decryptForColumn binds AAD from table+column', async () => {
+      const { encryptSecret, decryptForColumn } = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+      });
+
+      const v3 = encryptSecret('hello', { aad: 'partners.settings' });
+      expect(decryptForColumn('partners', 'settings', v3)).toBe('hello');
+
+      // A ciphertext bound to partners.settings cannot be decrypted under
+      // sites.settings — the cross-column swap defense.
+      expect(() => decryptForColumn('sites', 'settings', v3)).toThrow();
+    });
+
     it('reencryptSecret preserves aad binding when decrypting v3', async () => {
       const { encryptSecret, decryptSecret, reencryptSecret } = await loadSecretCrypto({
         APP_ENCRYPTION_KEY: 'current-key-material',

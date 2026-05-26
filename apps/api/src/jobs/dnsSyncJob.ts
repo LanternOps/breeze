@@ -19,7 +19,7 @@ import {
 import { createDnsProvider, type DnsEvent } from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { decryptSecret } from '../services/secretCrypto';
+import { decryptForColumn } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
@@ -404,8 +404,8 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
   try {
     const provider = createDnsProvider({
       provider: integration.provider,
-      apiKey: decryptSecret(integration.apiKey),
-      apiSecret: decryptSecret(integration.apiSecret),
+      apiKey: decryptForColumn('dns_filter_integrations', 'api_key', integration.apiKey),
+      apiSecret: decryptForColumn('dns_filter_integrations', 'api_secret', integration.apiSecret),
       config
     });
 
@@ -577,8 +577,8 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
   try {
     const provider = createDnsProvider({
       provider: row.integration.provider,
-      apiKey: decryptSecret(row.integration.apiKey),
-      apiSecret: decryptSecret(row.integration.apiSecret),
+      apiKey: decryptForColumn('dns_filter_integrations', 'api_key', row.integration.apiKey),
+      apiSecret: decryptForColumn('dns_filter_integrations', 'api_secret', row.integration.apiSecret),
       config
     });
 

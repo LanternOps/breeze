@@ -12,13 +12,29 @@ export interface SecretCryptoOptions {
    * When provided to encryptSecret, the value is encrypted using the v3 format
    * with AAD bound to the GCM auth tag (defense in depth: decrypt fails if the
    * caller passes a different AAD). When provided to decryptSecret, the AAD
-   * must match for v3 ciphertext; v2/v1 ciphertext ignores AAD.
+   * must match for v3 ciphertext; v2/v1 ciphertext ignores AAD unless `strict`
+   * is also set.
    *
    * Convention: callers from the encrypted-column registry pass
    * `${table}.${column}` so a ciphertext blob from one column cannot be
    * swapped into a different column and silently decrypt.
    */
   aad?: string;
+
+  /**
+   * Refuse to decrypt v2 ciphertext when `aad` is provided.
+   *
+   * v2 has no AAD binding — accepting it alongside v3 leaves a downgrade-swap
+   * window where an attacker with DB write access can paste a v2 blob from one
+   * column into a different column and have it decrypt. Once a column has been
+   * rotated to v3 (ENABLE_AAD_V3 flag-day + registry rewrite), the per-column
+   * caller should pass `strict: true` so any surviving v2 ciphertext is rejected.
+   *
+   * Off by default — strict mode is opt-in per callsite because the rollout is
+   * incremental: callers must keep accepting v2 until the migration finishes.
+   * Has no effect when `aad` is unset (v2/v1 still decrypts as before).
+   */
+  strict?: boolean;
 }
 
 let cachedEncryptionKey: Buffer | null = null;
@@ -392,8 +408,39 @@ export function decryptSecret(
     return decryptWithKey(payload, getV2EncryptionKey(keyId), Buffer.from(options.aad, 'utf8'));
   }
 
-  // v2: AAD argument is ignored (legacy format predates AAD binding).
+  // v2: AAD argument is ignored (legacy format predates AAD binding) UNLESS
+  // the caller set `strict: true`, in which case we refuse v2 to close the
+  // downgrade-swap window. Used by columns that have completed the v2→v3
+  // rotation; their ciphertext should never be observed as v2 anymore.
+  if (options.strict && options.aad) {
+    throw new Error('Strict v3 requested but ciphertext is v2 — refusing to decrypt downgraded blob');
+  }
   return decryptWithKey(payload, getV2EncryptionKey(keyId));
+}
+
+/**
+ * Decrypt an encrypted secret bound to a specific table.column.
+ *
+ * Convenience wrapper around `decryptSecret` that derives AAD from the
+ * supplied table/column pair. Centralizes the binding so callers cannot
+ * accidentally pass mismatched AAD strings, and gives a single place to
+ * enforce strict-v3 once columns have been migrated.
+ *
+ * Pass-through for plaintext (legacy rows pre-encryption) and null/empty
+ * inputs — same contract as `decryptSecret`.
+ *
+ * @param table  Postgres table name (e.g. `partners`)
+ * @param column Postgres column name (e.g. `settings`); JSON sub-field
+ *               decryptions use the parent column name so the AAD matches
+ *               what `transformEncryptedColumnValue` writes.
+ */
+export function decryptForColumn(
+  table: string,
+  column: string,
+  value: string | null | undefined,
+  options: Omit<SecretCryptoOptions, 'aad'> = {},
+): string | null {
+  return decryptSecret(value, { ...options, aad: `${table}.${column}` });
 }
 
 export function reencryptSecret(

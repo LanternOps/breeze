@@ -12,7 +12,7 @@ import {
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { decryptSecret } from '../services/secretCrypto';
+import { decryptForColumn } from '../services/secretCrypto';
 import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
@@ -568,7 +568,7 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
     };
   }
 
-  const token = decryptSecret(integration.apiTokenEncrypted);
+  const token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
   if (!token) {
     throw new Error('SentinelOne integration is missing a decryptable API token');
   }
@@ -685,7 +685,7 @@ async function processPollActions() {
   for (const integration of integrations) {
     let token: string | null;
     try {
-      token = decryptSecret(integration.apiTokenEncrypted);
+      token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
     } catch (cryptoError) {
       // Permanent failure — don't retry actions tied to this org
       clientByOrg.set(integration.orgId, null);
@@ -1017,7 +1017,7 @@ export async function dispatchS1ThreatAction(
     throw new Error('SentinelOne integration not found');
   }
 
-  const token = decryptSecret(integration.apiTokenEncrypted);
+  const token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
   if (!token) {
     throw new Error('SentinelOne integration token is missing or invalid');
   }
@@ -1057,7 +1057,7 @@ export async function dispatchS1Isolation(
     throw new Error('SentinelOne integration not found');
   }
 
-  const token = decryptSecret(integration.apiTokenEncrypted);
+  const token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
   if (!token) {
     throw new Error('SentinelOne integration token is missing or invalid');
   }

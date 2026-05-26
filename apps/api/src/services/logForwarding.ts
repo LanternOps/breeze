@@ -2,7 +2,7 @@ import { Client } from '@elastic/elasticsearch';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { decryptSecret } from './secretCrypto';
+import { decryptForColumn } from './secretCrypto';
 
 interface LogForwardingConfig {
   enabled: boolean;
@@ -44,8 +44,10 @@ export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardi
   if (!forwarding?.enabled || !forwarding.elasticsearchUrl) return null;
   return {
     ...forwarding,
-    elasticsearchApiKey: decryptSecret(forwarding.elasticsearchApiKey) ?? undefined,
-    elasticsearchPassword: decryptSecret(forwarding.elasticsearchPassword) ?? undefined,
+    // Sub-fields of organizations.settings JSON column; AAD binds at the
+    // column level to match transformEncryptedColumnValue's walker output.
+    elasticsearchApiKey: decryptForColumn('organizations', 'settings', forwarding.elasticsearchApiKey) ?? undefined,
+    elasticsearchPassword: decryptForColumn('organizations', 'settings', forwarding.elasticsearchPassword) ?? undefined,
   };
 }
 

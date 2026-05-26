@@ -7,7 +7,7 @@ import { db } from '../db';
 import { psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 
 export const psaRoutes = new Hono();
 
@@ -90,7 +90,10 @@ function decryptCredentials(value: unknown): Record<string, unknown> | null {
 
   try {
     if (typeof value === 'string') {
-      const decrypted = decryptSecret(value);
+      // psa_connections.credentials is a JSON column; the registry walker
+      // uses the column-level AAD when re-encrypting, so we bind the same
+      // here regardless of where the ciphertext sits inside the JSON.
+      const decrypted = decryptForColumn('psa_connections', 'credentials', value);
       if (!decrypted) return null;
       return parseRecord(JSON.parse(decrypted));
     }
@@ -98,7 +101,7 @@ function decryptCredentials(value: unknown): Record<string, unknown> | null {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const asRecord = value as Record<string, unknown>;
       if (typeof asRecord.encrypted === 'string') {
-        const decrypted = decryptSecret(asRecord.encrypted);
+        const decrypted = decryptForColumn('psa_connections', 'credentials', asRecord.encrypted);
         if (!decrypted) return null;
         return parseRecord(JSON.parse(decrypted));
       }

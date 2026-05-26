@@ -70,6 +70,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string) => `enc:${value}`),
   decryptSecret: vi.fn((value: string) => value.replace(/^enc:/, '')),
+  decryptForColumn: vi.fn((_t: string, _c: string, value: string) => value.replace(/^enc:/, '')),
 }));
 
 vi.mock('../services/auditEvents', () => ({

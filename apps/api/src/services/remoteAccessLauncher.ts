@@ -1,6 +1,6 @@
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
 import { isAllowedLauncherScheme } from '@breeze/shared';
-import { decryptSecret } from './secretCrypto';
+import { decryptForColumn } from './secretCrypto';
 
 // Reasons we may decline to produce a launch URL. These are surfaced to the UI
 // so it can distinguish expected-empty from configuration error from a security
@@ -78,12 +78,14 @@ export function resolveRemoteAccessLaunch(
     return { launchUrl: null, providerId: provider.id, scheme: null, skipReason: 'empty_url_template' };
   }
 
-  // Decrypt the provider password before substitution. Once `partners.settings`
-  // is registered in encryptedColumnRegistry.ts the stored value is an
-  // `enc:v2:...` blob; `decryptSecret` is a no-op for plaintext, so this is
-  // backwards-compatible with pre-migration rows. See GitHub issue #716.
+  // Decrypt the provider password before substitution. Provider passwords
+  // are originally written under partners.settings.remoteAccessProviders by
+  // the partner-settings update route, so the AAD binding (v3 ciphertext) is
+  // partners.settings — the column-level binding the registry walker uses.
+  // For pre-migration plaintext rows decryptForColumn is a no-op.
+  // See GitHub issue #716.
   const rawPassword = provider.password ?? '';
-  const password = decryptSecret(rawPassword) ?? rawPassword;
+  const password = decryptForColumn('partners', 'settings', rawPassword) ?? rawPassword;
   const built = provider.urlTemplate
     .replaceAll('{id}', encodeURIComponent(idValue))
     .replaceAll('{password}', encodeURIComponent(password));

@@ -7,7 +7,7 @@ import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { ensureFreshToken } from '../../services/c2cM365';
-import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../../services/secretCrypto';
 import { createConnectionSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId, maskSecret } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
@@ -172,7 +172,7 @@ connectionsRoutes.post(
       try {
         const tokenResult = await ensureFreshToken({
           tenantId: row.tenantId,
-          currentToken: decryptSecret(row.accessToken),
+          currentToken: decryptForColumn('c2c_connections', 'access_token', row.accessToken),
           tokenExpiresAt: row.tokenExpiresAt,
         });
 

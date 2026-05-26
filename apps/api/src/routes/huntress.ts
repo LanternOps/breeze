@@ -20,7 +20,7 @@ import {
   parseHuntressWebhookPayload,
   verifyHuntressWebhookSignature,
 } from '../services/huntressClient';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { captureException } from '../services/sentry';
@@ -194,7 +194,7 @@ huntressRoutes.post('/webhook', async (c) => {
     return c.json({ error: 'Webhook secret not configured for this integration. Configure a webhook secret to enable webhook ingestion.' }, 403);
   }
 
-  const webhookSecret = decryptSecret(integration.webhookSecretEncrypted);
+  const webhookSecret = decryptForColumn('huntress_integrations', 'webhook_secret_encrypted', integration.webhookSecretEncrypted);
   if (!webhookSecret) {
     return c.json({ error: 'Webhook secret is not configured correctly' }, 401);
   }

@@ -243,12 +243,12 @@ export function buildSnmpPollCommand(
       target: device.ipAddress,
       port: device.port ?? 161,
       version: device.snmpVersion ?? 'v2c',
-      community: decryptSnmpSecret(device.community) ?? 'public',
+      community: decryptSnmpSecret(device.community, { table: 'snmp_devices', column: 'community' }) ?? 'public',
       username: device.username ?? '',
       authProtocol: device.authProtocol ?? '',
-      authPassword: decryptSnmpSecret(device.authPassword) ?? '',
+      authPassword: decryptSnmpSecret(device.authPassword, { table: 'snmp_devices', column: 'auth_password' }) ?? '',
       privProtocol: device.privProtocol ?? '',
-      privPassword: decryptSnmpSecret(device.privPassword) ?? '',
+      privPassword: decryptSnmpSecret(device.privPassword, { table: 'snmp_devices', column: 'priv_password' }) ?? '',
       oids
     }
   };

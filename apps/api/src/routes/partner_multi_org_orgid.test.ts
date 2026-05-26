@@ -204,6 +204,7 @@ vi.mock('../services/huntressConstants', () => ({
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((v: string | undefined) => `enc:${v ?? ''}`),
   decryptSecret: vi.fn(() => 'secret'),
+  decryptForColumn: vi.fn(() => 'secret'),
   isEncryptedSecret: vi.fn(() => false),
 }));
 vi.mock('../services/permissions', () => ({

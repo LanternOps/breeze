@@ -9,7 +9,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { writeRouteAudit } from '../services/auditEvents';
 import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import {
   decryptWebhookHeaders,
@@ -95,7 +95,7 @@ function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): Work
   let secret: string | undefined;
   if (webhook.secret) {
     try {
-      secret = decryptSecret(webhook.secret) ?? undefined;
+      secret = decryptForColumn('webhooks', 'secret', webhook.secret) ?? undefined;
     } catch (error) {
       console.error(`[webhooks] Failed to decrypt secret for webhook ${webhook.id}:`, error);
       secret = undefined;

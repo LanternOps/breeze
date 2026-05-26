@@ -17,7 +17,7 @@ import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
-import { decryptSecret } from '../services/secretCrypto';
+import { decryptForColumn } from '../services/secretCrypto';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
 
 const { db } = dbModule;
@@ -597,7 +597,7 @@ async function syncIntegrationById(
     } else {
       let apiKey: string | null;
       try {
-        apiKey = decryptSecret(integration.apiKeyEncrypted);
+        apiKey = decryptForColumn('huntress_integrations', 'api_key_encrypted', integration.apiKeyEncrypted);
       } catch (err) {
         throw new Error(`Failed to decrypt API key for Huntress integration ${integrationId}: ${err instanceof Error ? err.message : String(err)}`);
       }

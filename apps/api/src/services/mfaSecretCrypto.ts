@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
-import { decryptSecret, isEncryptedSecret } from './secretCrypto';
+import { decryptForColumn, isEncryptedSecret } from './secretCrypto';
 
 const MFA_ENCRYPTED_PREFIX = 'mfa:v1:';
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
@@ -75,7 +75,10 @@ export function decryptMfaTotpSecretForMigration(value: string | null | undefine
     return { plaintext, migratedSecret: null };
   }
 
-  const plaintext = isEncryptedSecret(value) ? decryptSecret(value) : value;
+  // Legacy migration path: rows written before the mfa:v1 format used
+  // the general secretCrypto stack against users.mfa_secret. Bind AAD to
+  // that column so v3 ciphertext decrypts post-rotation.
+  const plaintext = isEncryptedSecret(value) ? decryptForColumn('users', 'mfa_secret', value) : value;
   return {
     plaintext,
     migratedSecret: plaintext ? encryptMfaTotpSecret(plaintext) : null,

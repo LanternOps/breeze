@@ -1,4 +1,4 @@
-import { decryptSecret, encryptSecret } from './secretCrypto';
+import { decryptForColumn, decryptSecret, encryptSecret } from './secretCrypto';
 
 export const MASKED_SNMP_SECRET = '********';
 
@@ -28,7 +28,16 @@ export function encryptSnmpSecret(value: string | null | undefined): string | nu
   return encryptSecret(value);
 }
 
-export function decryptSnmpSecret(value: string | null | undefined): string | null {
+// AAD pair used when reading snmp_devices.<column> ciphertext. The wrapper
+// takes the column name so the same helper covers community / auth_password /
+// priv_password without callers duplicating the AAD string. The fallback to
+// the unbound decryptSecret path is for snmp credentials nested inside
+// discovery_profiles.snmp_credentials JSON, where the registry binds at the
+// JSON-column level (passed via aad parameter).
+export function decryptSnmpSecret(value: string | null | undefined, aad?: { table: string; column: string }): string | null {
+  if (aad) {
+    return decryptForColumn(aad.table, aad.column, value);
+  }
   return decryptSecret(value);
 }
 
@@ -49,7 +58,10 @@ export function mergeEncryptSnmpCommunities(values: string[] | undefined, existi
 }
 
 export function decryptSnmpCommunities(values: string[] | null | undefined): string[] {
-  return (values ?? []).map((value) => decryptSnmpSecret(value)).filter((value): value is string => Boolean(value));
+  // Communities live in discovery_profiles.snmp_communities (text[]).
+  return (values ?? [])
+    .map((value) => decryptSnmpSecret(value, { table: 'discovery_profiles', column: 'snmp_communities' }))
+    .filter((value): value is string => Boolean(value));
 }
 
 export function maskSnmpCommunities(values: string[] | null | undefined): string[] {
@@ -97,14 +109,17 @@ export function mergeEncryptSnmpCredentials(update: unknown, existing: unknown):
 }
 
 export function decryptSnmpCredentials(value: unknown): unknown {
+  // Credentials are nested inside discovery_profiles.snmp_credentials (JSON).
+  // The registry walker uses the column-level AAD, so we match it here.
+  const credAad = { table: 'discovery_profiles', column: 'snmp_credentials' } as const;
   if (Array.isArray(value)) return value.map((entry) => decryptSnmpCredentials(entry));
   if (!isRecord(value)) return value;
 
   const decrypted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (SECRET_FIELD_NAMES.has(key)) {
-      if (Array.isArray(entry)) decrypted[key] = entry.map((item) => typeof item === 'string' ? decryptSnmpSecret(item) : item);
-      else decrypted[key] = typeof entry === 'string' ? decryptSnmpSecret(entry) : entry;
+      if (Array.isArray(entry)) decrypted[key] = entry.map((item) => typeof item === 'string' ? decryptSnmpSecret(item, credAad) : item);
+      else decrypted[key] = typeof entry === 'string' ? decryptSnmpSecret(entry, credAad) : entry;
     } else {
       decrypted[key] = decryptSnmpCredentials(entry);
     }

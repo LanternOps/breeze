@@ -80,6 +80,8 @@ vi.mock('../../services/c2cM365', () => ({
 vi.mock('../../services/secretCrypto', () => ({
   encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [any])),
   decryptSecret: (...args: unknown[]) => decryptSecretMock(...(args as [any])),
+  decryptForColumn: (_t: string, _c: string, value: string | null | undefined) =>
+    decryptSecretMock(value),
 }));
 
 vi.mock('../../middleware/auth', () => ({

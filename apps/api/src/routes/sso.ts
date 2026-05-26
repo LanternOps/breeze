@@ -31,7 +31,7 @@ import {
 import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import { envFlag } from '../utils/envFlag';
 import { setRefreshTokenCookie } from './auth/helpers';
@@ -202,7 +202,7 @@ function buildSsoCallbackUri(): string {
 }
 
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
-  const decryptedClientSecret = decryptSecret(provider.clientSecret);
+  const decryptedClientSecret = decryptForColumn('sso_providers', 'client_secret', provider.clientSecret);
 
   if (!provider.clientId || !decryptedClientSecret || !provider.issuer) {
     throw new Error('Provider is not fully configured');

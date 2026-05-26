@@ -7,6 +7,10 @@ vi.mock('./secretCrypto', () => ({
     s == null
       ? null
       : Buffer.from(s.replace(/^enc:v1:/, ''), 'base64').toString('utf8'),
+  decryptForColumn: (_t: string, _c: string, s: string | null | undefined) =>
+    s == null
+      ? null
+      : Buffer.from(s.replace(/^enc:v1:/, ''), 'base64').toString('utf8'),
 }));
 
 interface FakeRow {

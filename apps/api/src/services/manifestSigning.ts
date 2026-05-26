@@ -20,7 +20,7 @@ import {
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { manifestSigningKeys } from '../db/schema/manifestSigningKeys';
-import { encryptSecret, decryptSecret } from './secretCrypto';
+import { encryptSecret, decryptForColumn } from './secretCrypto';
 
 export interface ActiveSigningKey {
   keyId: string;
@@ -173,7 +173,7 @@ export async function signManifest(manifestJson: string): Promise<string> {
   if (!active) {
     throw new Error('no active manifest signing key — call ensureActiveSigningKey first');
   }
-  const seedB64 = decryptSecret(active.privateKeyEnc);
+  const seedB64 = decryptForColumn('manifest_signing_keys', 'private_key_enc', active.privateKeyEnc);
   if (!seedB64) {
     throw new Error('decryptSecret returned null for active signing key');
   }
