@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, History } from 'lucide-react';
-import ScriptForm, { type ScriptFormValues } from './ScriptForm';
+import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './ScriptForm';
+import { mappingToRows } from './ScriptFormSchema';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
@@ -44,7 +45,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         content: scriptData.content || '',
         parameters: scriptData.parameters || [],
         timeoutSeconds: scriptData.timeoutSeconds || 300,
-        runAs: scriptData.runAs || 'system'
+        runAs: scriptData.runAs || 'system',
+        exitCodeSeverityMapping: mappingToRows(scriptData.exitCodeSeverityMapping),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -57,7 +59,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     fetchScript();
   }, [fetchScript]);
 
-  const handleSubmit = async (values: ScriptFormValues) => {
+  const handleSubmit = async (values: ScriptSubmitValues) => {
     setSubmitting(true);
     setError(undefined);
 
