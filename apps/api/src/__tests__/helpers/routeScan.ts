@@ -64,17 +64,23 @@ const ROUTE_DEF_PATTERN = /\.(get|post|put|patch|delete)\(\s*['"`](\/[^'"`]*)['"
 // repo (`:deviceId`, `:deviceIds`, `:device_id`). Matched case-insensitively.
 const DEVICE_PARAM_IN_URL = /:device(?:Id|Ids|_id)\b/i;
 
-/** Maximum bytes of source we inspect for each handler body. Covers nearly
- *  every route in the codebase; the scanner restarts at each route def so
- *  trailing handlers in the same file don't pollute the next slice. */
+/** Maximum bytes of source we inspect for each handler body. Per-route
+ *  slices are additionally truncated at the next top-level route definition
+ *  so a handler that drops its gate cannot be "rescued" by a sibling
+ *  handler's gate spilling into the window. */
 const HANDLER_SLICE_BYTES = 4000;
 
 /** Pattern for top-level helper declarations whose body we want to scan for
  *  gate references. Captures both `function foo(...) { ... }` and
- *  `const foo = (async)? (...) => { ... }` shapes. Indentation tolerates
- *  zero leading spaces (top-level helpers only — we don't recurse into
- *  inner closures). */
-const LOCAL_HELPER_DECL = /^(?:async\s+)?function\s+(\w+)\s*[\(<]|^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(?/gm;
+ *  `const foo = ... function/( ...) => { ... }` shapes — but NOT a const
+ *  bound to a function CALL like `const requireGroupRead = requirePermission(...)`.
+ *  The previous pattern matched middleware-constant bindings, which were
+ *  then treated as "helpers" whose 4000-byte slice happened to mention a
+ *  gate further down the file — causing the scanner to admit any route
+ *  using that middleware as gate-protected even when the handler body had
+ *  no real gate call. Require the RHS to start with `function`, `async
+ *  function`, or `(` (arrow / function-expression) to exclude calls. */
+const LOCAL_HELPER_DECL = /^(?:async\s+)?function\s+(\w+)\s*[\(<]|^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?(?:function\b|\()/gm;
 
 async function listTsFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -95,22 +101,32 @@ async function listTsFiles(dir: string): Promise<string[]> {
 
 /**
  * One-pass: collect names of file-local helpers that reference a canonical
- * gate anywhere in their body. The body window starts at the declaration and
- * extends `HANDLER_SLICE_BYTES` bytes forward, the same window the route
- * scanner uses; this is approximate but cheap and works for our codebase
- * (helpers are short).
+ * gate anywhere in their body. The body window starts at the declaration
+ * and ends at either HANDLER_SLICE_BYTES OR the start of the next top-level
+ * declaration, whichever comes first. This prevents a helper's slice from
+ * spilling into an unrelated function further down the file.
  */
 function findLocalGateWrappers(text: string): string[] {
-  const names: string[] = [];
+  type Decl = { index: number; name: string };
+  const decls: Decl[] = [];
   LOCAL_HELPER_DECL.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = LOCAL_HELPER_DECL.exec(text)) !== null) {
     const name = match[1] || match[2];
     if (!name) continue;
-    if (CANONICAL_GATE_NAMES.includes(name as (typeof CANONICAL_GATE_NAMES)[number])) continue;
-    const body = text.slice(match.index, match.index + HANDLER_SLICE_BYTES);
+    decls.push({ index: match.index, name });
+  }
+
+  const names: string[] = [];
+  for (let i = 0; i < decls.length; i++) {
+    const decl = decls[i];
+    if (!decl) continue;
+    if (CANONICAL_GATE_NAMES.includes(decl.name as (typeof CANONICAL_GATE_NAMES)[number])) continue;
+    const nextStart = decls[i + 1]?.index ?? text.length;
+    const bodyEnd = Math.min(decl.index + HANDLER_SLICE_BYTES, nextStart);
+    const body = text.slice(decl.index, bodyEnd);
     if (CANONICAL_GATE_PATTERNS.some((re) => re.test(body))) {
-      names.push(name);
+      names.push(decl.name);
     }
   }
   return names;
@@ -133,29 +149,41 @@ export async function findRoutesTouchingDevices(): Promise<RouteInfo[]> {
       ...localGateNames.map((n) => new RegExp(`\\b${n}\\b`)),
     ];
 
+    // Collect all route definitions in this file first, so each slice is
+    // bounded by the start of the next route. Without this bound, a
+    // handler that drops its gate inherits the gate string from the
+    // following route's slice and falsely passes the contract test.
+    type RouteMatch = { index: number; method: string; urlPattern: string };
+    const routeMatches: RouteMatch[] = [];
     ROUTE_DEF_PATTERN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = ROUTE_DEF_PATTERN.exec(text)) !== null) {
       const method = match[1];
       const urlPattern = match[2];
       if (!method || !urlPattern) continue;
-      const offset = match.index;
-      const slice = text.slice(offset, offset + HANDLER_SLICE_BYTES);
+      routeMatches.push({ index: match.index, method, urlPattern });
+    }
 
+    for (let i = 0; i < routeMatches.length; i++) {
+      const cur = routeMatches[i];
+      if (!cur) continue;
       // Only flag routes whose URL pattern names a device explicitly
       // (`:deviceId` etc). Body-level references would catch list/filter
       // routes too (which deserve site-scope checks but are too numerous
       // to lock in via a single contract test); scope this test to
       // per-device handlers — the audit's known offender class.
-      const hasDeviceIdInUrl = DEVICE_PARAM_IN_URL.test(urlPattern);
-      if (!hasDeviceIdInUrl) continue;
+      if (!DEVICE_PARAM_IN_URL.test(cur.urlPattern)) continue;
+
+      const nextStart = routeMatches[i + 1]?.index ?? text.length;
+      const sliceEnd = Math.min(cur.index + HANDLER_SLICE_BYTES, nextStart);
+      const slice = text.slice(cur.index, sliceEnd);
 
       const usesSiteScopeGate = gatePatterns.some((re) => re.test(slice));
-      const line = text.slice(0, offset).split('\n').length;
+      const line = text.slice(0, cur.index).split('\n').length;
       const relFile = path.relative(SRC_DIR, file).split(path.sep).join('/');
 
       results.push({
-        id: `${relFile}:${method.toUpperCase()} ${urlPattern}`,
+        id: `${relFile}:${cur.method.toUpperCase()} ${cur.urlPattern}`,
         file: relFile,
         line,
         usesSiteScopeGate,

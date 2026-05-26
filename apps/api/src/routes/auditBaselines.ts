@@ -458,13 +458,22 @@ auditBaselineRoutes.get(
     }
 
     const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId, hostname: devices.hostname })
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
       .from(devices)
       .where(and(...conditions))
       .limit(1);
 
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // Site-scope: partner-scope users may be restricted to a subset of sites
+    // within the org. canAccessSite returns true when permissions.allowedSiteIds
+    // is undefined (no site restriction), so this is a no-op for unrestricted
+    // users and a 403 for restricted users hitting a site they can't see.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (typeof device.siteId === 'string' && !canAccessSite(permissions, device.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const rows = await db
