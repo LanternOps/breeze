@@ -215,6 +215,10 @@ services:
     restart: unless-stopped
     command: >
       sh -ec 'password="$$(cat /run/secrets/redis_password)";
+      if [ -z "$$password" ] || [ "$$password" = "__GENERATE_ME__" ]; then
+        echo "[redis] REDIS_PASSWORD is empty or the __GENERATE_ME__ placeholder. Set REDIS_PASSWORD in .env to a strong value (openssl rand -hex 32)." >&2;
+        exit 1;
+      fi;
       umask 077;
       printf "%s\n" "appendonly yes" "maxmemory ${REDIS_MAXMEMORY:-256mb}" "maxmemory-policy noeviction" "maxclients 10000" "requirepass $$password" > /tmp/redis.conf;
       exec redis-server /tmp/redis.conf'

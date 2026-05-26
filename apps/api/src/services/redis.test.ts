@@ -40,4 +40,53 @@ describe('resolveRedisUrl', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('throws in hosted-SaaS production when REDIS_URL has no password', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalIsHosted = process.env.IS_HOSTED;
+    vi.resetModules();
+    const { resolveRedisUrl } = await import('./redis');
+
+    process.env.NODE_ENV = 'production';
+    process.env.IS_HOSTED = 'true';
+    process.env.REDIS_URL = 'redis://redis:6379';
+    delete process.env.REDIS_PASSWORD;
+    delete process.env.REDIS_PASSWORD_FILE;
+
+    try {
+      expect(() => resolveRedisUrl()).toThrow(/REDIS_URL must include a password/);
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+      if (originalIsHosted === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = originalIsHosted;
+    }
+  });
+
+  it('warns but does not throw in self-hosted production with no Redis password', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalIsHosted = process.env.IS_HOSTED;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.resetModules();
+    const { resolveRedisUrl } = await import('./redis');
+
+    process.env.NODE_ENV = 'production';
+    process.env.IS_HOSTED = 'false';
+    process.env.REDIS_URL = 'redis://redis:6379';
+    delete process.env.REDIS_PASSWORD;
+    delete process.env.REDIS_PASSWORD_FILE;
+
+    try {
+      expect(() => resolveRedisUrl()).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('REDIS_PASSWORD')
+      );
+    } finally {
+      warnSpy.mockRestore();
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+      if (originalIsHosted === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = originalIsHosted;
+    }
+  });
 });

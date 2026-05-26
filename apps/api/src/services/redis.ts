@@ -10,6 +10,10 @@ function isProductionEnv(): boolean {
   return (process.env.NODE_ENV ?? 'development') === 'production';
 }
 
+function isHostedSaas(): boolean {
+  return (process.env.IS_HOSTED ?? '').toLowerCase() === 'true';
+}
+
 function hasPasswordInRedisUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -19,13 +23,23 @@ function hasPasswordInRedisUrl(url: string): boolean {
   }
 }
 
-function warnAboutInsecureRedis(message: string): void {
-  if (!isProductionEnv() || warnedAboutInsecureProdRedis) {
+const INSECURE_REDIS_GUIDANCE =
+  'Set REDIS_PASSWORD (openssl rand -hex 32) and ensure REDIS_URL is redis://:<password>@host:port. See https://breezermm.com/deploy/production#redis-authentication';
+
+function failOrWarnAboutInsecureRedis(reason: string): void {
+  if (!isProductionEnv()) {
     return;
   }
 
+  if (isHostedSaas()) {
+    throw new Error(`[Redis] ${reason}. ${INSECURE_REDIS_GUIDANCE}`);
+  }
+
+  if (warnedAboutInsecureProdRedis) {
+    return;
+  }
   warnedAboutInsecureProdRedis = true;
-  console.warn(`[Redis] ${message}`);
+  console.warn(`[Redis] ${reason}. ${INSECURE_REDIS_GUIDANCE}`);
 }
 
 function readRedisPasswordFile(): string | undefined {
@@ -48,8 +62,8 @@ export function resolveRedisUrl(): string {
   const explicitUrl = process.env.REDIS_URL?.trim();
   if (explicitUrl) {
     if (!hasPasswordInRedisUrl(explicitUrl)) {
-      warnAboutInsecureRedis(
-        'REDIS_URL in production does not include authentication; security-sensitive features may fail closed during Redis outages'
+      failOrWarnAboutInsecureRedis(
+        'REDIS_URL must include a password (redis://:<password>@host:port) in production'
       );
     }
     return explicitUrl;
@@ -63,8 +77,8 @@ export function resolveRedisUrl(): string {
     return `redis://:${encodeURIComponent(password)}@${host}:${port}`;
   }
 
-  warnAboutInsecureRedis(
-    'REDIS_URL/REDIS_PASSWORD not configured in production; falling back to unauthenticated Redis'
+  failOrWarnAboutInsecureRedis(
+    'REDIS_PASSWORD is not configured in production; falling back to unauthenticated Redis'
   );
 
   return `redis://${host}:${port}`;
