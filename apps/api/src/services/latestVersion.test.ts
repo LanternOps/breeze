@@ -19,7 +19,7 @@ describe('latestVersion', () => {
     expect(r.source).toBe('github');
     expect(fetchSpy).toHaveBeenCalledOnce();
     const url = fetchSpy.mock.calls[0]![0] as string;
-    expect(url).toContain('api.github.com/repos/breeze-mm/breeze/releases/latest');
+    expect(url).toContain('api.github.com/repos/LanternOps/breeze/releases/latest');
     const init = fetchSpy.mock.calls[0]![1] as RequestInit;
     expect((init.headers as Record<string, string>)['User-Agent']).toBe('breeze-rmm-api');
   });

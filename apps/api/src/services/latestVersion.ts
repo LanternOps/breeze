@@ -1,4 +1,4 @@
-const GITHUB_URL = 'https://api.github.com/repos/breeze-mm/breeze/releases/latest';
+const GITHUB_URL = 'https://api.github.com/repos/LanternOps/breeze/releases/latest';
 const TTL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5000;
 const TAG_RE = /^\d+\.\d+\.\d+$/;
