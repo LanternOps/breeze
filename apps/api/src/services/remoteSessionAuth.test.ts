@@ -224,6 +224,31 @@ describe('WS ticket caller binding (IP + UA)', () => {
     expect(consumed2.ok === false && consumed2.reason).toBe('ua_mismatch');
   });
 
+  it('atomic claim — concurrent consume calls yield exactly one success', async () => {
+    // Regression for the TOCTOU between consumeWsTicket's GET and DEL that
+    // briefly slipped in (microtask boundary between read and burn). With
+    // the atomic get-then-sync-delete path, only one parallel claim can
+    // observe the record; the other gets not_found.
+    const { createWsTicket, consumeWsTicket } = await loadModule();
+    const { ticket } = await createWsTicket({
+      sessionId: 's1',
+      sessionType: 'terminal',
+      userId: 'u1',
+      ip: '203.0.113.1',
+      userAgent: 'Mozilla/5.0',
+    });
+
+    const [a, b] = await Promise.all([
+      consumeWsTicket(ticket, { ip: '203.0.113.1', userAgent: 'Mozilla/5.0' }),
+      consumeWsTicket(ticket, { ip: '203.0.113.1', userAgent: 'Mozilla/5.0' }),
+    ]);
+
+    const successes = [a, b].filter((r) => r.ok).length;
+    const notFounds = [a, b].filter((r) => !r.ok && r.reason === 'not_found').length;
+    expect(successes).toBe(1);
+    expect(notFounds).toBe(1);
+  });
+
   it('returns not_found for an unknown ticket', async () => {
     const { consumeWsTicket } = await loadModule();
     const consumed = await consumeWsTicket('does-not-exist', {

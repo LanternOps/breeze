@@ -222,69 +222,52 @@ export async function consumeWsTicket(
   ticket: string,
   caller: { ip: string; userAgent: string }
 ): Promise<ConsumeWsTicketResult> {
-  // We need read-then-(maybe-)delete semantics so we can return the
-  // correct rejection reason. The legacy GET+DEL Lua / `consumeRecord`
-  // helper deletes unconditionally; here we read first, decide, and
-  // delete in both the success and mismatch paths so a stolen ticket
-  // cannot be probed again with corrected values.
+  // Atomic GET+DEL — only one concurrent caller wins the record. The IP+UA
+  // checks then run against the (already-claimed) record. A previous
+  // version of this function split GET and DEL across an await boundary,
+  // which let two concurrent claims both succeed and silently violated the
+  // documented one-time semantics — fine for legit racers (e.g. React
+  // strict-mode double-fire) but not what the design promises.
   let record: WsTicketRecord | null = null;
 
   if (shouldUseRedis()) {
-    const redis = getRedis();
-    if (!redis) {
+    try {
+      record = await redisConsumeJson<WsTicketRecord>(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`);
+    } catch (err) {
+      console.error('[session-auth] Failed to atomically consume WS ticket from Redis:', err);
       return { ok: false, reason: 'not_found' };
     }
-    const raw = await redis.get(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`);
-    if (raw && typeof raw === 'string') {
-      try {
-        record = JSON.parse(raw) as WsTicketRecord;
-      } catch (err) {
-        console.error('[session-auth] Failed to parse Redis WS ticket JSON:', err);
-        // Burn the unparseable key so it can't be hammered.
-        await redis.del(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`);
-        return { ok: false, reason: 'not_found' };
-      }
-    }
   } else {
+    // In-memory equivalent: get + delete synchronously before any await, so
+    // a second caller landing on the same tick sees nothing. We do NOT
+    // filter by expiry here so the outer code can return 'expired' rather
+    // than a less-informative 'not_found'.
     record = wsTickets.get(ticket) ?? null;
+    if (record) {
+      wsTickets.delete(ticket);
+    }
   }
 
   if (!record) {
     return { ok: false, reason: 'not_found' };
   }
 
-  const burn = async () => {
-    if (shouldUseRedis()) {
-      const redis = getRedis();
-      if (redis) {
-        await redis.del(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`);
-      }
-    } else {
-      wsTickets.delete(ticket);
-    }
-  };
-
   if (isExpired(record.expiresAt)) {
-    await burn();
     return { ok: false, reason: 'expired' };
   }
 
   // IP binding — only enforced if (a) the env flag is on (default) AND
-  // (b) the stored record actually carries an IP. Records minted before
-  // Task 16 (or by paths that don't have request context) skip this.
+  // (b) the stored record actually carries an IP. The record is already
+  // gone (atomic DEL above), so a probe with corrected IP/UA after a
+  // mismatch hits "not_found".
   if (shouldBindTicketIp() && record.ip && record.ip !== caller.ip) {
-    await burn();
     return { ok: false, reason: 'ip_mismatch' };
   }
 
   // UA binding — always enforced when the stored record carries a hash.
   if (record.uaHash && record.uaHash !== hashUa(caller.userAgent)) {
-    await burn();
     return { ok: false, reason: 'ua_mismatch' };
   }
-
-  // All checks pass — consume the ticket (one-time semantics).
-  await burn();
 
   return {
     ok: true,
