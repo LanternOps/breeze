@@ -95,6 +95,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_reliability', 'device_reliability_history', 'device_sessions',
   'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
+  'elevation_requests',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'peripheral_events', 'playbook_executions',
@@ -111,12 +112,14 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
- * Currently empty — no device-id-scoped child table has a site_id column.
- * Forward-defense list: any future schema PR adding site_id to such a table
- * will be caught by the moveOrg.coverage.test.ts drift-detector below and
- * must be added here so cross-org-cross-site moves rewrite child site_ids.
+ * Cross-org-cross-site moves via POST /devices/:id/move-org must rewrite each
+ * row's site_id alongside org_id, or those rows strand under the OLD site_id.
+ * The moveOrg.coverage.test.ts drift-detector enforces that any future
+ * schema PR adding site_id to a device-id-scoped table populates this list.
  */
-export const DEVICE_SITE_DENORMALIZED_TABLES = [] as const;
+export const DEVICE_SITE_DENORMALIZED_TABLES = [
+  'elevation_requests',
+] as const;
 
 /**
  * All tables with a direct device_id FK to devices.id, ordered so children come

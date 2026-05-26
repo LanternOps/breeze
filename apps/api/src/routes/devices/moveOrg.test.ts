@@ -51,7 +51,7 @@ import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { moveOrgRoutes } from './moveOrg';
-import { DEVICE_ORG_DENORMALIZED_TABLES } from './core';
+import { DEVICE_ORG_DENORMALIZED_TABLES, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 
 // Snapshot the gate registration BEFORE any `vi.clearAllMocks()` runs.
 // requireScope/requirePermission/requireMfa run at module-import time as the
@@ -224,8 +224,13 @@ describe('POST /devices/:id/move-org', () => {
       // Every denormalized table got an UPDATE issued in the transaction.
       // This is the unit-test proxy for "RLS will read from the new org
       // only post-move": each row in those tables has its org_id rewritten
-      // to the new org, so RLS in the OLD org no longer matches it.
-      expect(updatedTables).toEqual([...DEVICE_ORG_DENORMALIZED_TABLES]);
+      // to the new org, so RLS in the OLD org no longer matches it. The
+      // SITE loop runs second and any table in DEVICE_SITE_DENORMALIZED_TABLES
+      // appears in updatedTables a second time for the site_id rewrite.
+      expect(updatedTables).toEqual([
+        ...DEVICE_ORG_DENORMALIZED_TABLES,
+        ...DEVICE_SITE_DENORMALIZED_TABLES,
+      ]);
 
       // After the move, the live WS for this agent MUST be closed so the
       // reconnect handshake resolves the new org_id. Otherwise every
