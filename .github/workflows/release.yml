@@ -289,8 +289,44 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -Path dist -ItemType Directory -Force | Out-Null
           go install github.com/tc-hib/go-winres@v0.3.3
+          $winres = "$env:USERPROFILE\go\bin\go-winres.exe"
+          # Embed VERSIONINFO + manifest + icon resources into every Windows
+          # binary we ship. Without an embedded FileVersion, MSI treats our
+          # exes as "unversioned" and applies the "preserve user-modified
+          # unversioned files" rule, which surfaces in install.log as
+          # `File: ...\breeze-agent.exe; Won't Overwrite` whenever an existing
+          # binary at the install path has been modified (#944).
+          #
+          # We use `go-winres simply` (CLI args) rather than `make` + JSON
+          # because .ico files work via --icon in simply mode but not in
+          # JSON-mode RT_GROUP_ICON entries (go-winres v0.3.x rejects them
+          # with "image: unknown format"). Each invocation is checked for
+          # $LASTEXITCODE so a tooling failure aborts the release.
           Push-Location agent\resources
-          & "$env:USERPROFILE\go\bin\go-winres.exe" make --in winres.json --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico --admin `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Agent" --file-description "Breeze RMM Agent" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-agent.exe" `
+            --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-agent failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Watchdog" --file-description "Breeze RMM Watchdog" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-watchdog.exe" `
+            --out ..\cmd\breeze-watchdog\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-watchdog failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Backup Helper" --file-description "Breeze RMM Backup Helper" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-backup.exe" `
+            --out ..\cmd\breeze-backup\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-backup failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --manifest gui --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Desktop Helper" --file-description "Breeze RMM Desktop Helper" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-desktop-helper.exe" `
+            --out ..\cmd\breeze-desktop-helper\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-desktop-helper failed with exit code $LASTEXITCODE" }
           Pop-Location
           Push-Location agent
           $env:GOOS = "windows"

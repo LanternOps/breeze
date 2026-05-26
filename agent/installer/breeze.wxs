@@ -67,15 +67,27 @@
     <Property Id="BREEZE_SC_FAILURE_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
 
-    <!-- Kill any running Breeze processes before InstallValidate so upgrades
-         don't leave a stale helper/watchdog running with an older binary hash.
+    <!-- Kill any running Breeze processes before InstallValidate so file
+         replacement isn't blocked by locked exes.
          ServiceControl stops BreezeAgent and BreezeWatchdog below, but the
          user-session desktop helper (spawned via CreateProcessAsUser) is not a
          service and would otherwise survive an in-place upgrade — causing the
          sessionbroker binary hash check to fail on the next remote-desktop
-         connection. Runs on upgrade, uninstall, and repair; fresh installs
-         have nothing to kill. Admin token (required by the MSI) is sufficient
-         for cross-session SeDebugPrivilege-backed termination. -->
+         connection. The CA runs on EVERY install path (fresh install, major
+         upgrade, repair) because a fresh install can land on top of a binary
+         left behind by a previous uninstall or a non-MSI deployment — the
+         MSI install log line we kept seeing was:
+            File: ...\breeze-agent.exe; Won't Overwrite;
+            Existing file is unversioned but modified
+         even on a "first-time" MSI install where the agent was previously
+         dropped onto the box by another mechanism. Skipping the kill on
+         REMOVE is fine because ServiceControl handles service shutdown on
+         uninstall and the user-helper exits cleanly when its tray menu
+         exits. The taskkill /F is idempotent: `& exit /b 0` swallows the
+         "process not found" error so a fresh box with nothing to kill
+         still returns success (#944). Admin token (required by the MSI)
+         is sufficient for cross-session SeDebugPrivilege-backed
+         termination. -->
     <SetProperty Id="BREEZE_KILL_CMD" Value="[System64Folder]cmd.exe" Before="KillBreezeProcesses" Sequence="execute" />
     <CustomAction
       Id="KillBreezeProcesses"
@@ -265,7 +277,11 @@
       HideTarget="yes" />
 
     <InstallExecuteSequence>
-      <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR Installed" />
+      <!-- Run on every install path EXCEPT uninstall. Broadened from the
+           original `WIX_UPGRADE_DETECTED OR Installed` (which skipped fresh
+           installs over a pre-existing non-MSI binary) — see comment at the
+           CA definition above and issue #944. -->
+      <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="NOT REMOVE" />
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
       <Custom Action="HardenProgramDataAcl" After="CreateFolders" Condition="NOT REMOVE" />
       <!-- Rollback rolls back the FIRST-install case only; on upgrade or
