@@ -99,8 +99,22 @@ function positiveIntFromEnv(name: string, fallback: number): number {
   return n;
 }
 
-export const ACCOUNT_LOCKOUT_MAX = positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_MAX', 5);
-export const ACCOUNT_LOCKOUT_WINDOW_SECONDS = positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS', 15 * 60);
+// Read at call time, not at module load, so ops can change
+// LOGIN_ACCOUNT_LOCKOUT_MAX / _WINDOW_SECONDS without an API restart. The
+// kill-switch sibling (mfaForcePartnerAdmin) uses the same pattern.
+export function getAccountLockoutMax(): number {
+  return positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_MAX', 5);
+}
+
+export function getAccountLockoutWindowSeconds(): number {
+  return positiveIntFromEnv('LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS', 15 * 60);
+}
+
+// Back-compat read-only exports — DO NOT USE in new code, prefer the getters
+// above so env changes take effect at runtime. Kept so older call sites and
+// tests don't break in one shot; can be removed once all callers migrate.
+export const ACCOUNT_LOCKOUT_MAX = getAccountLockoutMax();
+export const ACCOUNT_LOCKOUT_WINDOW_SECONDS = getAccountLockoutWindowSeconds();
 
 function accountFailureKey(email: string): string {
   return `login:account-fail:${email.toLowerCase()}`;
@@ -131,34 +145,36 @@ export async function recordAccountFailure(
   // Feature disabled (MAX=0): short-circuit before any Redis call so the
   // null-Redis fail-closed branch below can't accidentally lock everyone
   // out when ops have explicitly turned the feature off.
-  if (ACCOUNT_LOCKOUT_MAX <= 0) {
+  const maxAttempts = getAccountLockoutMax();
+  const windowSeconds = getAccountLockoutWindowSeconds();
+  if (maxAttempts <= 0) {
     return { count: 0, locked: false, newlyLocked: false };
   }
   if (!redis) {
     console.error('[rate-limit] Redis unavailable, failing closed on account failure for:', email);
-    return { count: ACCOUNT_LOCKOUT_MAX, locked: true, newlyLocked: false };
+    return { count: maxAttempts, locked: true, newlyLocked: false };
   }
 
   const key = accountFailureKey(email);
   try {
-    // Read the prior count BEFORE incrementing so we can detect the exact
-    // attempt that crossed the threshold (newlyLocked) versus subsequent
-    // failures inside an already-locked window.
-    const prev = await redis.get(key);
-    const prevCount = prev ? parseInt(prev, 10) : 0;
+    // Atomically increment the counter. newlyLocked is the call where the
+    // INCR's own return value is exactly maxAttempts — only one racer can
+    // observe that boundary, so the lockout email + audit row fire exactly
+    // once per lockout window. (The previous GET-then-INCR pattern let two
+    // concurrent 4→5 / 4→6 callers BOTH return newlyLocked.)
     const count = await redis.incr(key);
     if (count === 1) {
       // Only reset TTL when the counter was just created — otherwise a
       // sliding TTL would let an attacker keep the counter "young" by
       // pacing attempts and never trip the lockout.
-      await redis.expire(key, ACCOUNT_LOCKOUT_WINDOW_SECONDS);
+      await redis.expire(key, windowSeconds);
     }
-    const locked = count >= ACCOUNT_LOCKOUT_MAX;
-    const newlyLocked = locked && prevCount < ACCOUNT_LOCKOUT_MAX;
+    const locked = count >= maxAttempts;
+    const newlyLocked = count === maxAttempts;
     return { count, locked, newlyLocked };
   } catch (err) {
     console.error('[rate-limit] Redis error recording account failure for:', email, err);
-    return { count: ACCOUNT_LOCKOUT_MAX, locked: true, newlyLocked: false };
+    return { count: maxAttempts, locked: true, newlyLocked: false };
   }
 }
 
@@ -186,14 +202,15 @@ export async function clearAccountFailures(redis: Redis | null, email: string): 
  * guessing during a Redis outage.
  */
 export async function isAccountLocked(redis: Redis | null, email: string): Promise<boolean> {
-  if (ACCOUNT_LOCKOUT_MAX <= 0) return false;
+  const maxAttempts = getAccountLockoutMax();
+  if (maxAttempts <= 0) return false;
   if (!redis) {
     console.error('[rate-limit] Redis unavailable, treating account as locked for:', email);
     return true;
   }
   try {
     const v = await redis.get(accountFailureKey(email));
-    return v !== null && parseInt(v, 10) >= ACCOUNT_LOCKOUT_MAX;
+    return v !== null && parseInt(v, 10) >= maxAttempts;
   } catch (err) {
     console.error('[rate-limit] Redis error checking account lock for:', email, err);
     return true;

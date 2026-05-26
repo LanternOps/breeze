@@ -233,7 +233,6 @@ describe('rate-limit service', () => {
     });
 
     it('recordAccountFailure does NOT refresh TTL on subsequent failures', async () => {
-      accountRedis.get.mockResolvedValue('3');
       accountRedis.incr.mockResolvedValue(4);
 
       const result = await recordAccountFailure(accountRedis as unknown as Redis, 'victim@example.com');
@@ -242,8 +241,7 @@ describe('rate-limit service', () => {
       expect(accountRedis.expire).not.toHaveBeenCalled();
     });
 
-    it('recordAccountFailure marks newlyLocked exactly on the threshold-crossing attempt', async () => {
-      accountRedis.get.mockResolvedValue('4');
+    it('recordAccountFailure marks newlyLocked only when INCR returns exactly MAX', async () => {
       accountRedis.incr.mockResolvedValue(5);
 
       const result = await recordAccountFailure(accountRedis as unknown as Redis, 'victim@example.com');
@@ -252,7 +250,6 @@ describe('rate-limit service', () => {
     });
 
     it('recordAccountFailure does NOT re-fire newlyLocked once already locked', async () => {
-      accountRedis.get.mockResolvedValue('5');
       accountRedis.incr.mockResolvedValue(6);
 
       const result = await recordAccountFailure(accountRedis as unknown as Redis, 'victim@example.com');
@@ -262,7 +259,6 @@ describe('rate-limit service', () => {
     });
 
     it('recordAccountFailure normalizes email to lowercase', async () => {
-      accountRedis.get.mockResolvedValue(null);
       accountRedis.incr.mockResolvedValue(1);
       accountRedis.expire.mockResolvedValue(1);
 
@@ -279,7 +275,7 @@ describe('rate-limit service', () => {
     });
 
     it('recordAccountFailure fails closed on redis error', async () => {
-      accountRedis.get.mockRejectedValue(new Error('redis down'));
+      accountRedis.incr.mockRejectedValue(new Error('redis down'));
 
       const result = await recordAccountFailure(accountRedis as unknown as Redis, 'victim@example.com');
 

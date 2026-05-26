@@ -49,6 +49,8 @@ vi.mock('../services', () => ({
   isAccountLocked: vi.fn().mockResolvedValue(false),
   ACCOUNT_LOCKOUT_MAX: 5,
   ACCOUNT_LOCKOUT_WINDOW_SECONDS: 15 * 60,
+  getAccountLockoutMax: vi.fn(() => 5),
+  getAccountLockoutWindowSeconds: vi.fn(() => 15 * 60),
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => ({
     setex: vi.fn(),

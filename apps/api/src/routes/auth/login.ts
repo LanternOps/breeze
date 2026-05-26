@@ -23,7 +23,7 @@ import {
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked,
-  ACCOUNT_LOCKOUT_WINDOW_SECONDS
+  getAccountLockoutWindowSeconds
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -131,7 +131,7 @@ async function recordAccountFailureAndMaybeNotify(
         method: 'password',
         consecutiveFailures: result.count,
         action: 'auth.login.account_locked',
-        lockoutWindowSeconds: ACCOUNT_LOCKOUT_WINDOW_SECONDS
+        lockoutWindowSeconds: getAccountLockoutWindowSeconds()
       }
     });
 
@@ -155,7 +155,7 @@ async function recordAccountFailureAndMaybeNotify(
           to: user.email,
           name: user.name ?? undefined,
           resetUrl,
-          lockoutMinutes: Math.round(ACCOUNT_LOCKOUT_WINDOW_SECONDS / 60)
+          lockoutMinutes: Math.round(getAccountLockoutWindowSeconds() / 60)
         });
       } catch (err) {
         console.error('[auth] Failed to send account-locked email:', err);
@@ -178,12 +178,11 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const normalizedEmail = email.toLowerCase();
 
   // Task 11: kick off the timing-floor promise at the very top so every
-  // branch below — including the cheap "no Redis" 503 we deliberately
-  // exclude from flooring, and the cheap "unknown email" 401 — is
-  // measured against the same starting line. We Promise.all this with
-  // the actual decision logic before returning each response. The 503
-  // path below is the one exception: it bypasses the floor because
-  // Redis being down is an ops state, not a privacy concern.
+  // branch below — including the cheap "no Redis" 503 and the cheap
+  // "unknown email" 401 — is measured against the same starting line.
+  // Every return path awaits this before responding; the 503 (Redis-down)
+  // branch awaits it too so attackers can't observationally distinguish
+  // "Redis is down right now" from any other denial outcome.
   const floorPromise = loginResponseFloorPromise();
 
   // Rate limit by IP + email combination - fail closed for security
@@ -192,6 +191,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   if (!e2eMode) {
     const redis = getRedis();
     if (!redis) {
+      await floorPromise;
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
 
@@ -286,7 +286,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       await floorPromise;
       return c.json({
         error: 'Account temporarily locked due to repeated failed sign-ins. Try again in 15 minutes or reset your password.',
-        retryAfter: ACCOUNT_LOCKOUT_WINDOW_SECONDS
+        retryAfter: getAccountLockoutWindowSeconds()
       }, 429);
     }
   }
