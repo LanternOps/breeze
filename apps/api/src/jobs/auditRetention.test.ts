@@ -189,7 +189,7 @@ describe('auditRetention worker', () => {
       expect(stats.errors).toBe(0);
     });
 
-    it('issues SET LOCAL ROLE + SET LOCAL GUC before DELETE for each policy', async () => {
+    it('issues SET LOCAL ROLE + SET LOCAL GUC before DELETE and re-anchors the chain', async () => {
       dbExecuteMock
         .mockResolvedValueOnce([
           { id: 'p1', org_id: 'org-a', retention_days: 30 },
@@ -197,6 +197,7 @@ describe('auditRetention worker', () => {
         .mockResolvedValueOnce(undefined) // SET LOCAL ROLE
         .mockResolvedValueOnce(undefined) // SET LOCAL GUC
         .mockResolvedValueOnce({ rowCount: 5 }) // DELETE
+        .mockResolvedValueOnce(undefined) // re-anchor UPDATE (rows were deleted)
         .mockResolvedValueOnce(undefined); // UPDATE last_cleanup_at
 
       const stats = await pruneExpiredAuditLogs();
@@ -205,12 +206,9 @@ describe('auditRetention worker', () => {
       expect(stats.rowsDeleted).toBe(5);
       expect(stats.errors).toBe(0);
 
-      // 1 select + 3 (role/guc/delete) + 1 update = 5 calls total.
-      expect(dbExecuteMock).toHaveBeenCalledTimes(5);
+      // 1 select + 3 (role/guc/delete) + 1 re-anchor + 1 last_cleanup_at update = 6 calls.
+      expect(dbExecuteMock).toHaveBeenCalledTimes(6);
 
-      // The role-switch and GUC-set must run before the DELETE. Drizzle's
-      // sql template carries the literal in `queryChunks` (an array of
-      // strings + bound params). Stringify the first chunk to assert on.
       const callTexts = dbExecuteMock.mock.calls.map((call: unknown[]) => {
         const q = call[0];
         const sqlObj = q as { queryChunks?: Array<{ value?: string[] } | string> };
@@ -224,6 +222,24 @@ describe('auditRetention worker', () => {
       expect(callTexts[1]).toMatch(/SET LOCAL ROLE breeze_audit_admin/);
       expect(callTexts[2]).toMatch(/SET LOCAL breeze\.allow_audit_retention/);
       expect(callTexts[3]).toMatch(/DELETE FROM audit_logs/);
+      // Re-anchor UPDATE rewrites prev_checksum=NULL on the new chain head.
+      expect(callTexts[4]).toMatch(/prev_checksum = NULL/);
+    });
+
+    it('skips chain re-anchor when no rows were deleted', async () => {
+      dbExecuteMock
+        .mockResolvedValueOnce([
+          { id: 'p1', org_id: 'org-a', retention_days: 30 },
+        ])
+        .mockResolvedValueOnce(undefined) // SET LOCAL ROLE
+        .mockResolvedValueOnce(undefined) // SET LOCAL GUC
+        .mockResolvedValueOnce({ rowCount: 0 }) // DELETE — no rows
+        .mockResolvedValueOnce(undefined); // UPDATE last_cleanup_at
+
+      const stats = await pruneExpiredAuditLogs();
+      expect(stats.rowsDeleted).toBe(0);
+      // 1 select + 3 (role/guc/delete) + 1 last_cleanup_at = 5 calls. No re-anchor.
+      expect(dbExecuteMock).toHaveBeenCalledTimes(5);
     });
 
     it('continues to the next policy when one fails', async () => {
@@ -236,10 +252,11 @@ describe('auditRetention worker', () => {
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error('connection lost'))
-        // org-b: role, guc, DELETE ok, UPDATE ok
+        // org-b: role, guc, DELETE ok, re-anchor ok, UPDATE ok
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce({ rowCount: 3 })
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined);
 
       const stats = await pruneExpiredAuditLogs();
