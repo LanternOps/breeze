@@ -302,8 +302,8 @@ importers:
         specifier: ~55.0.15
         version: 55.0.15(expo@55.0.8)(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)
       expo-local-authentication:
-        specifier: ~55.0.14
-        version: 55.0.14(expo@55.0.8)
+        specifier: ~56.0.4
+        version: 56.0.4(expo@55.0.8)
       expo-notifications:
         specifier: ~55.0.13
         version: 55.0.13(expo@55.0.8)(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)
@@ -6755,8 +6755,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  expo-local-authentication@55.0.14:
-    resolution: {integrity: sha512-7yMXn/3A/rHUeqxXApkmtANFRCrECEMEnYPKfR6hLHBB5GdoZ3aeIdgkj809yyKT76jW6X8+aNAI938O769KQw==}
+  expo-local-authentication@56.0.4:
+    resolution: {integrity: sha512-OpW2vs72E+SwHV+82CUlP873yClDaAesa26d2tjnUGxT2FJBJ3+aTncNFZHKjh812JQ0/fB5LVIY25+g+om5zg==}
     peerDependencies:
       expo: '*'
 
@@ -18328,7 +18328,7 @@ snapshots:
       - expo
       - supports-color
 
-  expo-local-authentication@55.0.14(expo@55.0.8):
+  expo-local-authentication@56.0.4(expo@55.0.8):
     dependencies:
       expo: 55.0.8(@babel/core@7.29.0)(@expo/dom-webview@55.0.3)(react-dom@19.2.6(react@19.2.6))(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@5.9.3)
       invariant: 2.2.4
