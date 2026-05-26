@@ -564,6 +564,8 @@ coreRoutes.get(
         architecture: d.architecture,
         agentVersion: d.agentVersion,
         status: d.status,
+        watchdogStatus: d.watchdogStatus,
+        mainAgentSilentSince: d.mainAgentSilentSince,
         lastSeenAt: d.lastSeenAt,
         enrolledAt: d.enrolledAt,
         tags: d.tags,
