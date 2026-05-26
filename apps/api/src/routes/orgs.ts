@@ -12,6 +12,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
+import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { isAllowedLauncherScheme } from '@breeze/shared';
 
 export const orgRoutes = new Hono();
@@ -410,8 +411,11 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     ? { ...currentSettings, ...body.settings }
     : currentSettings;
 
+  // Encrypt secret-bearing fields (e.g. remoteAccessProviders[*].password)
+  // BEFORE writing. Without this, every PATCH from the UI would regress the
+  // column to plaintext between deploy-day batch re-encrypt runs.
   const updateData: Record<string, unknown> = {
-    settings: newSettings,
+    settings: encryptColumnValueForWrite('partners', 'settings', newSettings),
     updatedAt: new Date()
   };
 
@@ -469,10 +473,15 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   const id = c.req.param('id')!;
 
   const data = c.req.valid('json');
-  const updates = { ...data, updatedAt: new Date() };
+  const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
 
   if (Object.keys(data).length === 0) {
     return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  // Encrypt secret-bearing fields in partners.settings before writing.
+  if (updates.settings !== undefined) {
+    updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
   const [partner] = await db
@@ -684,7 +693,10 @@ orgRoutes.patch(
 
     const [partner] = await db
       .update(partners)
-      .set({ settings: newSettings, updatedAt: new Date() })
+      .set({
+        settings: encryptColumnValueForWrite('partners', 'settings', newSettings),
+        updatedAt: new Date(),
+      })
       .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
       .returning();
     if (!partner) {
@@ -835,7 +847,11 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
   if (data.slug !== undefined) updates.slug = data.slug;
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
-  if (data.settings !== undefined) updates.settings = data.settings;
+  if (data.settings !== undefined) {
+    // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
+    // before writing organizations.settings. See encryptedColumnRegistry.
+    updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
+  }
   if (data.ssoConfig !== undefined) updates.ssoConfig = data.ssoConfig;
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
   if (data.contractStart !== undefined) {
@@ -1054,9 +1070,16 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
+  // Encrypt secret-bearing fields inside sites.settings before writing —
+  // matches the registry walker so UI edits don't regress to plaintext.
+  const writeData: Record<string, unknown> = { ...data, updatedAt: new Date() };
+  if (writeData.settings !== undefined) {
+    writeData.settings = encryptColumnValueForWrite('sites', 'settings', writeData.settings);
+  }
+
   const [updated] = await db
     .update(sites)
-    .set({ ...data, updatedAt: new Date() })
+    .set(writeData)
     .where(eq(sites.id, id))
     .returning();
 

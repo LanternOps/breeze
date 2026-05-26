@@ -171,6 +171,26 @@ export function transformEncryptedColumnValue(spec: EncryptedColumnSpec, value: 
   return transformJsonSecrets(value, undefined, aad);
 }
 
+/**
+ * Encrypt secret-bearing fields inside a registered table.column value before
+ * writing it to the database.
+ *
+ * Mutating routes that set `partners.settings` / `sites.settings` /
+ * `organizations.settings` (or any other registered column) MUST run their
+ * incoming value through this helper. Otherwise a UI edit silently re-writes
+ * the column as plaintext — undoing the at-rest guarantee from the deploy-day
+ * batch re-encrypt. See PR #716 and the registry walker `reencryptRegisteredSecrets`
+ * for the reference path.
+ *
+ * No-op when the table/column is not registered (returns the value unchanged)
+ * — callers can guard registered and unregistered columns with the same code.
+ */
+export function encryptColumnValueForWrite(table: string, column: string, value: unknown): unknown {
+  const spec = encryptedColumnRegistry.find((s) => s.table === table && s.column === column);
+  if (!spec) return value;
+  return transformEncryptedColumnValue(spec, value);
+}
+
 async function tableExists(executor: SecretReencryptionExecutor, table: string): Promise<boolean> {
   const rows = rowsFromResult(await executor.execute(sql`
     SELECT to_regclass(${`public.${table}`}) IS NOT NULL AS present

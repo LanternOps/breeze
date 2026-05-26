@@ -9,6 +9,7 @@ import {
   partners,
 } from '../../../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../../../services/auditEvents';
+import { encryptColumnValueForWrite } from '../../../services/encryptedColumnRegistry';
 import type { BootstrapTool, BootstrapContext } from '../types';
 
 // ---- Input / output -------------------------------------------------------
@@ -149,7 +150,10 @@ export async function setRiskProfile(
     return { created: false };
   }
   const next = { ...current, riskProfile: level };
-  await db.update(partners).set({ settings: next }).where(eq(partners.id, partnerId));
+  await db
+    .update(partners)
+    .set({ settings: encryptColumnValueForWrite('partners', 'settings', next) })
+    .where(eq(partners.id, partnerId));
   return { created: true };
 }
 

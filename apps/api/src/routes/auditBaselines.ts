@@ -468,11 +468,10 @@ auditBaselineRoutes.get(
     }
 
     // Site-scope: partner-scope users may be restricted to a subset of sites
-    // within the org. canAccessSite returns true when permissions.allowedSiteIds
-    // is undefined (no site restriction), so this is a no-op for unrestricted
-    // users and a 403 for restricted users hitting a site they can't see.
+    // within the org. When the request context has no permissions object
+    // (e.g. system-scope), the site restriction does not apply.
     const permissions = c.get('permissions') as UserPermissions | undefined;
-    if (typeof device.siteId === 'string' && !canAccessSite(permissions, device.siteId)) {
+    if (permissions && typeof device.siteId === 'string' && !canAccessSite(permissions, device.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
