@@ -23,12 +23,12 @@ Raw `.exe` binaries built via `go build` with ldflags version embedding, distrib
 Embeds metadata (version, publisher, icon) into the `.exe` so Windows shows proper info in Properties and UAC prompts.
 
 **Files needed:**
-- `agent/resources/winres.json` - go-winres config (version, icon, manifest)
 - `agent/resources/icon.ico` - Application icon (multi-size)
-- `agent/resources/breeze.manifest` - UAC manifest requesting `requireAdministrator`
-- Compiled to `agent/cmd/breeze-agent/rsrc_windows_amd64.syso` (Go picks this up automatically)
+- Compiled to `agent/cmd/<binary>/rsrc_windows_amd64.syso` per binary (Go picks this up automatically)
 
-**Tool:** [go-winres](https://github.com/tc-hib/go-winres) or `windres` from MinGW
+**Tool:** [go-winres](https://github.com/tc-hib/go-winres) (pinned to `v0.3.3` in `release.yml`).
+
+**Invocation:** `go-winres simply` with CLI args, one call per binary. Source of truth is the `build-winres` Makefile target (`agent/Makefile`) and the equivalent block in `.github/workflows/release.yml`. There is no `winres.json` config file — flags are passed directly so dev builds and release builds run the same command. See issue #944 for why this replaced the previous `winres.json` setup.
 
 ### 3. MSI Installer (WiX Toolset v4)
 
@@ -172,9 +172,7 @@ That dynamically generates (or serves a cached) MSI with the server URL and enro
 
 | File | Purpose |
 |---|---|
-| `agent/resources/winres.json` | go-winres config (version, icon, manifest) |
-| `agent/resources/icon.ico` | App icon (multi-size) |
-| `agent/resources/breeze.manifest` | UAC/security manifest for embedded resources |
+| `agent/resources/icon.ico` | App icon (multi-size); embedded into each binary's VERSIONINFO via `go-winres simply` |
 | `agent/installer/breeze.wxs` | WiX installer definition |
 | `agent/installer/build-msi.ps1` | Reproducible WiX build wrapper script |
 | `agent/installer/enroll-agent.ps1` | Deferred custom action for enrollment |

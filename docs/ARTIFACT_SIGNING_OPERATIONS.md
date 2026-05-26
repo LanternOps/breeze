@@ -137,8 +137,7 @@ Allow third parties to deploy this project with their own trust identity, withou
 To avoid publisher confusion and reputation coupling, change branding identifiers before release:
 - Windows installer manufacturer and product naming:
   - `agent/installer/breeze.wxs`
-  - `agent/resources/winres.json`
-  - `agent/resources/breeze.manifest`
+  - The `go-winres simply` invocations in `agent/Makefile` (`build-winres` target) and `.github/workflows/release.yml` — update `--product-name`, `--file-description`, `--copyright`, and the `--admin`/`--manifest gui` choices to match your fork's identity
 - macOS package identifier and signing subject:
   - `docs/MACOS_LINUX_INSTALLER_SIGNING.md` build examples (`com.breeze.agent` and Developer ID subject).
 - Release naming/docs:
