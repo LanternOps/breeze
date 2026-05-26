@@ -174,6 +174,8 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   // Backup verification
   'recovery_readiness',
+  // PAM elevation requests (elevation_audit cascades automatically via FK ON DELETE CASCADE)
+  'elevation_requests',
 ] as const;
 
 export const coreRoutes = new Hono();
