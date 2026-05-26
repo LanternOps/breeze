@@ -17,8 +17,13 @@ import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
+import { provisionRoutes } from './provision';
 
 export const deviceRoutes = new Hono();
+
+// Mount provision routes FIRST — `/provision` is a static path under /devices
+// that must NOT be eaten by the `/:id` matcher in coreRoutes.
+deviceRoutes.route('/', provisionRoutes);
 
 // Mount diagnose routes (POST /:id/diagnose)
 deviceRoutes.route('/', diagnoseRoutes);

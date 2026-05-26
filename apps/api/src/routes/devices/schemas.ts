@@ -80,6 +80,17 @@ export const updateDeviceSchema = z.object({
   deviceRole: z.enum(DEVICE_ROLES).optional()
 });
 
+// POST /devices/provision — admin pre-creates a device row + downloadable
+// agent config so the agent never has to call /agents/enroll. orgId+siteId
+// come from the admin's input (not from an enrollment key).
+export const provisionDeviceSchema = z.object({
+  orgId: z.string().uuid(),
+  siteId: z.string().uuid(),
+  hostname: z.string().min(1).max(255),
+  osType: z.enum(['windows', 'macos', 'linux']),
+  displayName: z.string().max(255).optional(),
+});
+
 export const metricsQuerySchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
