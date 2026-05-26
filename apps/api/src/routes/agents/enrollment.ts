@@ -286,39 +286,19 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
     }
 
-    const [key] = await db
-      .update(enrollmentKeys)
-      .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
-      .where(
-        and(
-          eq(enrollmentKeys.id, matchingKey.id),
-          ...validEnrollmentKeyConditions
-        )
-      )
-      .returning();
+    // The enrollment key is NOT consumed here — only validated. The actual
+    // usage_count bump happens inside the transaction below, *after* the
+    // device INSERT/UPDATE succeeds. Issue #946: previously, the increment
+    // ran before the device write, so any post-validation failure
+    // (hostname collision, device limit, etc.) silently burned a single-
+    // use key without ever creating a device.
+    const key = {
+      id: matchingKey.id,
+      orgId: matchingKey.orgId,
+      siteId: matchingKey.siteId,
+    };
 
-    if (!key) {
-      // The row existed at step 1 but the re-validated UPDATE affected 0
-      // rows — the key expired or was exhausted between the initial lookup
-      // and the claim. Distinct reason so this specific race is visible in
-      // the audit log and the client can retry with a fresh installer.
-      writeAuditEvent(c, {
-        orgId: matchingKey.orgId,
-        actorType: 'system',
-        action: 'agent.enroll',
-        resourceType: 'device',
-        resourceName: data.hostname,
-        details: { reason: 'enrollment_key_race_lost', keyId: matchingKey.id },
-        result: 'denied',
-        errorMessage: 'Enrollment key was claimed by another enrollment in the same moment',
-      });
-      return c.json({
-        error: 'Enrollment key was just exhausted or expired — regenerate a fresh key or installer link',
-        reason: 'enrollment_key_race_lost',
-      }, 401);
-    }
-
-    const siteId = key.siteId!; // non-null asserted: matchingKey.siteId guard at line 180
+    const siteId = key.siteId!; // non-null asserted: matchingKey.siteId guard above
 
     // Fetch partner device limit (used inside transaction below)
     let deviceLimitPartnerId: string | null = null;
@@ -476,7 +456,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // (the old row stays decommissioned), and the non-decom branches
     // never reach this point with status='decommissioned' — so that
     // top-level UPDATE is now unreachable and has been removed.
-    const device = await db.transaction(async (tx) => {
+    //
+    // #946: in-transaction sentinel used to translate "enrollment-key
+    // claim lost the TOCTOU race" into the 401 enrollment_key_race_lost
+    // response after rolling back the device INSERT. Any other throw in
+    // the transaction propagates normally (HTTPException for device-limit,
+    // generic 500 for unexpected failures).
+    const ENROLLMENT_KEY_RACE_LOST = Symbol('enrollment_key_race_lost');
+    let device;
+    try {
+      device = await db.transaction(async (tx) => {
       // Device limit check inside transaction to prevent TOCTOU race.
       // Runs when no existing row OR when the decom-bypass-fresh-id path
       // (#914) is going to INSERT a new active row — both grow net active
@@ -650,8 +639,54 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         }
       }
 
+      // #946: consume the enrollment key ONLY after the device row has
+      // been successfully written. We re-apply the validity conditions
+      // (`expiresAt`/`maxUsage`) to preserve the TOCTOU protection that
+      // the standalone pre-insert UPDATE used to provide. If a concurrent
+      // claim drained the last slot between our initial lookup and this
+      // point, the UPDATE affects 0 rows; we throw the sentinel and the
+      // transaction rolls back — the device INSERT is undone and the
+      // caller receives 401 enrollment_key_race_lost.
+      const claimed = await tx
+        .update(enrollmentKeys)
+        .set({ usageCount: sql`${enrollmentKeys.usageCount} + 1` })
+        .where(
+          and(
+            eq(enrollmentKeys.id, matchingKey.id),
+            ...validEnrollmentKeyConditions
+          )
+        )
+        .returning({ id: enrollmentKeys.id });
+
+      if (claimed.length === 0) {
+        throw ENROLLMENT_KEY_RACE_LOST;
+      }
+
       return dev;
     });
+    } catch (err) {
+      if (err === ENROLLMENT_KEY_RACE_LOST) {
+        // The device INSERT was rolled back along with the failed key
+        // claim. Surface the same `enrollment_key_race_lost` reason the
+        // standalone pre-insert UPDATE used to emit, so clients and audit
+        // logs stay backwards-compatible.
+        writeAuditEvent(c, {
+          orgId: matchingKey.orgId,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'enrollment_key_race_lost', keyId: matchingKey.id },
+          result: 'denied',
+          errorMessage: 'Enrollment key was claimed by another enrollment in the same moment',
+        });
+        return c.json({
+          error: 'Enrollment key was just exhausted or expired — regenerate a fresh key or installer link',
+          reason: 'enrollment_key_race_lost',
+        }, 401);
+      }
+      throw err;
+    }
 
     const mtlsCert = await issueMtlsCertForDevice(device.id, key.orgId);
 

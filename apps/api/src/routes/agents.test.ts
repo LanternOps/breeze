@@ -319,7 +319,10 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([])
+              // #946: in-tx consume-key UPDATE must return one row to indicate
+              // a successful claim. An empty array triggers the race-lost
+              // sentinel and rolls back the device INSERT.
+              returning: vi.fn().mockResolvedValue([{ id: 'key-123' }])
             })
           })
         })
@@ -442,7 +445,10 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([])
+              // #946: in-tx consume-key UPDATE must return one row to indicate
+              // a successful claim. An empty array triggers the race-lost
+              // sentinel and rolls back the device INSERT.
+              returning: vi.fn().mockResolvedValue([{ id: 'key-123' }])
             })
           })
         })
@@ -542,7 +548,10 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([])
+              // #946: in-tx consume-key UPDATE must return one row to indicate
+              // a successful claim. An empty array triggers the race-lost
+              // sentinel and rolls back the device INSERT.
+              returning: vi.fn().mockResolvedValue([{ id: 'key-123' }])
             })
           })
         })
