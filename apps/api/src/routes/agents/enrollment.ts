@@ -376,6 +376,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       .limit(1);
 
     let existingDeviceAuthenticated = false;
+    // Set true on the decom-bypass path so the transaction below renames
+    // the old row's hostname (freeing the slot) and INSERTs a fresh device
+    // row with a new id, instead of UPDATE-in-place on the prior id. See
+    // issue #914 — without a fresh id, any holder of the org enrollment
+    // key + secret + a known-decommissioned hostname could silently adopt
+    // the prior device's audit history (agent_logs, alerts, etc.).
+    let decomBypassFreshRow = false;
     if (existingDevice) {
       const tokenSuspended = !!existingDevice.agentTokenSuspendedAt;
 
@@ -394,18 +401,21 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       } else if (existingDevice.status === 'decommissioned') {
         // Decommission-bypass: admin explicitly DELETE'd the device. The
         // prior agent's tokens are irrelevant; the slot is freed for fresh
-        // enrollment. The auto-restore block below flips status back to
-        // 'online' and the transaction below re-uses the existing device
-        // id so audit history (agent_logs etc.) survives. Without this
-        // branch, uninstall+reinstall on the same hostname is permanently
-        // broken — observed 2026-05-25 on Trevor-Legion: agent re-enroll
-        // loops on 409 until an operator hand-renames the decommissioned
-        // row in SQL to free the hostname.
+        // enrollment. Per issue #914 we mint a NEW device.id rather than
+        // re-using existingDevice.id — the old row keeps its FK-attached
+        // audit history (agent_logs, alerts, deviceHardware/Network) and
+        // is renamed below in-transaction to free the hostname for the
+        // fresh INSERT. Re-enrollment still works (the case that #896
+        // originally fixed), but the new agent does not silently inherit
+        // the prior row's historical attribution.
         existingDeviceAuthenticated = true;
+        decomBypassFreshRow = true;
         // Audit the admin-approved-replacement bypass for forensic
         // traceability. Re-enrollment onto a decommissioned slot is a
-        // sensitive transition (new tokens issued, device id preserved) and
-        // must be traceable independent of the success-path audit below.
+        // sensitive transition (new tokens issued) and must be traceable
+        // independent of the success-path audit below. resourceId here is
+        // the PRIOR device id; the success audit below will record the new
+        // fresh id.
         writeAuditEvent(c, {
           orgId: key.orgId,
           actorType: 'system',
@@ -414,7 +424,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           resourceId: existingDevice.id,
           resourceName: data.hostname,
           details: {
-            reason: 'decommissioned_row_reenrolled',
+            reason: 'decommissioned_row_reenrolled_fresh_id',
             siteId,
             priorDeviceId: existingDevice.id,
           },
@@ -460,16 +470,19 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       }
     }
 
-    // Auto-restore decommissioned devices on re-enrollment
-    if (existingDevice && existingDevice.status === 'decommissioned') {
-      await db.update(devices)
-        .set({ status: 'offline', updatedAt: new Date() })
-        .where(eq(devices.id, existingDevice.id));
-    }
-
+    // Pre-#914 a top-level auto-restore UPDATE flipped a decommissioned
+    // existingDevice back to status='offline' before the in-transaction
+    // re-enroll UPDATE. With #914 the decom path INSERTs a fresh row
+    // (the old row stays decommissioned), and the non-decom branches
+    // never reach this point with status='decommissioned' — so that
+    // top-level UPDATE is now unreachable and has been removed.
     const device = await db.transaction(async (tx) => {
-      // Device limit check inside transaction to prevent TOCTOU race
-      if (maxDevices != null && deviceLimitPartnerId && !existingDevice) {
+      // Device limit check inside transaction to prevent TOCTOU race.
+      // Runs when no existing row OR when the decom-bypass-fresh-id path
+      // (#914) is going to INSERT a new active row — both grow net active
+      // count by 1. Skipped on the normal UPDATE-in-place re-enroll path,
+      // which is count-neutral.
+      if (maxDevices != null && deviceLimitPartnerId && (!existingDevice || decomBypassFreshRow)) {
         const partnerOrgIds = tx
           .select({ id: organizations.id })
           .from(organizations)
@@ -505,8 +518,27 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         }
       }
 
+      // #914 decom-bypass: rename the prior decommissioned row's hostname
+      // so the new INSERT can claim the original. There is no DB-level
+      // unique constraint on hostname today (only the cursor-keyset index
+      // devices_hostname_id_idx), but the application's existingDevice
+      // lookup at the top of this handler filters by exact hostname — if
+      // both rows kept the same hostname, the next re-enroll would race
+      // on which row .limit(1) returns. The `.decom-<id8>` suffix is
+      // collision-free in practice (8 hex chars = ~4B namespace) and
+      // mirrors the SQL workaround documented in the #896 incident notes.
+      if (decomBypassFreshRow && existingDevice) {
+        await tx
+          .update(devices)
+          .set({
+            hostname: `${data.hostname}.decom-${existingDevice.id.slice(0, 8)}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(devices.id, existingDevice.id));
+      }
+
       let dev;
-      if (existingDevice) {
+      if (existingDevice && !decomBypassFreshRow) {
         [dev] = await tx
           .update(devices)
           .set({
@@ -635,6 +667,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         siteId: key.siteId,
         reenrollment: Boolean(existingDevice),
         mtlsCertIssued: mtlsCert !== null,
+        // #914: when decom-bypass minted a fresh id, link the new row's
+        // audit trail back to the decommissioned row it replaced so the
+        // forensic chain is queryable in one step.
+        ...(decomBypassFreshRow && existingDevice
+          ? { decomBypassPriorDeviceId: existingDevice.id }
+          : {}),
       },
     });
 

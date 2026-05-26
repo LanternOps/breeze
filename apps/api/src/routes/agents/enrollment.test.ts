@@ -363,16 +363,21 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
   });
 
-  it('allows re-enrollment without the existing-device token when the existing row is decommissioned', async () => {
+  it('allows re-enrollment without the existing-device token when the existing row is decommissioned (mints a fresh device.id — #914)', async () => {
     // Real-world scenario (Trevor-Legion, 2026-05-25):
     // 1. Admin calls DELETE /api/v1/devices/<id> — soft-deletes, status=decommissioned
     // 2. Operator uninstalls Breeze on the endpoint and re-runs the installer
     // 3. Fresh agent has no prior token; re-enrolls
     // Pre-fix: hostname-collision check returned 409 even for decommissioned
     // rows, leaving the host permanently un-enrollable without a hand-rename
-    // in SQL. Post-fix: decommissioned rows are treated as authenticated for
-    // re-enrollment, and the existing row is restored/updated in-place so
-    // history (agent_logs etc.) survives.
+    // in SQL.
+    // Post-#896: re-enrollment succeeds but the new agent silently inherits
+    // the prior row's device.id and audit history (issue #914 — anyone with
+    // org enrollment key + secret + a known-decommissioned hostname could
+    // adopt the prior identity).
+    // Post-#914: re-enrollment succeeds with a FRESH device.id; the prior
+    // row is renamed (hostname suffixed with `.decom-<id8>`) inside the
+    // transaction and retains its FK-attached audit history.
     mockKeyLookup({
       id: 'key-decom',
       orgId: 'org-decom',
@@ -407,14 +412,14 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       previousTokenExpiresAt: null,
     }]);
 
-    // Auto-restore: db.update flipping status decommissioned -> offline
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn(() => ({
-        where: vi.fn().mockResolvedValue(undefined),
-      })),
-    } as any);
+    // Note: post-#914 the unconditional auto-restore UPDATE (status->offline)
+    // is SKIPPED on the decom-bypass-fresh-id path. The old row stays
+    // decommissioned and only its hostname is rewritten inside the
+    // transaction. So we no longer queue a top-level db.update() here.
 
-    // Transaction: device is existing, so the inner branch is tx.update().returning()
+    // Transaction: rename + INSERT-new. The decom-bypass-fresh-id path
+    // executes tx.update() once (to rename the old row's hostname) THEN
+    // tx.insert().returning() to create a fresh row with a new id.
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
       const fakeTx = {
         select: vi.fn().mockReturnValue({
@@ -424,19 +429,17 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
         }),
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([{
-                id: 'device-decom-existing',
-                orgId: 'org-decom',
-                siteId: 'site-decom',
-                hostname: 'host-1',
-              }]),
-            }),
+            where: vi.fn().mockResolvedValue(undefined),
           }),
         }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([]),
+            returning: vi.fn().mockResolvedValue([{
+              id: 'device-decom-fresh-id',
+              orgId: 'org-decom',
+              siteId: 'site-decom',
+              hostname: 'host-1',
+            }]),
             onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
           }),
         }),
@@ -455,7 +458,9 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
 
     expect(resp.status).toBe(201);
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body.deviceId).toBe('device-decom-existing');
+    // #914: response carries the FRESH device.id, NOT the prior one.
+    expect(body.deviceId).toBe('device-decom-fresh-id');
+    expect(body.deviceId).not.toBe('device-decom-existing');
     // Importantly: no 409 audit event was written for hostname_collision
     expect(writeAuditEvent).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -465,7 +470,8 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
         }),
       })
     );
-    // AND: an audit row was written for the admin-approved replacement bypass
+    // Bypass-audit row records the fresh-id reason + priorDeviceId for
+    // forensic linkage. resourceId on THIS audit row is the prior id.
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -473,9 +479,40 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
         resourceId: 'device-decom-existing',
         result: 'success',
         details: expect.objectContaining({
-          reason: 'decommissioned_row_reenrolled',
+          reason: 'decommissioned_row_reenrolled_fresh_id',
           priorDeviceId: 'device-decom-existing',
         }),
+      })
+    );
+    // Success-audit row references the NEW id and back-links to the prior.
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: 'agent',
+        action: 'agent.enroll',
+        resourceId: 'device-decom-fresh-id',
+        details: expect.objectContaining({
+          reenrollment: true,
+          decomBypassPriorDeviceId: 'device-decom-existing',
+        }),
+      })
+    );
+    // Defense against the pre-#914 behavior re-emerging: assert the legacy
+    // reason string is NOT used and that the success audit does NOT use the
+    // prior id as resourceId.
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'decommissioned_row_reenrolled',
+        }),
+      })
+    );
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: 'agent',
+        resourceId: 'device-decom-existing',
       })
     );
   });
@@ -597,12 +634,12 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
         }),
       })
     );
-    // NOT the decom-bypass success audit
+    // NOT the decom-bypass success audit (post-#914 reason string)
     expect(writeAuditEvent).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         details: expect.objectContaining({
-          reason: 'decommissioned_row_reenrolled',
+          reason: 'decommissioned_row_reenrolled_fresh_id',
         }),
       })
     );
