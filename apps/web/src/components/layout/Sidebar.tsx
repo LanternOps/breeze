@@ -42,6 +42,7 @@ import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
+import { semverCompare } from '@breeze/shared';
 import BrandHeader from './BrandHeader';
 
 interface SidebarProps {
@@ -257,15 +258,19 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
 
-  // Fetch API version once
+  // Fetch API version + latest release info once
   const [apiVersion, setApiVersion] = useState<string | null>(null);
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
   useEffect(() => {
     fetchWithAuth('/system/version')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((data: { version: string }) => setApiVersion(data.version))
+      .then((data: { version: string; latest: string | null }) => {
+        setApiVersion(data.version);
+        setLatestVersion(data.latest);
+      })
       .catch((err) => {
         console.warn('[Sidebar] Failed to fetch API version:', err);
         setApiVersion('unavailable');
@@ -541,7 +546,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
       {showLabels && (
         <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/50">
-          <p>Web {WEB_VERSION}{apiVersion ? ` · API ${apiVersion}` : ''}</p>
+          <p>
+            Web <VersionSpan version={WEB_VERSION} latest={latestVersion} component="Web" />
+            {apiVersion && apiVersion !== 'unavailable' && (
+              <>
+                {' · '}API <VersionSpan version={apiVersion} latest={latestVersion} component="API" />
+              </>
+            )}
+            {apiVersion === 'unavailable' && ' · API unavailable'}
+          </p>
         </div>
       )}
     </aside>
@@ -595,4 +608,40 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }
 
   return sidebarContent;
+}
+
+export function VersionSpan({
+  version,
+  latest,
+  component,
+}: {
+  version: string;
+  latest: string | null;
+  component: 'Web' | 'API';
+}) {
+  if (!latest) {
+    return <span title={`${component} ${version} — latest version unknown`}>{version}</span>;
+  }
+  const cmp = semverCompare(version, latest);
+  if (cmp === null) {
+    return <span title={`${component} ${version} — latest version unknown`}>{version}</span>;
+  }
+  if (cmp < 0) {
+    return (
+      <span
+        className="text-red-500/80"
+        title={`${component} ${version} — update available (latest ${latest})`}
+      >
+        {version}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="text-green-500/70"
+      title={`${component} ${version} — up to date`}
+    >
+      {version}
+    </span>
+  );
 }
