@@ -41,7 +41,7 @@ describe('audit_logs append-only enforcement', () => {
       VALUES ('system', gen_random_uuid(), 'test.action', 'test', 'success')
       RETURNING id
     `);
-    auditId = (rows as unknown as Array<{ id: string }>)[0].id;
+    auditId = (rows as unknown as Array<{ id: string }>)[0]!.id;
   });
 
   it('rejects DELETE from breeze_app under any RLS context', async () => {
@@ -113,7 +113,7 @@ describe('audit_logs append-only enforcement', () => {
       can_insert: boolean;
       can_select: boolean;
     }>;
-    const r = rows[0];
+    const r = rows[0]!;
     expect(r.can_update).toBe(false);
     expect(r.can_delete).toBe(false);
     expect(r.can_truncate).toBe(false);

@@ -45,7 +45,7 @@ describe('audit_logs checksum chain', () => {
         VALUES (${orgId}, 'system', gen_random_uuid(), 'chain.test', 'test', 'success')
         RETURNING id, checksum
       `);
-      const row = (rows as unknown as Array<{ id: string; checksum: string }>)[0];
+      const row = (rows as unknown as Array<{ id: string; checksum: string }>)[0]!;
       expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
     });
   });
@@ -62,8 +62,8 @@ describe('audit_logs checksum chain', () => {
         VALUES (${orgId}, 'system', gen_random_uuid(), 'b', 'test', 'success')
         RETURNING checksum, prev_checksum
       `)) as unknown as Array<{ checksum: string; prev_checksum: string }>;
-      expect(b[0].prev_checksum).toEqual(a[0].checksum);
-      expect(b[0].checksum).not.toEqual(a[0].checksum);
+      expect(b[0]!.prev_checksum).toEqual(a[0]!.checksum);
+      expect(b[0]!.checksum).not.toEqual(a[0]!.checksum);
     });
   });
 
@@ -80,7 +80,7 @@ describe('audit_logs checksum chain', () => {
         VALUES (${orgId}, 'system', gen_random_uuid(), 'verify.test', 'test', 'success')
         RETURNING id, prev_checksum, checksum
       `)) as unknown as Array<{ id: string; prev_checksum: string | null; checksum: string }>;
-      const row = inserted[0];
+      const row = inserted[0]!;
 
       // Re-compute the canonical string via the SQL helper from the migration —
       // this is the authoritative formatter; the trigger and verifier both call
@@ -92,7 +92,7 @@ describe('audit_logs checksum chain', () => {
         ) AS payload
       `)) as unknown as Array<{ payload: string }>;
 
-      const expected = createHash('sha256').update(canonicalRows[0].payload, 'utf8').digest('hex');
+      const expected = createHash('sha256').update(canonicalRows[0]!.payload, 'utf8').digest('hex');
       expect(row.checksum).toEqual(expected);
     });
   });
@@ -139,7 +139,7 @@ describe('audit_logs checksum chain', () => {
           VALUES (${orgId}, 'system', gen_random_uuid(), ${action}, 'test', 'success')
           RETURNING id
         `)) as unknown as Array<{ id: string }>;
-        inserted.push(rows[0]);
+        inserted.push(rows[0]!);
       });
     }
 
@@ -151,7 +151,7 @@ describe('audit_logs checksum chain', () => {
     const sudo = getTestDb();
     await sudo.execute(sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_update`);
     try {
-      await sudo.execute(sql`UPDATE audit_logs SET action = 'tampered' WHERE id = ${inserted[1].id}`);
+      await sudo.execute(sql`UPDATE audit_logs SET action = 'tampered' WHERE id = ${inserted[1]!.id}`);
     } finally {
       await sudo.execute(sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_log_block_update`);
     }
@@ -160,6 +160,6 @@ describe('audit_logs checksum chain', () => {
       SELECT broken_id FROM public.audit_log_verify_chain(${orgId}::uuid)
     `)) as unknown as Array<{ broken_id: string }>;
     expect(breaks.length).toBeGreaterThanOrEqual(1);
-    expect(breaks.map(b => b.broken_id)).toContain(inserted[1].id);
+    expect(breaks.map(b => b.broken_id)).toContain(inserted[1]!.id);
   });
 });

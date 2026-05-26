@@ -105,10 +105,13 @@ jobs:
           # let the API finish startup.
           BREEZE_BOOTSTRAP_ADMIN_EMAIL: smoke-admin@example.test
           BREEZE_BOOTSTRAP_ADMIN_PASSWORD: ci-smoke-bsl-bootstrap-admin-Hy4Bz9Mp2Wq6Tv0Lk3
-          # Self-host doesn't need release-artifact-manifest envs because the
-          # API generates its own per-deployment Ed25519 key on first boot.
-          # Leaving RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS unset is the actual
-          # broken-by-default path the deployment doc tells operators to use.
+          # Production validator now requires the manifest trust root for
+          # both BINARY_SOURCE=github AND BINARY_SOURCE=local (Task 27 fix).
+          # In local mode the API still generates its own per-deployment key
+          # for signing manifests, but the trust root is the verification
+          # anchor; without it, agents would accept unsigned manifests. We
+          # use the public-key fixture from the github-source smoke job.
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: "yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso="
         run: |
           export AGENT_BINARY_DIR="$WORKSPACE/tmp/agent/bin"
           export BINARY_VERSION_FILE="$WORKSPACE/tmp/VERSION"

@@ -75,8 +75,8 @@ require_grep 'verifySignature' apps/api/src/services/releaseArtifactManifest.ts 
   "API release artifact verification must verify Ed25519 signatures in Node"
 require_grep 'public key is required for GitHub fallback asset verification in production' apps/api/src/services/releaseArtifactManifest.ts \
   "API release artifact verification must fail closed in production without a public-key trust root"
-require_grep 'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production when BINARY_SOURCE=github' apps/api/src/config/validate.ts \
-  "production config validation must require a release artifact public key for GitHub fallback binaries"
+require_grep 'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production for both BINARY_SOURCE=github' apps/api/src/config/validate.ts \
+  "production config validation must require a release artifact public key for both BINARY_SOURCE=github and BINARY_SOURCE=local"
 
 require_grep 'VERSION_METADATA_URL=' apps/api/src/routes/agents/download.ts \
   "generated Linux installer must fetch version metadata"
