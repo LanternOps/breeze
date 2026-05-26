@@ -296,8 +296,8 @@ importers:
         specifier: ~55.0.7
         version: 55.0.7(expo@55.0.8)(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)
       expo-haptics:
-        specifier: ~55.0.14
-        version: 55.0.14(expo@55.0.8)
+        specifier: ~56.0.3
+        version: 56.0.3(expo@55.0.8)
       expo-linking:
         specifier: ~55.0.15
         version: 55.0.15(expo@55.0.8)(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)
@@ -6738,8 +6738,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  expo-haptics@55.0.14:
-    resolution: {integrity: sha512-KjDItBsA9mi1f5nRwf8g1wOdfEcLHwvEdt5Jl1sMCDETR/homcGOl+F3QIiPOl/PRlbGVieQsjTtF4DGtHOj6g==}
+  expo-haptics@56.0.3:
+    resolution: {integrity: sha512-ycoahZJnR9tWAVh/0mJYxbETtHRYaWjiWS8cHlP6aDGU6Q6Y8rZ5NKsuBwWw6HR2Pe30mfVFgbF2HrBR6gtYmw==}
     peerDependencies:
       expo: '*'
 
@@ -18309,7 +18309,7 @@ snapshots:
       react: 19.2.6
       react-native: 0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6)
 
-  expo-haptics@55.0.14(expo@55.0.8):
+  expo-haptics@56.0.3(expo@55.0.8):
     dependencies:
       expo: 55.0.8(@babel/core@7.29.0)(@expo/dom-webview@55.0.3)(react-dom@19.2.6(react@19.2.6))(react-native@0.83.2(@babel/core@7.29.0)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))(@types/react@19.2.15)(react@19.2.6))(react@19.2.6)(typescript@5.9.3)
 
