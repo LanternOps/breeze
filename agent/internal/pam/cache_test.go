@@ -14,6 +14,14 @@ import (
 // MAC is reproducible across runs.
 var testKey = []byte("0123456789abcdef0123456789abcdef")
 
+// testKeyPath mirrors the production layout: cache file under the temp root,
+// HMAC key under a sibling keys/ subdir (matching DefaultKeyPath). Returns
+// the key path; the parent dir is created by LoadOrCreateKey on first use.
+func testKeyPath(t *testing.T, dir string) string {
+	t.Helper()
+	return filepath.Join(dir, "keys", "pam-rules.key")
+}
+
 // newGoodEnvelope returns a fresh, valid envelope (SyncedAt = now).
 func newGoodEnvelope() *Envelope {
 	return &Envelope{
@@ -304,9 +312,10 @@ func TestStaleAfterBoundary(t *testing.T) {
 func TestLoadOrCreateKey(t *testing.T) {
 	t.Run("create then read round-trip", func(t *testing.T) {
 		dir := t.TempDir()
-		keyPath := filepath.Join(dir, "pam-rules.key")
+		keyPath := testKeyPath(t, dir)
 
-		// First call: file does not exist → generate.
+		// First call: file does not exist → generate. Parent dir does not
+		// exist either — LoadOrCreateKey is expected to MkdirAll it.
 		k1, err := LoadOrCreateKey(keyPath)
 		if err != nil {
 			t.Fatalf("LoadOrCreateKey (create): %v", err)
@@ -334,7 +343,11 @@ func TestLoadOrCreateKey(t *testing.T) {
 
 	t.Run("wrong length returns ErrKeyCorrupt", func(t *testing.T) {
 		dir := t.TempDir()
-		keyPath := filepath.Join(dir, "pam-rules.key")
+		keyPath := testKeyPath(t, dir)
+		// Pre-create the parent dir since we're seeding the file directly.
+		if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+			t.Fatalf("seed parent dir: %v", err)
+		}
 		if err := os.WriteFile(keyPath, []byte("too-short"), 0600); err != nil {
 			t.Fatalf("seed short key: %v", err)
 		}
@@ -346,7 +359,7 @@ func TestLoadOrCreateKey(t *testing.T) {
 
 	t.Run("end-to-end with Save/Load", func(t *testing.T) {
 		dir := t.TempDir()
-		keyPath := filepath.Join(dir, "pam-rules.key")
+		keyPath := testKeyPath(t, dir)
 		cachePath := filepath.Join(dir, "pam-rules.json")
 
 		key, err := LoadOrCreateKey(keyPath)

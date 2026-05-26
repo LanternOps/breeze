@@ -8,6 +8,11 @@
 //	Linux:    /var/lib/breeze/pam-rules.json
 //	macOS:    /Library/Application Support/Breeze/data/pam-rules.json
 //
+// The HMAC key lives in a sibling `keys/` subdir under the same data root
+// (see DefaultKeyPath). Co-locating the key with the cache file would mean a
+// single ACL regression on the data dir exposes both; the separation buys
+// defense in depth.
+//
 // The file is an HMAC-SHA256-authenticated JSON envelope. The rule body itself
 // is opaque to this package (json.RawMessage) — the actual rule schema is
 // defined by the rule engine (separate PR, not in this track).
@@ -15,6 +20,33 @@
 // Tampering with the file on disk is detected via the HMAC. Read-only-to-SYSTEM
 // NTFS ACLs on Windows raise the bar further, but the HMAC is the
 // authoritative trust boundary.
+//
+// # Threat model — cache file vs key co-location
+//
+// The cache envelope and its HMAC key are stored in sibling directories
+// (data/pam-rules.json vs data/keys/pam-rules.key) rather than alongside each
+// other in the same dir. Both paths inherit hardened parent-dir perms today,
+// but if a future change ever loosens the data dir's ACL/perms (e.g. to let
+// the Breeze Helper running as the logged-in user read agent.yaml), the key
+// still sits behind a separately ACL'd subdir (0700 on Unix, SYSTEM+Admins-
+// only DACL on Windows). An attacker who can read the envelope still can't
+// forge a new MAC without also breaching the keys dir.
+//
+// # Threat model — staleness
+//
+// The 7-day refuse-stale gate (RefuseAfter) uses wall-clock time via
+// time.Since(SignedFields.SyncedAt). A local-admin attacker with the ability
+// to roll the system clock back can defeat this gate and keep a stale
+// envelope "fresh" indefinitely. This is acceptable for the threat the gate
+// is designed to catch — "agent forgotten / VPN broken for >7d, rules need
+// to fail closed" — but is NOT a defense against an active local-admin
+// attacker.
+//
+// Defense in depth for the air-gapped-endpoint threat model would require a
+// monotonic "last-seen-fresh" watermark file that only ever moves forward
+// (max(previous, time.Now()) on every successful sync), so that rolling the
+// clock back cannot make the watermark younger. That is out of scope for
+// this PR and tracked as a follow-up.
 package pam
 
 import (

@@ -22,10 +22,18 @@ const keyLen = 32
 // without any operator visibility.
 var ErrKeyCorrupt = errors.New("pam: key file corrupt (wrong length)")
 
-// DefaultKeyPath returns the platform default HMAC-key file path. Sits
-// alongside DefaultPath under the agent data dir.
+// DefaultKeyPath returns the platform default HMAC-key file path.
+//
+// Threat model: the key lives under a sibling `keys/` subdir rather than
+// alongside the cache file under GetDataDir() directly. This is defense in
+// depth — if a future regression on the data dir's ACL ever loosens read
+// access to local Users, the key still sits behind a separately ACL'd
+// `keys/` directory (mode 0700 on Unix, SYSTEM+Administrators-only DACL on
+// Windows applied by LoadOrCreateKey via applyCacheACL). An attacker who
+// can read the cache envelope still can't recompute or forge its HMAC
+// without also breaching the keys dir.
 func DefaultKeyPath() string {
-	return filepath.Join(config.GetDataDir(), "pam-rules.key")
+	return filepath.Join(config.GetDataDir(), "keys", "pam-rules.key")
 }
 
 // LoadOrCreateKey returns the HMAC key bytes used to sign the PAM cache
@@ -62,18 +70,29 @@ func LoadOrCreateKey(keyPath string) ([]byte, error) {
 		return nil, fmt.Errorf("pam: generate key: %w", err)
 	}
 
+	// Parent dir gets mode 0700 (Unix) — stricter than the 0750 used for the
+	// data dir itself, because nothing other than the agent process (running
+	// as root) should ever traverse the keys/ subdir.
 	dir := filepath.Dir(keyPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("pam: mkdir %s: %w", dir, err)
+	}
+	// On Windows, also pin the parent dir's DACL to SYSTEM+Administrators
+	// only. SDDL flags are identical to the file-level ACL (no inheritance,
+	// no Users). File-level ACL alone would be sufficient for read
+	// confidentiality of the key bytes, but pinning the dir too means an
+	// attacker can't replace the file via a same-dir rename either.
+	if err := applyCacheACL(dir); err != nil {
+		return nil, fmt.Errorf("pam: apply key dir ACL: %w", err)
 	}
 	if err := atomicWriteFile(keyPath, buf, 0600); err != nil {
 		return nil, fmt.Errorf("pam: write key file: %w", err)
 	}
 	if err := applyCacheACL(keyPath); err != nil {
 		// Key bytes are already on disk; ACL failure on Windows leaves the
-		// file at the parent dir's inherited ACL (typically SYSTEM+Admins
-		// already via the data dir's DACL — see config/permissions_windows.go).
-		// Surface the error so the caller can log it.
+		// file at the parent dir's inherited ACL (which we just tightened
+		// above to SYSTEM+Admins only). Surface the error so the caller can
+		// log it.
 		return nil, fmt.Errorf("pam: apply key ACL (file written): %w", err)
 	}
 	return buf, nil
