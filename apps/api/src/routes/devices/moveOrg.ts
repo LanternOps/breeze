@@ -17,7 +17,7 @@ import {
 } from './helpers';
 import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { DEVICE_ORG_DENORMALIZED_TABLES } from './core';
+import { DEVICE_ORG_DENORMALIZED_TABLES, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 import { disconnectAgent } from '../agentWs';
 
 export const moveOrgRoutes = new Hono();
@@ -145,6 +145,17 @@ moveOrgRoutes.post(
         for (const table of DEVICE_ORG_DENORMALIZED_TABLES) {
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
+          );
+        }
+
+        // Forward-defense: rewrite denormalized site_id on any device-scoped
+        // table that has one. Currently empty (no such table exists today),
+        // but kept in lockstep with the org_id loop so a future schema PR
+        // adding site_id to a device-id-scoped table is handled automatically
+        // once it lands in DEVICE_SITE_DENORMALIZED_TABLES.
+        for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
+          await tx.execute(
+            sql`UPDATE ${sql.identifier(table)} SET site_id = ${targetSiteId}::uuid WHERE device_id = ${deviceId}::uuid`,
           );
         }
       });

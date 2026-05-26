@@ -110,6 +110,15 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
+ * Tables that are both device-id scoped AND denormalize site_id for query-perf.
+ * Currently empty — no device-id-scoped child table has a site_id column.
+ * Forward-defense list: any future schema PR adding site_id to such a table
+ * will be caught by the moveOrg.coverage.test.ts drift-detector below and
+ * must be added here so cross-org-cross-site moves rewrite child site_ids.
+ */
+export const DEVICE_SITE_DENORMALIZED_TABLES = [] as const;
+
+/**
  * All tables with a direct device_id FK to devices.id, ordered so children come
  * before parents (to avoid FK violations during cascade delete).
  *
