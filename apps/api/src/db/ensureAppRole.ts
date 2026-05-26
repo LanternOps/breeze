@@ -97,7 +97,14 @@ export async function ensureAppRole(): Promise<void> {
       DO $$
       BEGIN
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_logs') THEN
-          REVOKE UPDATE, DELETE ON TABLE audit_logs FROM breeze_app;
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_logs FROM breeze_app;
+          -- The append-only trigger fires per-row on UPDATE/DELETE only;
+          -- TRUNCATE is statement-level and bypasses the trigger entirely.
+          -- Belt-and-suspenders: revoke TRUNCATE from PUBLIC too so a future
+          -- engineer who adds TRUNCATE to a blanket GRANT (or grants it to a
+          -- new role inheriting from breeze_app) doesn't silently open the
+          -- bypass. Idempotent re-revoke is a no-op.
+          REVOKE TRUNCATE ON TABLE audit_logs FROM PUBLIC;
         END IF;
       END $$;
     `);

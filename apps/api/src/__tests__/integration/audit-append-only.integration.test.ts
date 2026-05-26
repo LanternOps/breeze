@@ -98,18 +98,55 @@ describe('audit_logs append-only enforcement', () => {
   // privilege-layer half of the belt-and-suspenders pair was decorative.
   // This test asserts the privilege is actually absent after ensureAppRole
   // runs (which the test setup does via autoMigrate -> ensureAppRole).
-  it('breeze_app has no UPDATE or DELETE privilege on audit_logs after ensureAppRole runs', async () => {
+  it('breeze_app has no UPDATE, DELETE, or TRUNCATE privilege on audit_logs after ensureAppRole runs', async () => {
     const rows = (await db.execute(sql`
       SELECT
         has_table_privilege('breeze_app', 'audit_logs', 'UPDATE') AS can_update,
         has_table_privilege('breeze_app', 'audit_logs', 'DELETE') AS can_delete,
+        has_table_privilege('breeze_app', 'audit_logs', 'TRUNCATE') AS can_truncate,
         has_table_privilege('breeze_app', 'audit_logs', 'INSERT') AS can_insert,
         has_table_privilege('breeze_app', 'audit_logs', 'SELECT') AS can_select
-    `)) as unknown as Array<{ can_update: boolean; can_delete: boolean; can_insert: boolean; can_select: boolean }>;
+    `)) as unknown as Array<{
+      can_update: boolean;
+      can_delete: boolean;
+      can_truncate: boolean;
+      can_insert: boolean;
+      can_select: boolean;
+    }>;
     const r = rows[0];
     expect(r.can_update).toBe(false);
     expect(r.can_delete).toBe(false);
+    expect(r.can_truncate).toBe(false);
     expect(r.can_insert).toBe(true);
     expect(r.can_select).toBe(true);
+  });
+
+  it('rejects TRUNCATE on audit_logs even if the privilege check were bypassed', async () => {
+    // Seed a row so a successful TRUNCATE would visibly destroy state.
+    await getTestDb().execute(sql`
+      INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+      VALUES (NULL, 'system', gen_random_uuid(), 'truncate.regression', 'test', 'success')
+    `);
+
+    // Use the superuser test client (which would normally have TRUNCATE
+    // privilege) so we exercise the trigger, not the GRANT. The trigger
+    // must raise regardless of caller authority.
+    let caught: unknown;
+    try {
+      await getTestDb().execute(sql`TRUNCATE TABLE audit_logs`);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    const cause = (caught as { cause?: { message?: string } } | undefined)?.cause
+      ?? (caught as { message?: string } | undefined);
+    expect(String(cause?.message)).toMatch(/audit log is append-only/i);
+
+    // Defense-in-depth: confirm the row survived.
+    const rows = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'truncate.regression'`
+    )) as unknown as Array<{ n: number }>;
+    expect(rows[0]?.n).toBeGreaterThanOrEqual(1);
   });
 });
