@@ -188,11 +188,16 @@ updates:
       - "toddhebebrand"
 
   # Docker base images for workspace Dockerfiles
+  # Node base is pinned to an LTS major (oidc-provider rejects non-LTS); allow
+  # minor/patch + digest updates only.
   - package-ecosystem: "docker"
     directory: "/apps/api"
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "docker"
@@ -204,6 +209,9 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "docker"
@@ -216,6 +224,9 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "docker"

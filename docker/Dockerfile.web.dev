@@ -1,5 +1,5 @@
 # Development Dockerfile for Web with hot-reloading
-FROM node:26-alpine
+FROM node:24-alpine
 
 # Install pnpm (pinned to match prod / packageManager field)
 RUN npm install -g pnpm@10.33.4
