@@ -35,6 +35,44 @@ describe('latestVersion', () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
+  it('re-fetches after TTL expires', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ tag_name: 'v0.65.10' }), { status: 200 }),
+    );
+    const start = Date.now();
+    const realNow = Date.now;
+    Date.now = () => start;
+    try {
+      await getLatestVersion();
+      Date.now = () => start + 60 * 60 * 1000 + 1;
+      await getLatestVersion();
+    } finally {
+      Date.now = realNow;
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('aborts and returns null when fetch exceeds the timeout', async () => {
+    vi.spyOn(global, 'fetch').mockImplementationOnce((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = getLatestVersion();
+      await vi.advanceTimersByTimeAsync(5001);
+      const r = await pending;
+      expect(r.latest).toBeNull();
+      expect(r.source).toBe('error');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns null and source=error on HTTP 5xx', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(new Response('boom', { status: 500 }));
     const r = await getLatestVersion();
