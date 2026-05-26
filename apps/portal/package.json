@@ -14,7 +14,7 @@
     "@astrojs/react": "^5.0.5",
     "@astrojs/tailwind": "^6.0.0",
     "@hookform/resolvers": "^5.2.2",
-    "@tanstack/react-query": "^5.100.11",
+    "@tanstack/react-query": "^5.100.14",
     "astro": "^6.3.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
