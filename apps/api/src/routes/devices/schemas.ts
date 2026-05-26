@@ -91,6 +91,11 @@ export const provisionDeviceSchema = z.object({
   displayName: z.string().max(255).optional(),
 });
 
+export const moveOrgSchema = z.object({
+  orgId: z.string().uuid(),
+  siteId: z.string().uuid(),
+});
+
 export const metricsQuerySchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),

@@ -18,6 +18,7 @@ import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
 import { provisionRoutes } from './provision';
+import { moveOrgRoutes } from './moveOrg';
 
 export const deviceRoutes = new Hono();
 
@@ -33,6 +34,10 @@ deviceRoutes.route('/', groupsRoutes);
 
 // Mount filesystem routes before core routes so /:id/filesystem resolves cleanly.
 deviceRoutes.route('/', filesystemRoutes);
+
+// Mount move-org BEFORE core routes — its POST /:id/move-org would collide
+// with any future :id-prefixed match in core if registered after.
+deviceRoutes.route('/', moveOrgRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);

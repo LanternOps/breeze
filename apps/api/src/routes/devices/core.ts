@@ -61,6 +61,64 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 ] as const;
 
 /**
+ * Subset of {@link DEVICE_CASCADE_DELETE_TABLES} whose rows denormalize
+ * `org_id` for RLS performance. When a device moves between orgs, every
+ * one of these tables must have its `org_id` rewritten inside the same
+ * transaction that flips `devices.org_id`, otherwise pre-existing rows
+ * stay visible to the OLD org under RLS and invisible to the NEW org.
+ *
+ * IMPORTANT: When you add a new device-scoped table with an `org_id`
+ * column, add it here too. The test in moveOrg.coverage.test.ts will
+ * fail CI if you forget.
+ *
+ * Tables intentionally excluded (no `org_id` column today):
+ *   automation_policy_compliance, deployment_devices, deployment_results,
+ *   device_commands (system-scoped per RLS policy), device_software,
+ *   file_transfers, patch_job_results, patch_rollbacks,
+ *   psa_ticket_mappings, software_compliance_status
+ */
+export const DEVICE_ORG_DENORMALIZED_TABLES = [
+  'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
+  'audit_baseline_results', 'audit_policy_states',
+  'backup_chains', 'backup_jobs', 'backup_sla_events',
+  'backup_snapshots', 'backup_verifications',
+  'brain_device_context', 'browser_extensions', 'browser_policy_violations',
+  'capacity_predictions',
+  'cis_baseline_results', 'cis_remediation_actions',
+  'deployment_invites',
+  'device_boot_metrics', 'device_change_log', 'device_config_state',
+  'device_connections', 'device_disks', 'device_event_logs',
+  'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
+  'device_filesystem_snapshots',
+  'device_group_memberships', 'device_hardware', 'device_ip_history',
+  'device_metrics', 'device_network', 'device_patches', 'device_registry_state',
+  'device_reliability', 'device_reliability_history', 'device_sessions',
+  'device_warranty',
+  'dns_event_aggregations', 'dns_security_events',
+  'group_membership_log',
+  'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
+  'peripheral_events', 'playbook_executions',
+  'recovery_readiness', 'recovery_tokens', 'remote_sessions', 'restore_jobs',
+  's1_actions', 's1_agents', 's1_threats',
+  'script_executions',
+  'security_posture_snapshots', 'security_scans', 'security_status',
+  'security_threats',
+  'sensitive_data_findings', 'sensitive_data_scans',
+  'service_process_check_results',
+  'software_inventory', 'software_policy_audit', 'sql_instances',
+  'tickets', 'time_series_metrics', 'tunnel_sessions',
+] as const;
+
+/**
+ * Tables that are both device-id scoped AND denormalize site_id for query-perf.
+ * Currently empty — no device-id-scoped child table has a site_id column.
+ * Forward-defense list: any future schema PR adding site_id to such a table
+ * will be caught by the moveOrg.coverage.test.ts drift-detector below and
+ * must be added here so cross-org-cross-site moves rewrite child site_ids.
+ */
+export const DEVICE_SITE_DENORMALIZED_TABLES = [] as const;
+
+/**
  * All tables with a direct device_id FK to devices.id, ordered so children come
  * before parents (to avoid FK violations during cascade delete).
  *

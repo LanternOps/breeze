@@ -2313,6 +2313,30 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
 }
 
 /**
+ * Force-close an agent's active WS connection so it reconnects with a fresh
+ * handshake (and re-resolves its orgId/siteId via agentAuth). Use this after
+ * any server-side change that invalidates the orgId baked into the live
+ * connection — e.g. a cross-org move where every per-message
+ * runWithAgentDbAccess call would otherwise keep using the stale orgId for
+ * RLS (see preValidatedAgent closure capture in createAgentWsHandlers).
+ *
+ * Returns true if a connection was found and close() was called.
+ * Returns false if no active connection exists for this agentId.
+ */
+export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): boolean {
+  const ws = activeConnections.get(agentId);
+  if (!ws) return false;
+  try {
+    ws.close(code, reason);
+  } catch (error) {
+    console.error(`disconnectAgent(${agentId.slice(0,12)}) close threw:`, error);
+  }
+  // Don't delete from map here — the WS onClose handler does that itself
+  // (lines ~1905-1907) and we don't want to race with reconnect logic.
+  return true;
+}
+
+/**
  * Check if an agent is connected via WebSocket
  */
 export function isAgentConnected(agentId: string): boolean {

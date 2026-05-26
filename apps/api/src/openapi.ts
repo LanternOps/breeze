@@ -2170,6 +2170,49 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/devices/{id}/move-org': {
+      post: {
+        operationId: 'moveDeviceOrg',
+        tags: ['Devices'],
+        summary: 'Move device to a different organization',
+        description: 'Relocate a device between organizations (and to a site within the new org) without uninstalling the agent. Requires partner or system scope, devices:write + organizations:write, and MFA. Cross-partner moves require system scope.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['orgId', 'siteId'],
+                properties: {
+                  orgId: { type: 'string', format: 'uuid', description: 'Target organization id' },
+                  siteId: { type: 'string', format: 'uuid', description: 'Target site id (must belong to target org)' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Device moved',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    device: { $ref: '#/components/schemas/Device' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (e.g. target site not in target org, target org equals source)' },
+          '403': { description: 'Access denied (target org or cross-partner move without system scope)' },
+          '404': { description: 'Device or target organization not found' },
+        },
+      },
+    },
     '/devices/{id}/metrics': {
       get: {
         operationId: 'getDeviceMetrics',
