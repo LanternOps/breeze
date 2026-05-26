@@ -820,7 +820,11 @@ app.onError((err, c) => {
     );
   }
 
+  // Route unhandled errors to Sentry. Per-route `captureException(err, c)`
+  // calls only cover routes with explicit try/catch — anything that throws
+  // and falls through to onError was previously invisible to Sentry.
   console.error('Error:', err);
+  captureException(err, c);
   return c.json(
     {
       error: 'Internal Server Error',

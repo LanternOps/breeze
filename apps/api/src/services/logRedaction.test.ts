@@ -26,6 +26,16 @@ describe('log redaction', () => {
     });
   });
 
+  it('redacts Pi-hole-style ?auth= URL query params (catches a real leak vector)', () => {
+    // Pi-hole puts the API key in the URL query string. If a Node fetch
+    // error echoes the URL, the API key ends up in dnsFilterIntegrations.
+    // lastSyncError verbatim. The `auth` alternative in the assignment
+    // pattern strips it before persistence.
+    expect(redactLogMessage('fetch failed for http://pi.hole/admin/api.php?auth=brz_pihole_secret&getAllQueries=true')).toBe(
+      'fetch failed for http://pi.hole/admin/api.php?auth=[REDACTED]&getAllQueries=true'
+    );
+  });
+
   it('redacts row messages and fields defensively before returning logs', () => {
     expect(redactAgentLogRow({
       id: 'log-1',

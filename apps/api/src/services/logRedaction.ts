@@ -4,7 +4,10 @@ const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*ke
 
 const SECRET_ASSIGNMENT_PATTERNS: RegExp[] = [
   /\b(authorization\s*:\s*bearer\s+)[^\s,;]+/gi,
-  /\b((?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|community|authpassphrase|privacypassphrase)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+  // Includes `auth=` to catch Pi-hole's URL pattern `?auth=<apiKey>` —
+  // these can leak into Node fetch error messages whose .cause echoes
+  // the URL verbatim.
+  /\b((?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|community|authpassphrase|privacypassphrase|auth)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi,
   /\b(Cookie\s*:\s*)[^\r\n]+/g,
 ];
 

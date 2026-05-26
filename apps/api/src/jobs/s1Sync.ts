@@ -15,6 +15,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
 import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
+import { redactLogMessage } from '../services/logRedaction';
 import { publishEvent } from '../services/eventBus';
 import {
   recordS1ActionDispatch,
@@ -125,9 +126,12 @@ function isThreatAction(value: string): value is S1ThreatAction {
   return (S1_THREAT_ACTIONS as readonly string[]).includes(value);
 }
 
-function truncateError(err: unknown): string {
+export function truncateError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.slice(0, 2_000);
+  // Redact before truncating. S1 bearer tokens go in headers (not URL), but
+  // an HTTP error message can still echo back a Cookie or Authorization
+  // header — strip those before persisting to DB.
+  return redactLogMessage(message).slice(0, 2_000);
 }
 
 export function dedupeThreatDetections<T extends { s1ThreatId: string }>(rows: T[]): T[] {

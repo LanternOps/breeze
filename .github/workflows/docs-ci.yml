@@ -16,6 +16,9 @@ on:
       - '**/*.md'
       - '**/*.mdx'
 
+permissions:
+  contents: read
+
 jobs:
   ci-success:
     name: CI Success

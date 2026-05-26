@@ -69,7 +69,12 @@ tenantExportRoutes.get('/:orgId', requireMfa(), async (c) => {
     return c.body(zipBuffer as unknown as ArrayBuffer);
   } catch (err) {
     captureException(err, c);
-    const detail = err instanceof Error ? err.message : 'export failed';
+    // Raw err.message suppressed in production — even admin-gated endpoints
+    // can leak DB constraint names or internal paths via err.message. Sentry
+    // + audit trail keep the full diagnostic context.
+    const detail = process.env.NODE_ENV !== 'production' && err instanceof Error
+      ? err.message
+      : undefined;
     return c.json({ error: 'export failed', detail }, 500);
   }
 });

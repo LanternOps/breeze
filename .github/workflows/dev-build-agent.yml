@@ -20,6 +20,12 @@ on:
         required: true
         default: 'dev'
 
+# Default least-privilege: this workflow only reads the repo. Per-job
+# permissions can opt into write scopes (e.g. id-token: write for
+# signing) when they actually need them.
+permissions:
+  contents: read
+
 env:
   GO_VERSION: '1.25.8'
 

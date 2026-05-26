@@ -89,6 +89,26 @@ updates:
     reviewers:
       - "toddhebebrand"
 
+  # E2E test harness has its own package.json (Playwright + tsx + dotenv).
+  # Without explicit coverage these never get bumped and land in CI runner
+  # context where a vulnerable transitive could exfiltrate runner secrets.
+  - package-ecosystem: "npm"
+    directory: "/e2e-tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+      - "e2e-tests"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
   # Go dependencies for the agent
   - package-ecosystem: "gomod"
     directory: "/agent"

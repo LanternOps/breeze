@@ -64,6 +64,68 @@ describe('writeAuditEvent', () => {
     );
   });
 
+  it('runs details through sanitizeAuditPayload — redacts secrets and caps depth', () => {
+    const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+    writeAuditEvent(c, {
+      orgId: '123e4567-e89b-42d3-a456-426614174000',
+      actorType: 'user',
+      actorId: '123e4567-e89b-42d3-a456-426614174001',
+      action: 'oauth.grant.revoke',
+      resourceType: 'oauth_grant',
+      resourceId: '123e4567-e89b-42d3-a456-426614174002',
+      details: {
+        // These are the field names sanitizeAuditPayload's SECRET_FIELD_PATTERN
+        // matches; the caller no longer has to remember to filter them.
+        password: 'hunter2',
+        token: 'brz_should_be_redacted',
+        apiKey: 'brz_api_key_secret',
+        clientSecret: 'oauth-client-secret',
+        // Safe fields pass through.
+        grantId: 'grant-123',
+        revokedCount: 3,
+      },
+    });
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: expect.objectContaining({
+          password: '[REDACTED]',
+          token: '[REDACTED]',
+          apiKey: '[REDACTED]',
+          clientSecret: '[REDACTED]',
+          grantId: 'grant-123',
+          revokedCount: 3,
+        }),
+      })
+    );
+  });
+
+  it('redacts Authorization-bearer patterns embedded inside arbitrary string fields', () => {
+    const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+    // admin/abuse.ts persists raw err.message strings into details. If an
+    // upstream error message ever echoes back an Authorization header, this
+    // test documents that the sanitizer's per-string redaction strips it
+    // before persistence.
+    writeAuditEvent(c, {
+      orgId: '123e4567-e89b-42d3-a456-426614174000',
+      actorType: 'user',
+      actorId: '123e4567-e89b-42d3-a456-426614174001',
+      action: 'partner.suspended_for_abuse',
+      resourceType: 'partner',
+      resourceId: '123e4567-e89b-42d3-a456-426614174002',
+      details: {
+        upstreamError: 'fetch failed: Authorization: Bearer brz_leaked_token at /api',
+      },
+    });
+
+    const call = vi.mocked(createAuditLogAsync).mock.calls.at(-1)?.[0];
+    const persistedError = String(call?.details?.upstreamError ?? '');
+    expect(persistedError).not.toContain('brz_leaked_token');
+    expect(persistedError).toContain('[REDACTED]');
+  });
+
   it('normalizes non-UUID resource IDs and preserves raw resource ID in details', () => {
     const c = buildRequestLike({ 'user-agent': 'vitest' });
 

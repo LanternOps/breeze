@@ -419,6 +419,34 @@ describe('admin/abuse — suspend mutation behavior', () => {
     expect((auditCall.details as Record<string, unknown>).tokenRevocationFailures).toBeDefined();
   });
 
+  it('suppresses raw tokenRevocationFailures and oauthRevocationError in production', async () => {
+    const originalEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('Redis unavailable: internal-path-xyz'));
+      vi.mocked(revokeAllPartnerOauthArtifacts).mockRejectedValueOnce(new Error('oauth revocation cache write failed: postgres constraint xyz'));
+
+      const app = buildApp(platformAdminAuth);
+      const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'prod-mode-redaction-regression' }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as Record<string, unknown>;
+      // Flags + counts still surface for triage.
+      expect(body.tokenRevocationFailed).toBe(true);
+      expect(body.tokenRevocationFailureCount).toBe(1);
+      expect(body.oauthRevocationFailed).toBe(true);
+      // Raw err.message strings are NOT in the response body.
+      expect(body.tokenRevocationFailures).toBeUndefined();
+      expect(body.oauthRevocationError).toBeUndefined();
+    } finally {
+      if (originalEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalEnv;
+    }
+  });
+
   it('still returns 200 (and writes audit) when createAuditLog itself throws', async () => {
     vi.mocked(createAuditLog).mockRejectedValueOnce(new Error('audit DB down'));
 

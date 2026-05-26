@@ -21,6 +21,7 @@ import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
+import { redactLogMessage } from '../services/logRedaction';
 import { publishEvent, EVENT_TYPES } from '../services/eventBus';
 
 const { db } = dbModule;
@@ -576,11 +577,14 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // Redact before persisting. Pi-hole puts the API key in the URL query
+    // string (?auth=<key>); a Node fetch error whose .cause echoes the URL
+    // would otherwise land in dnsFilterIntegrations.lastSyncError verbatim.
     await db
       .update(dnsFilterIntegrations)
       .set({
         lastSyncStatus: 'error',
-        lastSyncError: message.slice(0, 2000),
+        lastSyncError: redactLogMessage(message).slice(0, 2000),
         updatedAt: new Date()
       })
       .where(eq(dnsFilterIntegrations.id, integration.id));
@@ -655,7 +659,7 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
       .update(dnsPolicies)
       .set({
         syncStatus: 'error',
-        syncError: message.slice(0, 2000),
+        syncError: redactLogMessage(message).slice(0, 2000),
         updatedAt: new Date()
       })
       .where(eq(dnsPolicies.id, row.policy.id));

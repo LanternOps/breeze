@@ -103,8 +103,10 @@
          missing this hardening.
 
          `sc failure` syntax: spaces after each `=` are mandatory; actions are
-         a slash-separated list of (actionType/delayMs) pairs. exit /b 0 at
-         the end so a transient sc-error doesn't roll back the install. -->
+         a slash-separated list of (actionType/delayMs) pairs. `Return="ignore"`
+         (below) is what prevents a transient sc-error from rolling back the
+         install — keep both the static ExeCommand and Return="ignore" in
+         sync if either is ever edited. -->
     <SetProperty Id="BREEZE_SC_FAILURE_CMD" Value="[System64Folder]cmd.exe" Before="ConfigureBreezeFailureActions" Sequence="execute" />
     <CustomAction
       Id="ConfigureBreezeFailureActions"

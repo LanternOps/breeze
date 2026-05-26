@@ -239,16 +239,28 @@ abuseRoutes.post(
     }
 
     if (tokenRevocationFailures.length > 0 || oauthRevocationError !== null) {
+      // Raw err.message strings suppressed in production. Counts + a
+      // generic flag still surface so operators can triage; full detail
+      // is in Sentry + the audit trail. Anywhere other than prod (dev,
+      // test, staging-style) keeps the richer view for debugging.
+      const exposeRaw = process.env.NODE_ENV !== 'production';
       return c.json(
         {
           error: 'partial_suspend',
           partnerId,
           status: 'suspended' as const,
           ...(tokenRevocationFailures.length > 0
-            ? { tokenRevocationFailed: true, tokenRevocationFailures }
+            ? {
+                tokenRevocationFailed: true,
+                tokenRevocationFailureCount: tokenRevocationFailures.length,
+                ...(exposeRaw ? { tokenRevocationFailures } : {}),
+              }
             : {}),
           ...(oauthRevocationError !== null
-            ? { oauthRevocationFailed: true, oauthRevocationError }
+            ? {
+                oauthRevocationFailed: true,
+                ...(exposeRaw ? { oauthRevocationError } : {}),
+              }
             : {}),
           deviceCount: result.deviceCount,
           userCount: result.userCount,

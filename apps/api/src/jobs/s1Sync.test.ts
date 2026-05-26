@@ -8,7 +8,8 @@ import {
   resolveAgentSyncTarget,
   resolveOrgIdForAgentSite,
   resolveThreatSyncTarget,
-  resolveDeviceIdForAgent
+  resolveDeviceIdForAgent,
+  truncateError
 } from './s1Sync';
 
 describe('s1Sync helpers', () => {
@@ -28,6 +29,16 @@ describe('s1Sync helpers', () => {
     expect(normalizeThreatStatus('quarantine_pending')).toBe('quarantined');
     expect(normalizeThreatStatus('in_progress')).toBe('in_progress');
     expect(normalizeThreatStatus('new')).toBe('active');
+  });
+
+  it('truncateError strips Authorization-bearer patterns before persisting to DB', () => {
+    // S1 puts the bearer token in a header; HTTP error messages can echo
+    // headers back. lastSyncError is read by operators in plain text — the
+    // redaction guards against any future error message that includes the
+    // header verbatim.
+    const out = truncateError(new Error('s1 fetch failed: Authorization: Bearer s1_token_secret at /web/api'));
+    expect(out).not.toContain('s1_token_secret');
+    expect(out).toContain('[REDACTED]');
   });
 
   it('transitions action polling failures to terminal failure at threshold', () => {

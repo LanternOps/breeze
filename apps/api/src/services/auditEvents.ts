@@ -1,5 +1,6 @@
 import { createAuditLogAsync, type InitiatedByType } from './auditService';
 import { getTrustedClientIpOrUndefined } from './clientIp';
+import { sanitizeAuditPayload } from './auditPayloadSanitizer';
 
 export const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -77,6 +78,14 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     }
   }
 
+  // Run details through the shared sanitizer before persisting. ~499
+  // audit call sites previously had to filter secrets at the call point;
+  // applying sanitizeAuditPayload here closes the systemic gap (e.g.
+  // admin/abuse.ts persisting raw err.message strings into details).
+  const sanitizedDetails = Object.keys(details).length > 0
+    ? (sanitizeAuditPayload(details) as Record<string, unknown>)
+    : undefined;
+
   createAuditLogAsync({
     orgId: event.orgId ?? undefined,
     actorType: resolvedActorType,
@@ -86,7 +95,7 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     resourceType: event.resourceType,
     resourceId,
     resourceName: event.resourceName ?? undefined,
-    details: Object.keys(details).length > 0 ? details : undefined,
+    details: sanitizedDetails,
     ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: event.result ?? 'success',
