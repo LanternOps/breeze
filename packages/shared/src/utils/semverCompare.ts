@@ -9,13 +9,15 @@ export function semverCompare(a: string, b: string): number | null {
   const parsed = (v: string): [number, number, number] | null => {
     const m = /^(\d+)\.(\d+)\.(\d+)(?:-[\w.]+)?$/.exec(v);
     if (!m) return null;
-    return [Number(m[1]), Number(m[2]), Number(m[3])];
+    return [Number(m[1]!), Number(m[2]!), Number(m[3]!)];
   };
   const pa = parsed(a);
   const pb = parsed(b);
   if (!pa || !pb) return null;
-  for (let i = 0; i < 3; i++) {
-    if (pa[i] !== pb[i]) return pa[i] - pb[i];
-  }
+  const [aMajor, aMinor, aPatch] = pa;
+  const [bMajor, bMinor, bPatch] = pb;
+  if (aMajor !== bMajor) return aMajor - bMajor;
+  if (aMinor !== bMinor) return aMinor - bMinor;
+  if (aPatch !== bPatch) return aPatch - bPatch;
   return 0;
 }
