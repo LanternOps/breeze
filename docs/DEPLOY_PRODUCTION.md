@@ -5,6 +5,17 @@ This guide deploys Breeze with TLS, hardened container settings, monitoring, and
 - `deploy/docker-compose.prod.yml`
 - `scripts/prod/deploy.sh`
 
+## Which deploy path?
+
+Breeze ships two Compose configurations:
+
+| Path | Files | When to use |
+|------|-------|-------------|
+| **Simple self-host** | `docker-compose.yml` + `.env.example` (repo root) | Single-host self-hosted deploys behind your own TLS reverse proxy. Tag-pinned images by default (override with digests for higher assurance). Uses the `*_IMAGE_REF` variable schema. |
+| **Strict production** *(this doc)* | `deploy/docker-compose.prod.yml` + `deploy/.env.example` | Production rollouts with Cloudflare Tunnel, hardened ACLs, monitoring/logging, and **mandatory** digest-pinned images. Uses the `*_IMAGE_DIGEST` variable schema (Breeze images) and `*_IMAGE_REF` (third-party). The hardening check (`scripts/security/check-supply-chain-hardening.sh`) refuses to ship a release with mutable tags in this path. |
+
+The two paths use **different variable names** intentionally — they are not interchangeable. If you copied `.env` from one path, do not point it at the other Compose file.
+
 ## Prerequisites
 
 - Linux host with Docker Engine + Docker Compose plugin
@@ -45,6 +56,29 @@ Set at least these values in `.env.prod`:
 - `METRICS_SCRAPE_TOKEN`
 - `PUBLIC_API_URL` (example: `https://app.example.com/api/v1`)
 - `GRAFANA_ADMIN_PASSWORD`
+
+### Obtaining image digests
+
+`BREEZE_*_IMAGE_DIGEST` values are `sha256:<64hex>` strings — not full image refs. The Compose file prepends `ghcr.io/lanternops/breeze/<name>@` automatically.
+
+```bash
+# Replace 0.67.1 with the release you intend to deploy.
+TAG=0.67.1
+for img in api web binaries; do
+  digest=$(docker buildx imagetools inspect "ghcr.io/lanternops/breeze/$img:$TAG" \
+    --format '{{json .Manifest}}' | jq -r .digest)
+  echo "BREEZE_${img^^}_IMAGE_DIGEST=$digest"
+done
+```
+
+Third-party `*_IMAGE_REF` values are full digest-pinned refs (`name@sha256:<64hex>`):
+
+```bash
+docker buildx imagetools inspect caddy:2-alpine \
+  --format 'caddy@{{json .Manifest | fromjson | .digest}}' | tr -d '"'
+```
+
+Browse current releases at <https://github.com/orgs/LanternOps/packages?repo_name=breeze>.
 
 The bootstrap admin password is not logged by the API. If these values are missing on first boot against an empty production database, the API refuses to seed a default admin. After the initial admin signs in and completes setup, remove `BREEZE_BOOTSTRAP_ADMIN_EMAIL` and `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` from the production environment.
 
