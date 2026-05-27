@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Get PR diff
         run: gh pr diff "$PR_NUMBER" > /tmp/pr.diff
