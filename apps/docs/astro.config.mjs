@@ -21,19 +21,19 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Getting Started',
-          autogenerate: { directory: 'getting-started' },
+          items: [{ autogenerate: { directory: 'getting-started' } }],
         },
         {
           label: 'Deployment',
-          autogenerate: { directory: 'deploy' },
+          items: [{ autogenerate: { directory: 'deploy' } }],
         },
         {
           label: 'Agent',
-          autogenerate: { directory: 'agents' },
+          items: [{ autogenerate: { directory: 'agents' } }],
         },
         {
           label: 'Security Architecture',
-          autogenerate: { directory: 'security' },
+          items: [{ autogenerate: { directory: 'security' } }],
         },
         {
           label: 'Features',
@@ -78,7 +78,7 @@ export default defineConfig({
             },
             {
               label: 'Backup & Recovery',
-              autogenerate: { directory: 'backup' },
+              items: [{ autogenerate: { directory: 'backup' } }],
             },
             {
               label: 'Monitoring & Alerting',
@@ -144,7 +144,7 @@ export default defineConfig({
         },
         {
           label: 'Reference',
-          autogenerate: { directory: 'reference' },
+          items: [{ autogenerate: { directory: 'reference' } }],
         },
       ],
     }),
