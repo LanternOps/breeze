@@ -457,7 +457,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
       const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ reason: 'prod-mode-redaction-regression' }),
+        body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'prod-mode-redaction-regression' }),
       });
       expect(res.status).toBe(500);
       const body = (await res.json()) as Record<string, unknown>;

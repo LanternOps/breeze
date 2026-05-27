@@ -482,6 +482,14 @@ jobs:
           POSTGRES_IMAGE_REF=postgres:16-alpine
           REDIS_IMAGE_REF=redis:7-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
+          # Required in production by config/validate.ts (#625) — without
+          # this, agents would accept unsigned release manifests. CI uses
+          # the well-known test pubkey from ci-smoke-binary-source-*.yml.
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=
+          # Required in production by config/validate.ts (#570) — distinguishes
+          # hosted SaaS from self-hosted, gates the email-verification flow on
+          # /auth/register-partner. CI runs in self-hosted mode.
+          IS_HOSTED=false
           EOF
 
       - name: Build and start containers
