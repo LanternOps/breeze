@@ -252,13 +252,13 @@ require_grep 'AUTH %s' scripts/prod/deploy.sh \
   "production deploy script must feed Redis AUTH through stdin"
 
 for dockerfile in apps/api/Dockerfile apps/web/Dockerfile docker/Dockerfile.api docker/Dockerfile.web; do
-  require_grep '^FROM[[:space:]]+node:26-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+base' "$dockerfile" \
+  require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+base' "$dockerfile" \
     "$dockerfile must digest-pin the Node base image while retaining the tag for Dependabot refreshes"
   reject_grep '^FROM[[:space:]]+node:[^[:space:]@]+([[:space:]]|$)' "$dockerfile" \
     "$dockerfile must not use tag-only Node base image references"
 done
 for dockerfile in apps/api/Dockerfile apps/web/Dockerfile; do
-  require_grep '^FROM[[:space:]]+node:26-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$dockerfile" \
+  require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$dockerfile" \
     "$dockerfile must digest-pin the production Node runner image while retaining the tag for Dependabot refreshes"
 done
 
