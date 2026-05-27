@@ -12,12 +12,19 @@ export const parameterSchema = z.object({
 export const severityValues = ['critical', 'high', 'medium', 'low', 'info'] as const;
 export type Severity = (typeof severityValues)[number];
 
+// Sentinel used in form-row state to represent the wire-shape `null`
+// (explicitly suppress the alert for this exit code). Kept as a string so
+// `<select>` values and `register()` round-trip cleanly; converted to/from
+// `null` at the form boundary by rowsToMapping / mappingToRows.
+export const SUPPRESS_SEVERITY = '__suppress__' as const;
+export type SeverityRowValue = Severity | typeof SUPPRESS_SEVERITY;
+
 // Form-side representation of one exit-code → severity mapping row. Stored as
 // a list during editing so order is stable and each row owns its own state;
-// converted to/from the wire `Record<string, severity>` at form boundaries.
+// converted to/from the wire `Record<string, severity | null>` at form boundaries.
 export const exitCodeSeverityRowSchema = z.object({
   exitCode: z.string().regex(/^\d+$/, 'Exit code must be a non-negative integer'),
-  severity: z.enum(severityValues),
+  severity: z.enum([...severityValues, SUPPRESS_SEVERITY]),
 });
 
 export const scriptSchema = z.object({
@@ -59,8 +66,10 @@ export type ExitCodeSeverityRow = z.infer<typeof exitCodeSeverityRowSchema>;
 
 // Wire shape sent to / received from the API. Form-side editing keeps an
 // ordered list of rows for stable React keys + per-row error display; we
-// convert at the form boundary.
-export type ExitCodeSeverityMapping = Record<string, Severity>;
+// convert at the form boundary. `null` = explicitly suppress the alert for
+// that exit code (distinct from omitting the key, which falls back to
+// script-level default handling).
+export type ExitCodeSeverityMapping = Record<string, Severity | null>;
 
 export type ScriptSubmitValues = Omit<ScriptFormValues, 'exitCodeSeverityMapping'> & {
   exitCodeSeverityMapping?: ExitCodeSeverityMapping;
@@ -69,7 +78,7 @@ export type ScriptSubmitValues = Omit<ScriptFormValues, 'exitCodeSeverityMapping
 export function rowsToMapping(rows: ExitCodeSeverityRow[] | undefined): ExitCodeSeverityMapping | undefined {
   if (!rows || rows.length === 0) return undefined;
   return rows.reduce<ExitCodeSeverityMapping>((acc, { exitCode, severity }) => {
-    acc[exitCode] = severity;
+    acc[exitCode] = severity === SUPPRESS_SEVERITY ? null : severity;
     return acc;
   }, {});
 }
@@ -77,17 +86,20 @@ export function rowsToMapping(rows: ExitCodeSeverityRow[] | undefined): ExitCode
 export function mappingToRows(mapping: ExitCodeSeverityMapping | null | undefined): ExitCodeSeverityRow[] {
   if (!mapping) return [];
   return Object.entries(mapping)
-    .filter((entry): entry is [string, Severity] => entry[1] !== null)
-    .map(([exitCode, severity]) => ({ exitCode, severity }))
+    .map<ExitCodeSeverityRow>(([exitCode, severity]) => ({
+      exitCode,
+      severity: severity === null ? SUPPRESS_SEVERITY : severity,
+    }))
     .sort((a, b) => Number(a.exitCode) - Number(b.exitCode));
 }
 
-export const severityOptions: { value: Severity; label: string }[] = [
+export const severityOptions: { value: SeverityRowValue; label: string }[] = [
   { value: 'critical', label: 'Critical' },
   { value: 'high', label: 'High' },
   { value: 'medium', label: 'Medium' },
   { value: 'low', label: 'Low' },
   { value: 'info', label: 'Info' },
+  { value: SUPPRESS_SEVERITY, label: 'Suppress alert' },
 ];
 
 export const languageOptions: { value: ScriptLanguage; label: string; monacoLang: string }[] = [

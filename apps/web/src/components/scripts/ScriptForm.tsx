@@ -508,7 +508,8 @@ export default function ScriptForm({
           {severityFields.length === 0 && (
             <p className="text-sm text-muted-foreground">
               Map specific exit codes to alert severities. When the script returns one of these codes,
-              an alert is raised at the configured severity. Exit codes you don&apos;t list here use the
+              an alert is raised at the configured severity. Choose <em>Suppress alert</em> to mark a
+              code as informational (no incident raised). Exit codes you don&apos;t list here use the
               default outcome handling.
             </p>
           )}
@@ -541,6 +542,9 @@ export default function ScriptForm({
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
+                  <p className="text-xs text-muted-foreground">
+                    Suppress alert &mdash; exit code is treated as informational, no incident raised.
+                  </p>
                 </div>
               </div>
               <button
