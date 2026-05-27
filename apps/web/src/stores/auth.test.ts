@@ -8,7 +8,9 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   fetchWithAuth,
-  useAuthStore
+  restoreAccessTokenFromCookie,
+  useAuthStore,
+  waitForPendingRefresh
 } from './auth';
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -301,5 +303,71 @@ describe('auth API helpers', () => {
 
     expect((fetchMock.mock.calls[0][1] as RequestInit).referrerPolicy).toBe('no-referrer');
     expect((fetchMock.mock.calls[1][1] as RequestInit).referrerPolicy).toBe('no-referrer');
+  });
+});
+
+describe('waitForPendingRefresh (#950)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resolves immediately when no refresh is in flight', async () => {
+    const before = Date.now();
+    await waitForPendingRefresh();
+    expect(Date.now() - before).toBeLessThan(50);
+  });
+
+  it('serializes behind an in-flight refresh', async () => {
+    // Block the underlying /auth/refresh call so the in-flight promise stays
+    // pending; resolve it later and assert waitForPendingRefresh resolves
+    // only AFTER the in-flight one settles. This is the core anti-race
+    // semantic — without it, the post-reload page beats the pre-reload page
+    // to its own cookie consumption.
+    let resolveRefresh!: (value: unknown) => void;
+    const refreshGate = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      await refreshGate;
+      return makeResponse({ user: baseUser, tokens: baseTokens });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Kick off a refresh (don't await). restoreAccessTokenFromCookie uses
+    // the same shared in-flight gate that waitForPendingRefresh observes.
+    const inflight = restoreAccessTokenFromCookie();
+
+    // Microtask yield so the underlying requestTokenRefresh call has been
+    // dispatched and the module's tokenRefreshInFlight is populated.
+    await Promise.resolve();
+
+    let waitResolved = false;
+    const waitPromise = waitForPendingRefresh().then(() => {
+      waitResolved = true;
+    });
+
+    // Confirm we have NOT resolved yet — refresh is still pending.
+    await Promise.resolve();
+    expect(waitResolved).toBe(false);
+
+    // Unblock the refresh; waitForPendingRefresh should now resolve.
+    resolveRefresh(undefined);
+    await inflight;
+    await waitPromise;
+    expect(waitResolved).toBe(true);
+  });
+
+  it('does not propagate refresh failures', async () => {
+    // The whole point is serialization-without-coupling; if the pre-reload
+    // refresh threw, the caller (OrgSwitcher) still needs to proceed to its
+    // reload step so the post-reload page gets its own clean attempt.
+    const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const inflight = restoreAccessTokenFromCookie();
+    await Promise.resolve();
+
+    await expect(waitForPendingRefresh()).resolves.toBeUndefined();
+    await inflight;
   });
 });

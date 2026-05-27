@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useOrgStore, type Organization, type Site } from '@/stores/orgStore';
+import { waitForPendingRefresh } from '@/stores/auth';
 
 /**
  * When switching organizations, certain detail-view routes show data scoped to
@@ -250,9 +251,16 @@ export default function OrgSwitcher() {
                   key={org.id}
                   org={org}
                   isSelected={org.id === currentOrgId}
-                  onSelect={() => {
+                  onSelect={async () => {
                     if (org.id !== currentOrgId) {
                       setOrganization(org.id);
+                      // Yield a microtask so setOrganization's downstream
+                      // fetchSites/etc has a chance to register itself with
+                      // tokenRefreshInFlight before we check. Then wait for
+                      // any pending refresh to settle so the post-reload
+                      // page doesn't race the same cookie jti. See #950.
+                      await Promise.resolve();
+                      await waitForPendingRefresh();
                       const redirect = getOrgSwitchRedirect(window.location.pathname);
                       if (redirect) {
                         window.location.href = redirect;
@@ -263,11 +271,15 @@ export default function OrgSwitcher() {
                   }}
                   sites={sites}
                   currentSiteId={currentSiteId}
-                  onSelectSite={(siteId) => {
+                  onSelectSite={async (siteId) => {
                     const changed = siteId !== currentSiteId;
                     setSite(siteId);
                     setIsOpen(false);
                     if (changed) {
+                      // Same refresh-race avoidance as the org-switch path
+                      // above — see #950.
+                      await Promise.resolve();
+                      await waitForPendingRefresh();
                       window.location.reload();
                     }
                   }}

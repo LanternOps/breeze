@@ -254,6 +254,32 @@ async function requestTokenRefreshShared(): Promise<Tokens | null> {
   return tokenRefreshInFlight;
 }
 
+/**
+ * Resolve when any in-flight token refresh has settled. Used by reload-class
+ * code paths (OrgSwitcher, SiteSwitcher) to avoid the post-reload page racing
+ * the pre-reload page on the same refresh cookie jti — see #950.
+ *
+ * The v0.67.0 launch-readiness security sweep (#900) introduced NX-claim
+ * refresh-token reuse-detection: only ONE concurrent /auth/refresh wins;
+ * the loser gets 401 AND has its refresh cookie cleared. If OrgSwitcher
+ * fires window.location.reload() while a refresh is mid-flight, the
+ * post-reload page hydrates fresh, its Astro islands fire /auth/refresh,
+ * lose the race, get the cookie cleared, and the user is bounced to /login.
+ *
+ * Returns immediately if no refresh is in flight. Swallows refresh errors —
+ * we only care about serialization; if the pre-reload refresh failed, the
+ * post-reload page will get its own fresh attempt with no race.
+ */
+export async function waitForPendingRefresh(): Promise<void> {
+  if (tokenRefreshInFlight) {
+    try {
+      await tokenRefreshInFlight;
+    } catch {
+      // Intentionally swallowed — see comment above.
+    }
+  }
+}
+
 export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   try {
     const tokens = await requestTokenRefreshShared();
