@@ -43,8 +43,15 @@ Templates are named collections of OIDs that define what to poll on a device. Th
 
 | Type | Description |
 |------|-------------|
-| **Builtin** | Ship with the platform. Cannot be modified or deleted. Cover common device types. |
+| **Builtin** | Ship with the platform. Cannot be modified or deleted. Cover common device types and major vendors. |
 | **Custom** | Created by users. Fully editable. Scoped globally (not per-org). |
+
+Built-in templates now cover a broad range of common network gear so you can monitor most devices without writing your own template. Browse the full list with `GET /snmp/templates?source=builtin`. The library includes:
+
+- Generic baselines (Common, Router, Switch, Printer per RFC 1213 and RFC 3805)
+- Cisco IOS switches
+- Ubiquiti UniFi switches, access points, and security gateways
+- Additional multi-vendor templates added with each release
 
 Each OID entry in a template includes:
 

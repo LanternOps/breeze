@@ -45,7 +45,8 @@ Each audit log entry contains the following fields:
 | `userAgent` | Text | Client user-agent string |
 | `result` | Enum | Outcome of the action: `success`, `failure`, or `denied` |
 | `errorMessage` | Text | Error details when the result is `failure` or `denied` |
-| `checksum` | String (128) | Integrity checksum for tamper detection |
+| `checksum` | String (128) | SHA-256 of this row's canonical payload |
+| `prevChecksum` | String (128) | Checksum of the previous audit row in this organization's hash chain |
 
 ### Actor Types
 
@@ -86,6 +87,15 @@ The following actions are flagged as security events and appear in the security 
 - `policy.create`
 - `policy.evaluate`
 - `automation.policy.evaluate`
+- `agent.source.ip.changed` — emitted when an agent's source IP changes between heartbeats; can indicate NAT changes, mobility, or stolen tokens.
+
+### Tamper Evidence
+
+Audit log rows are append-only at the database layer. Postgres triggers refuse `UPDATE`, `DELETE`, and `TRUNCATE` against the table — even a superuser cannot rewrite history without explicit administrative privileges.
+
+In addition to row-level immutability, each row carries `prevChecksum` linking to the previous audit row in the same organization. Together with `checksum`, this produces a per-org SHA-256 hash chain. Verifying the chain end-to-end detects insertion, deletion, or alteration of any row between two timestamps.
+
+Retention pruning is the one supported path that removes audit rows. It requires both the `breeze_audit_admin` Postgres role and the `breeze.allow_audit_retention='1'` session GUC, and re-anchors the chain on the surviving rows so the integrity check continues to pass after old data ages out. The platform's audit retention worker handles this — operators do not prune by hand.
 
 ### Compliance Actions
 
@@ -120,8 +130,11 @@ The audit log list endpoints support the following query parameters for filterin
 | `resource` | String | Filter by resource type or resource name (ILIKE match) |
 | `from` | ISO 8601 datetime | Start of date range |
 | `to` | ISO 8601 datetime | End of date range |
+| `skipCount` | Boolean | When `true`, the list endpoint skips the `count(*)` over the filtered set and returns only the page itself. Use it on high-frequency dashboard widgets where the total isn't displayed. |
 
 The search endpoint (`GET /search`) adds a `q` parameter that performs a full-text ILIKE search across action, actor email, resource type, resource name, and the JSON-cast details field. Search conditions are combined with any active filters using AND logic.
+
+The dashboard's audit-log viewer humanizes raw action codes (e.g. `device.create` renders as "Created device") and, for `actorType=agent` rows, qualifies the actor column with the device hostname instead of showing only the agent identifier.
 
 ### Retention Policies
 

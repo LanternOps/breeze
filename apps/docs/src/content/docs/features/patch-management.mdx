@@ -144,12 +144,15 @@ Scanning is asynchronous. The scan command is sent to the agent on each target d
 
 ## Reviewing and Approving Patches
 
+For all approval endpoints below, `orgId` is accepted either in the JSON body (as shown) or as the `?orgId=` query parameter. Organization-scoped tokens auto-resolve `orgId`. An optional `ringId` field (UUID) ties the approval to a specific deployment ring; if you don't pass it, approvals are not ring-scoped and the response returns `ringId: null`.
+
 ### Approving
 
 ```bash
 POST /patches/:id/approve
 {
   "orgId": "uuid",
+  "ringId": "ring-uuid",
   "note": "Reviewed — approved for production fleet"
 }
 ```

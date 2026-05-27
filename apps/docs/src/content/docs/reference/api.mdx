@@ -55,10 +55,15 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/devices` | List devices (paginated, filterable) |
+| `GET` | `/devices` | List devices (paginated, filterable; supports keyset cursor) |
 | `GET` | `/devices/:id` | Get device details |
-| `POST` | `/devices/:id/commands` | Send command to device |
+| `POST` | `/devices/provision` | Pre-create a device row before any agent has enrolled. Returns a single-use enrollment payload. |
+| `POST` | `/devices/:id/move-org` | Relocate a device to a different organization within the same partner. |
+| `POST` | `/devices/:id/commands` | Send command to device. Rejects a duplicate `refresh_inventory` with `409 ALREADY_PENDING`. |
+| `POST` | `/devices/bulk/commands` | Send the same command to many devices. Returns `commands`, `skipped`, and `failed` arrays. |
 | `DELETE` | `/devices/:id` | Decommission device |
+
+`GET /devices` supports a cursor-based paging mode in addition to the legacy `page`/`limit` shape. Pass `cursor`, `sort` (`hostname` / `lastSeen` / `enrolled`), `sortDir`, `limit` (max 1000), and optional filters like `orgIds`, `siteIds`, `groupIds`, `includeDecommissioned`, and `includeTotal`. The response carries `{ devices, nextCursor, limit, total? }`; pass `nextCursor` back as `cursor` to fetch the next page. The list payload also exposes `mainAgentSilentSince` and `watchdogStatus` per device so callers can render the **Agent silent (watchdog OK)** badge described in [Agent Watchdog](/features/watchdog/).
 
 ## Partners & Organizations
 

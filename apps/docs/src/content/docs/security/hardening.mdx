@@ -48,10 +48,12 @@ Before going live, verify every item:
 ### Authentication
 
 - [ ] MFA (TOTP) enabled for all admin accounts
+- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enroll a TOTP device; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available.
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
 - [ ] Session timeout configured (`SESSION_MAX_AGE`)
 - [ ] Session revocation is fail-closed — revoked sessions stay revoked even if Redis is unavailable
+- [ ] Refresh tokens use family-based reuse detection — replaying a previously rotated refresh token immediately revokes every other token in that family, log out included.
 
 ### Agent Security
 
@@ -60,7 +62,14 @@ Before going live, verify every item:
 - [ ] Config file permissions: `0750` for `/etc/breeze/`, `0640` for `agent.yaml`, `0600` for `secrets.yaml`
 - [ ] Agent rate limiting enabled (120 req/60s per agent via Redis)
 - [ ] Enrollment keys set with expiry and usage limits
+- [ ] Cross-tenant probe detection enabled — if an agent token is used to access a device in another tenant, the token is automatically suspended and re-enrollment is blocked until an admin reviews the device.
+- [ ] Source-IP tracking active — every heartbeat records the agent's source IP, and an `agent.source.ip.changed` audit event fires when it shifts, surfacing token theft or NAT changes.
 - [ ] Consider enabling [Cloudflare mTLS](/security/mtls/) for zero-trust agent auth
+
+### Outbound Request Safety (SSRF)
+
+- [ ] Outbound integrations (webhooks, DNS providers, SSO discovery) flow through the platform's SSRF guard, which blocks private/loopback ranges and cloud metadata hostnames unless an explicit allowlist entry permits them.
+- [ ] `partners.settings` and `sites.settings` columns are AES-256-GCM encrypted at rest — secrets stored here (provider credentials, integration tokens) never leave the database in plaintext.
 
 ### Monitoring
 
@@ -98,6 +107,14 @@ All mutating operations are automatically logged with:
 | `details` | JSON payload of changes |
 | `ipAddress` | Client IP address |
 | `timestamp` | ISO 8601 timestamp |
+| `checksum` | SHA-256 of the canonical row payload |
+| `prev_checksum` | Checksum of the previous row in this organization's chain |
+
+### Tamper evidence
+
+The `audit_log` table is **append-only at the database level**. Database triggers refuse `UPDATE`, `DELETE`, and `TRUNCATE` operations against audit rows — not even a superuser can quietly edit history. Each row also carries a `prev_checksum` that links to the previous audit row in the same organization, producing a per-org SHA-256 hash chain. Verifying the chain end-to-end detects any insertion, deletion, or alteration between two timestamps.
+
+Retention pruning is the one legitimate path that removes audit rows. It requires both the `breeze_audit_admin` Postgres role and the `breeze.allow_audit_retention='1'` session GUC; pruning re-anchors the chain on the surviving rows so the integrity check still passes after old data ages out. Both controls are managed by the platform's audit retention worker — operators do not run pruning by hand.
 
 Query audit logs via the API:
 

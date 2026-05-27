@@ -67,6 +67,20 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
 
    Paste the output into `.env`.
 
+   Then set these required deployment-mode flags. Without them the API refuses to boot in production:
+
+   ```bash
+   # Self-hosted by default. Set to "true" only if you're running the hosted SaaS edition.
+   IS_HOSTED=false
+
+   # Base64 SPKI of the Ed25519 key used to sign release manifests. The hosted releases
+   # we publish on GitHub are anchored to this key — leave the published default unless
+   # you build and sign your own binaries.
+   RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=<base64-spki>
+   ```
+
+   If Breeze is behind a reverse proxy, also set `TRUST_PROXY_HEADERS=true` and list the proxy's CIDRs in `TRUSTED_PROXY_CIDRS`. See [Environment Variables](/deploy/environment/) for details.
+
 4. **Configure TURN server**
 
    The TURN server enables remote desktop connectivity across NATs and firewalls. Set the server's public IP address:
@@ -143,7 +157,7 @@ By default, images pull the `latest` tag. To pin to a specific release:
 
 ```bash
 # In .env
-BREEZE_VERSION=0.3.0
+BREEZE_VERSION=0.67.1
 ```
 
 Then pull and restart:
@@ -163,7 +177,7 @@ REDIS_MAXMEMORY=512mb
 
 ### Redis Authentication
 
-Redis requires password authentication in production. Generate a password and add it to `.env`:
+Redis password authentication is **required in production**. The API will refuse to start if `REDIS_URL` doesn't carry a password. The secret-generation loop above already produces `REDIS_PASSWORD`; pair it with a `REDIS_URL` that uses it:
 
 ```bash
 REDIS_PASSWORD=$(openssl rand -hex 32)

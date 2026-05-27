@@ -409,7 +409,33 @@ All endpoints require authentication via `authMiddleware`.
 | DELETE | `/alerts/channels/:id` | Delete a notification channel |
 | POST | `/alerts/channels/:id/test` | Send a test notification through the channel |
 
-Channel endpoints require `organization`, `partner`, or `system` scope.
+Channel endpoints require `organization`, `partner`, or `system` scope. Create, update, delete, and test all require MFA verification.
+
+### Per-channel throttle
+
+Each channel can cap how many notifications it dispatches per device (or per rule, depending on the alert source) inside a sliding window. Use this when a noisy device might otherwise pager-bomb on-call.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `throttleMaxPerWindow` | integer or null | null | Maximum notifications per window. `null` or `0` means unlimited. |
+| `throttleWindowSeconds` | integer | `3600` | Length of the sliding window in seconds. |
+
+The throttle is applied at dispatch time. When the cap is reached, the dispatcher skips the send and records a "throttled" outcome on the delivery — throttled deliveries are not retried. If the throttle backend (Redis) is unavailable, the dispatcher fails open and delivers the notification rather than dropping it.
+
+Add these fields to any channel POST/PUT body:
+
+```bash
+curl -X POST /alerts/channels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "On-Call SMS",
+    "type": "sms",
+    "config": { "phoneNumbers": ["+15551234567"], "from": "+15550001111" },
+    "throttleMaxPerWindow": 5,
+    "throttleWindowSeconds": 3600,
+    "enabled": true
+  }'
+```
 
 ### Creating a channel
 

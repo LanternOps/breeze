@@ -283,6 +283,12 @@ Enable or disable automatic agent self-updates for the device. When disabled, th
 
 This command is also exposed directly as `POST /devices/:id/auto-update` with body `{ "enabled": <bool> }` — useful for re-enabling auto-update on agents that were left with it turned off (for example after a manual or recovery update).
 
+### `refresh_inventory`
+
+Ask the agent to collect a fresh hardware/software inventory snapshot immediately instead of waiting for its scheduled run. The dashboard exposes this as the **Refresh Inventory** button on the device detail page; the API surface is `POST /devices/:id/commands` with `{ "type": "refresh_inventory" }`.
+
+Duplicates are rejected: while an inventory refresh is already queued or running for a device, a second request returns `409 Conflict` with `code: "ALREADY_PENDING"`. The bulk variant (`POST /devices/bulk/commands`) applies the same check per device and partitions its response into `commands` (newly issued), `skipped` (already-pending refreshes, each with the existing `commandId`), and `failed`.
+
 ---
 
 ## File Operations

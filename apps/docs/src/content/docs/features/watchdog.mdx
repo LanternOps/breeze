@@ -103,6 +103,16 @@ Failover keeps the device manageable even when the agent process is completely d
 
 ---
 
+## Agent-Silent Detection
+
+The watchdog reports its own health to the server through its own connection. That means the watchdog can be perfectly healthy while the main agent has gone quiet — a "silent agent" condition that earlier versions of Breeze couldn't distinguish from a fully-offline device.
+
+The server now watches for this asymmetry on every device. When the main agent stops checking in but the watchdog stays online, the device row shows an amber **Agent silent (watchdog OK)** badge in the dashboard. The badge tells you the device is still reachable through the watchdog and a remote **Restart Agent** action will work — versus a fully-offline device where neither component is responding.
+
+The agent also supervises itself. If its main loop stops making forward progress for an extended period, the agent self-restarts before the watchdog needs to step in, keeping recovery fast for the common transient-stuck case.
+
+---
+
 ## Health Journal
 
 The watchdog maintains a local rotating log file called the **health journal**. Each entry records a timestamped event (state transition, health check result, recovery action, IPC message) in structured JSON format.

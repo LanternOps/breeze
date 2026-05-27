@@ -295,7 +295,7 @@ The AI system has access to powerful tools. Every AI-initiated action passes thr
 
 | Control | Implementation |
 |---------|----------------|
-| **Base image** | `node:20-alpine` (minimal attack surface) |
+| **Base image** | `node:24-alpine` (current LTS, minimal attack surface) |
 | **Multi-stage build** | `deps → builder → runner` (no build tools in production) |
 | **Non-root execution** | Dedicated `hono` user (UID 1001), `nodejs` group (GID 1001) |
 | **File ownership** | `--chown=hono:nodejs` on all copied assets |
@@ -345,6 +345,9 @@ All scanners run in CI and **block merges** on failure.
 | `APP_ENCRYPTION_KEY` | AES-256-GCM encryption | 32-byte hex |
 | `MFA_ENCRYPTION_KEY` | MFA secret encryption | 32-byte hex |
 | `AGENT_ENROLLMENT_SECRET` | Agent enrollment | 32-byte hex |
+| `REDIS_PASSWORD` | Redis authentication (must appear in `REDIS_URL`) | 32-byte hex |
+| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | Verifies signed release manifests in GitHub-mode binary distribution | Base64 SPKI |
+| `IS_HOSTED` | Deployment mode flag (`true`/`false`); gates signup, billing, and email-verification policy | Explicit boolean |
 
 ### Production Enforcement
 

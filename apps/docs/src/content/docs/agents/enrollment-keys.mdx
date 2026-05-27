@@ -125,6 +125,8 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 
 When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 60). Supplying both is rejected so the resolved expiry is unambiguous.
 
+POST and PATCH on `/enrollment-keys` reject any field that isn't in the table above. A typo like `maxUses` (instead of `maxUsage`) now returns `400 Bad Request` with a precise field-name error rather than silently dropping the value — useful when scripting key creation against earlier API examples that used different field names.
+
 <Aside>
   The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 60 minutes after creation.
 </Aside>

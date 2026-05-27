@@ -181,8 +181,8 @@ Wake-on-LAN powers on an offline device from the Breeze dashboard without visiti
 **Requirements:**
 
 - The target device must have Wake-on-LAN enabled in its BIOS/UEFI (often labelled "Power on by LAN" or "Wake on Magic Packet").
-- The target must have checked in at least once so Breeze has its MAC address and last-known IPv4 subnet.
-- At least one other agent must be online at the same site and on the same subnet to relay the magic packet.
+- The target must have checked in at least once so Breeze has its MAC address(es) and one or more recorded non-APIPA IPv4 subnets. APIPA addresses (`169.254.0.0/16`) are skipped — they're a sign of a broken DHCP lease and don't represent the real LAN.
+- At least one other agent must be online at the same site and on a matching subnet to relay the magic packet. Breeze tries every plausible candidate subnet recorded for the target, in priority order, until one succeeds.
 
 **Sending a wake:**
 
@@ -221,7 +221,7 @@ By default, **Connect → Desktop** opens the built-in Breeze WebRTC desktop ses
 
 </Steps>
 
-Each device then needs that custom field populated with its identifier for the tool. When a user clicks **Connect → Desktop**, Breeze substitutes the values and either opens the URL in a new browser tab (`http`/`https`) or hands it to the operating system's protocol handler (any other scheme, e.g. `rustdesk://`). If a device is missing the required custom field, the launcher is unavailable for that device and the built-in WebRTC session remains the fallback.
+Each device then needs that custom field populated with its identifier for the tool. When a user clicks **Connect → Desktop**, Breeze substitutes the values and either opens the URL in a new browser tab (`http`/`https`) or hands it to the operating system's protocol handler (any other scheme, e.g. `rustdesk://`). If the launcher can't issue a URL — provider disabled, no provider configured, device is missing the required custom field, or the resolved URL fails the scheme check — the UI surfaces the specific reason instead of silently falling back to WebRTC, so you can fix the configuration rather than guess why a click did nothing.
 
 **Security:**
 

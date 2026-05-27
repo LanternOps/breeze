@@ -527,6 +527,224 @@
         "agents/commands.mdx",
         "reference/api.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/moveOrg.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/provision.ts",
+      "docs": [
+        "reference/api.mdx",
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/cursor.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/core.ts",
+      "docs": [
+        "reference/api.mdx",
+        "features/watchdog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/watchdogLogs.ts",
+      "docs": [
+        "features/watchdog.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/dnsSecurity.ts",
+      "docs": [
+        "features/dns-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/dnsSyncJob.ts",
+      "docs": [
+        "features/dns-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/dnsThreatAlerts.ts",
+      "docs": [
+        "features/dns-security.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/dnsProviders/**",
+      "docs": [
+        "features/dns-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/dnsSecurity/**",
+      "docs": [
+        "features/dns-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/pages/dns-security.astro",
+      "docs": [
+        "features/dns-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/notificationThrottle.ts",
+      "docs": [
+        "features/notifications.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/notificationDispatcher.ts",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptSeverity.ts",
+      "docs": [
+        "features/scripts.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ssrfGuard.ts",
+      "docs": [
+        "security/hardening.mdx",
+        "security/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/logRedaction.ts",
+      "docs": [
+        "security/error-tracking.mdx",
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/auditService.ts",
+      "docs": [
+        "reference/audit-logs.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auditLogs.ts",
+      "docs": [
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/lib/auditFormat.ts",
+      "docs": [
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/audit/**",
+      "docs": [
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/auth/ForcedMfaSetupPage.tsx",
+      "docs": [
+        "reference/users-and-roles.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/validate.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/production.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/redis.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/production.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/auth.ts",
+      "docs": [
+        "reference/users-and-roles.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/bearerTokenAuth.ts",
+      "docs": [
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/permissionsCatalog.ts",
+      "docs": [
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/releaseArtifactManifest.ts",
+      "docs": [
+        "deploy/binaries.mdx",
+        "deploy/upgrades.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/oauth/provider.ts",
+      "docs": [
+        "features/mcp-server.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/snmp*.ts",
+      "docs": [
+        "features/snmp.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/migrations/**",
+      "docs": [
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "docker/Dockerfile.*",
+      "docs": [
+        "deploy/production.mdx",
+        "security/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/Dockerfile",
+      "docs": [
+        "deploy/production.mdx",
+        "security/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/Dockerfile",
+      "docs": [
+        "deploy/production.mdx",
+        "security/overview.mdx"
+      ]
     }
   ]
 }

@@ -85,3 +85,9 @@ If an agent's token is compromised or the device needs to be reassigned:
    - macOS: `sudo rm "/Library/Application Support/Breeze/agent.yaml" "/Library/Application Support/Breeze/secrets.yaml"`
    - Windows: `Remove-Item C:\ProgramData\Breeze\agent.yaml, C:\ProgramData\Breeze\secrets.yaml`
 3. **Re-enroll**: `sudo breeze-agent enroll YOUR_ENROLLMENT_KEY --server ... --enrollment-secret ...`
+
+### Reusing a hostname for a decommissioned device
+
+When a device row is **decommissioned** in the dashboard, the original device id is retired but the hostname is free to be claimed again. Running `breeze-agent enroll` from a new install on the same hostname creates a fresh device record (new id, new token) rather than failing with a hostname collision. The decommissioned row stays in audit history for compliance — the new device is treated as a distinct asset from day one.
+
+The only exception is if the decommissioned device's token was suspended for a security reason (for example, a cross-tenant access probe). In that case re-enrollment is blocked with a `409 Conflict` until an administrator reviews the previous incident. The response includes the reason so the technician on-site knows to escalate rather than retry.

@@ -1,0 +1,5 @@
+{
+  "lastReviewedRef": "623514b6",
+  "reviewedAt": "2026-05-27",
+  "notes": "Bumped after v0.66.0..HEAD sweep on 2026-05-26. The /update-breeze-docs skill writes this back after each sweep; read with `jq -r .lastReviewedRef scripts/docs-review/last-reviewed.json` and use it as the lower bound for `git log $REF..HEAD` when running a docs sweep."
+}

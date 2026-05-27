@@ -116,6 +116,14 @@ The GUI installer uses bootstrap tokens generated server-side from an enrollment
 
 ---
 
+## Pre-Provisioning Devices
+
+For deployments where you want a device row to exist in the dashboard before the agent has ever talked to the server — for example, building out an asset list ahead of a hardware shipment — admins can pre-create the row with `POST /devices/provision`. The endpoint accepts the device's hostname, target organization, and site, and returns a single-use enrollment payload that can be baked into the installer.
+
+Pre-provisioned devices land in `status: 'pending'` and stay there until the agent's first heartbeat arrives. They show up in the device list with a "Pending enrollment" indicator so it's clear which rows are placeholders versus active devices.
+
+---
+
 ## What Gets Installed
 
 All platform installers (MSI, PKG, and manual service install) include two components:
