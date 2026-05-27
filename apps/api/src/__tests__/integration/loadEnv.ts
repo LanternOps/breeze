@@ -47,6 +47,11 @@ process.env.NODE_ENV ||= 'test';
 // throwaway Ed25519 keypair generated specifically for tests — never use
 // it for real signing.
 process.env.MCP_OAUTH_ENABLED ||= 'true';
+// DCR is gated by its own flag (PR #900 split it from MCP_OAUTH_ENABLED so
+// production deploys can run OAuth without exposing public client registration).
+// The OAuth code-flow integration test does DCR via POST /oauth/reg, so it
+// must opt in here. Without this the test fails with `registration_disabled`.
+process.env.OAUTH_DCR_ENABLED ||= 'true';
 process.env.OAUTH_ISSUER ||= 'http://localhost:3001';
 process.env.OAUTH_RESOURCE_URL ||= 'http://localhost:3001/api/v1/mcp/message';
 process.env.OAUTH_CONSENT_URL_BASE ||= 'http://localhost:3000';
