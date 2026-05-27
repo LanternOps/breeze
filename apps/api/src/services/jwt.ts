@@ -1,4 +1,4 @@
-import { SignJWT, jwtVerify, type JWTHeaderParameters } from 'jose';
+import { SignJWT, jwtVerify, errors as joseErrors, type JWTHeaderParameters } from 'jose';
 import { randomUUID } from 'crypto';
 
 const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
@@ -262,6 +262,14 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
   } catch (error) {
+    // Routes that accept multiple bearer formats (JWT, API key, agent token,
+    // enrollment token, …) call verifyToken first. A non-JWT input lands here
+    // as JWSInvalid / JWTInvalid — expected, not a failure. Logging it sends
+    // misleading "Token verification failed" noise to stderr right next to a
+    // 200 from the fallback auth path.
+    if (error instanceof joseErrors.JWSInvalid || error instanceof joseErrors.JWTInvalid) {
+      return null;
+    }
     console.debug('[jwt] Token verification failed:', error instanceof Error ? error.message : error);
     return null;
   }

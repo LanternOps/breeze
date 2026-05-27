@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SignJWT } from 'jose';
 import {
   createAccessToken,
@@ -90,6 +90,34 @@ describe('jwt service', () => {
 
       const decoded = await verifyToken(hs384Token);
       expect(decoded).toBeNull();
+    });
+
+    // Non-JWT bearer tokens (API keys, agent tokens, enrollment tokens) routinely
+    // hit verifyToken when a route accepts multiple credential formats. Logging
+    // "Token verification failed" for those is misleading — stderr aggregators
+    // surface it as a warning right next to a successful 200 from the fallback.
+    it('does not log when the input is structurally not a JWT', async () => {
+      const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      try {
+        expect(await verifyToken('brz_some_api_key_not_a_jwt')).toBeNull();
+        expect(await verifyToken('not-a-jwt-at-all')).toBeNull();
+        expect(await verifyToken('')).toBeNull();
+        expect(debugSpy).not.toHaveBeenCalled();
+      } finally {
+        debugSpy.mockRestore();
+      }
+    });
+
+    it('still logs when a real JWT fails verification (tampered signature)', async () => {
+      const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      try {
+        const token = await createAccessToken(testPayload);
+        const tamperedToken = token.slice(0, -5) + 'xxxxx';
+        expect(await verifyToken(tamperedToken)).toBeNull();
+        expect(debugSpy).toHaveBeenCalled();
+      } finally {
+        debugSpy.mockRestore();
+      }
     });
   });
 
