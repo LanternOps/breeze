@@ -254,12 +254,10 @@ export default function OrgSwitcher() {
                   onSelect={async () => {
                     if (org.id !== currentOrgId) {
                       setOrganization(org.id);
-                      // Yield a microtask so setOrganization's downstream
-                      // fetchSites/etc has a chance to register itself with
-                      // tokenRefreshInFlight before we check. Then wait for
-                      // any pending refresh to settle so the post-reload
-                      // page doesn't race the same cookie jti. See #950.
-                      await Promise.resolve();
+                      // Wait for any refresh that was already in flight at
+                      // click time (e.g. AdminSessionManager's 5-min
+                      // heartbeat) to settle so the post-reload page
+                      // doesn't reuse the same cookie jti. See #950.
                       await waitForPendingRefresh();
                       const redirect = getOrgSwitchRedirect(window.location.pathname);
                       if (redirect) {
@@ -278,7 +276,6 @@ export default function OrgSwitcher() {
                     if (changed) {
                       // Same refresh-race avoidance as the org-switch path
                       // above — see #950.
-                      await Promise.resolve();
                       await waitForPendingRefresh();
                       window.location.reload();
                     }
