@@ -439,8 +439,8 @@ importers:
   apps/viewer:
     dependencies:
       '@novnc/novnc':
-        specifier: 1.7.0-beta
-        version: 1.7.0-beta
+        specifier: 1.7.0
+        version: 1.7.0
       '@tauri-apps/api':
         specifier: ^2.11.0
         version: 2.11.0
@@ -518,8 +518,8 @@ importers:
         specifier: ^4.6.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@novnc/novnc':
-        specifier: 1.7.0-beta
-        version: 1.7.0-beta
+        specifier: 1.7.0
+        version: 1.7.0
       '@sentry/astro':
         specifier: ^10.51.0
         version: 10.51.0(astro@6.3.8(@types/node@25.9.1)(ioredis@5.10.1)(jiti@1.21.7)(lightningcss@1.32.0)(rollup@4.60.4)(terser@5.48.0)(tsx@4.22.3)(yaml@2.9.0))(rollup@4.60.4)
@@ -3129,8 +3129,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@novnc/novnc@1.7.0-beta':
-    resolution: {integrity: sha512-h1NihPIO1bo023eL5b8OCSJarVOngWmCYQIN0jZfjgvP/s9ZKQZVsrH8pwVqB8zCkqmqzSSEOTN0mHtLp7u7gg==}
+  '@novnc/novnc@1.7.0':
+    resolution: {integrity: sha512-ucEJOx4T2avIRCleodk7YobZj5O2Ga2AeLfQ69A/yjG9HHba2+PDgwSkN3FttrmG+70ZGx21sElNFouK13RzyA==}
 
   '@one-ini/wasm@0.1.1':
     resolution: {integrity: sha512-XuySG1E38YScSJoMlqovLru4KTUNSjgVTIjyh7qMX6aNN5HY5Ct5LhRJdxO79JtTzKfzV/bnWpz+zquYrISsvw==}
@@ -14089,7 +14089,7 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@novnc/novnc@1.7.0-beta': {}
+  '@novnc/novnc@1.7.0': {}
 
   '@one-ini/wasm@0.1.1': {}
 
