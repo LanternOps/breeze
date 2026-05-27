@@ -14,7 +14,7 @@
     "doc-verify:run": "tsx doc-verify/cli.ts run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.99.0",
     "dotenv": "^17.3.1"
   },
   "devDependencies": {
