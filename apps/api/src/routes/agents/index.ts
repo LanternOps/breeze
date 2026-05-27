@@ -18,6 +18,7 @@ import { reliabilityRoutes } from './reliability';
 import { changesRoutes } from './changes';
 import { peripheralRoutes } from './peripherals';
 import { tokenRoutes } from './token';
+import { elevationRequestsRoutes } from './elevationRequests';
 
 export const agentRoutes = new Hono();
 
@@ -66,3 +67,4 @@ agentRoutes.route('/', bootPerformanceRoutes);
 agentRoutes.route('/', reliabilityRoutes);
 agentRoutes.route('/', changesRoutes);
 agentRoutes.route('/', peripheralRoutes);
+agentRoutes.route('/', elevationRequestsRoutes);

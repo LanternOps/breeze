@@ -561,6 +561,12 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	hb.SetWebSocketClient(wsClient)
 	go wsClient.Start()
 
+	// PAM Track 3: subscribe to Microsoft-Windows-LUA ETW provider for
+	// UAC consent discovery. Windows-only; no-op stub on other platforms
+	// (see etwlua_start_other.go). Uses ctx scoped to the agent process
+	// so a shutdown cleanly tears down the ETW session.
+	startETWLua(context.Background(), hb)
+
 	log.Info("agent is running")
 
 	// Write state file so the watchdog can detect a running agent.
