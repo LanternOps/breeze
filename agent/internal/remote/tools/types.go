@@ -213,6 +213,12 @@ const (
 	CmdTunnelOpen  = "tunnel_open"
 	CmdTunnelData  = "tunnel_data"
 	CmdTunnelClose = "tunnel_close"
+
+	// PAM Track 5: actuate an approved UAC elevation by typing the
+	// dormant-admin credentials into consent.exe on the secure desktop.
+	// Server-pushed only; handled by internal/pamactuator on Windows and
+	// a no-op stub on other platforms.
+	CmdActuateElevation = "actuate_elevation"
 )
 
 // CommandResult represents the result of a command execution

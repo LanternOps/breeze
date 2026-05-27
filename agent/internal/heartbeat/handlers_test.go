@@ -117,6 +117,9 @@ var allCommandTypes = []string{
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
+
+	// handlers_actuate.go init() — PAM Track 5
+	tools.CmdActuateElevation,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {

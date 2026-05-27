@@ -19,6 +19,7 @@ import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
 import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
+import { actuateElevationRoutes } from './actuateElevation';
 
 export const deviceRoutes = new Hono();
 
@@ -57,6 +58,7 @@ deviceRoutes.route('/', diagnosticLogsRoutes);
 deviceRoutes.route('/', watchdogLogsRoutes);
 deviceRoutes.route('/', warrantyRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
+deviceRoutes.route('/', actuateElevationRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';
