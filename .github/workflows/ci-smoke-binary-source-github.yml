@@ -93,6 +93,13 @@ jobs:
           BREEZE_APP_DB_PASSWORD: breeze
           POSTGRES_PASSWORD: breeze
           REDIS_URL: redis://localhost:6379
+          # The CI Redis service has no password; #909 made unauthenticated
+          # Redis fail-closed in self-hosted production (IS_HOSTED=false
+          # below). This override acknowledges the CI-only sandbox posture
+          # so resolveRedisUrl() warns instead of throwing. Without it the
+          # smoke step exits 1 at boot before the binary-download path is
+          # ever exercised. See #969.
+          BREEZE_ALLOW_UNAUTH_REDIS: "true"
           NODE_ENV: production
           PUBLIC_APP_URL: http://localhost:3001
           # PUBLIC_API_URL drives the server-relative URL rewrite in
