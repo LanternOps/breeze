@@ -139,16 +139,31 @@ export default function AlertsPage() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetchWithAuth('/filters/preview', {
-          method: 'POST',
-          body: JSON.stringify({ conditions: deviceFilter, limit: 100 })
-        });
+        // Use POST /devices/query (unified endpoint) with includeMatchingIds=true
+        // to get the FULL set of matching device IDs in a single snapshot.
+        // Previous implementation used /filters/preview with limit=100 which
+        // silently capped the gating set — any fleet with >100 matching
+        // devices under-gated alerts. limit=1 keeps the row payload trivial
+        // (we only need the IDs).
+        const res = await fetchWithAuth(
+          '/devices/query',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              filter: deviceFilter,
+              limit: 1,
+              includeMatchingIds: true,
+            }),
+          },
+          { skipOrgIdInjection: true }
+        );
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const ids = new Set<string>((data.data?.devices ?? []).map((d: { id: string }) => d.id));
+        const matching = (data.matchingIds ?? []) as Array<{ id: string; hostname: string }>;
+        const ids = new Set<string>(matching.map((m) => m.id));
         if (!cancelled) setDeviceFilterIds(ids);
       } catch (err) {
-        console.error('Filter preview failed:', err);
+        console.error('Device filter query failed:', err);
         if (!cancelled) setDeviceFilterIds(null);
       }
     })();

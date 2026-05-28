@@ -378,7 +378,7 @@ function getIntervalSQL(amount: number, unit: string): SQL<unknown> {
   }
 }
 
-function buildGroupSQL(group: FilterConditionGroup): SQL<unknown> {
+export function buildGroupSQL(group: FilterConditionGroup): SQL<unknown> {
   if (group.conditions.length === 0) {
     return sql`TRUE`;
   }

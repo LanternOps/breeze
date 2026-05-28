@@ -189,8 +189,6 @@ export default function DeviceList({
   // its dropdown into the area below the table and get clipped.
   const [rowMenuFlipUp, setRowMenuFlipUp] = useState(false);
   const rowMenuRef = useRef<HTMLDivElement>(null);
-  const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
-  const [serverFilterLoading, setServerFilterLoading] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -272,69 +270,18 @@ export default function DeviceList({
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
 
-  // Fetch matching device IDs from server when advanced filter changes
-  useEffect(() => {
-    if (!serverFilter) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    const hasValidConditions = serverFilter.conditions.some(c => {
-      if ('conditions' in c) return true;
-      return c.value !== '' && c.value !== null && c.value !== undefined;
-    });
-
-    if (!hasValidConditions) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    setServerFilterLoading(true);
-    const controller = new AbortController();
-
-    // v2 chip-filter endpoint: POST /devices/filter-preview, body is the
-    // FilterConditionGroup itself, response is `{ matchingIds: string[] }`.
-    // skipOrgIdInjection when the parent says "all orgs" so a partner
-    // caller's filter spans every accessible org (otherwise the server
-    // pre-narrows to current-org and the chip filter looks empty for cross-
-    // org criteria).
-    fetchWithAuth(
-      '/devices/filter-preview',
-      {
-        method: 'POST',
-        body: JSON.stringify(serverFilter),
-        signal: controller.signal
-      },
-      { skipOrgIdInjection: orgScope === 'all' }
-    )
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const result = data.data ?? data;
-          const ids = new Set<string>((result.matchingIds ?? []) as string[]);
-          setServerFilterIds(ids);
-        }
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.error('Filter preview failed:', err);
-          setServerFilterIds(null);
-        }
-      })
-      .finally(() => setServerFilterLoading(false));
-
-    return () => controller.abort();
-  }, [serverFilter, orgScope]);
+  // Server-side advanced filter is applied in DevicesPage.fetchDevices via
+  // POST /devices/query — the `devices` array already only contains rows that
+  // match `serverFilter`. No separate ID-set gating is needed here, which is
+  // what caused the old two-snapshot drift (rows fetched at T1 with stale
+  // status against a matching-IDs set fetched at T2). Client-side filters
+  // below (status, OS, role, query, org, site, group, tags) are quick
+  // refinements on top of the already-filtered set.
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter(device => {
-      // Apply server-side advanced filter
-      if (serverFilterIds !== null && !serverFilterIds.has(device.id)) {
-        return false;
-      }
-
       const matchesQuery = normalizedQuery.length === 0
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery) ||
@@ -358,7 +305,7 @@ export default function DeviceList({
 
       return matchesQuery && matchesStatus && matchesOs && matchesRole && matchesOrg && matchesSite && matchesGroup;
     });
-  }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, serverFilterIds, lockedOrgFilter]);
+  }, [devices, query, statusFilter, osFilter, roleFilter, orgFilter, siteFilter, groupFilter, groupMembershipMap, lockedOrgFilter]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -724,11 +671,10 @@ export default function DeviceList({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             {filteredDevices.length} of {statusFilter === 'all' ? devices.filter(d => d.status !== 'decommissioned').length : devices.length} devices
-            {serverFilterIds !== null && (
+            {serverFilter !== null && serverFilter.conditions.length > 0 && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                 <Filter className="h-3 w-3" />
                 Advanced filter active
-                {serverFilterLoading && <span className="ml-1 animate-pulse">...</span>}
               </span>
             )}
           </p>

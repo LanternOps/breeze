@@ -18,6 +18,7 @@ import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
 import { filterPreviewRoutes } from './filterPreview';
+import { queryRoutes } from './query';
 import { softwareDistinctRoutes } from './softwareDistinct';
 
 export const deviceRoutes = new Hono();
@@ -25,6 +26,12 @@ export const deviceRoutes = new Hono();
 // Mount filter-preview routes — `/filter-preview` is a static POST path that
 // must NOT be eaten by the `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', filterPreviewRoutes);
+
+// Mount query routes — `/query` is a static POST path that must beat `/:id`.
+// POST /devices/query is the unified single-snapshot list endpoint. Returns
+// row data + optional matchingIds in one query, eliminating the drift bug
+// between /devices and /devices/filter-preview.
+deviceRoutes.route('/', queryRoutes);
 
 // Mount software/distinct — static GET path; must beat the `/:id` matcher.
 deviceRoutes.route('/', softwareDistinctRoutes);

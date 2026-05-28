@@ -31,6 +31,12 @@ import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 
+type AdvancedMatching = {
+  ids: Set<string>;
+  hostnames: Set<string>;
+  loading: boolean;
+};
+
 type BuilderReportType = 'devices' | 'alerts' | 'patches' | 'compliance' | 'activity';
 type ReportBuilderType = BuilderReportType | LegacyReportType;
 type ChartType = 'table' | 'bar' | 'line' | 'pie';
@@ -707,9 +713,59 @@ export default function ReportBuilder({
     conditions: []
   });
   const previewRequestIdRef = useRef(0);
+  // useFilterPreview is kept ONLY to drive the inline FilterPreview UI panel
+  // (sample-hostname display) — its 10-row default cap is acceptable for a
+  // visual hint. The actual gating below uses the unified /devices/query
+  // endpoint which returns the FULL matching set (uncapped up to 10k),
+  // eliminating the silent truncation that hid >10 matching devices.
   const { preview: deviceFilterPreview, loading: deviceFilterPreviewLoading } = useFilterPreview(deviceFilter, {
     enabled: filterMode === 'advanced' && deviceFilter.conditions.length > 0
   });
+  const [advancedMatching, setAdvancedMatching] = useState<AdvancedMatching>({
+    ids: new Set(),
+    hostnames: new Set(),
+    loading: false,
+  });
+  useEffect(() => {
+    if (filterMode !== 'advanced' || deviceFilter.conditions.length === 0) {
+      setAdvancedMatching({ ids: new Set(), hostnames: new Set(), loading: false });
+      return;
+    }
+    let cancelled = false;
+    setAdvancedMatching((prev) => ({ ...prev, loading: true }));
+    (async () => {
+      try {
+        const res = await fetchWithAuth(
+          '/devices/query',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              filter: deviceFilter,
+              limit: 1,
+              includeMatchingIds: true,
+            }),
+          },
+          { skipOrgIdInjection: true }
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const matching = (data.matchingIds ?? []) as Array<{ id: string; hostname: string }>;
+        if (!cancelled) {
+          setAdvancedMatching({
+            ids: new Set(matching.map((m) => m.id)),
+            hostnames: new Set(matching.map((m) => m.hostname.toLowerCase())),
+            loading: false,
+          });
+        }
+      } catch (err) {
+        console.error('Device filter query failed:', err);
+        if (!cancelled) {
+          setAdvancedMatching({ ids: new Set(), hostnames: new Set(), loading: false });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filterMode, deviceFilter]);
 
   useEffect(() => {
     if (!defaultValues || defaultsAppliedRef.current) return;
@@ -882,18 +938,11 @@ export default function ReportBuilder({
     [builderType, livePreviewRows]
   );
 
-  const advancedHostnameFilter = useMemo(() => {
-    if (filterMode !== 'advanced' || deviceFilter.conditions.length === 0 || !deviceFilterPreview) {
-      return null;
-    }
-    return new Set(deviceFilterPreview.devices.map(device => device.hostname.toLowerCase()));
-  }, [deviceFilter.conditions.length, deviceFilterPreview, filterMode]);
-
   const filteredRows = useMemo(() => {
     if (normalizedPreviewRows.length === 0) return [];
 
     const enforceAdvanced =
-      filterMode === 'advanced' && deviceFilter.conditions.length > 0 && !deviceFilterPreviewLoading;
+      filterMode === 'advanced' && deviceFilter.conditions.length > 0 && !advancedMatching.loading;
 
     return normalizedPreviewRows.filter(row => {
       if (!rowMatchesSimpleFilters(row, filterConditions)) {
@@ -904,20 +953,27 @@ export default function ReportBuilder({
         return true;
       }
 
-      if (!advancedHostnameFilter || advancedHostnameFilter.size === 0) {
+      if (advancedMatching.ids.size === 0 && advancedMatching.hostnames.size === 0) {
         return false;
+      }
+
+      // Prefer id-matching (report row carries device id); fall back to
+      // case-folded hostname matching for report types whose rows don't
+      // carry a device id field.
+      const rowId = typeof row.id === 'string' ? row.id : typeof row.deviceId === 'string' ? row.deviceId : null;
+      if (rowId && advancedMatching.ids.has(rowId)) {
+        return true;
       }
 
       const candidates = [row.hostname, row.device, row.deviceHostname, row.displayName]
         .filter((value): value is string => typeof value === 'string')
         .map(value => value.toLowerCase());
 
-      return candidates.some(candidate => advancedHostnameFilter.has(candidate));
+      return candidates.some(candidate => advancedMatching.hostnames.has(candidate));
     });
   }, [
-    advancedHostnameFilter,
+    advancedMatching,
     deviceFilter.conditions.length,
-    deviceFilterPreviewLoading,
     filterConditions,
     filterMode,
     normalizedPreviewRows

@@ -7,7 +7,7 @@ import type { Script, ScriptLanguage } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
-import { useFilterPreview } from '../../hooks/useFilterPreview';
+import { fetchWithAuth } from '../../stores/auth';
 import ScriptParametersForm, { validateParameters as validateParamsHelper } from './ScriptParametersForm';
 
 export type Device = {
@@ -70,14 +70,44 @@ export default function ScriptExecutionModal({
     conditions: [{ field: 'hostname', operator: 'contains', value: '' }]
   });
 
-  const { preview: filterPreview } = useFilterPreview(
-    showAdvancedFilter ? advancedFilter : null,
-    { enabled: showAdvancedFilter }
-  );
-  const advancedFilterIds = useMemo(() => {
-    if (!showAdvancedFilter || !filterPreview) return null;
-    return new Set(filterPreview.devices.map(d => d.id));
-  }, [showAdvancedFilter, filterPreview]);
+  // Fetch the FULL set of matching device IDs via the unified /devices/query
+  // endpoint. Previous implementation used useFilterPreview which defaulted to
+  // limit=10 and silently capped the targeting set — selecting >10 matching
+  // devices for script execution was impossible without the user noticing.
+  const [advancedFilterIds, setAdvancedFilterIds] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!showAdvancedFilter || advancedFilter.conditions.length === 0) {
+      setAdvancedFilterIds(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth(
+          '/devices/query',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              filter: advancedFilter,
+              limit: 1,
+              includeMatchingIds: true,
+            }),
+          },
+          { skipOrgIdInjection: true }
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const matching = (data.matchingIds ?? []) as Array<{ id: string; hostname: string }>;
+        if (!cancelled) {
+          setAdvancedFilterIds(new Set<string>(matching.map((m) => m.id)));
+        }
+      } catch (err) {
+        console.error('Device filter query failed:', err);
+        if (!cancelled) setAdvancedFilterIds(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showAdvancedFilter, advancedFilter]);
 
   // Initialize parameters with defaults
   useEffect(() => {

@@ -25,6 +25,17 @@ import ProgressBar from '../shared/ProgressBar';
 
 type ViewMode = 'list' | 'grid';
 
+// True if any leaf condition in the group has a non-empty value. Used to
+// gate whether to route /devices/query through the filter branch — an empty
+// AND group with zero conditions matches everything and would needlessly
+// take the POST path.
+function hasValidFilterConditions(group: FilterConditionGroup): boolean {
+  return group.conditions.some((c) => {
+    if ('conditions' in c) return hasValidFilterConditions(c as FilterConditionGroup);
+    return c.value !== '' && c.value !== null && c.value !== undefined;
+  });
+}
+
 type Org = {
   id: string;
   name: string;
@@ -183,19 +194,39 @@ export default function DevicesPage() {
       setLoading(true);
       setError(null);
 
-      // /devices opts out of fetchWithAuth's auto-injected orgId so the
-      // server returns every device in the caller's accessible scope,
-      // not just the current-org subset. The Current/All-orgs toggle
-      // then narrows client-side via DeviceList's lockedOrgFilter.
-      // Without the opt-out, "All orgs" looks identical to "Current org"
-      // because the server already pre-filtered.
+      // When an advancedFilter with valid conditions is active, route through
+      // POST /devices/query so filter + row-fetch share a single snapshot.
+      // This eliminates the two-snapshot drift that produced rows like
+      // PWCC-W-6 status=online appearing under "Status is offline" — the old
+      // path got matchingIds from /devices/filter-preview and rows from
+      // /devices in separate queries, and a status flip between them painted
+      // contradictory rows. With /devices/query, the rows returned ARE the
+      // matching rows; no separate gating set is needed.
+      const hasActiveFilter = advancedFilter !== null && hasValidFilterConditions(advancedFilter);
+      const devicesPromise = hasActiveFilter
+        ? fetchWithAuth(
+            '/devices/query',
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                filter: advancedFilter,
+                limit: 500,
+                includeDecommissioned: true,
+              }),
+            },
+            { skipOrgIdInjection: true }
+          )
+        : fetchWithAuth(
+            // No filter: legacy GET path keeps working unchanged. limit=500
+            // matches the API-side cap; client-side pagination handles the
+            // displayed page size.
+            '/devices?includeDecommissioned=true&limit=500',
+            {},
+            { skipOrgIdInjection: true }
+          );
+
       const [devicesResponse, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
-        // limit=500 matches the API-side cap for /devices; the list is
-        // paginated client-side after this fetch. Larger fleets need
-        // server-side sort/filter/page — tracked separately.
-        // skipOrgIdInjection: true so the All Orgs toggle can show every
-        // device in the caller's scope, not just current-org subset.
-        fetchWithAuth('/devices?includeDecommissioned=true&limit=500', {}, { skipOrgIdInjection: true }),
+        devicesPromise,
         fetchWithAuth('/orgs'),
         fetchWithAuth('/orgs/sites'),
         fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
@@ -305,7 +336,7 @@ export default function DevicesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [advancedFilter]);
 
   useEffect(() => {
     fetchDevices();
