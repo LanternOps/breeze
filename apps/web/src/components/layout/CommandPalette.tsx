@@ -534,10 +534,10 @@ export default function CommandPalette() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex h-9 w-80 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring"
+        className="flex h-9 w-full items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring"
       >
-        <Search className="h-4 w-4" />
-        <span className="flex-1 text-left">Search devices, scripts, alerts, users, settings</span>
+        <Search className="h-4 w-4 shrink-0" />
+        <span className="flex-1 truncate whitespace-nowrap text-left">Search devices, scripts, alerts, users, settings</span>
         <span className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
           {modifierLabel ? `${modifierLabel}+K` : 'K'}
         </span>

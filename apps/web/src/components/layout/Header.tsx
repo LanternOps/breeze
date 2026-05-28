@@ -193,7 +193,7 @@ export default function Header() {
         </div>
 
         {/* Global Search */}
-        <div data-tour="search">
+        <div data-tour="search" className="min-w-0 flex-1 max-w-xs sm:max-w-sm md:max-w-md lg:max-w-[28rem]">
           <CommandPalette />
         </div>
       </div>
