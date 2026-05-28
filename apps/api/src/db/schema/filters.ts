@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, integer, pgEnum, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 
 export const savedFilterScopeEnum = pgEnum('saved_filter_scope', ['private', 'org', 'partner']);
@@ -17,7 +17,10 @@ export const savedFilterFolders = pgTable('saved_filter_folders', {
 
 export const savedFilters = pgTable('saved_filters', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // Dual-axis tenancy: exactly one of orgId/partnerId is set (CHECK enforced in migration).
+  // org_id → org-scoped filter; partner_id → partner-wide filter visible across all the partner's orgs.
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
   conditions: jsonb('conditions').notNull(),

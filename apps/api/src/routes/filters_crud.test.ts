@@ -42,6 +42,7 @@ vi.mock('../db/schema', () => ({
   savedFilters: {
     id: 'id',
     orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     description: 'description',
     conditions: 'conditions',
@@ -76,6 +77,7 @@ function makeFilter(overrides: Record<string, unknown> = {}) {
   return {
     id: FILTER_ID_1,
     orgId: ORG_ID,
+    partnerId: null,
     name: 'Online Windows',
     description: 'All online Windows devices',
     conditions: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] },
@@ -328,7 +330,7 @@ describe('filter routes', () => {
       expect(body.error).toContain('Organization context required');
     });
 
-    it('should require orgId for partner with multiple orgs', async () => {
+    it('should save as partner-wide filter when partner-scope omits orgId', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           user: { id: 'user-456', email: 'partner@example.com', name: 'Partner User' },
@@ -341,18 +343,26 @@ describe('filter routes', () => {
         return next();
       });
 
+      const insertedRow = makeFilter({ orgId: null, partnerId: PARTNER_ID });
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([insertedRow])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
       const res = await app.request('/filters', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
-          name: 'Filter',
+          name: 'Partner-wide online filter',
           conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] }
         })
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(201);
       const body = await res.json();
-      expect(body.error).toContain('orgId is required');
+      expect(body.data.orgId).toBeNull();
+      expect(body.data.partnerId).toBe(PARTNER_ID);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: null, partnerId: PARTNER_ID }));
     });
 
     it('should auto-select org for partner with single org', async () => {

@@ -15,7 +15,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
-RUN pnpm --filter @breeze/api build
+RUN NODE_OPTIONS="--max-old-space-size=6144" pnpm --filter @breeze/api build
 # Create a self-contained deployment (resolves pnpm symlinks).
 # pnpm 10's deploy command requires workspace deps be declared injected.
 # TODO: declare @breeze/shared (and other workspace deps) as injected in

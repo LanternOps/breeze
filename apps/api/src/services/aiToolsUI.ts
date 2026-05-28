@@ -7,9 +7,22 @@
 
 import { db } from '../db';
 import { savedFilters } from '../db/schema';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { eq, and, desc, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+
+// saved_filters is dual-axis (org-scoped OR partner-scoped). A read query that
+// only filters by org_id will hide partner-scoped rows from partner-scope users.
+// Combine the org condition with a partner_id match so both shapes are visible.
+function savedFilterReadCondition(auth: AuthContext): SQL | undefined {
+  const orgCond = auth.orgCondition(savedFilters.orgId);
+  const partnerCond =
+    auth.scope === 'partner' && auth.partnerId
+      ? eq(savedFilters.partnerId, auth.partnerId)
+      : undefined;
+  if (orgCond && partnerCond) return or(orgCond, partnerCond);
+  return orgCond ?? partnerCond;
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -90,8 +103,8 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const orgCond = auth.orgCondition(savedFilters.orgId);
-        if (orgCond) conditions.push(orgCond);
+        const visibilityCond = savedFilterReadCondition(auth);
+        if (visibilityCond) conditions.push(visibilityCond);
 
         const filters = await db
           .select({
@@ -113,8 +126,8 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
         }
 
         const conditions: SQL[] = [eq(savedFilters.id, input.filterId as string)];
-        const orgCond = auth.orgCondition(savedFilters.orgId);
-        if (orgCond) conditions.push(orgCond);
+        const visibilityCond = savedFilterReadCondition(auth);
+        if (visibilityCond) conditions.push(visibilityCond);
 
         const [filter] = await db
           .select()
@@ -144,6 +157,7 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
           .insert(savedFilters)
           .values({
             orgId: resolved.orgId!,
+            partnerId: null, // AI tool create is org-scoped only; partner-wide is created via web only
             name: input.name as string,
             description: (input.description as string) ?? null,
             conditions: input.conditions as Record<string, unknown>,
@@ -164,8 +178,8 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
         }
 
         const conditions: SQL[] = [eq(savedFilters.id, input.filterId as string)];
-        const orgCond = auth.orgCondition(savedFilters.orgId);
-        if (orgCond) conditions.push(orgCond);
+        const visibilityCond = savedFilterReadCondition(auth);
+        if (visibilityCond) conditions.push(visibilityCond);
 
         const [existing] = await db
           .select({ id: savedFilters.id, name: savedFilters.name })

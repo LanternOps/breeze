@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { savedFilters, savedFilterFolders, savedFilterStars } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -23,7 +23,8 @@ const requireFilterWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource,
 
 type SavedFilterResponse = {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   name: string;
   description: string | null;
   conditions: unknown;
@@ -97,6 +98,24 @@ async function ensureOrgAccess(
   return true;
 }
 
+// A saved_filter row is either org-scoped (orgId set) or partner-scoped (partnerId set).
+// Partner-scoped rows are visible only to partner-scope callers from the same partner.
+function canAccessFilter(
+  filter: { orgId: string | null; partnerId: string | null },
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'canAccessOrg'>
+): boolean {
+  if (auth.scope === 'system') return true;
+  if (filter.orgId) {
+    if (auth.scope === 'organization') return auth.orgId === filter.orgId;
+    if (auth.scope === 'partner') return auth.canAccessOrg(filter.orgId);
+    return false;
+  }
+  if (filter.partnerId) {
+    return auth.scope === 'partner' && auth.partnerId === filter.partnerId;
+  }
+  return false;
+}
+
 async function getOrgIdsForAuth(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>
 ): Promise<string[] | null> {
@@ -126,8 +145,7 @@ async function getFilterWithAccess(
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(filter.orgId, auth);
-  if (!hasAccess) {
+  if (!canAccessFilter(filter, auth)) {
     return null;
   }
 
@@ -138,6 +156,7 @@ function mapFilterRow(filter: typeof savedFilters.$inferSelect): SavedFilterResp
   return {
     id: filter.id,
     orgId: filter.orgId,
+    partnerId: filter.partnerId,
     name: filter.name,
     description: filter.description ?? null,
     conditions: filter.conditions,
@@ -229,14 +248,26 @@ filterRoutes.get(
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
-    if (auth.scope !== 'system' && (!orgIds || orgIds.length === 0)) {
+    const hasOrgVisibility = orgIds && orgIds.length > 0;
+    const hasPartnerVisibility = auth.scope === 'partner' && !!auth.partnerId;
+    if (auth.scope !== 'system' && !hasOrgVisibility && !hasPartnerVisibility) {
       return c.json({ data: [], total: 0 });
     }
 
+    // Visibility: org-scoped filters in accessible orgs PLUS partner-scoped
+    // filters owned by the caller's partner. System scope sees all (no filter).
     const conditions: SQL[] = [];
-    if (orgIds) {
-      conditions.push(inArray(savedFilters.orgId, orgIds));
+
+    const visibilityClauses: SQL[] = [];
+    if (hasOrgVisibility) visibilityClauses.push(inArray(savedFilters.orgId, orgIds!));
+    if (hasPartnerVisibility) visibilityClauses.push(eq(savedFilters.partnerId, auth.partnerId!));
+    if (visibilityClauses.length === 1) {
+      conditions.push(visibilityClauses[0]);
+    } else if (visibilityClauses.length > 1) {
+      const combined = or(...visibilityClauses);
+      if (combined) conditions.push(combined);
     }
+
     if (query.scope) {
       conditions.push(eq(savedFilters.scope, query.scope));
     }
@@ -281,7 +312,8 @@ filterRoutes.post(
     const auth = c.get('auth');
     const payload = c.req.valid('json');
 
-    let orgId = payload.orgId;
+    let orgId: string | null = payload.orgId ?? null;
+    let partnerId: string | null = null;
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
@@ -289,16 +321,16 @@ filterRoutes.post(
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+        // No orgId specified → save as partner-wide filter visible across all the partner's orgs.
+        if (!auth.partnerId) {
+          return c.json({ error: 'Partner context required' }, 403);
         }
-      }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
+        partnerId = auth.partnerId;
+      } else {
+        const hasAccess = await ensureOrgAccess(orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
       }
     } else if (auth.scope === 'system' && !orgId) {
       return c.json({ error: 'orgId is required' }, 400);
@@ -307,7 +339,8 @@ filterRoutes.post(
     const [filter] = await db
       .insert(savedFilters)
       .values({
-        orgId: orgId!,
+        orgId,
+        partnerId,
         name: payload.name,
         description: payload.description ?? null,
         conditions: payload.conditions,
