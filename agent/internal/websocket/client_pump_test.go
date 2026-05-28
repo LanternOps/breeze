@@ -181,6 +181,66 @@ func TestReadPump_IgnoresNonCommandMessages(t *testing.T) {
 	if handlerCalled.Load() {
 		t.Fatal("handler should not be called for non-command messages")
 	}
+	if c.terminalOutputBase64Enabled() {
+		t.Fatal("connected without capabilities should not enable terminal base64")
+	}
+}
+
+func TestReadPump_ConnectedMessageEnablesTerminalOutputBase64(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		conn.WriteJSON(map[string]any{
+			"type":         "connected",
+			"capabilities": []string{"terminal_output_base64"},
+		})
+		time.Sleep(100 * time.Millisecond)
+		conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+
+	c.readPump()
+
+	if !c.terminalOutputBase64Enabled() {
+		t.Fatal("expected terminal_output_base64 capability to be enabled")
+	}
+}
+
+func TestConnectResetsTerminalOutputBase64Capability(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		conn.WriteJSON(map[string]any{
+			"type":         "connected",
+			"capabilities": []string{"terminal_output_base64"},
+		})
+		time.Sleep(100 * time.Millisecond)
+		conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+	c.readPump()
+
+	if !c.terminalOutputBase64Enabled() {
+		t.Fatal("expected capability enabled after connected message")
+	}
+
+	c.closeCurrentConn(false)
+	if c.terminalOutputBase64Enabled() {
+		t.Fatal("expected capability reset after disconnect")
+	}
+
+	if err := c.connect(); err != nil {
+		t.Fatalf("reconnect error: %v", err)
+	}
+	if c.terminalOutputBase64Enabled() {
+		t.Fatal("expected capability reset on reconnect before connected message")
+	}
 }
 
 func TestReadPump_RespondsToServerPing(t *testing.T) {

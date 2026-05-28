@@ -299,7 +299,7 @@ func TestSendBackupProgress_ChannelFull(t *testing.T) {
 
 // ---------- SendTerminalOutput ----------
 
-func TestSendTerminalOutput_Success(t *testing.T) {
+func TestSendTerminalOutput_PlainTextWhenCapabilityAbsent(t *testing.T) {
 	c := newTestClient("http://localhost", noopHandler)
 
 	err := c.SendTerminalOutput("sess-term-1", []byte("$ whoami\nroot\n"))
@@ -319,8 +319,37 @@ func TestSendTerminalOutput_Success(t *testing.T) {
 		if parsed["sessionId"] != "sess-term-1" {
 			t.Fatalf("sessionId = %v, want sess-term-1", parsed["sessionId"])
 		}
+		if _, ok := parsed["encoding"]; ok {
+			t.Fatalf("encoding = %v, want field omitted", parsed["encoding"])
+		}
 		if parsed["data"] != "$ whoami\nroot\n" {
-			t.Fatalf("data = %v, want terminal output", parsed["data"])
+			t.Fatalf("data = %v, want plain terminal output", parsed["data"])
+		}
+	default:
+		t.Fatal("expected data in sendChan")
+	}
+}
+
+func TestSendTerminalOutput_Base64WhenCapabilityEnabled(t *testing.T) {
+	c := newTestClient("http://localhost", noopHandler)
+	c.setTerminalOutputBase64(true)
+
+	err := c.SendTerminalOutput("sess-term-1", []byte("$ whoami\nroot\n"))
+	if err != nil {
+		t.Fatalf("SendTerminalOutput error: %v", err)
+	}
+
+	select {
+	case data := <-c.sendChan:
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if parsed["encoding"] != "base64" {
+			t.Fatalf("encoding = %v, want base64", parsed["encoding"])
+		}
+		if parsed["data"] != "JCB3aG9hbWkKcm9vdAo=" {
+			t.Fatalf("data = %v, want base64 terminal output", parsed["data"])
 		}
 	default:
 		t.Fatal("expected data in sendChan")

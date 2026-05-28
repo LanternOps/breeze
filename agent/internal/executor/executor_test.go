@@ -132,6 +132,26 @@ func TestBuildEnvironmentIncludesBreezeMetadataAndParameters(t *testing.T) {
 	}
 }
 
+func TestExecuteCapturesAccentedUTF8Output(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash accent test runs on Unix")
+	}
+
+	e := newTestExecutor()
+	result, err := e.Execute(ScriptExecution{
+		ID:         "exec-accent",
+		ScriptID:   "script-accent",
+		ScriptType: ScriptTypeBash,
+		Script:     "printf 'café\\n'",
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if result.Stdout != "café\n" {
+		t.Fatalf("stdout = %q, want %q", result.Stdout, "café\n")
+	}
+}
+
 func TestConfigureRunAsSystemNoOp(t *testing.T) {
 	e := newTestExecutor()
 	cmd := exec.Command("echo", "hello")

@@ -84,6 +84,7 @@ func TestSessionStartSetsTermEnv(t *testing.T) {
 	foundTerm := false
 	foundCols := false
 	foundLines := false
+	foundLang := false
 	for _, env := range s.cmd.Env {
 		if env == "TERM=xterm-256color" {
 			foundTerm = true
@@ -94,6 +95,9 @@ func TestSessionStartSetsTermEnv(t *testing.T) {
 		if env == "LINES=50" {
 			foundLines = true
 		}
+		if env == "LANG=C.UTF-8" {
+			foundLang = true
+		}
 	}
 	if !foundTerm {
 		t.Fatal("expected TERM=xterm-256color in env")
@@ -103,6 +107,9 @@ func TestSessionStartSetsTermEnv(t *testing.T) {
 	}
 	if !foundLines {
 		t.Fatal("expected LINES=50 in env")
+	}
+	if !foundLang {
+		t.Fatal("expected LANG=C.UTF-8 in env")
 	}
 }
 

@@ -154,6 +154,7 @@ import {
   createAgentWsHandlers,
   createAgentWsRoutes,
   __resetCrossTenantDropsForTest,
+  AGENT_WS_CAPABILITIES,
 } from './agentWs';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
@@ -213,6 +214,29 @@ function updateResult(rows: unknown[] = []) {
     })
   };
 }
+
+describe('agent websocket handshake', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('advertises terminal_output_base64 in the connected message', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onOpen({}, ws as any);
+
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(vi.mocked(ws.send).mock.calls[0][0] as string);
+    expect(payload.type).toBe('connected');
+    expect(payload.capabilities).toEqual([...AGENT_WS_CAPABILITIES]);
+  });
+});
 
 describe('agent websocket command results', () => {
   beforeEach(() => {

@@ -386,3 +386,18 @@ func TestRunScriptWithSpecialCharacters(t *testing.T) {
 		t.Fatalf("exitCode = %d, want 0", result.ExitCode)
 	}
 }
+
+func TestRunCapturesAccentedUTF8Output(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping bash accent test on Windows")
+	}
+
+	r := NewRunner()
+	result := r.Run("bash", "printf 'résumé\\n'", 10*time.Second)
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed (error: %s)", result.Status, result.ErrorMsg)
+	}
+	if result.Stdout != "résumé\n" {
+		t.Fatalf("stdout = %q, want %q", result.Stdout, "résumé\n")
+	}
+}

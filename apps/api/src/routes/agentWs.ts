@@ -30,6 +30,9 @@ import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 
+/** Capabilities advertised to agents in the post-connect `connected` message. */
+export const AGENT_WS_CAPABILITIES = ['terminal_output_base64'] as const;
+
 declare module 'hono' {
   interface ContextVariableMap {
     agentDb: AgentDbContext;
@@ -689,8 +692,16 @@ const heartbeatMessageSchema = z.object({
 const terminalOutputSchema = z.object({
   type: z.literal('terminal_output'),
   sessionId: z.string(),
-  data: z.string()
+  data: z.string(),
+  encoding: z.enum(['base64']).optional(),
 });
+
+function decodeTerminalOutput(data: string, encoding?: 'base64'): string {
+  if (encoding === 'base64') {
+    return Buffer.from(data, 'base64').toString('utf8');
+  }
+  return data;
+}
 
 const agentMessageSchema = z.discriminatedUnion('type', [
   commandResultSchema,
@@ -1474,7 +1485,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         type: 'connected',
         agentId,
         timestamp: Date.now(),
-        pendingCommands
+        pendingCommands,
+        capabilities: [...AGENT_WS_CAPABILITIES],
       }));
 
       // Start server-side ping/pong for stale connection detection
@@ -1573,14 +1585,17 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping malformed terminal_output from agent ${agentId}: ${parsed.error.errors[0]?.message}`);
             return;
           }
-          const { sessionId, data: termData } = parsed.data;
+          const { sessionId, data: termData, encoding } = parsed.data;
           const termSession = getActiveTerminalSession(sessionId);
           if (!termSession || termSession.agentId !== agentId) {
             console.warn(`[AgentWs] Dropping terminal_output for unowned session ${sessionId} from agent ${agentId}`);
             recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'terminal_output');
             return;
           }
-          handleTerminalOutput(sessionId, termData);
+          handleTerminalOutput(
+            sessionId,
+            decodeTerminalOutput(termData, encoding),
+          );
           return;
         }
 

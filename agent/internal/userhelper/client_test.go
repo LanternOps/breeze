@@ -94,6 +94,36 @@ func TestExecuteScriptListRunningUsesSharedExecutor(t *testing.T) {
 	})
 }
 
+func TestExecuteProcessCapturesAccentedUTF8Output(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("accent capture test uses /bin/sh")
+	}
+
+	c := New("/tmp/test.sock", ipc.HelperRoleUser)
+	result := c.executeProcess(ipc.IPCCommand{
+		CommandID: "proc-accent",
+		Type:      "exec",
+		Payload: marshalPayload(t, map[string]any{
+			"command":        "/bin/sh",
+			"args":           []any{"-c", "printf 'café\\n'"},
+			"timeoutSeconds": 10,
+		}),
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected completed status, got %s (%s)", result.Status, result.Error)
+	}
+
+	var payload struct {
+		Stdout string `json:"stdout"`
+	}
+	if err := json.Unmarshal(result.Result, &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if payload.Stdout != "café\n" {
+		t.Fatalf("stdout = %q, want %q", payload.Stdout, "café\n")
+	}
+}
+
 func TestAuthorizeCommandUsesHelperScopes(t *testing.T) {
 	c := New("/tmp/test.sock", ipc.HelperRoleUser)
 	c.scopes = []string{"run_as_user"}

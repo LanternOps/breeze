@@ -69,8 +69,7 @@ func (s *Session) start() error {
 	if os.Getenv("SHELL") == "" {
 		env = append(env, "SHELL="+s.Shell)
 	}
-	env = append(env,
-		"TERM=xterm-256color",
+	env = applyShellEnv(env,
 		fmt.Sprintf("COLUMNS=%d", s.Cols),
 		fmt.Sprintf("LINES=%d", s.Rows),
 	)

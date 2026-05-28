@@ -96,13 +96,13 @@ func (s *Session) startPipes() error {
 	var cmd *exec.Cmd
 	shellBase := strings.ToLower(filepath.Base(s.Shell))
 	if shellBase == "powershell.exe" || shellBase == "pwsh.exe" {
-		cmd = exec.Command(s.Shell, "-NoExit", "-Command",
-			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "+
-				"$Host.UI.RawUI.ForegroundColor = 'Gray'")
+		cmd = exec.Command(s.Shell, "-NoExit", "-Command", powershellBootstrapCommand())
+	} else if shellBase == "cmd.exe" {
+		cmd = exec.Command(s.Shell, "/K", "chcp 65001 >nul")
 	} else {
 		cmd = exec.Command(s.Shell)
 	}
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = applyShellEnv(os.Environ())
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -190,8 +190,19 @@ func (s *Session) resize(cols, rows uint16) error {
 // buildCommandLine constructs the shell command line string.
 func buildCommandLine(shell string) string {
 	shellBase := strings.ToLower(filepath.Base(shell))
-	if shellBase == "powershell.exe" || shellBase == "pwsh.exe" {
-		return shell + ` -NoExit -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"`
+	switch shellBase {
+	case "powershell.exe", "pwsh.exe":
+		return shell + ` -NoExit -Command "` + powershellBootstrapCommand() + `"`
+	case "cmd.exe":
+		return shell + ` /K chcp 65001 >nul`
+	default:
+		return shell
 	}
-	return shell
+}
+
+// powershellBootstrapCommand configures UTF-8 console I/O and readable colors
+// on dark web-terminal backgrounds.
+func powershellBootstrapCommand() string {
+	return "[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+		"$Host.UI.RawUI.ForegroundColor = 'Gray'"
 }

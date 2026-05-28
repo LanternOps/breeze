@@ -13,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procoutput"
 	"github.com/breeze-rmm/agent/internal/privilege"
 )
 
@@ -161,7 +162,12 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 		return result, err
 	}
 
-	args := append(shellArgs, scriptPath)
+	var args []string
+	if runtime.GOOS == "windows" {
+		shellCmd, args = procoutput.WindowsScriptCommand(shellCmd, shellArgs, scriptPath)
+	} else {
+		args = append(shellArgs, scriptPath)
+	}
 	cmd := exec.CommandContext(ctx, shellCmd, args...)
 
 	// Set working directory
@@ -173,7 +179,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	cmd.Stderr = &limitedWriter{buf: &stderr, limit: MaxOutputSize}
 
 	// Configure environment
-	cmd.Env = e.buildEnvironment(script)
+	cmd.Env = procoutput.ApplyEnv(e.buildEnvironment(script))
 
 	// Set process group so children are killed on timeout
 	setProcessGroup(cmd)
@@ -225,8 +231,8 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	e.mu.Unlock()
 
 	// Process results
-	result.Stdout = stdout.String()
-	result.Stderr = stderr.String()
+	result.Stdout = procoutput.BytesToUTF8(stdout.Bytes())
+	result.Stderr = procoutput.BytesToUTF8(stderr.Bytes())
 	result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 
 	// Record truncation in both a structured field and human-readable notice
