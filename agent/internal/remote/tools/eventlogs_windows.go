@@ -13,7 +13,7 @@ import (
 func listEventLogsOS(startTime time.Time) CommandResult {
 	// Use PowerShell to get event log names
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		`Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Select-Object LogName, RecordCount, MaximumSizeInBytes | ConvertTo-Json`)
+		utf8PowerShellCommand(`Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Select-Object LogName, RecordCount, MaximumSizeInBytes | ConvertTo-Json`))
 	output, err := cmd.Output()
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to list event logs: %w", err), time.Since(startTime).Milliseconds())
@@ -61,9 +61,9 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 	// Query events using PowerShell
 	maxEvents := page * limit
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		fmt.Sprintf(`Get-WinEvent -FilterHashtable @{%s} -MaxEvents %d -ErrorAction SilentlyContinue | `+
+		utf8PowerShellCommand(fmt.Sprintf(`Get-WinEvent -FilterHashtable @{%s} -MaxEvents %d -ErrorAction SilentlyContinue | `+
 			`Select-Object RecordId, LogName, LevelDisplayName, TimeCreated, ProviderName, Id, Message | `+
-			`ConvertTo-Json -Depth 2`, filter, maxEvents))
+			`ConvertTo-Json -Depth 2`, filter, maxEvents)))
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -107,10 +107,10 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 
 func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) CommandResult {
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		fmt.Sprintf(`Get-WinEvent -FilterHashtable @{LogName='%s'} -ErrorAction SilentlyContinue | `+
+		utf8PowerShellCommand(fmt.Sprintf(`Get-WinEvent -FilterHashtable @{LogName='%s'} -ErrorAction SilentlyContinue | `+
 			`Where-Object { $_.RecordId -eq %d } | Select-Object -First 1 | `+
 			`Select-Object RecordId, LogName, LevelDisplayName, TimeCreated, ProviderName, Id, Message, UserId, MachineName | `+
-			`ConvertTo-Json -Depth 2`, escapePowerShellSingleQuoted(logName), recordID))
+			`ConvertTo-Json -Depth 2`, escapePowerShellSingleQuoted(logName), recordID)))
 
 	output, err := cmd.Output()
 	if err != nil {
