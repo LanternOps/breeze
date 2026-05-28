@@ -19,6 +19,7 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
+import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { dispatchHook } from '../../services/partnerHooks';
 import { matchDeploymentInviteOnEnrollment } from '../../modules/mcpInvites/matchInviteOnEnrollment';
@@ -80,6 +81,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     ENROLLMENT_RATE_WINDOW_SECONDS
   );
   if (!rateCheck.allowed) {
+    recordAgentEnrollment('denied');
     c.header('Retry-After', String(Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)));
     writeAuditEvent(c, {
       orgId: null,
@@ -308,6 +310,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       .from(organizations)
       .where(eq(organizations.id, key.orgId))
       .limit(1);
+
+    // Captured for the success-path anomaly counter (enrollment rate by partner).
+    const enrollmentPartnerId = org?.partnerId ?? null;
 
     if (org) {
       const [partner] = await db
@@ -689,6 +694,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     }
 
     const mtlsCert = await issueMtlsCertForDevice(device.id, key.orgId);
+
+    recordAgentEnrollment('success', enrollmentPartnerId);
 
     writeAuditEvent(c, {
       orgId: key.orgId,

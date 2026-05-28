@@ -29,6 +29,7 @@ import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
 import { createAuditLogAsync } from '../../services/auditService';
+import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
 import { ENABLE_2FA, loginSchema } from './schemas';
@@ -206,6 +207,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     const ipRateKey = `login:ip:${ip}`;
     const ipRateCheck = await rateLimiter(redis, ipRateKey, 10, 5 * 60);
     if (!ipRateCheck.allowed) {
+      recordFailedLogin('rate_limited_ip');
       // Task 11: floor rate-limit responses too. Without this, the
       // attacker can detect whether they've crossed the per-IP bucket
       // (cheap rate-limit 429, ~5ms) vs the per-(IP,email) bucket
@@ -222,6 +224,7 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     const rateCheck = await rateLimiter(redis, rateKey, loginLimiter.limit, loginLimiter.windowSeconds);
 
     if (!rateCheck.allowed) {
+      recordFailedLogin('rate_limited_account');
       await floorPromise;
       return c.json({
         error: 'Too many login attempts. Please try again later.',

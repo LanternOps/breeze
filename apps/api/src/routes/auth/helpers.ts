@@ -12,6 +12,7 @@ import {
   verifyPassword
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
+import { recordFailedLogin } from '../../services/anomalyMetrics';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
@@ -562,6 +563,8 @@ export async function auditUserLoginFailure(
   }
 ): Promise<void> {
   const orgId = await resolveUserAuditOrgId(opts.userId);
+
+  recordFailedLogin(opts.reason, orgId);
 
   writeAuthAudit(c, {
     orgId: orgId ?? undefined,

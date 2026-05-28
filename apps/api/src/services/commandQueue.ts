@@ -9,6 +9,7 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
+import { recordCommandDispatch } from './anomalyMetrics';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -351,6 +352,16 @@ export async function queueCommand(
   // by RLS and the audit block would silently no-op before ever reaching
   // the insert. `runOutsideDbContext` escapes any caller tx so a failed
   // audit can't poison the caller's transaction.
+  // Anomaly signal (launch-readiness #5): count every dispatch so a command
+  // flood is visible regardless of command type. Tenant attribution happens
+  // in the audited block below (where the device's org is already loaded) to
+  // avoid adding a devices lookup to the dispatch hot path. Non-audited
+  // dispatches are still counted, just with an unattributed tenant label.
+  const dispatchActor: 'user' | 'system' = userId ? 'user' : 'system';
+  if (!AUDITED_COMMANDS.has(type)) {
+    recordCommandDispatch(type, dispatchActor);
+  }
+
   if (command && AUDITED_COMMANDS.has(type)) {
     const commandId = command.id;
     runOutsideDbContext(() =>
@@ -362,8 +373,11 @@ export async function queueCommand(
           .limit(1);
 
         if (!device) {
+          recordCommandDispatch(type, dispatchActor);
           return;
         }
+
+        recordCommandDispatch(type, dispatchActor, device.orgId);
 
         await db.insert(auditLogs).values({
           orgId: device.orgId,
