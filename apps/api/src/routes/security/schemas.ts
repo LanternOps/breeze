@@ -217,7 +217,12 @@ export const firewallQuerySchema = z.object({
   limit: z.string().optional(),
   status: z.enum(['enabled', 'disabled']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  // Optional org narrowing — partner-scope callers can pass orgId to narrow
+  // an otherwise-cross-org view to a single org. listStatusRows() already
+  // supports this; the schema previously stripped it before the handler
+  // could read it, so the matrix saw 201 always regardless of orgId.
+  orgId: z.string().uuid().optional()
 });
 
 export const encryptionQuerySchema = z.object({
@@ -225,7 +230,8 @@ export const encryptionQuerySchema = z.object({
   limit: z.string().optional(),
   status: z.enum(['encrypted', 'partial', 'unencrypted']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  orgId: z.string().uuid().optional()
 });
 
 export const passwordPolicyQuerySchema = z.object({
@@ -233,7 +239,8 @@ export const passwordPolicyQuerySchema = z.object({
   limit: z.string().optional(),
   compliance: z.enum(['compliant', 'non_compliant']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  orgId: z.string().uuid().optional()
 });
 
 export const adminAuditQuerySchema = z.object({
@@ -241,7 +248,8 @@ export const adminAuditQuerySchema = z.object({
   limit: z.string().optional(),
   issue: z.enum(['default_account', 'weak_password', 'stale_account', 'no_issues']).optional(),
   os: z.enum(['windows', 'macos', 'linux']).optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  orgId: z.string().uuid().optional()
 });
 
 export const recommendationsQuerySchema = z.object({
