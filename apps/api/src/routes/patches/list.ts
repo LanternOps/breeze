@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, type SQL } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
 import { db } from '../../db';
-import { patches, patchApprovals } from '../../db/schema';
+import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs } from './helpers';
 
@@ -37,6 +37,22 @@ listRoutes.get(
     }
     if (query.os) {
       conditions.push(sql`${sql.param(query.os)} = ANY(${patches.osTypes})`);
+    }
+
+    // Org scoping. The `patches` table is a global vendor-published catalog
+    // with no `org_id` column — the only way "patches for org X" is meaningful
+    // is via the device_patches join showing which patches are present on
+    // devices in that org. When the caller passes `?orgId=<uuid>`, narrow to
+    // patches present on devices in that org via EXISTS. Without an explicit
+    // orgId we preserve the prior behavior (full catalog for partner/system
+    // scope) to keep this change minimum-risk; a follow-up can decide whether
+    // partner-no-orgId callers should also auto-narrow.
+    if (query.orgId) {
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM ${devicePatches} dp
+        INNER JOIN ${devices} d ON d.id = dp.device_id
+        WHERE dp.patch_id = ${patches.id} AND d.org_id = ${query.orgId}
+      )`);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
