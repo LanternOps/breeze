@@ -108,7 +108,7 @@ export function SavedFiltersPanel({ currentFilter, onApply, saveTrigger }: Saved
         <div className="text-xs text-muted-foreground">No saved filters yet.</div>
       )}
 
-      <ul className="flex flex-col gap-1">
+      <ul className="flex flex-col gap-1 max-h-[60vh] overflow-y-auto">
         {filters.map(f => {
           const chipCount = countChips(f.conditions as FilterConditionGroup);
           return (
