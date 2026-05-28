@@ -34,6 +34,9 @@ export interface FilterChipBarProps {
   // Spec 4.12 — `Ctrl+S` invokes save. Parent owns saved-filter state, so
   // this callback is fired with the current group (parent prompts for name).
   onSaveRequested?: (group: FilterConditionGroup) => void;
+  // Right-aligned content rendered in the top button row (e.g. Saved +
+  // Save controls). Sized to match Chip/Advanced buttons.
+  rightSlot?: React.ReactNode;
 }
 
 const EMPTY_GROUP: FilterConditionGroup = { operator: 'AND', conditions: [] };
@@ -49,7 +52,7 @@ function defaultConditionForField(field: FilterFieldDefinition): FilterCondition
 }
 
 export function FilterChipBar({
-  value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSaveRequested
+  value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSaveRequested, rightSlot
 }: FilterChipBarProps) {
   const group = value ?? EMPTY_GROUP;
   const chips: FilterCondition[] = group.conditions.filter(
@@ -188,15 +191,18 @@ export function FilterChipBar({
             <ListTree className="h-3 w-3" /> Advanced
           </button>
         </div>
-        <button
-          type="button"
-          onClick={() => setHelpOpen(o => !o)}
-          aria-label="Show filter shortcuts"
-          data-testid="filter-help-toggle"
-          className="rounded p-1 text-muted-foreground hover:text-foreground"
-        >
-          <Keyboard className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2">
+          {rightSlot}
+          <button
+            type="button"
+            onClick={() => setHelpOpen(o => !o)}
+            aria-label="Show filter shortcuts"
+            data-testid="filter-help-toggle"
+            className="rounded p-1 text-muted-foreground hover:text-foreground"
+          >
+            <Keyboard className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {mode === 'chip' ? (

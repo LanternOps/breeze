@@ -804,24 +804,22 @@ export default function DevicesPage() {
 
       {filtersV2 ? (
         <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <SavedFiltersPanel
-              currentFilter={advancedFilter}
-              onApply={setAdvancedFilter}
-              saveTrigger={saveTrigger}
-            />
-            <div className="min-w-0 flex-1">
-              <FilterChipBar
-                value={advancedFilter}
-                onChange={setAdvancedFilter}
-                orgs={orgs}
-                sites={sites}
-                softwareOptions={softwareOptions}
-                softwareOptionCounts={softwareOptionCounts}
-                onSaveRequested={() => setSaveTrigger(t => t + 1)}
+          <FilterChipBar
+            value={advancedFilter}
+            onChange={setAdvancedFilter}
+            orgs={orgs}
+            sites={sites}
+            softwareOptions={softwareOptions}
+            softwareOptionCounts={softwareOptionCounts}
+            onSaveRequested={() => setSaveTrigger(t => t + 1)}
+            rightSlot={
+              <SavedFiltersPanel
+                currentFilter={advancedFilter}
+                onApply={setAdvancedFilter}
+                saveTrigger={saveTrigger}
               />
-            </div>
-          </div>
+            }
+          />
           <QuickAddChips value={advancedFilter} onChange={setAdvancedFilter} />
         </div>
       ) : (
