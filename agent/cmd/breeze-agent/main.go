@@ -303,6 +303,15 @@ type agentComponents struct {
 	wsClient    *websocket.Client
 	secureToken *secmem.SecureString
 
+	// etwluaCancel cancels the ETW LUA subscriber goroutine and tears
+	// down the Breeze-LUA-Discovery real-time ETW session. nil on
+	// non-Windows or when ETW init was skipped/failed.
+	etwluaCancel context.CancelFunc
+	// etwluaDone closes after the ETW subscriber goroutine has fully
+	// exited. Always non-nil (closed immediately when nothing was
+	// started) so callers don't need a nil check.
+	etwluaDone <-chan struct{}
+
 	// supervisorCancel cancels long-lived supervisory goroutines started in
 	// startAgent (currently: the Windows watchdog supervisor). nil on
 	// platforms or run modes where no supervisor was started.
@@ -321,6 +330,21 @@ type agentComponents struct {
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
+	}
+
+	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
+	// session is closed before any later teardown can time out and
+	// orphan it. Otherwise Breeze-LUA-Discovery stays registered with
+	// the kernel and the next agent restart hits the
+	// "two callers on the same machine would conflict" failure from
+	// NewETWSubscriber's doc comment.
+	if comps.etwluaCancel != nil {
+		comps.etwluaCancel()
+		if comps.etwluaDone != nil {
+			runWithTimeout("etwlua stop", 2*time.Second, func() {
+				<-comps.etwluaDone
+			})
+		}
 	}
 
 	// Cancel the watchdog supervisor BEFORE we tell the watchdog the agent
@@ -561,6 +585,16 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	hb.SetWebSocketClient(wsClient)
 	go wsClient.Start()
 
+	// PAM Track 3: subscribe to Microsoft-Windows-LUA ETW provider for
+	// UAC consent discovery. Windows-only; no-op stub on other platforms
+	// (see etwlua_start_other.go). ctx scoped to the agent process so
+	// shutdownAgent can tear down the ETW session cleanly.
+	// context.Background() (the old call) never cancels — defer
+	// sub.Stop() at etwlua.Start exit-path never fires and the real-time
+	// ETW session leaks across agent restarts (PR #959 review, blocker 1).
+	etwCtx, etwCancel := context.WithCancel(context.Background())
+	etwluaDone := startETWLua(etwCtx, hb)
+
 	log.Info("agent is running")
 
 	// Write state file so the watchdog can detect a running agent.
@@ -596,6 +630,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		hb:               hb,
 		wsClient:         wsClient,
 		secureToken:      secureToken,
+		etwluaCancel:     etwCancel,
+		etwluaDone:       etwluaDone,
 		supervisorCancel: supervisorCancel,
 		supervisorDone:   supervisorDone,
 	}, nil
