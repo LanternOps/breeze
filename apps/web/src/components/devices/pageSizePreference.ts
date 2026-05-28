@@ -4,7 +4,9 @@
 // a future enhancement may lift it to users.settings.devicesPageSize so
 // the preference follows the user across browsers (see Discussion #684).
 
-export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200] as const;
+// Server caps the devices list at maxLimit=500 (see apps/api/src/routes/devices/core.ts
+// + utils/pagination.ts). 500 is the upper bound — anything larger silently clamps.
+export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200, 500] as const;
 export type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 
 export const DEFAULT_PAGE_SIZE: PageSize = 10;
