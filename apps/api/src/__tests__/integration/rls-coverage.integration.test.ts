@@ -95,6 +95,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'users',
   'deployment_invites',
+  'access_reviews',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
