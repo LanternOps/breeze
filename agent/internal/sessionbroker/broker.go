@@ -1700,6 +1700,8 @@ func (b *Broker) allowedHelperPaths() []string {
 			"/usr/local/bin/breeze-watchdog",
 		)
 	}
+	// Allowlist the Breeze Assist helper binary so it can connect over IPC.
+	paths = append(paths, assistHelperBinaryPaths(dir)...)
 	seen := make(map[string]struct{}, len(paths))
 	out := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -1714,6 +1716,25 @@ func (b *Broker) allowedHelperPaths() []string {
 		out = append(out, clean)
 	}
 	return out
+}
+
+// assistHelperBinaryPaths returns candidate install paths for the Breeze Assist
+// helper, derived from the agent install dir. Used so RefreshAllowedHashes
+// allowlists the genuine breeze-helper binary's SHA-256. Non-existent paths are
+// skipped silently by computeAllowedHashes, so listing all platform candidates
+// is safe even when the helper is not installed.
+func assistHelperBinaryPaths(agentDir string) []string {
+	switch runtime.GOOS {
+	case "windows":
+		return []string{filepath.Join(agentDir, "breeze-helper.exe")}
+	case "darwin":
+		return []string{
+			"/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper",
+			filepath.Join(agentDir, "breeze-helper"),
+		}
+	default:
+		return []string{filepath.Join(agentDir, "breeze-helper")}
+	}
 }
 
 // RefreshAllowedHashes recomputes the helper binary hash allowlist from the

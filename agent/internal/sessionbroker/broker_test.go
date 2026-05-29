@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -884,5 +886,34 @@ func TestScopesForRoleAssist(t *testing.T) {
 	got := b.scopesForRole(ipc.HelperRoleAssist, ipc.HelperBinaryAssistHelper, "darwin", "/x")
 	if len(got) != 1 || got[0] != "assist" {
 		t.Fatalf("scopesForRole(assist) = %v, want [assist]", got)
+	}
+}
+
+func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
+	paths := assistHelperBinaryPaths("/opt/breeze")
+	found := false
+	for _, p := range paths {
+		base := filepath.Base(p)
+		if base == "breeze-helper" || base == "breeze-helper.exe" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("assistHelperBinaryPaths(%q) = %v, missing breeze-helper binary", "/opt/breeze", paths)
+	}
+
+	// On non-windows platforms the agent-dir-relative path must be present so
+	// the hash allowlist covers helpers installed alongside the agent.
+	if runtime.GOOS != "windows" {
+		want := filepath.Join("/opt/breeze", "breeze-helper")
+		has := false
+		for _, p := range paths {
+			if p == want {
+				has = true
+			}
+		}
+		if !has {
+			t.Fatalf("assistHelperBinaryPaths missing agent-dir path %q; got %v", want, paths)
+		}
 	}
 }
