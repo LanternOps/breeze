@@ -18,6 +18,10 @@ import { compactToolResultForChat } from './aiToolOutput';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import { aiActionPlans } from '../db/schema';
+import {
+  m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
+  m365DisableUserHandler, m365ResetPasswordHandler,
+} from './aiToolsM365';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -1447,6 +1451,70 @@ export function createBreezeMcpServer(
             message: 'Plan approved. Execute the steps in order now.',
           }) }],
         };
+      }
+    ),
+
+    // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
+    // to the active AI session). Thin glue around the testable handlers in
+    // ./aiToolsM365 — each resolves the session via getActiveSession() following
+    // the propose_action_plan precedent.
+    tool(
+      'm365_lookup_user',
+      'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
+      { userIdentifier: z.string() },
+      async (args: Record<string, unknown>) => {
+        const session = getActiveSession?.();
+        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
+        const text = await m365LookupUserHandler(args, session.auth, session.breezeSessionId);
+        return { content: [{ type: 'text' as const, text }] };
+      }
+    ),
+
+    tool(
+      'm365_recent_signins',
+      "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
+      { userIdentifier: z.string() },
+      async (args: Record<string, unknown>) => {
+        const session = getActiveSession?.();
+        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
+        const text = await m365RecentSigninsHandler(args, session.auth, session.breezeSessionId);
+        return { content: [{ type: 'text' as const, text }] };
+      }
+    ),
+
+    tool(
+      'm365_list_group_memberships',
+      'List the groups in the customer tenant selected for this session.',
+      {},
+      async (args: Record<string, unknown>) => {
+        const session = getActiveSession?.();
+        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
+        const text = await m365ListGroupMembershipsHandler(args, session.auth, session.breezeSessionId);
+        return { content: [{ type: 'text' as const, text }] };
+      }
+    ),
+
+    tool(
+      'm365_disable_user',
+      'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
+      { userIdentifier: z.string(), reason: z.string() },
+      async (args: Record<string, unknown>) => {
+        const session = getActiveSession?.();
+        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
+        const text = await m365DisableUserHandler(args, session.auth, session.breezeSessionId);
+        return { content: [{ type: 'text' as const, text }] };
+      }
+    ),
+
+    tool(
+      'm365_reset_password',
+      'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
+      { userIdentifier: z.string(), reason: z.string() },
+      async (args: Record<string, unknown>) => {
+        const session = getActiveSession?.();
+        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
+        const text = await m365ResetPasswordHandler(args, session.auth, session.breezeSessionId);
+        return { content: [{ type: 'text' as const, text }] };
       }
     ),
   ];
