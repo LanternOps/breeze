@@ -118,7 +118,7 @@ The middleware performs these steps in order:
 
 ### Dual Authentication
 
-Some endpoints accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence. The `eitherAuthMiddleware` enables this by checking for `X-API-Key` first, then falling back to the `Authorization` bearer token.
+Some endpoints accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence: the route handler checks for `X-API-Key` first and authenticates via `apiKeyAuthMiddleware`, falling back to `authMiddleware` only when that header is absent.
 
 ### Key Rotation
 
