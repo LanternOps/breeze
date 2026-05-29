@@ -358,13 +358,20 @@ pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool
                 // Stop requested mid-session.
                 return;
             }
-            // A caught panic is treated exactly like a transient failure: log
-            // once (never the payload/token), then back off and reconnect.
-            Some(Err(_panic)) => {
-                eprintln!("[helper] IPC session panicked; will reconnect");
-                if started.elapsed() >= HEALTHY_SESSION {
-                    backoff = BACKOFF_MIN;
-                }
+            // A caught panic is treated as a transient failure: log once
+            // (never the payload/token — the panic message is not the token,
+            // which only lives in HelperToken / the parsed payload), then back
+            // off and reconnect. Unlike clean/transient outcomes, a panic does
+            // NOT reset the backoff even after a long-running session: a
+            // slow-failing panic loop must keep backing off rather than hammer
+            // at the floor.
+            Some(Err(panic_payload)) => {
+                let msg = panic_payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                eprintln!("[helper] IPC session panicked ({msg}); will reconnect");
             }
             Some(Ok(Ok(()))) => {
                 // Clean disconnect. Reset backoff if the session was healthy.

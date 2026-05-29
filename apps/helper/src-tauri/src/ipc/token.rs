@@ -8,6 +8,14 @@ pub struct HelperToken {
     inner: Arc<RwLock<Option<String>>>,
 }
 
+impl std::fmt::Debug for HelperToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the token value. A manual impl also makes a future
+        // #[derive(Debug)] a compile error rather than a silent secret leak.
+        f.write_str("HelperToken(***)")
+    }
+}
+
 impl HelperToken {
     pub fn new() -> Self {
         Self::default()
@@ -35,5 +43,17 @@ mod tests {
         assert_eq!(cell.get().await.as_deref(), Some("brz_a"));
         cell.set("brz_b".into()).await;
         assert_eq!(cell.get().await.as_deref(), Some("brz_b"));
+    }
+
+    #[tokio::test]
+    async fn debug_redacts_token_value() {
+        let cell = HelperToken::new();
+        cell.set("brz_super_secret".into()).await;
+        let dbg = format!("{:?}", cell);
+        assert!(dbg.contains("***"), "expected redaction marker, got {dbg}");
+        assert!(
+            !dbg.contains("brz_super_secret"),
+            "Debug leaked the token value: {dbg}"
+        );
     }
 }
