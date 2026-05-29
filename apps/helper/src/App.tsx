@@ -438,7 +438,7 @@ export default function App() {
     return (
       <div className="helper-container helper-center">
         <span className="helper-spinner" />
-        <p>Connecting to Breeze...</p>
+        <p>Connecting to Breeze…</p>
       </div>
     );
   }
@@ -447,7 +447,7 @@ export default function App() {
     return (
       <div className="helper-container helper-center">
         <span className="helper-spinner" />
-        <p>Connecting to the Breeze agent&hellip;</p>
+        <p>Connecting to the Breeze agent…</p>
       </div>
     );
   }

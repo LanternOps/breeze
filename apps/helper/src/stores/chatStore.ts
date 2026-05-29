@@ -503,6 +503,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isFlagged: false,
 
   initialize: async () => {
+    // Avoid stacking concurrent inits (e.g. Retry pressed while a token poll is still running).
+    const cs = get().connectionState;
+    if (cs === 'connecting' || cs === 'waiting-for-token') return;
+
     set({ connectionState: 'connecting', connectionError: null });
 
     try {
