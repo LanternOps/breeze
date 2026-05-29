@@ -1,5 +1,6 @@
 mod ipc;
 
+use crate::ipc::token::HelperToken;
 use futures_util::StreamExt;
 use reqwest::{header::HeaderMap, Client, Identity, Method};
 use serde::{Deserialize, Serialize};
@@ -295,8 +296,6 @@ static HTTP_STATE: OnceLock<Mutex<Option<HttpClientState>>> = OnceLock::new();
 fn get_http_state_lock() -> &'static Mutex<Option<HttpClientState>> {
     HTTP_STATE.get_or_init(|| Mutex::new(None))
 }
-
-use crate::ipc::token::HelperToken;
 
 /// Process-global helper auth token delivered over IPC from the Breeze agent.
 /// Distinct from the file-loaded `HttpClientState::config.token` (Phase-1 fallback).
@@ -985,11 +984,13 @@ pub fn run() {
             });
 
             // Deliver the helper auth token over IPC from the Breeze agent.
+            // Keep the stop sender in managed state so the watch channel stays open
+            // for the app's lifetime; on app exit the state is dropped, the channel
+            // closes, and the client task exits. (The task also exits on a permanent
+            // broker reject — that is intentional.)
             let token = helper_token().clone();
-            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-            // Leak the sender so the watch channel stays open for the app's
-            // lifetime; the client task ends only when the process exits.
-            std::mem::forget(_stop_tx);
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            app.manage(stop_tx);
             tauri::async_runtime::spawn(crate::ipc::client::run(token, stop_rx));
 
             Ok(())
