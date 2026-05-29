@@ -21,6 +21,7 @@ pub fn default_socket_path() -> String {
     {
         "/Library/Application Support/Breeze/agent.sock".to_string()
     }
+    // Linux and other unix
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         "/var/run/breeze/agent.sock".to_string()
@@ -32,9 +33,13 @@ pub fn default_socket_path() -> String {
 /// `sid` is empty on unix; `uid` is unused (0) on windows.
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
+    /// Unix uid of this process; 0/unused on Windows.
     pub uid: u32,
+    /// Windows token-user SID string (e.g. "S-1-5-21-…"); empty on unix.
     pub sid: String,
+    /// Human-readable username — informational only, not verified by the broker.
     pub username: String,
+    /// Current process id.
     pub pid: u32,
 }
 
@@ -120,7 +125,7 @@ fn current_sid_string() -> Result<String, String> {
         // Copy the wide string into an owned Rust String, then free it.
         let sid = pwstr.to_string().map_err(|e| format!("SID utf16 decode failed: {e}"))?;
         // LocalFree expects an HLOCAL; the SID-string buffer is LocalAlloc'd.
-        // TODO(verify-on-windows-vm): exact LocalFree/HLOCAL cast for windows 0.58.
+        // TODO(T13 Windows VM verify): exact LocalFree/HLOCAL cast for windows 0.58.
         let _ = LocalFree(HLOCAL(pwstr.0 as *mut core::ffi::c_void));
         Ok(sid)
     }
@@ -153,12 +158,16 @@ pub async fn connect(path: &str) -> std::io::Result<tokio::net::UnixStream> {
 }
 
 /// Connect to the broker over a Windows named pipe.
+///
+/// `async` is kept for API symmetry with the unix variant even though
+/// `ClientOptions::open` is synchronous — T10's generic client calls
+/// `connect(...).await` on both platforms without needing a cfg guard.
 #[cfg(windows)]
 pub async fn connect(
     path: &str,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
     use tokio::net::windows::named_pipe::ClientOptions;
-    // TODO(verify-on-windows-vm): retry on ERROR_PIPE_BUSY may be needed in T10.
+    // TODO(T13 Windows VM verify): retry on ERROR_PIPE_BUSY may be needed in T10.
     ClientOptions::new().open(path)
 }
 
