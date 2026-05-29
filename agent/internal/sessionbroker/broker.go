@@ -211,6 +211,9 @@ var (
 	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
 	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
 	watchdogHelperScopes = []string{"watchdog"}
+	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
+	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
+	assistHelperScopes = []string{"assist"}
 )
 
 // MessageHandler is called when a user helper sends a message that isn't
@@ -1276,7 +1279,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		helperRole = ipc.HelperRoleSystem
 	}
 	switch helperRole {
-	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup:
+	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, ipc.HelperRoleAssist, backupipc.HelperRoleBackup:
 	default:
 		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
@@ -1312,6 +1315,17 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 				Accepted:  false,
 				Reason:    "user role requires non-SYSTEM identity",
+				Permanent: true,
+			})
+			conn.Close()
+			return
+		}
+		if helperRole == ipc.HelperRoleAssist && creds.SID == systemSID {
+			log.Warn("role/identity mismatch: SYSTEM process claiming assist role",
+				"sid", creds.SID, "pid", creds.PID)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted:  false,
+				Reason:    "assist role requires non-SYSTEM identity",
 				Permanent: true,
 			})
 			conn.Close()
@@ -1356,23 +1370,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	var scopes []string
-	switch helperRole {
-	case ipc.HelperRoleUser:
-		if runtime.GOOS == "darwin" &&
-			authReq.BinaryKind == ipc.HelperBinaryDesktopHelper &&
-			b.isDesktopHelperPeerPath(creds.BinaryPath) {
-			scopes = []string{"desktop"}
-		} else {
-			scopes = userHelperScopes
-		}
-	case backupipc.HelperRoleBackup:
-		scopes = backupHelperScopes
-	case ipc.HelperRoleWatchdog:
-		scopes = watchdogHelperScopes
-	case ipc.HelperRoleSystem:
-		scopes = systemHelperScopes
-	}
+	scopes := b.scopesForRole(helperRole, authReq.BinaryKind, runtime.GOOS, creds.BinaryPath)
 
 	// Send auth response
 	authResp := ipc.AuthResponse{
@@ -1618,6 +1616,28 @@ func binaryPathMatchesAllowed(peerPath string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// scopesForRole maps a validated helper role to its allowed scopes.
+func (b *Broker) scopesForRole(role, binaryKind, goos, peerPath string) []string {
+	switch role {
+	case ipc.HelperRoleUser:
+		if goos == "darwin" &&
+			binaryKind == ipc.HelperBinaryDesktopHelper &&
+			b.isDesktopHelperPeerPath(peerPath) {
+			return []string{"desktop"}
+		}
+		return userHelperScopes
+	case backupipc.HelperRoleBackup:
+		return backupHelperScopes
+	case ipc.HelperRoleWatchdog:
+		return watchdogHelperScopes
+	case ipc.HelperRoleAssist:
+		return assistHelperScopes
+	case ipc.HelperRoleSystem:
+		return systemHelperScopes
+	}
+	return nil
 }
 
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {

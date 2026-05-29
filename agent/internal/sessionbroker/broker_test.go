@@ -866,3 +866,23 @@ func TestTimedRWMutexWarnsOnSlowAcquire(t *testing.T) {
 		t.Fatalf("expected waited_ms field, got:\n%s", output)
 	}
 }
+
+func TestAssistScopesConstant(t *testing.T) {
+	if len(assistHelperScopes) != 1 || assistHelperScopes[0] != "assist" {
+		t.Fatalf("assistHelperScopes = %v, want [\"assist\"]", assistHelperScopes)
+	}
+	for _, s := range assistHelperScopes {
+		switch s {
+		case "desktop", "clipboard", "run_as_user", "notify", "tray":
+			t.Fatalf("assist scope must not include %q", s)
+		}
+	}
+}
+
+func TestScopesForRoleAssist(t *testing.T) {
+	b := &Broker{}
+	got := b.scopesForRole(ipc.HelperRoleAssist, ipc.HelperBinaryAssistHelper, "darwin", "/x")
+	if len(got) != 1 || got[0] != "assist" {
+		t.Fatalf("scopesForRole(assist) = %v, want [assist]", got)
+	}
+}
