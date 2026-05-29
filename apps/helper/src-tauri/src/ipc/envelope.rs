@@ -73,7 +73,14 @@ impl std::fmt::Display for IpcError {
     }
 }
 
-impl std::error::Error for IpcError {}
+impl std::error::Error for IpcError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            IpcError::Io(e) => Some(e),
+            IpcError::Protocol(_) => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for IpcError {
     fn from(e: std::io::Error) -> Self {
@@ -81,17 +88,31 @@ impl From<std::io::Error> for IpcError {
     }
 }
 
-/// Computes `hex(HMAC-SHA256(key, id || decimal(seq) || typ || payload))`.
+/// Builds the seeded HMAC-SHA256 `Mac` over `id || decimal(seq) || typ ||
+/// payload`. This is the single source of truth for the HMAC canonicalization;
+/// both [`compute_hmac`] (outbound, finalizes to hex) and [`parse_and_verify`]
+/// (inbound, constant-time `verify_slice`) build the message through here so the
+/// formula can never drift between the two paths.
 ///
-/// The update order and the decimal-string seq encoding match Go's
-/// `computeHMAC` exactly.
-pub fn compute_hmac(key: &[u8], id: &str, seq: u64, typ: &str, payload: &[u8]) -> String {
+/// NOTE: the fields are concatenated with NO separators. This is intentional and
+/// inherited verbatim from Go's `computeHMAC` (`agent/internal/ipc/protocol.go`).
+/// The two sides MUST agree byte-for-byte, so do not "fix" this by adding
+/// delimiters — doing so silently breaks the cross-language handshake.
+fn hmac_mac(key: &[u8], id: &str, seq: u64, typ: &str, payload: &[u8]) -> HmacSha256 {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(id.as_bytes());
     mac.update(seq.to_string().as_bytes());
     mac.update(typ.as_bytes());
     mac.update(payload);
-    hex::encode(mac.finalize().into_bytes())
+    mac
+}
+
+/// Computes `hex(HMAC-SHA256(key, id || decimal(seq) || typ || payload))`.
+///
+/// The update order and the decimal-string seq encoding match Go's
+/// `computeHMAC` exactly. See [`hmac_mac`] for the shared canonicalization.
+pub fn compute_hmac(key: &[u8], id: &str, seq: u64, typ: &str, payload: &[u8]) -> String {
+    hex::encode(hmac_mac(key, id, seq, typ, payload).finalize().into_bytes())
 }
 
 /// Like [`compute_hmac`] but treats an absent payload as the literal bytes
@@ -129,6 +150,8 @@ pub fn encode_frame(
     typ: &str,
     payload: Option<Box<RawValue>>,
 ) -> Option<Vec<u8>> {
+    // Monotonic send sequence. Wrap at u64::MAX is not a practical concern: at
+    // even a million frames/sec it would take ~580k years to overflow.
     *send_seq += 1;
     let seq = *send_seq;
 
@@ -144,7 +167,9 @@ pub fn encode_frame(
     };
 
     let body = serde_json::to_vec(&env).ok()?;
-    if body.is_empty() || body.len() > MAX_MESSAGE_SIZE {
+    // Only the oversize case is reachable: serde_json::to_vec on a struct always
+    // yields a non-empty object, so there is no empty-body guard here.
+    if body.len() > MAX_MESSAGE_SIZE {
         return None;
     }
 
@@ -162,13 +187,12 @@ pub async fn write_frame<W: AsyncWriteExt + Unpin>(
     id: &str,
     typ: &str,
     payload: Option<Box<RawValue>>,
-) -> std::io::Result<()> {
+) -> Result<(), IpcError> {
     let frame = encode_frame(key, send_seq, id, typ, payload).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "ipc: message too large or failed to encode",
-        )
+        IpcError::Protocol("ipc: message too large or failed to encode".to_string())
     })?;
+    // IO errors convert via `From<io::Error>`, so the transport `?` chains stay
+    // uniform on `IpcError`.
     w.write_all(&frame).await?;
     w.flush().await?;
     Ok(())
@@ -216,12 +240,16 @@ pub fn parse_and_verify(
     let env: Envelope = serde_json::from_slice(body)
         .map_err(|e| IpcError::Protocol(format!("unmarshal envelope: {}", e)))?;
 
-    // Recompute HMAC over the exact payload bytes and constant-time compare.
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(env.id.as_bytes());
-    mac.update(env.seq.to_string().as_bytes());
-    mac.update(env.typ.as_bytes());
-    mac.update(payload_hmac_bytes(&env.payload));
+    // Rebuild the HMAC over the exact payload bytes via the shared canonicalization
+    // and constant-time compare. Non-hex hmac strings are a protocol error, not a
+    // panic.
+    let mac = hmac_mac(
+        key,
+        &env.id,
+        env.seq,
+        &env.typ,
+        payload_hmac_bytes(&env.payload),
+    );
     let received = match hex::decode(&env.hmac) {
         Ok(b) => b,
         Err(_) => return Err(IpcError::Protocol("HMAC mismatch".to_string())),
@@ -373,5 +401,98 @@ mod tests {
         assert!(s.contains("\"hmac\":"), "{}", s);
         // error is omitempty in Go and skipped when empty here.
         assert!(!s.contains("\"error\":"), "{}", s);
+    }
+
+    #[test]
+    fn parse_rejects_malformed_json() {
+        let key = [1u8; 32];
+        let mut recv_seq = 0u64;
+        let err = parse_and_verify(b"{not valid json", &key, &mut recv_seq).unwrap_err();
+        match err {
+            IpcError::Protocol(m) => assert!(m.contains("unmarshal envelope"), "{}", m),
+            _ => panic!("expected protocol error"),
+        }
+        // recv_seq must be untouched on a parse failure.
+        assert_eq!(recv_seq, 0);
+    }
+
+    #[test]
+    fn parse_rejects_seq_zero() {
+        // Hand-build an envelope with seq == 0 and a VALID hmac for seq 0 so we
+        // exercise the seq==0 branch specifically (not an HMAC failure).
+        let key = [4u8; 32];
+        let payload = raw(r#"{"a":1}"#);
+        let hmac = compute_hmac(&key, "z", 0, "ping", payload.get().as_bytes());
+        let env = Envelope {
+            id: "z".to_string(),
+            seq: 0,
+            typ: "ping".to_string(),
+            payload: Some(payload),
+            error: String::new(),
+            hmac,
+        };
+        let body = serde_json::to_vec(&env).expect("serialize");
+
+        let mut recv_seq = 0u64;
+        let err = parse_and_verify(&body, &key, &mut recv_seq).unwrap_err();
+        match err {
+            IpcError::Protocol(m) => assert!(m.contains("invalid sequence number 0"), "{}", m),
+            _ => panic!("expected protocol error"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_non_hex_hmac() {
+        // A non-hex hmac string must surface as a Protocol error, never a panic.
+        let env = Envelope {
+            id: "x".to_string(),
+            seq: 1,
+            typ: "ping".to_string(),
+            payload: None,
+            error: String::new(),
+            hmac: "zzzz-not-hex".to_string(),
+        };
+        let body = serde_json::to_vec(&env).expect("serialize");
+
+        let key = [1u8; 32];
+        let mut recv_seq = 0u64;
+        let err = parse_and_verify(&body, &key, &mut recv_seq).unwrap_err();
+        match err {
+            IpcError::Protocol(m) => assert!(m.contains("HMAC mismatch"), "{}", m),
+            _ => panic!("expected protocol error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_read_round_trip() {
+        // Exercise the real async length-header path over a bidirectional pipe.
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        let key = [0u8; 32]; // pre-auth zero key
+        let mut send_seq = 0u64;
+        let mut recv_seq = 0u64;
+
+        write_frame(
+            &mut a,
+            &key,
+            &mut send_seq,
+            "auth",
+            "auth_request",
+            Some(raw(r#"{"token":"abc","v":1}"#)),
+        )
+        .await
+        .expect("write_frame");
+        assert_eq!(send_seq, 1);
+
+        let env = read_frame(&mut b, &key, &mut recv_seq)
+            .await
+            .expect("read_frame");
+        assert_eq!(env.id, "auth");
+        assert_eq!(env.seq, 1);
+        assert_eq!(env.typ, "auth_request");
+        assert_eq!(recv_seq, 1);
+        assert_eq!(
+            env.payload.as_ref().map(|r| r.get()),
+            Some(r#"{"token":"abc","v":1}"#)
+        );
     }
 }
