@@ -158,4 +158,64 @@ describe('requestJson — SSRF safety via safeFetch', () => {
       ).rejects.toBeInstanceOf(SsrfBlockedError);
     });
   });
+
+  describe('SSRF-blocked requests are NOT retried', () => {
+    it('fails fast on a blocked host even with maxRetries:3 (DNS lookup invoked exactly once)', async () => {
+      // Regression guard: the `!isSsrfBlocked` short-circuit in http.ts must
+      // prevent retrying an SSRF policy violation. If SsrfBlockedError were
+      // ever reclassified as retriable, the lookup would run maxRetries+1 times.
+      let lookupCalls = 0;
+      __setLookupForTests(async () => {
+        lookupCalls += 1;
+        return [{ address: '169.254.169.254', family: 4 }];
+      });
+
+      await expect(
+        requestJson('https://attacker.example/x', {
+          allowPrivateNetwork: true,
+          maxRetries: 3
+        })
+      ).rejects.toBeInstanceOf(SsrfBlockedError);
+
+      expect(lookupCalls).toBe(1);
+    });
+  });
+
+  describe('transient failures ARE retried (positive branch)', () => {
+    it('retries a transient 5xx and eventually succeeds (multiple transport attempts)', async () => {
+      // Literal allowed IP so there is no DNS hop; count transport invocations
+      // to confirm the retry loop runs more than once for a retriable 5xx.
+      let attempts = 0;
+      const requestSpy = vi
+        .spyOn(https, 'request')
+        .mockImplementation((_options: any, callback?: any) => {
+          const req = new EventEmitter() as any;
+          req.write = vi.fn();
+          req.destroy = vi.fn();
+          req.setTimeout = vi.fn();
+          req.end = vi.fn(() => {
+            attempts += 1;
+            const res = new EventEmitter() as any;
+            const firstAttempt = attempts === 1;
+            res.statusCode = firstAttempt ? 503 : 200;
+            res.statusMessage = firstAttempt ? 'Service Unavailable' : 'OK';
+            res.headers = firstAttempt
+              ? { 'content-type': 'application/json', 'retry-after': '0' }
+              : { 'content-type': 'application/json' };
+            callback?.(res);
+            res.emit('data', Buffer.from('{}'));
+            res.emit('end');
+          });
+          return req;
+        });
+
+      const result = await requestJson('https://10.0.0.5/x', {
+        allowPrivateNetwork: true,
+        maxRetries: 3
+      });
+
+      expect(result).toEqual({});
+      expect(requestSpy.mock.calls.length).toBeGreaterThan(1);
+    });
+  });
 });
