@@ -5,4 +5,5 @@
 
 pub mod envelope;
 pub mod token;
-// transport, client added in later tasks
+pub mod transport;
+// client added in later tasks
