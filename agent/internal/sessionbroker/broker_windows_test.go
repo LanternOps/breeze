@@ -495,6 +495,45 @@ func TestNamedPipeSessionIDCollisionRejected(t *testing.T) {
 	t.Logf("SessionID collision correctly rejected: %s", resp2.Reason)
 }
 
+// TestAssistRoleRejectsSystemSID verifies the step-10 privilege-escalation gate
+// for the Breeze Assist helper: a process running as Local System (S-1-5-18)
+// that claims the "assist" role must be permanently rejected with the reason
+// "assist role requires non-SYSTEM identity", and no session is registered (the
+// gate returns before NewSession/registration).
+//
+// The gate reads the kernel-verified peer-cred SID, which cannot be forged over
+// a named pipe, so this drives the extracted roleIdentityRejection decision with
+// an injected SID rather than connecting a real SYSTEM peer. It mirrors the
+// existing watchdog/user identity-mismatch behavior covered above.
+func TestAssistRoleRejectsSystemSID(t *testing.T) {
+	cases := []struct {
+		name       string
+		role       string
+		sid        string
+		wantReason string
+		wantReject bool
+	}{
+		{"assist as SYSTEM rejected", ipc.HelperRoleAssist, systemSID, "assist role requires non-SYSTEM identity", true},
+		{"assist as non-SYSTEM allowed", ipc.HelperRoleAssist, "S-1-5-21-1-2-3-1001", "", false},
+		{"user as SYSTEM rejected", ipc.HelperRoleUser, systemSID, "user role requires non-SYSTEM identity", true},
+		{"watchdog as non-SYSTEM rejected", ipc.HelperRoleWatchdog, "S-1-5-21-1-2-3-1001", "watchdog role requires SYSTEM identity", true},
+		{"watchdog as SYSTEM allowed", ipc.HelperRoleWatchdog, systemSID, "", false},
+		{"system as non-SYSTEM rejected", ipc.HelperRoleSystem, "S-1-5-21-1-2-3-1001", "system role requires SYSTEM identity", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, rejected := roleIdentityRejection(tc.role, tc.sid, 0, "windows")
+			if rejected != tc.wantReject {
+				t.Fatalf("rejected = %v, want %v (reason %q)", rejected, tc.wantReject, reason)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
 func computeTestBinaryHash(t *testing.T) string {
 	t.Helper()
 	exePath, err := os.Executable()

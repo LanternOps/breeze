@@ -1315,85 +1315,23 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Step 10: Validate role matches peer identity to prevent privilege escalation.
-	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user helpers
-	// must NOT run as SYSTEM. This prevents a non-SYSTEM process from claiming
-	// system role to get desktop scopes, or SYSTEM from claiming user role.
-	// The assist helper must also NOT run as SYSTEM (mirrors the user role).
-	// The watchdog must also run as root/SYSTEM.
-	const systemSID = "S-1-5-18"
-	if runtime.GOOS == "windows" {
-		if helperRole == ipc.HelperRoleSystem && creds.SID != systemSID {
-			log.Warn("role/identity mismatch: non-SYSTEM process claiming system role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "system role requires SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if helperRole == ipc.HelperRoleUser && creds.SID == systemSID {
-			log.Warn("role/identity mismatch: SYSTEM process claiming user role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "user role requires non-SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if helperRole == ipc.HelperRoleAssist && creds.SID == systemSID {
-			log.Warn("role/identity mismatch: SYSTEM process claiming assist role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "assist role requires non-SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if helperRole == ipc.HelperRoleWatchdog && creds.SID != systemSID {
-			log.Warn("role/identity mismatch: non-SYSTEM process claiming watchdog role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "watchdog role requires SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-	} else {
-		// Unix: watchdog and system-role helpers must run as root. The macOS
-		// desktop helper runs in the GUI user/loginwindow session, so it must
-		// authenticate as user-role and receives only desktop scope below.
-		// The assist helper is Windows-only; on Unix it would receive only the
-		// inert "assist" scope, so no identity gate is required here.
-		if helperRole == ipc.HelperRoleWatchdog && creds.UID != 0 {
-			log.Warn("role/identity mismatch: non-root process claiming watchdog role",
-				"uid", creds.UID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "watchdog role requires root identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if helperRole == ipc.HelperRoleSystem && creds.UID != 0 {
-			log.Warn("role/identity mismatch: non-root process claiming system role",
-				"uid", creds.UID, "pid", creds.PID, "binaryKind", authReq.BinaryKind)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "system role requires root identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
+	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user/assist
+	// helpers must NOT run as SYSTEM. This prevents a non-SYSTEM process from
+	// claiming system role to get desktop scopes, or SYSTEM from claiming user
+	// role. The watchdog must also run as root/SYSTEM. The decision is factored
+	// into roleIdentityRejection so the gate can be unit-tested with an injected
+	// peer-cred SID/UID (a real peer-cred SID can't be faked over a pipe).
+	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, runtime.GOOS); rejected {
+		log.Warn("role/identity mismatch",
+			"reason", reason, "role", helperRole, "sid", creds.SID, "uid", creds.UID,
+			"pid", creds.PID, "binaryKind", authReq.BinaryKind)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    reason,
+			Permanent: true,
+		})
+		conn.Close()
+		return
 	}
 
 	scopes := b.scopesForRole(helperRole, authReq.BinaryKind, runtime.GOOS, creds.BinaryPath)
@@ -1651,6 +1589,46 @@ func binaryPathMatchesAllowed(peerPath string, allowed []string) bool {
 }
 
 // scopesForRole maps a validated helper role to its allowed scopes.
+// systemSID is the well-known Windows Local System account SID.
+const systemSID = "S-1-5-18"
+
+// roleIdentityRejection reports whether a helper claiming helperRole from the
+// given kernel-verified peer identity (SID on Windows, UID on Unix) must be
+// rejected, and the rejection reason. All role/identity mismatches are
+// permanent. It returns ("", false) when the role/identity pairing is allowed.
+//
+// Pure and OS-parameterized so the privilege-escalation gate can be unit-tested
+// with an injected SID/UID — a real peer-cred SID can't be forged over a named
+// pipe / Unix socket, so end-to-end pipe tests can only exercise the current
+// test process's own identity.
+func roleIdentityRejection(role, sid string, uid uint32, goos string) (reason string, rejected bool) {
+	if goos == "windows" {
+		switch {
+		case role == ipc.HelperRoleSystem && sid != systemSID:
+			return "system role requires SYSTEM identity", true
+		case role == ipc.HelperRoleUser && sid == systemSID:
+			return "user role requires non-SYSTEM identity", true
+		case role == ipc.HelperRoleAssist && sid == systemSID:
+			return "assist role requires non-SYSTEM identity", true
+		case role == ipc.HelperRoleWatchdog && sid != systemSID:
+			return "watchdog role requires SYSTEM identity", true
+		}
+		return "", false
+	}
+	// Unix: watchdog and system-role helpers must run as root. The macOS
+	// desktop helper runs in the GUI user/loginwindow session, so it must
+	// authenticate as user-role and receives only desktop scope. The assist
+	// helper is Windows-only; on Unix it would receive only the inert "assist"
+	// scope, so no identity gate is required here.
+	switch {
+	case role == ipc.HelperRoleWatchdog && uid != 0:
+		return "watchdog role requires root identity", true
+	case role == ipc.HelperRoleSystem && uid != 0:
+		return "system role requires root identity", true
+	}
+	return "", false
+}
+
 func (b *Broker) scopesForRole(role, binaryKind, goos, peerPath string) []string {
 	switch role {
 	case ipc.HelperRoleUser:

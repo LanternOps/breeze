@@ -150,7 +150,7 @@ type AuthRequest struct {
 	BinaryHash      string `json:"binaryHash"`
 	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
 	HelperRole      string `json:"helperRole,omitempty"`   // "system" | "user" | "watchdog" | "assist" (default: "system")
-	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper" or "desktop_helper"
+	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper", "desktop_helper", or "assist_helper"
 	DesktopContext  string `json:"desktopContext,omitempty"`
 }
 

@@ -2504,6 +2504,28 @@ func shouldPushHelperToken(scopes []string) bool {
 	return false
 }
 
+// pushHelperToken delivers the helper token to a single eligible session and
+// recovers from a delivery failure. A missed push after rotation otherwise
+// leaves the Helper 401ing against the API with a stale/invalid token, with no
+// re-push until it happens to reconnect on its own. On a SendNotify error we
+// therefore close the session: closing tears down the connection so the client
+// reconnects and re-runs handleHelperSessionAuthenticated, which re-pushes the
+// current token. Closing from this goroutine is safe — Session.Close() only
+// touches the session's own conn/done (not the broker mutex); the broker's
+// RecvLoop unblocks on the closed conn and runs removeSession (which acquires
+// b.mu and fires onSessionClosed) for us. Callers must NOT hold b.mu here.
+func (h *Heartbeat) pushHelperToken(session *sessionbroker.Session, token string) {
+	// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
+	if err := session.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: token}); err != nil {
+		log.Error("failed to push helper token; closing assist session for reconnect+re-push",
+			"sessionId", session.SessionID, "error", err.Error())
+		if closeErr := session.Close(); closeErr != nil {
+			log.Error("failed to close assist session after token push failure",
+				"sessionId", session.SessionID, "error", closeErr.Error())
+		}
+	}
+}
+
 // handleHelperSessionAuthenticated is wired as the broker's
 // SessionAuthenticatedHandler. It pushes the current helper token to a freshly
 // authenticated assist session.
@@ -2515,23 +2537,23 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	if token == "" {
 		return
 	}
-	// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
-	if err := session.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: token}); err != nil {
-		log.Warn("failed to push helper token to assist session", "error", err.Error())
-	}
+	h.pushHelperToken(session, token)
 }
 
 // sendHelperTokenUpdate pushes a (possibly rotated) helper token to all
-// connected assist sessions.
+// connected assist sessions. Recipient eligibility is routed through the single
+// authoritative shouldPushHelperToken predicate (the same one used at connect
+// time) rather than SessionsWithScope's HasScope alone, whose wildcard match
+// would also select a hypothetical "*"-scoped session.
 func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
 	if h.sessionBroker == nil || newToken == "" {
 		return
 	}
 	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.ScopeAssist) {
-		// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
-		if err := sess.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: newToken}); err != nil {
-			log.Warn("failed to push rotated helper token", "error", err.Error())
+		if !shouldPushHelperToken(sess.AllowedScopes) {
+			continue
 		}
+		h.pushHelperToken(sess, newToken)
 	}
 }
 
