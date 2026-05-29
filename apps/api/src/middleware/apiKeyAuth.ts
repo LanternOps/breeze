@@ -269,28 +269,3 @@ export function requireApiKeyScope(...requiredScopes: string[]) {
   };
 }
 
-/**
- * Middleware that accepts either JWT auth or API key auth.
- * Useful for endpoints that can be accessed by both users and automated systems.
- *
- * Usage: Use with authMiddleware for combined auth:
- *   app.use('*', eitherAuth)
- *
- * After this middleware, check c.get('auth') for user auth or c.get('apiKey') for API key auth.
- */
-export async function eitherAuthMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header('Authorization');
-  const apiKeyHeader = c.req.header('X-API-Key');
-
-  if (!authHeader && !apiKeyHeader) {
-    throw new HTTPException(401, { message: 'Authentication required. Provide either Authorization header or X-API-Key header.' });
-  }
-
-  // Prefer API key if both are provided (API keys are more specific)
-  if (apiKeyHeader) {
-    return apiKeyAuthMiddleware(c, next);
-  }
-
-  // Fall through to the next middleware (should be authMiddleware for JWT)
-  await next();
-}

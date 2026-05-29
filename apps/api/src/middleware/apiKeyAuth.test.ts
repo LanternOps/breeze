@@ -47,7 +47,7 @@ import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import * as apiKeyAuthModule from './apiKeyAuth';
 
-const { apiKeyAuthMiddleware, requireApiKeyScope, eitherAuthMiddleware } = apiKeyAuthModule;
+const { apiKeyAuthMiddleware, requireApiKeyScope } = apiKeyAuthModule;
 
 type TestContext = Context & {
   _getResponseHeaders: () => Record<string, string>;
@@ -524,45 +524,6 @@ describe('requireApiKeyScope middleware', () => {
       status: 403,
       message: 'API key does not have required permissions'
     });
-  });
-});
-
-describe('eitherAuth middleware', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('rejects when neither Authorization nor X-API-Key headers are present', async () => {
-    const c = createContext();
-    const next = vi.fn();
-
-    await expect(eitherAuthMiddleware(c, next)).rejects.toMatchObject({
-      status: 401,
-      message: 'Authentication required. Provide either Authorization header or X-API-Key header.'
-    });
-  });
-
-  it.skip('prefers API key auth when X-API-Key is provided', async () => {
-    // Skipped: Complex spy mock required
-    const c = createContext({ 'X-API-Key': 'brz_key', Authorization: 'Bearer token' });
-    const next = vi.fn();
-    const apiKeySpy = vi
-      .spyOn(apiKeyAuthModule, 'apiKeyAuthMiddleware')
-      .mockResolvedValue(undefined as unknown as void);
-
-    await eitherAuthMiddleware(c, next);
-
-    expect(apiKeySpy).toHaveBeenCalledWith(c, next);
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it('falls through to next middleware when only Authorization header is provided', async () => {
-    const c = createContext({ Authorization: 'Bearer token' });
-    const next = vi.fn();
-
-    await eitherAuthMiddleware(c, next);
-
-    expect(next).toHaveBeenCalled();
   });
 });
 

@@ -54,130 +54,6 @@ declare module 'hono' {
   }
 }
 
-// Optional auth - doesn't throw if not authenticated, just sets auth to null
-export async function optionalAuthMiddleware(c: Context, next: Next) {
-  // If another middleware already authenticated this request, don't re-verify.
-  const existing = c.get('auth') as AuthContext | undefined;
-  if (existing) {
-    await next();
-    return;
-  }
-
-  const authHeader = c.req.header('Authorization');
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // Not authenticated - continue without auth context
-    await next();
-    return;
-  }
-
-  const token = authHeader.slice(7);
-  const payload = await verifyToken(token);
-
-  if (!payload || payload.type !== 'access') {
-    // Invalid token - continue without auth context
-    await next();
-    return;
-  }
-
-  if (await isUserTokenRevoked(payload.sub, payload.iat)) {
-    // Token has been explicitly revoked - continue without auth context
-    await next();
-    return;
-  }
-
-  // Fetch user. Runs BEFORE withDbAccessContext is set (the outer purpose
-  // of this middleware), so under breeze_app without a scope the RLS policy
-  // on `users` denies everything. Wrap in system scope for the lookup only —
-  // the real request-scoped context is applied further down.
-  const [user] = await withSystemDbAccessContext(async () =>
-    db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status,
-        isPlatformAdmin: users.isPlatformAdmin
-      })
-      .from(users)
-      .where(eq(users.id, payload.sub))
-      .limit(1)
-  );
-
-  if (user && user.status === 'active') {
-    try {
-      await assertActiveTenantContext({
-        scope: payload.scope,
-        partnerId: payload.partnerId,
-        orgId: payload.orgId,
-      });
-    } catch (err) {
-      if (!(err instanceof TenantInactiveError)) throw err;
-      await next();
-      return;
-    }
-
-    const accessibleOrgIds = await computeAccessibleOrgIds(
-      payload.scope,
-      payload.partnerId,
-      payload.orgId,
-      user.id
-    );
-    const accessiblePartnerIds = computeAccessiblePartnerIds(
-      payload.scope,
-      payload.partnerId
-    );
-
-    const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
-      if (accessibleOrgIds === null) return undefined;
-      if (accessibleOrgIds.length === 0) {
-        return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
-      }
-      if (accessibleOrgIds.length === 1) {
-        return eq(orgIdColumn, accessibleOrgIds[0]);
-      }
-      return inArray(orgIdColumn, accessibleOrgIds);
-    };
-
-    const canAccessOrg = (orgId: string): boolean => {
-      if (accessibleOrgIds === null) return true;
-      return accessibleOrgIds.includes(orgId);
-    };
-
-    await withDbAccessContext(
-      {
-        scope: payload.scope,
-        orgId: payload.orgId,
-        accessibleOrgIds,
-        accessiblePartnerIds,
-        userId: user.id
-      },
-      async () => {
-        c.set('auth', {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            isPlatformAdmin: user.isPlatformAdmin
-          },
-          token: payload,
-          partnerId: payload.partnerId,
-          orgId: payload.orgId,
-          scope: payload.scope,
-          accessibleOrgIds,
-          orgCondition,
-          canAccessOrg
-        });
-
-        await next();
-      }
-    );
-    return;
-  }
-
-  await next();
-}
-
 /**
  * Resolve whether the user's effective role for the current request has
  * `force_mfa=true`. Returns false for system scope (platform admin is a
@@ -393,7 +269,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
 
   // Fetch user to ensure they still exist and are active. Pre-auth lookup —
   // must run under system scope because the request's real scope isn't
-  // applied until further down (see optionalAuthMiddleware note).
+  // applied until further down (see the withDbAccessContext call below).
   const [user] = await withSystemDbAccessContext(async () =>
     db
       .select({
