@@ -931,6 +931,25 @@ func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
 	}
 }
 
+// TestAssistHelperBinaryPathsWindowsRealInstallPath guards the regression where
+// the Windows allowlist used the agent dir instead of the Helper MSI's real
+// "<ProgramFiles>\Breeze Helper\" install location, causing the broker to reject
+// the genuine Helper on Windows. Runs on any host via the OS-parameterized core.
+func TestAssistHelperBinaryPathsWindowsRealInstallPath(t *testing.T) {
+	paths := assistHelperBinaryPathsForOS(`C:\Program Files\Breeze`, "windows", `C:\Program Files`)
+	// At least one candidate must point at the "Breeze Helper" install dir
+	// (not the agent's "Breeze" dir) and be the breeze-helper.exe binary.
+	found := false
+	for _, p := range paths {
+		if strings.Contains(p, "Breeze Helper") && strings.HasSuffix(p, "breeze-helper.exe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("windows assist paths %v missing a 'Breeze Helper\\breeze-helper.exe' candidate", paths)
+	}
+}
+
 func TestSetSessionAuthenticatedHandler(t *testing.T) {
 	b := New("/tmp/does-not-matter.sock", func(*Session, *ipc.Envelope) {})
 	var got *Session

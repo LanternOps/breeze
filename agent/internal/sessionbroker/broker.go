@@ -1731,9 +1731,32 @@ func (b *Broker) allowedHelperPaths() []string {
 // skipped silently by computeAllowedHashes, so listing all platform candidates
 // is safe even when the helper is not installed.
 func assistHelperBinaryPaths(agentDir string) []string {
-	switch runtime.GOOS {
+	return assistHelperBinaryPathsForOS(agentDir, runtime.GOOS, os.Getenv("ProgramFiles"))
+}
+
+// assistHelperBinaryPathsForOS is the OS-parameterized core, exported-for-test
+// so the Windows path (which can't run on the CI host) is verified directly.
+//
+// IMPORTANT: the Helper MSI installs to "<ProgramFiles>\Breeze Helper\"
+// (Tauri productName "Breeze Helper"), NOT the agent's install dir. An earlier
+// version allowlisted only "<agentDir>\breeze-helper.exe", which never matches
+// the real install location, so the genuine Helper's hash was never added to
+// the allowlist and the assist IPC session was rejected on Windows. We now
+// cover the real install path (ProgramFiles + agent-dir sibling) plus the
+// legacy colocated path; missing candidates are skipped by computeAllowedHashes.
+func assistHelperBinaryPathsForOS(agentDir, goos, programFiles string) []string {
+	switch goos {
 	case "windows":
-		return []string{filepath.Join(agentDir, "breeze-helper.exe")}
+		paths := []string{
+			// Sibling of the agent dir, e.g. C:\Program Files\Breeze ->
+			// C:\Program Files\Breeze Helper. Robust to ProgramFiles localization.
+			filepath.Join(filepath.Dir(agentDir), "Breeze Helper", "breeze-helper.exe"),
+			filepath.Join(agentDir, "breeze-helper.exe"), // legacy/colocated
+		}
+		if programFiles != "" {
+			paths = append(paths, filepath.Join(programFiles, "Breeze Helper", "breeze-helper.exe"))
+		}
+		return paths
 	case "darwin":
 		return []string{
 			"/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper",
