@@ -305,7 +305,9 @@ where
 /// transient failure, and stops permanently on a permanent reject. Runs until
 /// `stop` flips to `true`.
 ///
-/// Wrapped so a panic inside a session does not kill the task.
+/// The session future is wrapped in `catch_unwind` so a panic inside a single
+/// session is caught, logged once, and treated as a transient failure (back off
+/// and reconnect) rather than killing the reconnect task.
 pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool>) {
     use super::transport::{connect, current_identity, default_socket_path};
 
@@ -345,11 +347,19 @@ pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool
 
         let started = std::time::Instant::now();
 
-        // Catch panics so a single bad session can't take down the task. The
-        // session future itself is run to completion here; the unwind guard
-        // wraps the await via a select against `stop`.
+        // Catch panics so a single bad session can't take down the reconnect
+        // task. `catch_unwind` turns a panic inside the session future into an
+        // `Err(_)` instead of unwinding through the spawned task. The borrowed
+        // state (`&token`, `&identity`) is only read after a panic via the
+        // normal reconnect path, so `AssertUnwindSafe` is appropriate here.
+        // The future is still `select!`ed against `stop.changed()` so a stop
+        // request mid-session is honored promptly.
+        use futures_util::FutureExt;
+        let session_fut =
+            std::panic::AssertUnwindSafe(run_session_with_identity(stream, &token, &identity))
+                .catch_unwind();
         let outcome = tokio::select! {
-            r = run_session_with_identity(stream, &token, &identity) => Some(r),
+            r = session_fut => Some(r),
             _ = stop.changed() => None,
         };
 
@@ -358,13 +368,21 @@ pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool
                 // Stop requested mid-session.
                 return;
             }
-            Some(Ok(())) => {
+            // A caught panic is treated exactly like a transient failure: log
+            // once (never the payload/token), then back off and reconnect.
+            Some(Err(_panic)) => {
+                eprintln!("[helper] IPC session panicked; will reconnect");
+                if started.elapsed() >= HEALTHY_SESSION {
+                    backoff = BACKOFF_MIN;
+                }
+            }
+            Some(Ok(Ok(()))) => {
                 // Clean disconnect. Reset backoff if the session was healthy.
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
             }
-            Some(Err(SessionError::PermanentReject(msg))) => {
+            Some(Ok(Err(SessionError::PermanentReject(msg)))) => {
                 // Retrying a non-allowlisted / permanently-rejected binary is
                 // futile. Log once and stop.
                 eprintln!(
@@ -373,7 +391,7 @@ pub async fn run(token: HelperToken, mut stop: tokio::sync::watch::Receiver<bool
                 );
                 return;
             }
-            Some(Err(SessionError::Transient(e))) => {
+            Some(Ok(Err(SessionError::Transient(e)))) => {
                 eprintln!("[helper] ipc: session ended: {}", e);
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
@@ -660,5 +678,84 @@ mod tests {
 
         let res = session.await.expect("join");
         assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
+    }
+
+    // --- Reconnect-driver core ---
+
+    /// `next_backoff` doubles from the floor, caps at `BACKOFF_MAX`, and never
+    /// panics/overflows even when called repeatedly at the ceiling.
+    #[test]
+    fn test_next_backoff_doubles_and_caps() {
+        // Doubles from the floor.
+        assert_eq!(next_backoff(BACKOFF_MIN), BACKOFF_MIN * 2);
+        assert_eq!(next_backoff(Duration::from_secs(2)), Duration::from_secs(4));
+        assert_eq!(next_backoff(Duration::from_secs(4)), Duration::from_secs(8));
+
+        // Saturates at the ceiling: a value just below the cap that would
+        // double past it lands exactly on BACKOFF_MAX.
+        assert_eq!(next_backoff(Duration::from_secs(20)), BACKOFF_MAX);
+        assert_eq!(next_backoff(BACKOFF_MAX), BACKOFF_MAX);
+
+        // Repeated calls from the floor converge to the cap and stay there,
+        // never panicking from overflow.
+        let mut b = BACKOFF_MIN;
+        for _ in 0..1000 {
+            b = next_backoff(b);
+            assert!(b <= BACKOFF_MAX, "backoff exceeded cap: {:?}", b);
+        }
+        assert_eq!(b, BACKOFF_MAX);
+
+        // Extreme input near Duration::MAX must saturate, not overflow/panic.
+        assert_eq!(next_backoff(Duration::MAX), BACKOFF_MAX);
+    }
+
+    /// `wait_or_stop` returns promptly (`true`) when the stop watch is already
+    /// true, without sleeping.
+    #[tokio::test(start_paused = true)]
+    async fn test_wait_or_stop_returns_when_already_stopped() {
+        let (tx, mut rx) = tokio::sync::watch::channel(true);
+        let stopped = wait_or_stop(&mut rx, Duration::from_secs(30)).await;
+        assert!(stopped, "expected stop=true to short-circuit");
+        drop(tx);
+    }
+
+    /// `wait_or_stop` wakes early and returns `true` when stop flips to true
+    /// mid-wait — no real wall-clock sleep thanks to paused time.
+    #[tokio::test(start_paused = true)]
+    async fn test_wait_or_stop_wakes_on_stop_flip() {
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+
+        let waiter = tokio::spawn(async move {
+            wait_or_stop(&mut rx, Duration::from_secs(30)).await
+        });
+
+        // Let the waiter park on the select, then flip stop to true.
+        tokio::task::yield_now().await;
+        tx.send(true).expect("send stop");
+
+        let stopped = waiter.await.expect("join");
+        assert!(stopped, "expected early wake with stop=true");
+    }
+
+    /// `wait_or_stop` waits the full requested duration when stop stays false,
+    /// then returns `false`. Verified against the paused clock — advancing time
+    /// just short of the duration does not complete it; advancing past does.
+    #[tokio::test(start_paused = true)]
+    async fn test_wait_or_stop_waits_full_duration() {
+        let (_tx, mut rx) = tokio::sync::watch::channel(false);
+
+        let waiter = tokio::spawn(async move {
+            wait_or_stop(&mut rx, Duration::from_secs(10)).await
+        });
+
+        // Just before the deadline: still pending.
+        tokio::time::advance(Duration::from_secs(9)).await;
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "completed before its duration elapsed");
+
+        // Past the deadline: completes, returning false (stop never flipped).
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let stopped = waiter.await.expect("join");
+        assert!(!stopped, "expected false when stop stayed unset");
     }
 }

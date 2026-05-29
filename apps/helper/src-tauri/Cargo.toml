@@ -27,6 +27,11 @@ sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
 
+[dev-dependencies]
+# `test-util` enables paused/virtual-clock tests (start_paused, time::advance)
+# for the reconnect-driver unit tests without real wall-clock sleeps.
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
