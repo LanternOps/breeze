@@ -1147,6 +1147,22 @@ describe('validateConfig', () => {
       warnSpy.mockRestore();
     });
 
+    it('emits ENABLE_2FA warning for a non-standard falsy value (envFlag disables on any non-truthy value)', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        ENABLE_2FA: 'disabled',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        const calls = warnSpy.mock.calls.map(args => args[0] as string);
+        expect(calls.some(msg => msg.includes('ENABLE_2FA'))).toBe(true);
+      });
+      warnSpy.mockRestore();
+    });
+
     it('does NOT emit ENABLE_2FA warning when ENABLE_2FA=true', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       withEnv({

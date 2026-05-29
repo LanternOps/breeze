@@ -970,11 +970,19 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // it's missing or weak.)
   }
 
-  // Warn when ENABLE_2FA=false: this neuters ALL requireMfa() step-up gates
-  // across the entire API, not just /auth/mfa endpoints. Non-fatal — a
+  // Warn when 2FA is globally disabled: this neuters ALL requireMfa() step-up
+  // gates across the entire API, not just /auth/mfa endpoints. Non-fatal — a
   // self-hosted operator may deliberately run 2FA-off; we must not lock them
   // out. See: Finding #3 (security review May 2026).
-  if (['false', '0', 'no', 'off'].includes((env.ENABLE_2FA ?? '').trim().toLowerCase())) {
+  //
+  // Mirror envFlag('ENABLE_2FA', true) exactly: it disables on ANY value that
+  // isn't in the truthy set (so ENABLE_2FA=disabled / nope also disable 2FA).
+  // Match that here so the warning fires for every disabling value, not just
+  // the obvious false/0/no/off ones.
+  const enable2faRaw = (env.ENABLE_2FA ?? '').trim().toLowerCase();
+  const enable2faSetButFalsy =
+    enable2faRaw !== '' && !['1', 'true', 'yes', 'on'].includes(enable2faRaw);
+  if (enable2faSetButFalsy) {
     warnings.push({
       key: 'ENABLE_2FA',
       message:
