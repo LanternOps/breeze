@@ -16,10 +16,17 @@ import { securityRoutes } from '../../routes/security';
 import { devices, devicePatches, patches, securityStatus } from '../../db/schema';
 
 // Regression coverage for PR #973 — server-side orgId narrowing on the
-// /patches and /security/status routes. Asserts real data isolation against
-// a live test DB (not mocked): a partner-scope caller narrowing to one of
-// its own orgs sees only that org's rows, and a caller asking for an org it
+// /patches and /security/* routes. Asserts real data isolation against a
+// live test DB (not mocked): a partner-scope caller narrowing to one of its
+// own orgs sees only that org's rows, and a caller asking for an org it
 // cannot access is denied (403 for patches, empty set for security).
+//
+// /security/firewall is one of the four compliance routes this PR actually
+// repaired (their query schema stripped orgId and their handler dropped the
+// second listStatusRows arg). /security/status was never broken; it is
+// asserted too, but firewall is the route that locks the fix against the
+// exact regression that reopens the hole — a refactor dropping orgId from a
+// compliance schema or call site.
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -57,7 +64,7 @@ async function seedPatch(externalId: string, title: string) {
   return row.id;
 }
 
-describe('org-scope narrowing (PR #973) — /patches and /security/status', () => {
+describe('org-scope narrowing (PR #973) — /patches and /security', () => {
   // `patches` is a global catalog (no tenant FK) so cleanupDatabase does not
   // truncate it between tests or across runs; random external_ids keep each
   // seeded patch unique regardless of leftover catalog rows.
@@ -69,6 +76,8 @@ describe('org-scope narrowing (PR #973) — /patches and /security/status', () =
   let token: string;
   let patchA: string;
   let patchB: string;
+  let deviceAId: string;
+  let deviceBId: string;
 
   beforeEach(async () => {
     // Partner P1 with org A + a partner-scope user/token that can access all of P1's orgs.
@@ -89,6 +98,8 @@ describe('org-scope narrowing (PR #973) — /patches and /security/status', () =
     // Devices: one in A, one in B, one in the foreign org.
     const deviceA = await seedDevice(orgAId, siteA.id, 'agent-a', 'dev-a');
     const deviceB = await seedDevice(orgBId, siteB.id, 'agent-b', 'dev-b');
+    deviceAId = deviceA;
+    deviceBId = deviceB;
     const deviceForeign = await seedDevice(
       foreignOrgId,
       foreignEnv.site.id,
@@ -147,6 +158,27 @@ describe('org-scope narrowing (PR #973) — /patches and /security/status', () =
     const res = await app.request(`/security/status?orgId=${foreignOrgId}`, auth());
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual([]);
+  });
+
+  // ── The fix's real target: a repaired compliance route (/security/firewall).
+  // Locks both the schema (orgId must survive validation) and the call site
+  // (handler must forward query.orgId to listStatusRows).
+  it('security/firewall (repaired route): ?orgId=A narrows to org A devices, excluding B', async () => {
+    const res = await app.request(`/security/firewall?orgId=${orgAId}`, auth());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const deviceIds = body.data.map((d: { deviceId: string }) => d.deviceId);
+    expect(deviceIds).toContain(deviceAId);
+    expect(deviceIds).not.toContain(deviceBId); // org B's device is excluded
+    expect(body.summary.total).toBe(1); // only A's single device is in scope
+  });
+
+  it('security/firewall (repaired route): ?orgId=<foreign> returns empty (200) — IDOR pin', async () => {
+    const res = await app.request(`/security/firewall?orgId=${foreignOrgId}`, auth());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([]);
+    expect(body.summary.total).toBe(0);
   });
 
   // ── Test 3: the patches device-join filter actually excludes the other org ─
