@@ -1295,6 +1295,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user helpers
 	// must NOT run as SYSTEM. This prevents a non-SYSTEM process from claiming
 	// system role to get desktop scopes, or SYSTEM from claiming user role.
+	// The assist helper must also NOT run as SYSTEM (mirrors the user role).
 	// The watchdog must also run as root/SYSTEM.
 	const systemSID = "S-1-5-18"
 	if runtime.GOOS == "windows" {
@@ -1346,6 +1347,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		// Unix: watchdog and system-role helpers must run as root. The macOS
 		// desktop helper runs in the GUI user/loginwindow session, so it must
 		// authenticate as user-role and receives only desktop scope below.
+		// The assist helper is Windows-only; on Unix it would receive only the
+		// inert "assist" scope, so no identity gate is required here.
 		if helperRole == ipc.HelperRoleWatchdog && creds.UID != 0 {
 			log.Warn("role/identity mismatch: non-root process claiming watchdog role",
 				"uid", creds.UID, "pid", creds.PID)
