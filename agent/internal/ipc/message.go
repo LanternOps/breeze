@@ -53,6 +53,7 @@ const (
 	TypeWatchdogPong          = "watchdog_pong"
 	TypeShutdownIntent        = "shutdown_intent"
 	TypeTokenUpdate           = "token_update"
+	TypeHelperTokenUpdate     = "helper_token_update" // helper token -> assist helper
 	TypeWatchdogCommand       = "watchdog_command"
 	TypeWatchdogCommandResult = "watchdog_command_result"
 	TypeStateSync             = "state_sync"
@@ -113,11 +114,13 @@ const (
 	HelperRoleSystem   = "system"
 	HelperRoleUser     = "user"
 	HelperRoleWatchdog = "watchdog"
+	HelperRoleAssist   = "assist" // Breeze Assist Tauri helper; receives helper token only
 )
 
 const (
 	HelperBinaryUserHelper    = "user_helper"
 	HelperBinaryDesktopHelper = "desktop_helper"
+	HelperBinaryAssistHelper  = "assist_helper"
 )
 
 const (
@@ -325,6 +328,14 @@ type ShutdownIntent struct {
 // TokenUpdate is sent by the agent to the watchdog when the watchdog-scoped token changes.
 type TokenUpdate struct {
 	Token string `json:"token"`
+}
+
+// HelperTokenUpdate carries the helper-scoped API token to the Assist helper.
+// Distinct from TokenUpdate (agent token -> watchdog) so the two tokens can
+// never be cross-delivered.
+type HelperTokenUpdate struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt,omitempty"` // RFC3339, optional
 }
 
 // WatchdogCommand is a command forwarded from the watchdog to the agent.
