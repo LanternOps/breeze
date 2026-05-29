@@ -370,6 +370,12 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_backup_health: { resource: 'devices', action: 'read' },
   run_backup_verification: { resource: 'devices', action: 'execute' },
   get_recovery_readiness: { resource: 'devices', action: 'read' },
+  // M365 helpdesk tools (Delegant-backed)
+  m365_lookup_user: { resource: 'm365', action: 'read' },
+  m365_recent_signins: { resource: 'm365', action: 'read' },
+  m365_list_group_memberships: { resource: 'm365', action: 'read' },
+  m365_disable_user: { resource: 'm365', action: 'execute' },
+  m365_reset_password: { resource: 'm365', action: 'execute' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {

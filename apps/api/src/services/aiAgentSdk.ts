@@ -23,6 +23,8 @@ import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './au
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from './expoPush';
+import { loadSession, loadConnection } from './m365Helpers';
+import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -31,6 +33,34 @@ function stripMcpPrefix(toolName: string): string {
   if (!toolName.startsWith('mcp__')) return toolName;
   const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
   return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
+}
+
+/**
+ * Human-readable verbs for the two M365 mutation tools that hit per-step
+ * approval. The three read tools are tier 1 and never create an approval card,
+ * so they are intentionally absent.
+ */
+const M365_VERB: Record<string, string> = {
+  m365_reset_password: 'Reset M365 password for',
+  m365_disable_user: 'Disable M365 sign-in for',
+};
+
+/**
+ * Build an enriched approval-card risk summary for M365 mutation tools,
+ * surfacing the customer tenant, target user, and the operator's reason.
+ * Returns null for non-M365 tools or when no connection is available, so the
+ * caller can fall back to the default guardrail description.
+ */
+export function buildM365RiskSummary(
+  toolName: string,
+  input: Record<string, unknown>,
+  conn: Pick<DelegantM365ConnectionRow, 'customerDisplayName'> | null,
+): string | null {
+  const verb = M365_VERB[stripMcpPrefix(toolName)] ?? M365_VERB[toolName];
+  if (!verb || !conn) return null;
+  const user = String(input.userIdentifier ?? 'a user');
+  const reason = input.reason ? ` Reason: ${String(input.reason)}.` : '';
+  return `${verb} ${user} on ${conn.customerDisplayName}.${reason}`;
 }
 
 function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
@@ -386,7 +416,18 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       const riskTier: 'medium' | 'high' | 'critical' =
         guardrailCheck.tier >= 4 ? 'critical' : guardrailCheck.tier >= 3 ? 'high' : 'medium';
       const actionLabel = description;
-      const riskSummary = description.length > 500 ? `${description.slice(0, 497)}...` : description;
+      // For M365 mutation tools, enrich the approval card with the customer
+      // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
+      // the default description rather than throwing into the approval path.
+      let m365Summary: string | null = null;
+      try {
+        const sessRow = await loadSession(session.breezeSessionId);
+        if (sessRow?.delegantM365ConnectionId) {
+          const conn = await loadConnection(sessRow.delegantM365ConnectionId);
+          m365Summary = buildM365RiskSummary(toolName, input as Record<string, unknown>, conn);
+        }
+      } catch { /* non-fatal: fall back to default description */ }
+      const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
       const expiresAt = new Date(Date.now() + 300_000); // matches waitForApproval timeout
 
       let approvalRequestId: string | undefined;

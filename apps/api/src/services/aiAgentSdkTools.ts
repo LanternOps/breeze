@@ -137,6 +137,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // M365 helpdesk tools (Delegant-backed)
+  m365_lookup_user: 1,
+  m365_recent_signins: 1,
+  m365_list_group_memberships: 1,
+  m365_disable_user: 3,
+  m365_reset_password: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
