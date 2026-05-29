@@ -260,7 +260,8 @@ function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: 
       path: ['TRUSTED_PROXY_CIDRS'],
       message:
         'TRUSTED_PROXY_CIDRS must be a non-empty CIDR list when TRUST_PROXY_HEADERS is enabled in production '
-        + '(e.g. "172.30.0.11/32" for a local Caddy hop, or "10.0.0.0/8,172.16.0.0/12" for a wider trusted range). '
+        + '(e.g. "172.30.0.11/32" for a local Caddy hop). Private-range proxies MUST be pinned to exact hosts '
+        + '(/32 for IPv4, /128 for IPv6) — broad private CIDRs like 172.16.0.0/12 or 10.0.0.0/8 are rejected. '
         + 'Without it, every upstream proxy is rejected and per-IP rate limits collapse onto a spoofable fingerprint. '
         + 'If the API is NOT behind a reverse proxy, set TRUST_PROXY_HEADERS=false instead.',
     });
