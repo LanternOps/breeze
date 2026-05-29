@@ -360,6 +360,113 @@ function makeHandler(
   };
 }
 
+/**
+ * Session-aware variant of makeHandler for tools whose handler signature is
+ * `(args, auth, sessionId)` and which require an active streaming session
+ * (e.g. Microsoft 365 helpdesk tools bound to a customer tenant).
+ *
+ * CRITICAL: this mirrors makeHandler EXACTLY — the full onPreToolUse enforcement
+ * chain (TOOL_TIERS gate, guardrails, RBAC checkToolPermission, rate limits, and
+ * tier-3 approval-card creation + waitForApproval blocking poll) runs before the
+ * handler, and onPostToolUse runs after for ai_tool_executions persistence +
+ * delegant_tool_call_id correlation. The ONLY difference from makeHandler is the
+ * execute line: instead of executeTool(toolName, args, auth) it resolves the
+ * active session and calls sessionHandler(args, auth, session.breezeSessionId).
+ *
+ * The no_active_session guard runs before any enforcement (nothing to enforce
+ * if there is no session/tenant to act on).
+ */
+function makeSessionAwareHandler(
+  toolName: string,
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  sessionHandler: (args: Record<string, unknown>, auth: AuthContext, sessionId: string) => Promise<string>,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  const toolTimeout = getToolTimeout(toolName);
+
+  return async (args: Record<string, unknown>) => {
+    // See makeHandler: escape any inherited AsyncLocalStorage DB context so all
+    // DB ops (preToolUse approval writes, the tool call, postToolUse persistence)
+    // start with a clean transaction context.
+    return runOutsideDbContext(async () => {
+    const startTime = Date.now();
+
+    // Resolve the active session up front. The no_active_session guard precedes
+    // enforcement — there is no tenant/session to gate against if it's absent.
+    const session = getActiveSession?.();
+    if (!session) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }],
+        isError: true,
+      };
+    }
+
+    // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
+    if (onPreToolUse) {
+      let check: { allowed: true } | { allowed: false; error: string };
+      try {
+        check = await onPreToolUse(toolName, args);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        check = { allowed: false, error: `Guardrails check failed: ${reason}` };
+      }
+      if (!check.allowed) {
+        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
+        await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
+        return {
+          content: [{ type: 'text' as const, text: safeError }],
+          isError: true,
+        };
+      }
+    }
+    try {
+      const auth = getAuth();
+      // Use the user's actual auth scope so RLS / DB-level tenant isolation is enforced.
+      const dbContext: DbAccessContext = {
+        scope: auth.scope as DbAccessContext['scope'],
+        orgId: auth.orgId ?? null,
+        accessibleOrgIds: auth.accessibleOrgIds ?? null,
+      };
+      const result = await withTimeout(
+        withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
+        toolTimeout,
+        toolName,
+      );
+      const compactResult = compactToolResultForChat(toolName, result);
+
+      // Detect error responses returned as JSON strings by tool handlers
+      let isToolError = false;
+      try {
+        const parsed = JSON.parse(compactResult);
+        if (parsed && typeof parsed === 'object' && 'error' in parsed && !('success' in parsed) && !('data' in parsed) && !('configured' in parsed)) {
+          isToolError = true;
+        }
+      } catch { /* not JSON, treat as success */ }
+
+      const durationMs = Date.now() - startTime;
+      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      const durationMs = Date.now() - startTime;
+      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
+      return {
+        content: [{ type: 'text' as const, text: safeError }],
+        isError: true,
+      };
+    }
+    }); // end runOutsideDbContext
+  };
+}
+
+// Exported for unit tests that lock in the enforcement ordering.
+export const __test__ = { makeSessionAwareHandler };
+
 // ============================================
 // SDK MCP Server Factory
 // ============================================
@@ -1461,67 +1568,43 @@ export function createBreezeMcpServer(
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
-    // to the active AI session). Thin glue around the testable handlers in
-    // ./aiToolsM365 — each resolves the session via getActiveSession() following
-    // the propose_action_plan precedent.
+    // to the active AI session). Routed through makeSessionAwareHandler so they
+    // get the SAME enforcement as every other tool: onPreToolUse (TOOL_TIERS gate,
+    // guardrails, RBAC, rate limits, tier-3 approval) and onPostToolUse
+    // (ai_tool_executions persistence + delegant_tool_call_id correlation).
     tool(
       'm365_lookup_user',
       'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
       { userIdentifier: z.string() },
-      async (args: Record<string, unknown>) => {
-        const session = getActiveSession?.();
-        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
-        const text = await m365LookupUserHandler(args, session.auth, session.breezeSessionId);
-        return { content: [{ type: 'text' as const, text }] };
-      }
+      makeSessionAwareHandler('m365_lookup_user', getAuth, getActiveSession, m365LookupUserHandler, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'm365_recent_signins',
       "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
       { userIdentifier: z.string() },
-      async (args: Record<string, unknown>) => {
-        const session = getActiveSession?.();
-        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
-        const text = await m365RecentSigninsHandler(args, session.auth, session.breezeSessionId);
-        return { content: [{ type: 'text' as const, text }] };
-      }
+      makeSessionAwareHandler('m365_recent_signins', getAuth, getActiveSession, m365RecentSigninsHandler, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'm365_list_group_memberships',
       'List the groups in the customer tenant selected for this session.',
       {},
-      async (args: Record<string, unknown>) => {
-        const session = getActiveSession?.();
-        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
-        const text = await m365ListGroupMembershipsHandler(args, session.auth, session.breezeSessionId);
-        return { content: [{ type: 'text' as const, text }] };
-      }
+      makeSessionAwareHandler('m365_list_group_memberships', getAuth, getActiveSession, m365ListGroupMembershipsHandler, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'm365_disable_user',
       'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
       { userIdentifier: z.string(), reason: z.string() },
-      async (args: Record<string, unknown>) => {
-        const session = getActiveSession?.();
-        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
-        const text = await m365DisableUserHandler(args, session.auth, session.breezeSessionId);
-        return { content: [{ type: 'text' as const, text }] };
-      }
+      makeSessionAwareHandler('m365_disable_user', getAuth, getActiveSession, m365DisableUserHandler, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'm365_reset_password',
       'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
       { userIdentifier: z.string(), reason: z.string() },
-      async (args: Record<string, unknown>) => {
-        const session = getActiveSession?.();
-        if (!session) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }], isError: true };
-        const text = await m365ResetPasswordHandler(args, session.auth, session.breezeSessionId);
-        return { content: [{ type: 'text' as const, text }] };
-      }
+      makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
     ),
   ];
 
