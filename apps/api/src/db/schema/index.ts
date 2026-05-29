@@ -60,6 +60,7 @@ export * from './warranty';
 export * from './applicationBackup';
 export * from './hypervVms';
 export * from './c2c';
+export * from './delegant';
 export * from './sla';
 export * from './drPlans';
 export * from './localVault';
