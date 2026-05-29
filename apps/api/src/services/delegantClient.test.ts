@@ -52,8 +52,8 @@ describe('mintPrincipalJwt', () => {
     };
     const t1 = await __mintPrincipalJwtForTest(args);
     const t2 = await __mintPrincipalJwtForTest(args);
-    const p1 = JSON.parse(Buffer.from(t1.split('.')[1], 'base64url').toString());
-    const p2 = JSON.parse(Buffer.from(t2.split('.')[1], 'base64url').toString());
+    const p1 = JSON.parse(Buffer.from(t1.split('.')[1]!, 'base64url').toString());
+    const p2 = JSON.parse(Buffer.from(t2.split('.')[1]!, 'base64url').toString());
     expect(p1.jti).not.toBe(p2.jti);
   });
 });
@@ -144,7 +144,7 @@ describe('invokeDelegantTool response mapping', () => {
   it('sends the service token and principal header', async () => {
     const fetchMock = mockFetchOnce(200, { isError: false, data: {} });
     await invokeDelegantTool(baseArgs(), { env, fetchImpl: fetchMock });
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('https://delegant.example/v1/tools/invoke');
     expect(init.headers['Authorization']).toBe('Bearer svc');
     expect(typeof init.headers['X-Delegant-Principal']).toBe('string');
