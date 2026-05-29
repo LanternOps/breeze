@@ -99,6 +99,12 @@ describe('invokeDelegantTool response mapping', () => {
     expect(res).toEqual({ kind: 'ok', data: { id: 'u1' } });
   });
 
+  it('maps 200 + {isError:false,data,toolCallId} to ok with toolCallId', async () => {
+    const fetchMock = mockFetchOnce(200, { isError: false, data: { id: 'u1' }, toolCallId: 'tc-123' });
+    const res = await invokeDelegantTool(baseArgs(), { env, fetchImpl: fetchMock });
+    expect(res).toEqual({ kind: 'ok', data: { id: 'u1' }, toolCallId: 'tc-123' });
+  });
+
   it('maps 200 + {isError:true,message} to error/tool_error', async () => {
     const fetchMock = mockFetchOnce(200, { isError: true, message: 'user not found' });
     const res = await invokeDelegantTool(baseArgs(), { env, fetchImpl: fetchMock });

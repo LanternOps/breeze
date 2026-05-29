@@ -54,7 +54,7 @@ export interface DelegantInvokeArgs {
 }
 
 export type DelegantInvokeResult =
-  | { kind: 'ok'; data: unknown }   // a later task may widen this with an optional toolCallId
+  | { kind: 'ok'; data: unknown; toolCallId?: string }
   | { kind: 'error'; code: DelegantErrorCode; message: string };
 
 interface InvokeDeps {
@@ -134,7 +134,11 @@ async function mapResponse(resp: Response): Promise<DelegantInvokeResult> {
     if (body && body.isError === true) {
       return { kind: 'error', code: 'tool_error', message: String(body.message ?? 'tool error') };
     }
-    return { kind: 'ok', data: body?.data ?? body };
+    return {
+      kind: 'ok',
+      data: body?.data ?? body,
+      ...(typeof body?.toolCallId === 'string' ? { toolCallId: body.toolCallId } : {}),
+    };
   }
   const message = String(body?.message ?? body?.error ?? `HTTP ${resp.status}`);
   switch (resp.status) {

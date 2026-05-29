@@ -34,7 +34,17 @@ export function formatResultForLlm(
     errorTemplate: (err: { code: string; message: string }) => string;
   },
 ): string {
-  if (result.kind === 'ok') return templates.successTemplate(result.data);
+  if (result.kind === 'ok') {
+    const message = templates.successTemplate(result.data);
+    // When Delegant returns a toolCallId, emit a JSON envelope carrying both the
+    // human-readable message and the delegantToolCallId so the postToolUse layer
+    // can correlate this Breeze audit row to Delegant's audit ledger. The human
+    // text remains a substring of the JSON (the LLM can still read it).
+    if (typeof result.toolCallId === 'string') {
+      return JSON.stringify({ message, delegantToolCallId: result.toolCallId });
+    }
+    return message;
+  }
   return templates.errorTemplate({ code: result.code, message: result.message });
 }
 

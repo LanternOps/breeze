@@ -631,6 +631,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               toolOutput: parsedOutput,
               status: isError ? 'failed' : 'completed',
               errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
+              delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
               durationMs,
               completedAt: new Date(),
             })
@@ -649,6 +650,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
                 status: isError ? 'failed' : 'completed',
                 toolOutput: parsedOutput,
                 errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
+                delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
                 durationMs,
                 completedAt: new Date(),
               })

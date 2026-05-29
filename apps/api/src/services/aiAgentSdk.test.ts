@@ -658,6 +658,63 @@ describe('createSessionPostToolUse', () => {
     expect(JSON.stringify(insertedPayloads)).not.toContain('hunter2');
     expect(JSON.stringify(insertedPayloads)).not.toContain('raw-secret');
   });
+
+  it('persists delegantToolCallId on the inserted execution row (tier < 2)', async () => {
+    const session = makeActiveSession();
+    const values = mockInsertValues();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('m365_lookup_user', { userIdentifier: 'u1' }, JSON.stringify({
+      message: 'M365 user profile: {"id":"u1"}',
+      delegantToolCallId: 'tc-123',
+    }), false, 12);
+
+    // Two inserts fire (aiMessages then aiToolExecutions); the execution row is
+    // the one carrying toolInput.
+    const execInsert = values.mock.calls
+      .map((c) => c[0])
+      .find((v) => v && typeof v === 'object' && 'toolInput' in v);
+    expect(execInsert).toBeDefined();
+    expect((execInsert as any).delegantToolCallId).toBe('tc-123');
+  });
+
+  it('omits delegantToolCallId for non-M365 tool output (no key present)', async () => {
+    const session = makeActiveSession();
+    const values = mockInsertValues();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'device-1' }, JSON.stringify({
+      status: 'completed',
+    }), false, 12);
+
+    const execInsert = values.mock.calls
+      .map((c) => c[0])
+      .find((v) => v && typeof v === 'object' && 'toolInput' in v);
+    expect(execInsert).toBeDefined();
+    expect((execInsert as any).delegantToolCallId).toBeUndefined();
+  });
+
+  it('persists delegantToolCallId on the updated execution row (tier >= 2)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+    } as any);
+    const session = makeActiveSession();
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    const callback = createSessionPostToolUse(session);
+
+    await callback('m365_reset_password', { userIdentifier: 'u1', reason: 'forgot' }, JSON.stringify({
+      message: 'Reset the password for u1.',
+      delegantToolCallId: 'tc-456',
+    }), false, 12);
+
+    const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
+    expect(setCall).toBeDefined();
+    expect((setCall![0] as any).delegantToolCallId).toBe('tc-456');
+  });
 });
 
 // ============================================

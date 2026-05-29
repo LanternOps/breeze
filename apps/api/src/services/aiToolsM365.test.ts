@@ -47,6 +47,26 @@ describe('m365_lookup_user', () => {
     expect(out).toContain('Jane');
   });
 
+  it('threads the Delegant toolCallId into the output JSON when present', async () => {
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: { id: 'u1', displayName: 'Jane' }, toolCallId: 'tc-123' });
+    const out = await m365LookupUserHandler({ userIdentifier: 'u1' }, auth, 'sess-1');
+    expect(out).toContain('Jane'); // human text still present as a substring
+    const parsed = JSON.parse(out);
+    expect(parsed.delegantToolCallId).toBe('tc-123');
+    expect(parsed.message).toContain('Jane');
+  });
+
+  it('omits delegantToolCallId when Delegant does not return one', async () => {
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: { id: 'u1', displayName: 'Jane' } });
+    const out = await m365LookupUserHandler({ userIdentifier: 'u1' }, auth, 'sess-1');
+    expect(out).toContain('Jane');
+    expect(out).not.toContain('delegantToolCallId');
+  });
+
   it('returns a graceful message when Delegant is unreachable', async () => {
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
     (loadConnection as any).mockResolvedValue(activeConn);
