@@ -155,6 +155,8 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
+	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
+	helperTokenMu    sync.RWMutex
 	sessionBroker    *sessionbroker.Broker
 	isService        bool
 	isHeadless       bool
@@ -407,6 +409,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
+		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
+		// Retain the helper-scoped token so connect-time pushes have it even after
+		// the config copy is cleared post-persist during rotation.
+		h.setHelperToken(h.config.HelperAuthToken)
 		reason := "config"
 		if cfg.IsService {
 			reason = "system-service"
@@ -2432,6 +2438,10 @@ func (h *Heartbeat) handleTokenRotation() {
 	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
 	h.sendWatchdogTokenUpdate(rotateResp.WatchdogAuthToken)
 
+	// Retain and push the rotated helper token to any connected assist sessions.
+	h.setHelperToken(rotateResp.HelperAuthToken)
+	h.sendHelperTokenUpdate(rotateResp.HelperAuthToken)
+
 	if h.wsClient != nil {
 		h.wsClient.ForceReconnect()
 	}
@@ -2468,6 +2478,59 @@ func (h *Heartbeat) sendWatchdogTokenUpdate(newToken string) {
 	_ = sess.SendNotify("", ipc.TypeTokenUpdate, ipc.TokenUpdate{
 		Token: newToken,
 	})
+}
+
+func (h *Heartbeat) setHelperToken(token string) {
+	h.helperTokenMu.Lock()
+	h.helperToken = token
+	h.helperTokenMu.Unlock()
+}
+
+func (h *Heartbeat) currentHelperToken() string {
+	h.helperTokenMu.RLock()
+	defer h.helperTokenMu.RUnlock()
+	return h.helperToken
+}
+
+// shouldPushHelperToken reports whether a session with the given scopes should
+// receive the helper token. Only assist-scope sessions qualify; this guards
+// against ever sending the helper token to the watchdog or a user helper.
+func shouldPushHelperToken(scopes []string) bool {
+	for _, s := range scopes {
+		if s == ipc.HelperRoleAssist {
+			return true
+		}
+	}
+	return false
+}
+
+// handleHelperSessionAuthenticated is wired as the broker's
+// SessionAuthenticatedHandler. It pushes the current helper token to a freshly
+// authenticated assist session.
+func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Session) {
+	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
+		return
+	}
+	token := h.currentHelperToken()
+	if token == "" {
+		return
+	}
+	if err := session.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: token}); err != nil {
+		log.Warn("failed to push helper token to assist session", "error", err.Error())
+	}
+}
+
+// sendHelperTokenUpdate pushes a (possibly rotated) helper token to all
+// connected assist sessions.
+func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
+	if h.sessionBroker == nil || newToken == "" {
+		return
+	}
+	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.HelperRoleAssist) {
+		if err := sess.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: newToken}); err != nil {
+			log.Warn("failed to push rotated helper token", "error", err.Error())
+		}
+	}
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {
