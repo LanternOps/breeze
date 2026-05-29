@@ -545,8 +545,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         for (let attempt = 0; attempt < TOKEN_POLL_MAX_ATTEMPTS; attempt++) {
           try {
             ready = (await invoke('helper_token_ready')) as boolean;
-          } catch {
+          } catch (err) {
             ready = false;
+            // Log on the last attempt so a broken IPC bridge (command throwing
+            // every iteration) is visible without spamming on every poll tick.
+            if (attempt === TOKEN_POLL_MAX_ATTEMPTS - 1) {
+              console.warn(
+                '[helper] helper_token_ready threw on final attempt — IPC bridge may be broken:',
+                err,
+              );
+            } else {
+              console.debug('[helper] helper_token_ready threw (attempt', attempt, '):', err);
+            }
           }
           if (ready) break;
           // Surface the waiting state on the first miss so the UI updates.
@@ -554,6 +564,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set({ agentConfig: config, connectionState: 'waiting-for-token', username });
           }
           await new Promise((resolve) => setTimeout(resolve, TOKEN_POLL_INTERVAL_MS));
+        }
+
+        if (!ready) {
+          // Phase 1: file-token fallback is still valid, so we continue to
+          // 'connected'. Requests may still succeed via the on-disk token.
+          // Phase 2 (no file fallback): replace this branch with a transition
+          // to an 'agent-unreachable' / 'error' state instead of 'connected'.
+          console.warn(
+            '[helper] IPC token not received before timeout; proceeding with file-fallback token (Phase 1).' +
+              ' If requests fail, ensure the Breeze agent is running.',
+          );
         }
       }
 
