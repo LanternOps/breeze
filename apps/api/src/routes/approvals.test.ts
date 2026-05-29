@@ -25,7 +25,12 @@ vi.mock('../db/schema/approvals', () => ({
 }));
 
 vi.mock('../db/schema/ai', () => ({
-  aiToolExecutions: { id: 'id' },
+  aiToolExecutions: { id: 'id', sessionId: 'session_id' },
+  aiSessions: { id: 'id', delegantM365ConnectionId: 'delegant_m365_connection_id' },
+}));
+
+vi.mock('../db/schema/delegant', () => ({
+  delegantM365Connections: { id: 'id', customerDisplayName: 'customer_display_name' },
 }));
 
 vi.mock('../db/schema/audit', () => ({
@@ -90,6 +95,16 @@ function mockSelectResolves(rows: unknown[]) {
       where: vi.fn().mockResolvedValue(rows),
     }),
   } as any);
+}
+
+// Mocks the customer-tenant join chain used by lookupCustomerTenants:
+//   db.select({...}).from(...).innerJoin(...).innerJoin(...).where(...)
+function mockTenantJoinResolves(rows: unknown[]) {
+  const innerJoin2 = { where: vi.fn().mockResolvedValue(rows) };
+  const innerJoin1 = { innerJoin: vi.fn().mockReturnValue(innerJoin2) };
+  return {
+    from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue(innerJoin1) }),
+  };
 }
 
 beforeEach(() => {
@@ -178,6 +193,67 @@ describe('GET /approvals/:id', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.approval.id).toBe('a1');
+  });
+});
+
+describe('GET /approvals/:id customer tenant (M365)', () => {
+  const m365Approval = {
+    id: 'a1',
+    userId: TEST_USER.id,
+    requestingClientLabel: 'Breeze AI',
+    requestingMachineLabel: null,
+    requestingClientId: null,
+    requestingSessionId: null,
+    actionLabel: 'Reset M365 password',
+    actionToolName: 'm365_reset_password',
+    actionArguments: { userPrincipalName: 'jane@pinnacle.dental' },
+    riskTier: 'high',
+    riskSummary: 'Reset M365 password for jane@pinnacle.dental on Pinnacle Dental.',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000),
+    decidedAt: null,
+    decisionReason: null,
+    executionId: 'exec-m365',
+    isRecursive: false,
+    createdAt: new Date(),
+  };
+
+  it('serializes customerTenant from the connection for an m365 mutation approval', async () => {
+    // 1) approval row select; 2) customer-tenant join chain.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([m365Approval]),
+        }),
+      } as any)
+      .mockReturnValueOnce(
+        mockTenantJoinResolves([
+          { executionId: 'exec-m365', customerDisplayName: 'Pinnacle Dental' },
+        ]) as any,
+      );
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.customerTenant).toBe('Pinnacle Dental');
+  });
+
+  it('serializes customerTenant: null for a non-m365 approval (no tenant lookup)', async () => {
+    const nonM365 = {
+      ...m365Approval,
+      actionToolName: 'breeze.devices.reboot',
+      riskSummary: 'Reboot devices.',
+    };
+    // Only the approval-row select runs; lookupCustomerTenants short-circuits
+    // (no m365 tool) and never queries the DB.
+    mockSelectResolves([nonM365]);
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.customerTenant).toBeNull();
+    // The join select must not have been invoked beyond the single row read.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 });
 

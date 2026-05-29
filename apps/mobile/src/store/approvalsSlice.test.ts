@@ -32,6 +32,7 @@ function makeApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
     actionArguments: {},
     riskTier: 'medium',
     riskSummary: 'Will reboot the agent service',
+    customerTenant: null,
     status: 'pending',
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     decidedAt: null,

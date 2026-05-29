@@ -20,6 +20,7 @@ import { RequesterRow } from './components/RequesterRow';
 import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { RiskBand } from './components/RiskBand';
+import { CustomerTenantBadge } from './components/CustomerTenantBadge';
 import { ApprovalButtons } from './components/ApprovalButtons';
 import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
@@ -248,6 +249,9 @@ export function ApprovalScreen() {
             createdAt={focused.createdAt}
           />
           <ActionHeadline action={focused.actionLabel} />
+          {focused.customerTenant ? (
+            <CustomerTenantBadge tenant={focused.customerTenant} />
+          ) : null}
           <RiskBand tier={focused.riskTier} summary={focused.riskSummary} />
           <DetailsCollapse toolName={focused.actionToolName} args={focused.actionArguments} />
         </ScrollView>

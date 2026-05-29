@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, gt, desc } from 'drizzle-orm';
+import { and, eq, gt, desc, inArray } from 'drizzle-orm';
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
-import { aiToolExecutions } from '../db/schema/ai';
+import { aiToolExecutions, aiSessions } from '../db/schema/ai';
+import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
@@ -29,7 +30,14 @@ approvalRoutes.get('/pending', async (c) => {
     )
     .orderBy(desc(approvalRequests.createdAt));
 
-  return c.json({ approvals: rows.map(serialize) });
+  // Batched lookup: one query resolves the customer tenant for ALL M365
+  // mutation rows in this list (no N+1).
+  const tenants = await lookupCustomerTenants(rows);
+  return c.json({
+    approvals: rows.map((r) =>
+      serialize(r, (r.executionId && tenants.get(r.executionId)) || null),
+    ),
+  });
 });
 
 const denySchema = z.object({
@@ -130,7 +138,9 @@ approvalRoutes.get('/:id', async (c) => {
     .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
 
   if (!row) return c.json({ error: 'Not found' }, 404);
-  return c.json({ approval: serialize(row) });
+  const tenants = await lookupCustomerTenants([row]);
+  const customerTenant = (row.executionId && tenants.get(row.executionId)) || null;
+  return c.json({ approval: serialize(row, customerTenant) });
 });
 
 approvalRoutes.post('/:id/approve', async (c) => {
@@ -308,7 +318,56 @@ async function decideHandler(
   return c.json({ approval: serialize(updated!) });
 }
 
-function serialize(r: typeof approvalRequests.$inferSelect) {
+// The two M365 mutation tools (tier 3) that create an approval card. Read-only
+// M365 tools are tier 1 and never reach this surface. Only these get a customer
+// tenant lookup so a technician sees the blast radius at a glance.
+const M365_MUTATION_TOOLS = new Set(['m365_reset_password', 'm365_disable_user']);
+
+/**
+ * Resolve the customer tenant display name for a set of approval rows whose
+ * action is an M365 mutation. Walks executionId -> ai_tool_executions.sessionId
+ * -> ai_sessions.delegantM365ConnectionId -> delegant_m365_connections, joined
+ * in ONE query for ALL given execution ids (no per-row / N+1 lookups).
+ *
+ * Returns a Map keyed by executionId. Rows with no execution, a non-M365 tool,
+ * or a session without a Delegant M365 connection are simply absent from the
+ * map and serialize as customerTenant: null.
+ */
+async function lookupCustomerTenants(
+  rows: (typeof approvalRequests.$inferSelect)[],
+): Promise<Map<string, string>> {
+  const executionIds = rows
+    .filter((r) => r.executionId && M365_MUTATION_TOOLS.has(r.actionToolName))
+    .map((r) => r.executionId as string);
+
+  if (executionIds.length === 0) return new Map();
+
+  const joined = await db
+    .select({
+      executionId: aiToolExecutions.id,
+      customerDisplayName: delegantM365Connections.customerDisplayName,
+    })
+    .from(aiToolExecutions)
+    .innerJoin(aiSessions, eq(aiSessions.id, aiToolExecutions.sessionId))
+    .innerJoin(
+      delegantM365Connections,
+      eq(delegantM365Connections.id, aiSessions.delegantM365ConnectionId),
+    )
+    .where(inArray(aiToolExecutions.id, executionIds));
+
+  const map = new Map<string, string>();
+  for (const row of joined) {
+    if (row.executionId && row.customerDisplayName) {
+      map.set(row.executionId, row.customerDisplayName);
+    }
+  }
+  return map;
+}
+
+function serialize(
+  r: typeof approvalRequests.$inferSelect,
+  customerTenant: string | null = null,
+) {
   return {
     id: r.id,
     requestingClientLabel: r.requestingClientLabel,
@@ -318,6 +377,7 @@ function serialize(r: typeof approvalRequests.$inferSelect) {
     actionArguments: r.actionArguments,
     riskTier: r.riskTier,
     riskSummary: r.riskSummary,
+    customerTenant,
     status: r.status,
     expiresAt: r.expiresAt.toISOString(),
     decidedAt: r.decidedAt?.toISOString() ?? null,
