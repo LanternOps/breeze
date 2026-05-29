@@ -9,7 +9,8 @@ export interface PiHoleProviderConfig {
 export class PiHoleProvider implements DnsProvider {
   constructor(
     private readonly apiKey: string,
-    private readonly config: PiHoleProviderConfig
+    private readonly config: PiHoleProviderConfig,
+    private readonly allowPrivateNetwork = false
   ) {}
 
   private baseUrl(): string {
@@ -26,7 +27,9 @@ export class PiHoleProvider implements DnsProvider {
       url.searchParams.set(key, value);
     }
     url.searchParams.set('auth', this.apiKey);
-    return requestJson<Record<string, unknown>>(url);
+    return requestJson<Record<string, unknown>>(url, {
+      allowPrivateNetwork: this.allowPrivateNetwork
+    });
   }
 
   async syncEvents(since: Date, until: Date): Promise<DnsEvent[]> {

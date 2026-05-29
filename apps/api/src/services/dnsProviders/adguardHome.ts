@@ -37,7 +37,8 @@ export class AdGuardHomeProvider implements DnsProvider {
   constructor(
     private readonly username: string,
     private readonly password: string | null,
-    private readonly config: AdGuardHomeConfig
+    private readonly config: AdGuardHomeConfig,
+    private readonly allowPrivateNetwork = false
   ) {}
 
   private baseUrl(): string {
@@ -56,6 +57,7 @@ export class AdGuardHomeProvider implements DnsProvider {
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
     return requestJson<T>(`${this.baseUrl()}${path}`, {
       ...init,
+      allowPrivateNetwork: this.allowPrivateNetwork,
       headers: {
         Authorization: this.authHeader(),
         ...(init.headers ?? {})

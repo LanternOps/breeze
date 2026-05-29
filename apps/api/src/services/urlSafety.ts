@@ -93,6 +93,48 @@ export function isPrivateIp(ip: string): boolean {
   return isPrivateV4(stripped);
 }
 
+// RFC1918 (IPv4 private) + ULA (IPv6 fc00::/7) only. This is the strict subset
+// of `isPrivateIp` that an on-prem appliance integration may legitimately need
+// to reach (e.g. a Pi-hole / AdGuard Home box on the LAN). Deliberately
+// EXCLUDES loopback (127/8, ::1), link-local + cloud metadata (169.254/16,
+// fe80::/10), CGNAT (100.64/10), unspecified (0/8), multicast/reserved, and
+// documentation/TEST-NET ranges — those are never a legitimate appliance
+// target and remain blocked even when private networking is opted in.
+function isRfc1918V4(ip: string): boolean {
+  const octets = parseV4(ip);
+  if (!octets) return false;
+  return (
+    octets[0] === 10 || // 10.0.0.0/8
+    (octets[0] === 192 && octets[1] === 168) || // 192.168.0.0/16
+    (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) // 172.16.0.0/12
+  );
+}
+
+/**
+ * True only for RFC1918 IPv4 or ULA IPv6 (fc00::/7) addresses — the ranges an
+ * on-prem appliance integration may opt into reaching. Loopback, link-local,
+ * metadata, CGNAT, multicast, etc. are NOT included here (see `isAlwaysBlockedIp`).
+ */
+export function isRfc1918OrUla(ip: string): boolean {
+  if (!ip) return false;
+  const stripped = ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
+  if (stripped.includes(':')) {
+    const lower = stripped.toLowerCase();
+    // ULA fc00::/7 — first byte 0xfc or 0xfd.
+    return lower.startsWith('fc') || lower.startsWith('fd');
+  }
+  return isRfc1918V4(stripped);
+}
+
+/**
+ * IPs that must NEVER be dialed even when `allowPrivateNetwork` is set: any
+ * private/loopback/link-local/metadata/CGNAT/multicast range that is NOT a
+ * plain RFC1918/ULA appliance address. Public IPs return false (allowed).
+ */
+export function isAlwaysBlockedIp(ip: string): boolean {
+  return isPrivateIp(ip) ? !isRfc1918OrUla(ip) : false;
+}
+
 // Optionally override DNS lookup in tests via module-level hook.
 type LookupAllFn = (
   hostname: string,
@@ -110,6 +152,13 @@ export function __setLookupForTests(fn: LookupAllFn | null): void {
 export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Opt-in for on-prem appliance integrations (e.g. Pi-hole / AdGuard Home on
+   * self-hosted deployments): allows RFC1918/ULA targets. Loopback, link-local,
+   * cloud metadata (169.254.169.254), CGNAT, multicast, etc. remain blocked
+   * even when this is true. Leave unset for strict (hosted-SaaS) behavior.
+   */
+  allowPrivateNetwork?: boolean;
 }
 
 /**
@@ -129,11 +178,16 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
 
   const hostname = u.hostname.replace(/^\[|\]$/g, '');
 
+  // Pick the blocking predicate. With `allowPrivateNetwork`, RFC1918/ULA
+  // appliance addresses are permitted but metadata/loopback/link-local/CGNAT
+  // (etc.) are STILL blocked; otherwise every private range is blocked.
+  const block = init.allowPrivateNetwork ? isAlwaysBlockedIp : isPrivateIp;
+
   // If the URL itself is a literal private IP, reject without any DNS work.
   // (This also catches `localhost` via the DNS path below, but handling
   // literals first avoids needing to resolve them.)
   const isLiteral = /^[\d.]+$/.test(hostname) || hostname.includes(':');
-  if (isLiteral && isPrivateIp(hostname)) {
+  if (isLiteral && block(hostname)) {
     throw new SsrfBlockedError(`URL points to blocked address: ${hostname}`, {
       hostname,
       resolvedIps: [hostname]
@@ -153,7 +207,7 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   }
 
   const allIps = records.map((r) => r.address);
-  const safeRecord = records.find((r) => !isPrivateIp(r.address));
+  const safeRecord = records.find((r) => !block(r.address));
   if (!safeRecord) {
     throw new SsrfBlockedError(
       `all resolved IPs for ${hostname} are private/loopback/link-local`,

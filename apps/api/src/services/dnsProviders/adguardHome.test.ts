@@ -1,31 +1,38 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdGuardHomeProvider } from './adguardHome';
+import { requestJson } from './http';
+
+// requestJson now routes through safeFetch (SSRF-safe). The provider unit tests
+// don't exercise transport — they mock requestJson and assert the provider's
+// request shaping (URL, auth header, body) and response handling.
+vi.mock('./http', () => ({
+  requestJson: vi.fn()
+}));
 
 interface MockResponse {
-  ok: boolean;
-  status?: number;
-  statusText?: string;
+  ok?: boolean;
   body?: unknown;
-  headers?: Record<string, string>;
 }
 
-function makeFetchMock(responses: MockResponse[]): ReturnType<typeof vi.fn> {
+const requestJsonMock = vi.mocked(requestJson);
+
+// Queue parsed JSON bodies in call order. requestJson returns the parsed body
+// directly (unlike the old fetch mock which returned a Response).
+function makeFetchMock(responses: MockResponse[]): typeof requestJsonMock {
   const queue = [...responses];
-  return vi.fn(async () => {
+  requestJsonMock.mockImplementation(async () => {
     const next = queue.shift();
-    if (!next) throw new Error('fetch mock exhausted');
-    const headers = new Map(Object.entries(next.headers ?? {}));
-    return {
-      ok: next.ok,
-      status: next.status ?? (next.ok ? 200 : 500),
-      statusText: next.statusText ?? '',
-      text: async () => JSON.stringify(next.body ?? {}),
-      headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null }
-    } as unknown as Response;
+    if (!next) throw new Error('requestJson mock exhausted');
+    return (next.body ?? {}) as never;
   });
+  return requestJsonMock;
 }
 
 describe('AdGuardHomeProvider', () => {
+  beforeEach(() => {
+    requestJsonMock.mockReset();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -41,7 +48,6 @@ describe('AdGuardHomeProvider', () => {
 
   it('sends HTTP Basic auth header on requests', async () => {
     const fetchMock = makeFetchMock([{ ok: true, body: { data: [] } }]);
-    vi.stubGlobal('fetch', fetchMock);
 
     await newProvider().syncEvents(new Date(0), new Date());
 
@@ -70,7 +76,6 @@ describe('AdGuardHomeProvider', () => {
         }]
       }
     }]);
-    vi.stubGlobal('fetch', fetchMock);
 
     const events = await newProvider().syncEvents(
       new Date('2026-05-21T00:00:00Z'),
@@ -108,7 +113,6 @@ describe('AdGuardHomeProvider', () => {
         ]
       }
     }]);
-    vi.stubGlobal('fetch', fetchMock);
 
     const events = await newProvider().syncEvents(
       new Date('2026-05-21T00:00:00Z'),
@@ -129,7 +133,6 @@ describe('AdGuardHomeProvider', () => {
         ]
       }
     }]);
-    vi.stubGlobal('fetch', fetchMock);
 
     const events = await newProvider().syncEvents(
       new Date('2026-05-21T10:00:00Z'),
@@ -146,7 +149,6 @@ describe('AdGuardHomeProvider', () => {
       { ok: true, body: { user_rules: ['||existing.bad^', '@@||allowed.good^'] } },
       { ok: true, body: {} }
     ]);
-    vi.stubGlobal('fetch', fetchMock);
 
     await newProvider().addBlocklistDomain('new.bad.example');
 
@@ -160,7 +162,6 @@ describe('AdGuardHomeProvider', () => {
     const fetchMock = makeFetchMock([
       { ok: true, body: { user_rules: ['||already.bad^'] } }
     ]);
-    vi.stubGlobal('fetch', fetchMock);
 
     await newProvider().addBlocklistDomain('already.bad');
 
@@ -172,7 +173,6 @@ describe('AdGuardHomeProvider', () => {
       { ok: true, body: { user_rules: ['||one.bad^', '||two.bad^', '@@||three.good^'] } },
       { ok: true, body: {} }
     ]);
-    vi.stubGlobal('fetch', fetchMock);
 
     await newProvider().removeBlocklistDomain('two.bad');
 
@@ -186,7 +186,6 @@ describe('AdGuardHomeProvider', () => {
       { ok: true, body: { user_rules: [] } },
       { ok: true, body: {} }
     ]);
-    vi.stubGlobal('fetch', fetchMock);
 
     await newProvider().addAllowlistDomain('safe.example');
 
