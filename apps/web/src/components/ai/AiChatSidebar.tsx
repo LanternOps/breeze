@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2, Flag } from 'lucide-react';
+import { X, MessageSquare, Plus, History, Search, ArrowLeft, Loader2, Flag, Building2 } from 'lucide-react';
 import { useAiStore } from '@/stores/aiStore';
 import AiChatMessages from './AiChatMessages';
 import AiChatInput from './AiChatInput';
@@ -43,7 +43,12 @@ export default function AiChatSidebar() {
     isInterrupting,
     isFlagged,
     flagSession,
-    unflagSession
+    unflagSession,
+    m365Connections,
+    selectedM365ConnectionId,
+    boundM365ConnectionId,
+    loadM365Connections,
+    setSelectedM365Connection
   } = useAiStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -80,6 +85,15 @@ export default function AiChatSidebar() {
   useEffect(() => {
     if (showHistory) loadSessions();
   }, [showHistory, loadSessions]);
+
+  // Load M365 customer connections when the sidebar opens
+  useEffect(() => {
+    if (isOpen) loadM365Connections();
+  }, [isOpen, loadM365Connections]);
+
+  const boundConnection = boundM365ConnectionId
+    ? m365Connections.find((conn) => conn.id === boundM365ConnectionId)
+    : null;
 
   // Debounced search
   useEffect(() => {
@@ -220,6 +234,36 @@ export default function AiChatSidebar() {
           <>
             {/* Cost indicator */}
             <AiCostIndicator enabled={isOpen} />
+
+            {/* M365 customer selector — only when starting a new session */}
+            {!sessionId && m365Connections.length > 0 && (
+              <div className="flex items-center gap-2 border-b px-4 py-2">
+                <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <select
+                  value={selectedM365ConnectionId ?? ''}
+                  onChange={(e) => setSelectedM365Connection(e.target.value || null)}
+                  className="w-full rounded-md border bg-muted px-2 py-1 text-xs text-foreground outline-none focus:border-primary"
+                  aria-label="M365 customer"
+                >
+                  <option value="">No M365 customer</option>
+                  {m365Connections.map((conn) => (
+                    <option key={conn.id} value={conn.id}>
+                      {conn.customerDisplayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Bound M365 customer badge */}
+            {sessionId && boundConnection && (
+              <div className="flex items-center gap-1.5 border-b bg-muted/40 px-4 py-2">
+                <Building2 className="h-3.5 w-3.5 shrink-0 text-primary" />
+                <span className="truncate text-xs font-medium text-foreground">
+                  {boundConnection.customerDisplayName}
+                </span>
+              </div>
+            )}
 
             {/* Context badge */}
             {pageContext && (

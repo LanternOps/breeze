@@ -7,7 +7,7 @@
  */
 
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, delegantM365Connections } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
@@ -24,12 +24,38 @@ const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
 export async function createSession(
   auth: AuthContext,
-  options: { pageContext?: AiPageContext; model?: string; title?: string; orgId?: string }
-): Promise<{ id: string; orgId: string }> {
+  options: {
+    pageContext?: AiPageContext;
+    model?: string;
+    title?: string;
+    orgId?: string;
+    delegantM365ConnectionId?: string;
+  }
+): Promise<{ id: string; orgId: string; delegantM365ConnectionId: string | null }> {
   const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
   if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
     throw new Error('Access denied to this organization');
+  }
+
+  // Cross-org validation (SECURITY-CRITICAL): a session may only be bound to an
+  // active M365 connection that belongs to the session's org.
+  let delegantM365ConnectionId: string | null = null;
+  if (options.delegantM365ConnectionId) {
+    const [conn] = await db
+      .select({
+        id: delegantM365Connections.id,
+        orgId: delegantM365Connections.orgId,
+        status: delegantM365Connections.status
+      })
+      .from(delegantM365Connections)
+      .where(eq(delegantM365Connections.id, options.delegantM365ConnectionId))
+      .limit(1);
+
+    if (!conn || conn.orgId !== orgId || conn.status !== 'active') {
+      throw new Error('Invalid M365 connection');
+    }
+    delegantM365ConnectionId = conn.id;
   }
 
   const [session] = await db
@@ -40,12 +66,13 @@ export async function createSession(
       model: options.model ?? DEFAULT_MODEL,
       title: options.title ?? null,
       contextSnapshot: options.pageContext ?? null,
+      delegantM365ConnectionId,
       systemPrompt: await buildSystemPrompt(auth, options.pageContext)
     })
     .returning();
 
   if (!session) throw new Error('Failed to create session');
-  return { id: session.id, orgId };
+  return { id: session.id, orgId, delegantM365ConnectionId };
 }
 
 export async function getSession(sessionId: string, auth: AuthContext) {
@@ -89,6 +116,33 @@ export async function listSessions(auth: AuthContext, options: { status?: string
     .offset(offset);
 
   return sessions;
+}
+
+/**
+ * List the caller's ACTIVE M365 customer connections.
+ *
+ * Returns ONLY the browser-safe projection (id, customerLabel,
+ * customerDisplayName) — never the delegant pointer / tenant fields.
+ * RLS (breeze_has_org_access) is enabled on the table; we also apply the
+ * explicit org filter here for defense-in-depth, matching the convention
+ * used by other AI services.
+ */
+export async function listM365Connections(
+  auth: AuthContext
+): Promise<{ id: string; customerLabel: string; customerDisplayName: string }[]> {
+  const conditions: SQL[] = [eq(delegantM365Connections.status, 'active')];
+  const orgCondition = auth.orgCondition(delegantM365Connections.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+
+  return db
+    .select({
+      id: delegantM365Connections.id,
+      customerLabel: delegantM365Connections.customerLabel,
+      customerDisplayName: delegantM365Connections.customerDisplayName
+    })
+    .from(delegantM365Connections)
+    .where(and(...conditions))
+    .orderBy(delegantM365Connections.customerDisplayName);
 }
 
 export async function closeSession(sessionId: string, auth: AuthContext): Promise<{ orgId: string } | null> {

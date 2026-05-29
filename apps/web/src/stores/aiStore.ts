@@ -19,6 +19,12 @@ interface SearchResult {
   createdAt: string;
 }
 
+interface M365Connection {
+  id: string;
+  customerLabel: string;
+  customerDisplayName: string;
+}
+
 interface AiState {
   isOpen: boolean;
   sessionId: string | null;
@@ -39,6 +45,10 @@ interface AiState {
   isInterrupting: boolean;
   isFlagged: boolean;
   flagReason: string | null;
+  // M365 customer binding (Delegant helpdesk tools)
+  m365Connections: M365Connection[];
+  selectedM365ConnectionId: string | null;
+  boundM365ConnectionId: string | null;
 
   // Actions
   toggle: () => void;
@@ -61,6 +71,8 @@ interface AiState {
   switchSession: (sessionId: string) => Promise<void>;
   flagSession: (reason?: string) => Promise<void>;
   unflagSession: () => Promise<void>;
+  loadM365Connections: () => Promise<void>;
+  setSelectedM365Connection: (connectionId: string | null) => void;
 }
 
 export const useAiStore = create<AiState>()(
@@ -85,6 +97,9 @@ export const useAiStore = create<AiState>()(
   isInterrupting: false,
   isFlagged: false,
   flagReason: null,
+  m365Connections: [],
+  selectedM365ConnectionId: null,
+  boundM365ConnectionId: null,
 
   toggle: () => {
     const opening = !get().isOpen;
@@ -105,17 +120,27 @@ export const useAiStore = create<AiState>()(
   createSession: async () => {
     set({ isLoading: true, error: null });
     try {
-      const { pageContext } = get();
+      const { pageContext, selectedM365ConnectionId } = get();
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
-        body: JSON.stringify({ pageContext: pageContext ?? undefined })
+        body: JSON.stringify({
+          pageContext: pageContext ?? undefined,
+          delegantM365ConnectionId: selectedM365ConnectionId ?? undefined
+        })
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
-      set({ sessionId: data.id, messages: [], isLoading: false, isFlagged: false, flagReason: null });
+      set({
+        sessionId: data.id,
+        messages: [],
+        isLoading: false,
+        isFlagged: false,
+        flagReason: null,
+        boundM365ConnectionId: data.delegantM365ConnectionId ?? null
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
@@ -150,6 +175,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
         flagReason: data.session.flagReason ?? null,
+        boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
       });
     } catch (err) {
       set({
@@ -376,7 +402,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, messages: [] });
+      set({ sessionId: null, messages: [], boundM365ConnectionId: null });
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
       set({ error: 'Failed to close session' });
@@ -440,6 +466,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,
         flagReason: data.session?.flagReason ?? null,
+        boundM365ConnectionId: data.session?.delegantM365ConnectionId ?? null,
       });
     } catch (err) {
       set({
@@ -485,6 +512,23 @@ export const useAiStore = create<AiState>()(
       set({ error: 'Failed to unflag session' });
     }
   },
+
+  loadM365Connections: async () => {
+    try {
+      const res = await fetchWithAuth('/ai/m365-connections');
+      if (!res.ok) {
+        console.error('[AI] Failed to load M365 connections: HTTP', res.status);
+        return;
+      }
+      const data = await res.json();
+      set({ m365Connections: data.data || [] });
+    } catch (err) {
+      console.error('[AI] Failed to load M365 connections:', err);
+    }
+  },
+
+  setSelectedM365Connection: (connectionId: string | null) =>
+    set({ selectedM365ConnectionId: connectionId }),
     }),
     {
       name: 'breeze-ai-chat',

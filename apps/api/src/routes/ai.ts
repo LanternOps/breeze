@@ -17,7 +17,8 @@ import {
   closeSession,
   getSessionMessages,
   handleApproval,
-  searchSessions
+  searchSessions,
+  listM365Connections
 } from '../services/aiAgent';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
@@ -40,7 +41,8 @@ import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
-  orgId: z.string().uuid().optional()
+  orgId: z.string().uuid().optional(),
+  delegantM365ConnectionId: z.string().uuid().optional()
 });
 
 /**
@@ -92,6 +94,7 @@ aiRoutes.post(
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Organization context required') return c.json({ error: message }, 400);
+      if (message === 'Invalid M365 connection') return c.json({ error: message }, 400);
       if (message === 'Access denied to this organization') return c.json({ error: message }, 403);
       return c.json({ error: message }, 500);
     }
@@ -115,6 +118,19 @@ aiRoutes.get(
     });
 
     return c.json({ data: sessions });
+  }
+);
+
+// GET /m365-connections - List the caller's active M365 customer connections.
+// Returns ONLY id, customerLabel, customerDisplayName — never delegant pointer fields.
+aiRoutes.get(
+  '/m365-connections',
+  requireScope('organization', 'partner', 'system'),
+  requireAiRead,
+  async (c) => {
+    const auth = c.get('auth');
+    const rows = await listM365Connections(auth);
+    return c.json({ data: rows });
   }
 );
 
