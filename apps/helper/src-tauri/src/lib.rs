@@ -1,3 +1,5 @@
+mod ipc;
+
 use futures_util::StreamExt;
 use reqwest::{header::HeaderMap, Client, Identity, Method};
 use serde::{Deserialize, Serialize};
