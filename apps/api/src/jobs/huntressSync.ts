@@ -17,7 +17,7 @@ import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
-import { decryptForColumn } from '../services/secretCrypto';
+import { decryptSecret } from '../services/secretCrypto';
 import { HUNTRESS_OFFLINE_STATUSES, HUNTRESS_RESOLVED_STATUSES } from '../services/huntressConstants';
 
 const { db } = dbModule;
@@ -597,7 +597,7 @@ async function syncIntegrationById(
     } else {
       let apiKey: string | null;
       try {
-        apiKey = decryptForColumn('huntress_integrations', 'api_key_encrypted', integration.apiKeyEncrypted);
+        apiKey = decryptSecret(integration.apiKeyEncrypted);
       } catch (err) {
         throw new Error(`Failed to decrypt API key for Huntress integration ${integrationId}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -662,14 +662,24 @@ async function syncIntegrationById(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {
-      await db
-        .update(huntressIntegrations)
-        .set({
-          lastSyncStatus: 'error',
-          lastSyncError: `${source}: ${message}`.slice(0, 2000),
-          updatedAt: new Date(),
-        })
-        .where(eq(huntressIntegrations.id, integrationId));
+      // The whole sync job runs inside one withSystemDbAccessContext transaction.
+      // Re-throwing below rolls that transaction back, so recording the failure on
+      // the job's own connection would be undone and the row would keep its stale
+      // status. Escape the current context (runOutsideDbContext) and open a fresh
+      // transaction (runWithSystemDbAccess) so the 'error' status commits and
+      // survives the rollback.
+      await dbModule.runOutsideDbContext(() =>
+        runWithSystemDbAccess(() =>
+          db
+            .update(huntressIntegrations)
+            .set({
+              lastSyncStatus: 'error',
+              lastSyncError: `${source}: ${message}`.slice(0, 2000),
+              updatedAt: new Date(),
+            })
+            .where(eq(huntressIntegrations.id, integrationId))
+        )
+      );
     } catch (dbErr) {
       console.error(`[HuntressSync] Failed to record sync error for integration ${integrationId}:`, dbErr);
       captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
