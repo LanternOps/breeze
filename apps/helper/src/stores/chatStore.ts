@@ -38,7 +38,12 @@ export interface SessionSummary {
   updatedAt: string;
 }
 
-type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'waiting-for-token'
+  | 'connected'
+  | 'error';
 
 export interface DeviceContext {
   hostname: string;
@@ -522,6 +527,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Restore username from localStorage, fall back to OS username
       const stored = localStorage.getItem(USERNAME_KEY);
       const username = stored || config.os_username || null;
+
+      // In Tauri, the helper auth token is delivered over IPC by the agent and
+      // may not be present at the instant the window opens. Show a transient
+      // "connecting to agent" state while we wait for it. In Phase 1 the file
+      // token is still a fallback, so we proceed after a bounded number of
+      // attempts even if the IPC token hasn't landed; in Phase 2 (no file
+      // fallback) this gate prevents requests that would 401.
+      if (invoke) {
+        const TOKEN_POLL_INTERVAL_MS = 500;
+        const TOKEN_POLL_MAX_ATTEMPTS = 20; // ~10s
+        let ready = false;
+        for (let attempt = 0; attempt < TOKEN_POLL_MAX_ATTEMPTS; attempt++) {
+          try {
+            ready = (await invoke('helper_token_ready')) as boolean;
+          } catch {
+            ready = false;
+          }
+          if (ready) break;
+          // Surface the waiting state on the first miss so the UI updates.
+          if (attempt === 0) {
+            set({ agentConfig: config, connectionState: 'waiting-for-token', username });
+          }
+          await new Promise((resolve) => setTimeout(resolve, TOKEN_POLL_INTERVAL_MS));
+        }
+      }
 
       set({ agentConfig: config, connectionState: 'connected', username });
     } catch (err) {

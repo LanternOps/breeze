@@ -430,6 +430,15 @@ fn get_helper_config() -> HelperConfig {
     load_helper_config()
 }
 
+/// Report whether the helper auth token has been delivered over IPC yet.
+/// The frontend polls this on startup to show a transient "connecting to
+/// agent" state until the token arrives (relevant when there is no file
+/// fallback in Phase 2).
+#[tauri::command]
+async fn helper_token_ready() -> bool {
+    helper_token().get().await.is_some()
+}
+
 // -- helper_fetch types -----------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -802,6 +811,7 @@ pub fn run() {
             get_os_username,
             get_helper_config,
             update_chat_active,
+            helper_token_ready,
         ])
         .setup(|app| {
             // Create main window manually (not from config) so we can set

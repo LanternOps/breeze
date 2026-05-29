@@ -443,6 +443,15 @@ export default function App() {
     );
   }
 
+  if (connectionState === 'waiting-for-token') {
+    return (
+      <div className="helper-container helper-center">
+        <span className="helper-spinner" />
+        <p>Connecting to the Breeze agent&hellip;</p>
+      </div>
+    );
+  }
+
   if (connectionState === 'error') {
     return (
       <div className="helper-container helper-center">
