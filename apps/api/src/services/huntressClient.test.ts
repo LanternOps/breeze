@@ -43,7 +43,7 @@ describe('HuntressClient', () => {
     const client = new HuntressClient({ apiKey: 'mykey:mysecret' });
     await client.listAgents();
 
-    const headers = calls[0].init.headers as Record<string, string>;
+    const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${Buffer.from('mykey:mysecret').toString('base64')}`);
     expect(headers.Authorization).not.toContain('Bearer');
     expect(headers['X-API-Key']).toBeUndefined();
@@ -66,8 +66,8 @@ describe('HuntressClient', () => {
     const agents = await client.listAgents();
 
     expect(agents).toHaveLength(1);
-    expect(agents[0].huntressAgentId).toBe('12345');
-    expect(agents[0].hostname).toBe('HOST-1');
+    expect(agents[0]!.huntressAgentId).toBe('12345');
+    expect(agents[0]!.hostname).toBe('HOST-1');
   });
 
   it('keeps incident records with a numeric id and maps the real fields (subject/body/sent_at)', async () => {
@@ -80,9 +80,9 @@ describe('HuntressClient', () => {
     const incidents = await client.listIncidents();
 
     expect(incidents).toHaveLength(1);
-    expect(incidents[0].huntressIncidentId).toBe('678');
-    expect(incidents[0].title).toBe('Suspicious login'); // from `subject`
-    expect(incidents[0].description).toBe('Details here'); // from `body`
-    expect(incidents[0].reportedAt?.toISOString()).toBe('2026-05-01T00:00:00.000Z'); // from `sent_at`
+    expect(incidents[0]!.huntressIncidentId).toBe('678');
+    expect(incidents[0]!.title).toBe('Suspicious login'); // from `subject`
+    expect(incidents[0]!.description).toBe('Details here'); // from `body`
+    expect(incidents[0]!.reportedAt?.toISOString()).toBe('2026-05-01T00:00:00.000Z'); // from `sent_at`
   });
 });
