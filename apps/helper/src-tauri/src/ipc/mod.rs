@@ -4,4 +4,5 @@
 //! `agent/internal/ipc` package byte-for-byte.
 
 pub mod envelope;
-// transport, client, token added in later tasks
+pub mod token;
+// transport, client added in later tasks
