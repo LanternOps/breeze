@@ -48,3 +48,10 @@ export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';
 export function mfaForcePartnerAdmin(): boolean {
   return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', true);
 }
+
+// Delegant service configuration for M365 helpdesk agent capability.
+// Delegant is a sibling service that manages AI-agent identity and governance.
+export const DELEGANT_BASE_URL = process.env.DELEGANT_BASE_URL ?? '';
+export const DELEGANT_SERVICE_TOKEN = process.env.DELEGANT_SERVICE_TOKEN ?? '';
+export const DELEGANT_PRINCIPAL_SIGNING_KEY = process.env.DELEGANT_PRINCIPAL_SIGNING_KEY ?? '';
+export const DELEGANT_PRINCIPAL_KID = process.env.DELEGANT_PRINCIPAL_KID ?? '';
