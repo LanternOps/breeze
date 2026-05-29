@@ -127,6 +127,56 @@ describe('audit_logs checksum chain', () => {
     });
   });
 
+  // Regression for the `text::bytea` cast bug (EU upgrade blocked by
+  // `invalid input syntax for type bytea`). The canonical payload includes
+  // `details::text`, and jsonb renders control chars / quotes / backslashes
+  // in string values as backslash escapes (\n, \", \\, \uXXXX). The original
+  // trigger/verifier/backfill hashed via `payload::bytea`, which runs the
+  // string through bytea's *input parser* — it interprets those escapes and
+  // throws on any that aren't a valid bytea escape. Real audit history
+  // (Windows paths, multi-line messages, user-agents with quotes) trips it,
+  // so the insert itself fails. The fix hashes via convert_to(payload,'UTF8'),
+  // which faithfully encodes the bytes. These payloads are backslash-free in
+  // every other test, which is why the bug hid until real data hit it.
+  it('hashes audit rows whose details contain backslash escapes', async () => {
+    const details = {
+      path: 'C:\\Users\\admin\\AppData',
+      msg: 'line1\nline2\ttabbed',
+      quote: 'he said "hi"',
+      unicode: 'café',
+    };
+    await withSystemDbAccessContext(async () => {
+      // Without the fix this INSERT throws `invalid input syntax for type bytea`.
+      const inserted = (await db.execute(sql`
+        INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, details)
+        VALUES (${orgId}, 'system', gen_random_uuid(), 'escape.test', 'test', 'success', ${JSON.stringify(details)}::jsonb)
+        RETURNING id, prev_checksum, checksum
+      `)) as unknown as Array<{ id: string; prev_checksum: string | null; checksum: string }>;
+      const row = inserted[0]!;
+      expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
+
+      // The checksum must be sha256 over the UTF-8 bytes of the canonical
+      // payload (what convert_to produces), matching the Node-side hash.
+      const canonicalRows = (await db.execute(sql`
+        SELECT public.audit_log_canonical_payload(
+          (SELECT audit_logs FROM audit_logs WHERE id = ${row.id}),
+          ${row.prev_checksum}::varchar
+        ) AS payload
+      `)) as unknown as Array<{ payload: string }>;
+      const expected = createHash('sha256').update(canonicalRows[0]!.payload, 'utf8').digest('hex');
+      expect(row.checksum).toEqual(expected);
+    });
+
+    // The verifier walks the same convert_to path — it must not throw and must
+    // report the chain intact for the backslash-laden row.
+    await withSystemDbAccessContext(async () => {
+      const breaks = (await db.execute(sql`
+        SELECT * FROM public.audit_log_verify_chain(${orgId}::uuid)
+      `)) as unknown as Array<{ broken_id: string }>;
+      expect(breaks).toEqual([]);
+    });
+  });
+
   it('audit_log_verify_chain detects tampering via direct SQL UPDATE', async () => {
     // Seed three rows each in their own transaction so the chain is
     // unambiguously ordered (see same-tx note above). Each insert returns the

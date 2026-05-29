@@ -149,7 +149,11 @@ export async function pruneExpiredAuditLogs(): Promise<RetentionStats> {
             UPDATE audit_logs
             SET prev_checksum = NULL,
                 checksum = encode(
-                  sha256(audit_log_canonical_payload(head, NULL)::bytea),
+                  -- convert_to(... ,'UTF8'), not ::bytea: the text->bytea cast
+                  -- throws on the backslash escapes jsonb details::text emits.
+                  -- Must match the trigger/verifier hash exactly or this
+                  -- re-anchor would itself break the chain.
+                  sha256(convert_to(audit_log_canonical_payload(head, NULL), 'UTF8')),
                   'hex'
                 )
             FROM head

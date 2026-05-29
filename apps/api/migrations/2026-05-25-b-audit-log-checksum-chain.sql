@@ -42,7 +42,11 @@ BEGIN
           || NEW.timestamp::text;
 
   NEW.prev_checksum := prev;
-  NEW.checksum := encode(sha256(payload::bytea), 'hex');
+  -- convert_to(... ,'UTF8'), not payload::bytea: the text->bytea cast runs the
+  -- string through bytea's input parser, which interprets backslash escapes and
+  -- throws `invalid input syntax for type bytea` on the \n / \" / \\ that
+  -- jsonb details::text emits. convert_to encodes the bytes faithfully.
+  NEW.checksum := encode(sha256(convert_to(payload, 'UTF8')), 'hex');
   RETURN NEW;
 END;
 $$;
@@ -81,12 +85,12 @@ BEGIN
 
     UPDATE audit_logs SET
       prev_checksum = prev,
-      checksum = encode(sha256((
+      checksum = encode(sha256(convert_to(
         COALESCE(prev, '') || '|' || rec.id::text || '|' || rec.actor_type::text || '|' ||
         COALESCE(rec.actor_id::text, '') || '|' || rec.action || '|' || rec.resource_type || '|' ||
         COALESCE(rec.resource_id::text, '') || '|' || rec.result::text || '|' ||
         COALESCE(rec.details::text, '') || '|' || rec.timestamp::text
-      )::bytea), 'hex')
+      , 'UTF8')), 'hex')
     WHERE id = rec.id
     RETURNING checksum INTO prev;
 

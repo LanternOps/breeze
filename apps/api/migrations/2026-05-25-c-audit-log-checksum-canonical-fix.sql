@@ -39,7 +39,9 @@ BEGIN
   LIMIT 1;
 
   NEW.prev_checksum := prev;
-  NEW.checksum := encode(sha256(audit_log_canonical_payload(NEW, prev)::bytea), 'hex');
+  -- convert_to(... ,'UTF8'), not ::bytea — see note in -b-: the text->bytea cast
+  -- throws on the backslash escapes jsonb details::text emits.
+  NEW.checksum := encode(sha256(convert_to(audit_log_canonical_payload(NEW, prev), 'UTF8')), 'hex');
   RETURN NEW;
 END;
 $$;
@@ -62,7 +64,7 @@ BEGIN
     WHERE org_id IS NOT DISTINCT FROM p_org_id
     ORDER BY timestamp, id
   LOOP
-    expected_hash := encode(sha256(audit_log_canonical_payload(rec, prev)::bytea), 'hex');
+    expected_hash := encode(sha256(convert_to(audit_log_canonical_payload(rec, prev), 'UTF8')), 'hex');
     IF rec.checksum IS DISTINCT FROM expected_hash
        OR rec.prev_checksum IS DISTINCT FROM prev THEN
       broken_id := rec.id;
@@ -108,7 +110,7 @@ BEGIN
 
     UPDATE audit_logs SET
       prev_checksum = prev,
-      checksum = encode(sha256(audit_log_canonical_payload(rec, prev)::bytea), 'hex')
+      checksum = encode(sha256(convert_to(audit_log_canonical_payload(rec, prev), 'UTF8')), 'hex')
     WHERE id = rec.id
     RETURNING checksum INTO prev;
 
