@@ -3,6 +3,7 @@
 package etwlua
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -65,7 +66,13 @@ func NewETWSubscriber() (Subscriber, error) {
 		return nil, fmt.Errorf("etwlua: enable LUA provider: %w", err)
 	}
 
-	consumer := etw.NewRealTimeConsumer(nil).FromSessions(session)
+	// NewRealTimeConsumer derives its context via context.WithCancel(parent)
+	// and PANICS on a nil parent ("cannot create context from nil parent"),
+	// which crashed the agent on startup on every Windows host running as
+	// SYSTEM. The consumer is explicitly torn down by etwSession.Stop()
+	// (consumer.Stop()), invoked from etwlua.Start's `defer sub.Stop()` on
+	// ctx.Done(), so context.Background() here is sufficient and leak-free.
+	consumer := etw.NewRealTimeConsumer(context.Background()).FromSessions(session)
 
 	s := &etwSession{
 		consumer: consumer,
