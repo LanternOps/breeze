@@ -296,6 +296,16 @@ fn get_http_state_lock() -> &'static Mutex<Option<HttpClientState>> {
     HTTP_STATE.get_or_init(|| Mutex::new(None))
 }
 
+use crate::ipc::token::HelperToken;
+
+/// Process-global helper auth token delivered over IPC from the Breeze agent.
+/// Distinct from the file-loaded `HttpClientState::config.token` (Phase-1 fallback).
+static HELPER_TOKEN: OnceLock<HelperToken> = OnceLock::new();
+
+fn helper_token() -> &'static HelperToken {
+    HELPER_TOKEN.get_or_init(HelperToken::new)
+}
+
 /// Build a reqwest::Client, optionally with mTLS identity.
 fn build_client(cfg: &AgentConfigFull) -> Result<Client, String> {
     let mut builder = Client::builder().use_rustls_tls();
@@ -567,7 +577,11 @@ async fn helper_fetch(
 ) -> Result<HelperFetchResponse, String> {
     ensure_http_state().await?;
 
-    let (client, token, api_url) = {
+    // Phase 1: prefer the IPC-delivered token; fall back to the file-loaded
+    // token while older agents still write it to agent.yaml. Phase 2 removes
+    // the file fallback.
+    let ipc_token = helper_token().get().await;
+    let (client, file_token, api_url) = {
         let lock = get_http_state_lock();
         let guard = lock.lock().await;
         let state = guard
@@ -579,6 +593,7 @@ async fn helper_fetch(
             state.config.api_url.clone(),
         )
     };
+    let token = ipc_token.unwrap_or(file_token);
 
     // Validate that the request URL targets the configured API server.
     // This prevents SSRF and token leakage to arbitrary hosts.
@@ -968,6 +983,14 @@ pub fn run() {
                     write_status_file(CHAT_ACTIVE.load(Ordering::Relaxed));
                 }
             });
+
+            // Deliver the helper auth token over IPC from the Breeze agent.
+            let token = helper_token().clone();
+            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            // Leak the sender so the watch channel stays open for the app's
+            // lifetime; the client task ends only when the process exits.
+            std::mem::forget(_stop_tx);
+            tauri::async_runtime::spawn(crate::ipc::client::run(token, stop_rx));
 
             Ok(())
         })
