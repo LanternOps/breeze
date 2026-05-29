@@ -614,3 +614,59 @@ func TestSaveToFailsWhenSecretsChmodFails(t *testing.T) {
 	}
 }
 
+// TestStripSecretsFromAgentConfigFailsClosed verifies the strip helper fails
+// closed: on a YAML error it returns a wrapped error and NIL data, never the
+// original (unstripped) buffer. Previously it silently returned the original
+// secret-bearing buffer, which SaveTo then wrote to the 0644 agent.yaml.
+func TestStripSecretsFromAgentConfigFailsClosed(t *testing.T) {
+	// Malformed YAML (unterminated flow mapping) forces an unmarshal error.
+	malformed := []byte("auth_token: brz_super_secret\n{ this: is, not: valid")
+
+	out, err := stripSecretsFromAgentConfig(malformed)
+	if err == nil {
+		t.Fatal("stripSecretsFromAgentConfig returned nil error on malformed YAML; expected fail-closed error")
+	}
+	if out != nil {
+		t.Fatalf("stripSecretsFromAgentConfig returned non-nil data on error: %q (must never return the unstripped buffer)", out)
+	}
+	if strings.Contains(string(out), "brz_super_secret") {
+		t.Fatal("stripSecretsFromAgentConfig leaked the original secret-bearing buffer on error")
+	}
+}
+
+// TestSaveToAbortsWhenStripFails verifies the SaveTo fail-closed path: if
+// stripping secrets errors (here via the injected marshal hook), SaveTo returns
+// an error and does NOT write secrets to the world-readable agent.yaml.
+func TestSaveToAbortsWhenStripFails(t *testing.T) {
+	defer viper.Reset()
+
+	orig := stripMarshalForTests
+	defer func() { stripMarshalForTests = orig }()
+	stripMarshalForTests = func(any) ([]byte, error) {
+		return nil, errors.New("boom: simulated strip marshal failure")
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent_strip_secret"
+
+	err := SaveTo(cfg, cfgPath)
+	if err == nil {
+		t.Fatal("SaveTo returned nil; expected an error when secret stripping fails")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error message does not include the underlying cause: %v", err)
+	}
+
+	// agent.yaml must NOT contain the secret. It may not exist at all (write
+	// aborted), which is fine — if it does exist, it must not carry the token.
+	data, readErr := os.ReadFile(cfgPath)
+	if readErr == nil && strings.Contains(string(data), "brz_agent_strip_secret") {
+		t.Fatalf("agent.yaml leaked the auth token after a failed strip: %q", data)
+	}
+}
+

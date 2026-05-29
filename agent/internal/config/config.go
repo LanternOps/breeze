@@ -444,7 +444,12 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling agent config: %w", err)
 	}
-	cfgYAML = stripSecretsFromAgentConfig(cfgYAML)
+	// Fail closed: if stripping secrets errors, abort BEFORE writing the
+	// world-readable agent.yaml so the unstripped buffer can never leak to it.
+	cfgYAML, err = stripSecretsFromAgentConfig(cfgYAML)
+	if err != nil {
+		return fmt.Errorf("writing agent config: %w", err)
+	}
 	// agent.yaml is world-readable (0644) so the Breeze Helper, running as the
 	// logged-in user, can read it. It carries only the helper-scoped token;
 	// full tokens and mTLS keys are written to root-only secrets.yaml below.
@@ -500,7 +505,8 @@ func SaveTo(cfg *Config, cfgFile string) error {
 
 	// Enforce secrets permissions — this is fatal, not just a warning, because
 	// leaving secrets.yaml world-readable after a failed chmod is a security
-	// breach. agent.yaml/dir chmod failures remain warn-only (see :441-446).
+	// breach. agent.yaml/dir chmod failures remain warn-only (see the log.Warn
+	// calls right after the agent.yaml write above).
 	if err := enforceSecretFilePermissions(secretsPath); err != nil {
 		return fmt.Errorf("enforcing secrets file permissions on %s: %w", secretsPath, err)
 	}
@@ -508,21 +514,35 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	return nil
 }
 
-func stripSecretsFromAgentConfig(data []byte) []byte {
+// stripSecretsFromAgentConfig removes secret-bearing keys (see isSecretYAMLKey)
+// from a serialized agent.yaml buffer. It MUST fail closed: on any
+// unmarshal/marshal error it returns a wrapped error and NO data, never the
+// original unstripped buffer. The caller (SaveTo) aborts before writing the
+// world-readable (0644) agent.yaml, so secrets can never leak to that file.
+// stripMarshalForTests lets tests force the post-delete marshal step to fail so
+// the fail-closed SaveTo abort path (secrets never written to agent.yaml) can be
+// exercised. nil in production => real yaml.Marshal.
+var stripMarshalForTests func(any) ([]byte, error)
+
+func stripSecretsFromAgentConfig(data []byte) ([]byte, error) {
 	var values map[string]any
 	if err := yaml.Unmarshal(data, &values); err != nil {
-		return data
+		return nil, fmt.Errorf("stripping secrets from agent config (unmarshal): %w", err)
 	}
 	for key := range values {
 		if isSecretYAMLKey(key) {
 			delete(values, key)
 		}
 	}
-	out, err := yaml.Marshal(values)
-	if err != nil {
-		return data
+	marshal := yaml.Marshal
+	if stripMarshalForTests != nil {
+		marshal = stripMarshalForTests
 	}
-	return out
+	out, err := marshal(values)
+	if err != nil {
+		return nil, fmt.Errorf("stripping secrets from agent config (marshal): %w", err)
+	}
+	return out, nil
 }
 
 // atomicWriteFile writes data to path durably: it creates path+".partial" in
