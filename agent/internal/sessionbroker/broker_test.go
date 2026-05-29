@@ -916,4 +916,17 @@ func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
 			t.Fatalf("assistHelperBinaryPaths missing agent-dir path %q; got %v", want, paths)
 		}
 	}
+
+	if runtime.GOOS == "darwin" {
+		want := "/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper"
+		has := false
+		for _, p := range paths {
+			if p == want {
+				has = true
+			}
+		}
+		if !has {
+			t.Fatalf("darwin paths %v missing %q", paths, want)
+		}
+	}
 }
