@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -574,6 +575,42 @@ backup_s3_secret_key: wJalrXUtnFEMI/K7MDENG
 	}
 	if loaded.BackupS3Region != "eu-west-1" {
 		t.Fatalf("BackupS3Region = %q, want eu-west-1", loaded.BackupS3Region)
+	}
+}
+
+// TestSaveToFailsWhenSecretsChmodFails verifies Finding #8: SaveTo must return
+// an error (not silently log a warning) when the secrets.yaml chmod enforcement
+// fails. This prevents a race window where secrets.yaml is world-readable.
+func TestSaveToFailsWhenSecretsChmodFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod injection is Unix-only; Windows DACLs covered by permissions_windows_test.go")
+	}
+	defer viper.Reset()
+
+	// Inject a failing chmod via the package-level var.
+	orig := enforceSecretFilePermissions
+	defer func() { enforceSecretFilePermissions = orig }()
+	enforceSecretFilePermissions = func(path string) error {
+		return errors.New("boom: simulated chmod failure")
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent_chmod"
+
+	err := SaveTo(cfg, cfgPath)
+	if err == nil {
+		t.Fatal("SaveTo returned nil; expected an error when secrets chmod fails")
+	}
+	if !strings.Contains(err.Error(), "secrets") {
+		t.Fatalf("error message does not reference secrets path: %v", err)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error message does not include the underlying cause: %v", err)
 	}
 }
 

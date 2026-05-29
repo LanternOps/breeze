@@ -20,6 +20,11 @@ func enforceConfigFilePermissions(path string) error {
 	return os.Chmod(path, 0644)
 }
 
-func enforceSecretFilePermissions(path string) error {
+func enforceSecretFilePermissionsImpl(path string) error {
 	return os.Chmod(path, 0600)
 }
+
+// enforceSecretFilePermissions is a package-level var so tests can inject a
+// failure to verify that SaveTo propagates it as a fatal error. Production
+// code always routes through enforceSecretFilePermissionsImpl.
+var enforceSecretFilePermissions = enforceSecretFilePermissionsImpl

@@ -493,9 +493,11 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		return fmt.Errorf("writing secrets file: %w", err)
 	}
 
-	// Defense-in-depth: ensure secrets permissions are correct.
+	// Enforce secrets permissions — this is fatal, not just a warning, because
+	// leaving secrets.yaml world-readable after a failed chmod is a security
+	// breach. agent.yaml/dir chmod failures remain warn-only (see :441-446).
 	if err := enforceSecretFilePermissions(secretsPath); err != nil {
-		log.Warn("failed to enforce secrets file permissions", "error", err.Error())
+		return fmt.Errorf("enforcing secrets file permissions on %s: %w", secretsPath, err)
 	}
 
 	return nil

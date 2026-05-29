@@ -31,9 +31,14 @@ func enforceConfigFilePermissions(path string) error {
 	return applyWindowsDACL(path, windowsConfigFileSDDL)
 }
 
-func enforceSecretFilePermissions(path string) error {
+func enforceSecretFilePermissionsImpl(path string) error {
 	return applyWindowsDACL(path, windowsSecretFileSDDL)
 }
+
+// enforceSecretFilePermissions is a package-level var so tests can inject a
+// failure to verify that SaveTo propagates it as a fatal error. Production
+// code always routes through enforceSecretFilePermissionsImpl.
+var enforceSecretFilePermissions = enforceSecretFilePermissionsImpl
 
 func applyWindowsDACL(path, sddl string) error {
 	sd, err := windows.SecurityDescriptorFromString(sddl)
