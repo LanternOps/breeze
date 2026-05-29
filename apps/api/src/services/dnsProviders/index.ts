@@ -44,7 +44,19 @@ export function createDnsProvider(input: DnsProviderFactoryInput): DnsProvider {
   // targets. Hosted SaaS stays strict (no private networking). Metadata,
   // loopback, link-local, and CGNAT remain blocked in both modes (see
   // urlSafety.isAlwaysBlockedIp). Cloud providers leave it unset (strict).
-  const allowPrivateNetwork = !isHosted();
+  //
+  // Fail closed: only open RFC1918/ULA for on-prem providers when self-host is
+  // AFFIRMATIVELY declared (IS_HOSTED explicitly set to a recognized non-truthy
+  // value: 'false'/'0'/'no'/'off'). Unset/empty/garbage IS_HOSTED => strict,
+  // mirroring the #570 hardening lesson (an unmapped IS_HOSTED must never
+  // silently weaken security). We mirror envFlag's truthy set so that any value
+  // it would treat as truthy keeps us hosted (strict), and only an explicit
+  // recognized falsey signal opens private networking.
+  const isHostedRaw = (process.env.IS_HOSTED ?? '').trim().toLowerCase();
+  const recognizedSelfHostSignal = new Set(['0', 'false', 'no', 'off']).has(isHostedRaw);
+  // `!isHosted()` is implied by the falsey-set membership but kept explicit so
+  // the truthy/falsey vocabularies can never drift apart silently.
+  const allowPrivateNetwork = recognizedSelfHostSignal && !isHosted();
 
   switch (input.provider) {
     case 'umbrella':
