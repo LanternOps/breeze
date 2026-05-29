@@ -263,6 +263,11 @@ func Load(cfgFile string) (*Config, error) {
 		if err := sv.ReadInConfig(); err != nil {
 			return nil, fmt.Errorf("reading secrets file: %w", err)
 		}
+		// IMPORTANT: this read-back is a hardcoded list and CANNOT be driven by
+		// isSecretYAMLKey (there's no generic config-key -> struct-field mapping
+		// at this layer). When you add a new secret field, update BOTH
+		// isSecretYAMLKey (so it gets stripped to secrets.yaml) AND this block
+		// (so it gets read back) — otherwise the field is silently lost on load.
 		if v := sv.GetString("auth_token"); v != "" {
 			cfg.AuthToken = v
 		}
