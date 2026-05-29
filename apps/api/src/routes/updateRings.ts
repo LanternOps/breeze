@@ -226,7 +226,9 @@ updateRingRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, data.orgId);
+    // fetchWithAuth injects the selected org as a query param for partner/system
+    // users, so fall back to it when the body omits orgId (matches the GET handler).
+    const orgResult = resolveOrgId(auth, data.orgId ?? c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const { orgId } = orgResult;
 
