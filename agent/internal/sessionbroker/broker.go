@@ -342,6 +342,8 @@ func (b *Broker) SetSessionClosedHandler(handler SessionClosedHandler) {
 	b.mu.Unlock()
 }
 
+// SetSessionAuthenticatedHandler registers a callback invoked (in a goroutine)
+// after each helper session has been authenticated and registered.
 func (b *Broker) SetSessionAuthenticatedHandler(handler SessionAuthenticatedHandler) {
 	b.mu.Lock()
 	b.onSessionAuthed = handler

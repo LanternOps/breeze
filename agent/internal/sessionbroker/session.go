@@ -246,7 +246,10 @@ func (s *Session) GetTCCStatus() *ipc.TCCStatus {
 	return s.TCCStatus
 }
 
-// HasScope checks if this session is authorized for the given scope.
+// HasScope reports whether the session was granted the given scope.
+// AllowedScopes is set once in NewSession and never mutated afterward, so this
+// is safe to call concurrently (e.g. from the SessionAuthenticatedHandler
+// goroutine) without holding s.mu.
 func (s *Session) HasScope(scope string) bool {
 	for _, allowed := range s.AllowedScopes {
 		if allowed == scope || allowed == "*" {
