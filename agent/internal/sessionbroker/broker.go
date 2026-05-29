@@ -223,6 +223,10 @@ type MessageHandler func(session *Session, env *ipc.Envelope)
 // SessionClosedHandler is called after a helper session has been removed.
 type SessionClosedHandler func(session *Session)
 
+// SessionAuthenticatedHandler is called after a helper session has been
+// successfully authenticated and registered.
+type SessionAuthenticatedHandler func(session *Session)
+
 // sessionSnapshot is an immutable point-in-time view of the broker's session
 // maps. It is stored via an atomic.Pointer so lock-free readers (FindCapableSession,
 // AllSessions, TCCStatus) can avoid acquiring b.mu.RLock() entirely, preventing
@@ -266,6 +270,7 @@ type Broker struct {
 
 	onMessage       MessageHandler
 	onSessionClosed SessionClosedHandler
+	onSessionAuthed SessionAuthenticatedHandler
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries
 }
 
@@ -335,6 +340,22 @@ func (b *Broker) SetSessionClosedHandler(handler SessionClosedHandler) {
 	b.mu.Lock()
 	b.onSessionClosed = handler
 	b.mu.Unlock()
+}
+
+func (b *Broker) SetSessionAuthenticatedHandler(handler SessionAuthenticatedHandler) {
+	b.mu.Lock()
+	b.onSessionAuthed = handler
+	b.mu.Unlock()
+}
+
+// fireSessionAuthenticated invokes the on-authenticated handler if set.
+func (b *Broker) fireSessionAuthenticated(session *Session) {
+	b.mu.RLock()
+	handler := b.onSessionAuthed
+	b.mu.RUnlock()
+	if handler != nil {
+		handler(session)
+	}
 }
 
 // SetConsoleUser updates the current macOS console user. When set to
@@ -1470,6 +1491,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"binaryKind", session.BinaryKind,
 		"desktopContext", session.DesktopContext,
 	)
+
+	// Notify the on-authenticated handler now that the session is fully
+	// registered (admitted, appended, scopes assigned). Fired outside the
+	// broker mutex and in a goroutine so a slow handler (e.g. one that pushes
+	// the helper token over IPC) can't block the accept loop or hold b.mu.
+	go b.fireSessionAuthenticated(session)
 
 	// Keepalive: send periodic pings and close the session if pongs stop
 	// arriving. Without this, a wedged helper (e.g. a capture process killed

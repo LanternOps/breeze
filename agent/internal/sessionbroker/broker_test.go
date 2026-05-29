@@ -930,3 +930,17 @@ func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
 		}
 	}
 }
+
+func TestSetSessionAuthenticatedHandler(t *testing.T) {
+	b := New("/tmp/does-not-matter.sock", func(*Session, *ipc.Envelope) {})
+	var got *Session
+	b.SetSessionAuthenticatedHandler(func(s *Session) { got = s })
+	sess := &Session{}
+	b.fireSessionAuthenticated(sess)
+	if got != sess {
+		t.Fatalf("handler not invoked with the session")
+	}
+	// Nil handler must be a no-op (no panic).
+	b2 := New("/tmp/x.sock", func(*Session, *ipc.Envelope) {})
+	b2.fireSessionAuthenticated(&Session{})
+}
