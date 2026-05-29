@@ -116,6 +116,11 @@ const (
 	HelperRoleAssist   = "assist" // Breeze Assist Tauri helper; receives helper token only
 )
 
+// Scope constants identify the capabilities granted to a helper session.
+const (
+	ScopeAssist = "assist" // IPC scope granted to the assist helper
+)
+
 const (
 	HelperBinaryUserHelper    = "user_helper"
 	HelperBinaryDesktopHelper = "desktop_helper"

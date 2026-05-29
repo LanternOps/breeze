@@ -117,6 +117,9 @@ pub fn compute_hmac(key: &[u8], id: &str, seq: u64, typ: &str, payload: &[u8]) -
 
 /// Like [`compute_hmac`] but treats an absent payload as the literal bytes
 /// `null`, matching Go's nil-payload normalisation.
+// Used only by the cross-language HMAC parity tests below; kept here next to
+// `compute_hmac` so the two stay in sync.
+#[allow(dead_code)]
 pub fn compute_hmac_opt(
     key: &[u8],
     id: &str,

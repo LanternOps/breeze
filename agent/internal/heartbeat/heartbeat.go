@@ -2497,7 +2497,7 @@ func (h *Heartbeat) currentHelperToken() string {
 // against ever sending the helper token to the watchdog or a user helper.
 func shouldPushHelperToken(scopes []string) bool {
 	for _, s := range scopes {
-		if s == ipc.HelperRoleAssist {
+		if s == ipc.ScopeAssist {
 			return true
 		}
 	}
@@ -2527,7 +2527,7 @@ func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
 	if h.sessionBroker == nil || newToken == "" {
 		return
 	}
-	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.HelperRoleAssist) {
+	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.ScopeAssist) {
 		// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
 		if err := sess.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: newToken}); err != nil {
 			log.Warn("failed to push rotated helper token", "error", err.Error())

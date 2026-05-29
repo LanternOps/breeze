@@ -213,7 +213,7 @@ var (
 	watchdogHelperScopes = []string{"watchdog"}
 	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
 	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
-	assistHelperScopes = []string{"assist"}
+	assistHelperScopes = []string{ipc.ScopeAssist}
 )
 
 // MessageHandler is called when a user helper sends a message that isn't

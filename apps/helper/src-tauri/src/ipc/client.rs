@@ -36,8 +36,8 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// reconnect backoff to the floor.
 const HEALTHY_SESSION: Duration = Duration::from_secs(60);
 
-/// Outcome of a single [`run_session`] call. The reconnect driver uses this to
-/// decide whether to retry (and how) or to stop permanently.
+/// Outcome of a single [`run_session_with_identity`] call. The reconnect driver
+/// uses this to decide whether to retry (and how) or to stop permanently.
 #[derive(Debug)]
 pub enum SessionError {
     /// The broker permanently rejected us (binary not allowlisted, protocol
@@ -167,22 +167,12 @@ fn parse_payload<T: for<'de> Deserialize<'de>>(
         .map_err(|e| IpcError::Protocol(format!("parse payload: {}", e)))
 }
 
-/// Run a single IPC session over an already-connected `stream`:
-/// auth handshake, then a token-receipt loop until disconnect or error.
+/// Run a single IPC session over an already-connected `stream` with an explicit
+/// identity: auth handshake, then a token-receipt loop until disconnect or error.
 ///
 /// The testable core — generic over any duplex byte stream so tests can drive a
-/// fake broker over [`tokio::io::duplex`].
-pub async fn run_session<S>(stream: S, token: &HelperToken) -> Result<(), SessionError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let identity = crate::ipc::transport::current_identity()
-        .map_err(|e| SessionError::Transient(IpcError::Protocol(format!("identity: {}", e))))?;
-    run_session_with_identity(stream, token, &identity).await
-}
-
-/// Like [`run_session`] but with an explicit identity. Lets tests avoid relying
-/// on process-global state.
+/// fake broker over [`tokio::io::duplex`]. Taking the identity explicitly lets
+/// tests avoid relying on process-global state.
 pub async fn run_session_with_identity<S>(
     stream: S,
     token: &HelperToken,
