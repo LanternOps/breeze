@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -280,6 +281,15 @@ func Load(cfgFile string) (*Config, error) {
 		if v := sv.GetString("mtls_cert_expires"); v != "" {
 			cfg.MtlsCertExpires = v
 		}
+		// Companion: backup S3 credentials migrate to secrets.yaml via
+		// isSecretYAMLKey; read them back so BackupS3AccessKey/BackupS3SecretKey
+		// are populated after Load (otherwise backup config silently breaks).
+		if v := sv.GetString("backup_s3_access_key"); v != "" {
+			cfg.BackupS3AccessKey = v
+		}
+		if v := sv.GetString("backup_s3_secret_key"); v != "" {
+			cfg.BackupS3SecretKey = v
+		}
 	}
 
 	// Validate config: fatals block startup, warnings are logged and continue.
@@ -463,6 +473,16 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
 	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)
+	// Backup S3 credentials are caught by isSecretYAMLKey (suffix _access_key /
+	// _secret_key) and stripped from agent.yaml; persist them here so they
+	// survive a round-trip through SaveTo → Load. Only write non-empty values
+	// for the same reason as auth_token above.
+	if cfg.BackupS3AccessKey != "" {
+		sv.Set("backup_s3_access_key", cfg.BackupS3AccessKey)
+	}
+	if cfg.BackupS3SecretKey != "" {
+		sv.Set("backup_s3_secret_key", cfg.BackupS3SecretKey)
+	}
 
 	// Same atomic-write pattern for the secrets file (0600).
 	secretsYAML, err := yaml.Marshal(sv.AllSettings())
@@ -486,14 +506,10 @@ func stripSecretsFromAgentConfig(data []byte) []byte {
 	if err := yaml.Unmarshal(data, &values); err != nil {
 		return data
 	}
-	for _, key := range []string{
-		"auth_token",
-		"watchdog_auth_token",
-		"mtls_cert_pem",
-		"mtls_key_pem",
-		"mtls_cert_expires",
-	} {
-		delete(values, key)
+	for key := range values {
+		if isSecretYAMLKey(key) {
+			delete(values, key)
+		}
 	}
 	out, err := yaml.Marshal(values)
 	if err != nil {
@@ -562,13 +578,36 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func isSecretConfigKey(key string) bool {
-	switch key {
-	case "auth_token", "watchdog_auth_token", "mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires":
-		return true
-	default:
+// secretKeyAllowedInAgentYAML lists keys that look secret by suffix rules but
+// must remain in agent.yaml. The Breeze Helper ("Breeze Assist") runs as the
+// logged-in user and reads agent.yaml directly; it needs helper_auth_token.
+var secretKeyAllowedInAgentYAML = map[string]bool{
+	"helper_auth_token": true,
+}
+
+// isSecretYAMLKey reports whether key should be kept out of agent.yaml (i.e.
+// written only to secrets.yaml). It uses a suffix-based predicate so future
+// secret keys like backup_s3_access_key are caught automatically without
+// requiring an explicit list update. Keys in secretKeyAllowedInAgentYAML are
+// explicitly exempted regardless of suffix.
+func isSecretYAMLKey(key string) bool {
+	if secretKeyAllowedInAgentYAML[key] {
 		return false
 	}
+	switch key {
+	case "auth_token", "watchdog_auth_token",
+		"mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires":
+		return true
+	}
+	return strings.HasSuffix(key, "_token") ||
+		strings.HasSuffix(key, "_secret_key") ||
+		strings.HasSuffix(key, "_access_key") ||
+		strings.HasSuffix(key, "_secret") ||
+		strings.HasSuffix(key, "_password")
+}
+
+func isSecretConfigKey(key string) bool {
+	return isSecretYAMLKey(key)
 }
 
 // GetDataDir returns the platform-specific data directory for the agent
@@ -624,17 +663,9 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 		return err
 	}
 
-	secretKeys := []string{
-		"auth_token",
-		"watchdog_auth_token",
-		"mtls_cert_pem",
-		"mtls_key_pem",
-		"mtls_cert_expires",
-	}
-
 	hasInlineSecretKeys := false
-	for _, key := range secretKeys {
-		if _, ok := cfgValues[key]; ok {
+	for key := range cfgValues {
+		if isSecretYAMLKey(key) {
 			hasInlineSecretKeys = true
 			break
 		}
@@ -655,11 +686,13 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 		return err
 	}
 
-	for _, key := range secretKeys {
-		if isEmptyYAMLValue(secretValues[key]) && !isEmptyYAMLValue(cfgValues[key]) {
-			secretValues[key] = cfgValues[key]
+	for key := range cfgValues {
+		if isSecretYAMLKey(key) {
+			if isEmptyYAMLValue(secretValues[key]) && !isEmptyYAMLValue(cfgValues[key]) {
+				secretValues[key] = cfgValues[key]
+			}
+			delete(cfgValues, key)
 		}
-		delete(cfgValues, key)
 	}
 
 	if secretFileExists || len(secretValues) > 0 {
