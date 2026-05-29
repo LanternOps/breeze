@@ -18,6 +18,41 @@ export function hashSql(content: string): string {
 }
 
 /**
+ * Known, verified-safe in-place edits to ALREADY-SHIPPED migrations.
+ *
+ * The checksum guard (step 6) normally refuses to boot if an applied
+ * migration's file content changed — editing shipped migrations is forbidden.
+ * The rare exception is a forward-fix that is provably equivalent/idempotent
+ * for any DB that already applied the original. For those, we heal the recorded
+ * checksum (from -> to) instead of crashing the upgrade.
+ *
+ * Each entry MUST be a deliberate, reviewed pair of exact checksums. A mismatch
+ * that is NOT an exact from->to match still throws. Only DBs that recorded the
+ * `from` checksum are touched — fresh installs / DBs that never applied the
+ * original are unaffected (they apply the current file normally).
+ *
+ * #994 edited 2026-05-25-b/c (`::bytea` -> `convert_to(payload, 'UTF8')`) to fix
+ * audit-chain hashing; the change is equivalent for already-chained rows. Only
+ * v0.67.1 DBs recorded the originals, so without this they crash on the
+ * v0.68.x upgrade with a checksum mismatch.
+ */
+export const CHECKSUM_RECONCILIATIONS: Record<
+  string,
+  { from: string; to: string; reason: string }
+> = {
+  '2026-05-25-b-audit-log-checksum-chain.sql': {
+    from: 'ccb3893ad6a659bcbebd759c9f3caef777f62ab0b9bc72b1d7a7bf7a6448fd7b',
+    to: '813160a82318e5e8da0320749efc2e47ee3319d949b9fc68e2447398c5313fdc',
+    reason: "#994: ::bytea -> convert_to(payload,'UTF8') for audit-chain hashing",
+  },
+  '2026-05-25-c-audit-log-checksum-canonical-fix.sql': {
+    from: '71df754e3171079848092df7fda360a3619e8760e288d219bdb76071fa6b0cde',
+    to: '214ebca196629d81d54610bad9ff79fef8b2b5bfb19c0b024a4cf2a6b230f693',
+    reason: '#994: canonical audit-chain fix (companion to 2026-05-25-b)',
+  },
+};
+
+/**
  * True if a migration file opts out of the default transactional apply.
  *
  * Detection: the directive `-- @no-transaction` must appear at the start
@@ -349,6 +384,25 @@ export async function autoMigrate(): Promise<void> {
       const currentChecksum = hashSql(content);
 
       if (priorChecksum !== currentChecksum) {
+        const reconciliation = CHECKSUM_RECONCILIATIONS[filename];
+        if (
+          reconciliation &&
+          reconciliation.from === priorChecksum &&
+          reconciliation.to === currentChecksum
+        ) {
+          // Known, verified-safe forward-fix to a shipped migration: heal the
+          // recorded checksum instead of crashing the upgrade. Exact from->to
+          // match only; any other change still throws below.
+          await client.unsafe(
+            `UPDATE ${MIGRATION_TABLE} SET checksum = $1 WHERE filename = $2`,
+            [currentChecksum, filename],
+          );
+          applied.set(filename, currentChecksum);
+          console.log(
+            `[auto-migrate] Reconciled checksum for ${filename} (known forward-fix: ${reconciliation.reason})`,
+          );
+          continue;
+        }
         throw new Error(
           `Migration checksum mismatch for ${filename}. ` +
             'The file changed after being applied. Add a new migration instead.',

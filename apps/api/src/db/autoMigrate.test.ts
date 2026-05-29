@@ -5,6 +5,7 @@ import {
   hasNoTransactionDirective,
   splitSqlStatements,
   deriveAppConnectionString,
+  CHECKSUM_RECONCILIATIONS,
 } from './autoMigrate';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -387,5 +388,26 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS bar_idx ON t (b);`;
       expect(out[0]).toContain('foo_idx');
       expect(out[1]).toContain('bar_idx');
     });
+  });
+});
+
+describe('CHECKSUM_RECONCILIATIONS', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+
+  it('each entry targets a real shipped migration whose CURRENT content hashes to `to`', () => {
+    const entries = Object.entries(CHECKSUM_RECONCILIATIONS);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [filename, rec] of entries) {
+      // The current on-disk file must hash to the declared `to`. If someone
+      // edits one of these migrations again, this fails until `to` is updated —
+      // preventing a silently-stale heal map.
+      const content = readFileSync(path.join(migrationsDir, filename), 'utf8');
+      expect(hashSql(content)).toBe(rec.to);
+      // A reconciliation must represent an actual change, with valid checksums.
+      expect(rec.from).not.toBe(rec.to);
+      expect(rec.from).toMatch(/^[0-9a-f]{64}$/);
+      expect(rec.to).toMatch(/^[0-9a-f]{64}$/);
+      expect(rec.reason.length).toBeGreaterThan(0);
+    }
   });
 });
