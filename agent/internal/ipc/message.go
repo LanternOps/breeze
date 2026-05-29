@@ -53,7 +53,7 @@ const (
 	TypeWatchdogPong          = "watchdog_pong"
 	TypeShutdownIntent        = "shutdown_intent"
 	TypeTokenUpdate           = "token_update"
-	TypeHelperTokenUpdate     = "helper_token_update" // helper token -> assist helper
+	TypeHelperTokenUpdate     = "helper_token_update" // sent to the Assist helper
 	TypeWatchdogCommand       = "watchdog_command"
 	TypeWatchdogCommandResult = "watchdog_command_result"
 	TypeStateSync             = "state_sync"
@@ -108,8 +108,7 @@ type Envelope struct {
 	HMAC    string          `json:"hmac"`
 }
 
-// Helper role constants distinguish SYSTEM helpers (desktop capture) from
-// user-token helpers (script execution as the logged-in user).
+// Helper role constants identify connecting helper processes and gate their scopes.
 const (
 	HelperRoleSystem   = "system"
 	HelperRoleUser     = "user"
@@ -145,7 +144,7 @@ type AuthRequest struct {
 	PID             int    `json:"pid"`
 	BinaryHash      string `json:"binaryHash"`
 	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
-	HelperRole      string `json:"helperRole,omitempty"`   // "system" or "user" (default: "system")
+	HelperRole      string `json:"helperRole,omitempty"`   // "system" | "user" | "watchdog" | "assist" (default: "system")
 	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper" or "desktop_helper"
 	DesktopContext  string `json:"desktopContext,omitempty"`
 }
