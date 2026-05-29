@@ -2515,6 +2515,7 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	if token == "" {
 		return
 	}
+	// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
 	if err := session.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: token}); err != nil {
 		log.Warn("failed to push helper token to assist session", "error", err.Error())
 	}
@@ -2527,6 +2528,7 @@ func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
 		return
 	}
 	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.HelperRoleAssist) {
+		// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
 		if err := sess.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: newToken}); err != nil {
 			log.Warn("failed to push rotated helper token", "error", err.Error())
 		}

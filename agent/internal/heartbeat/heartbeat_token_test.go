@@ -19,5 +19,5 @@ func TestShouldPushHelperToken(t *testing.T) {
 	if shouldPushHelperToken(nil) {
 		t.Fatal("no scopes must NOT receive helper token")
 	}
-	_ = ipc.TypeHelperTokenUpdate
+	_ = ipc.TypeHelperTokenUpdate // compile-time guard: ensures TypeHelperTokenUpdate stays defined
 }
