@@ -9,7 +9,12 @@ export const ENABLE_REGISTRATION = envFlag('ENABLE_REGISTRATION', false);
 export const ENABLE_2FA = envFlag('ENABLE_2FA', true);
 
 if (!ENABLE_2FA && process.env.NODE_ENV !== 'test') {
-  console.warn('[auth] WARNING: MFA is disabled (ENABLE_2FA=false). All MFA endpoints return 404.');
+  console.warn(
+    '[auth] WARNING: ENABLE_2FA=false. This disables ALL requireMfa() step-up ' +
+    'gates across the API (admin/abuse, tenant export/erasure, remote device ' +
+    'control, sensitive-data, API keys, SSO, backups/DR) — not just the ' +
+    '/auth/mfa endpoints. Do not use this configuration in production.',
+  );
 }
 
 // ============================================

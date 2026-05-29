@@ -1105,4 +1105,84 @@ describe('validateConfig', () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // ENABLE_2FA=false warning (Finding #3)
+  // ---------------------------------------------------------------------------
+  describe('ENABLE_2FA=false warning', () => {
+    it('emits ENABLE_2FA warning in production when ENABLE_2FA=false', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        ENABLE_2FA: 'false',
+      }, () => {
+        // Must NOT throw — this is warn-only
+        expect(() => validateConfig()).not.toThrow();
+        // Must emit a warning mentioning ENABLE_2FA, requireMfa, and clarify it's not just /auth/mfa
+        const calls = warnSpy.mock.calls.map(args => args[0] as string);
+        const enable2faWarning = calls.find(msg => msg.includes('ENABLE_2FA'));
+        expect(enable2faWarning).toBeDefined();
+        expect(enable2faWarning).toContain('requireMfa');
+        expect(enable2faWarning).not.toMatch(/only.*\/auth\/mfa/i);
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('emits ENABLE_2FA warning with "0" value', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        ENABLE_2FA: '0',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        const calls = warnSpy.mock.calls.map(args => args[0] as string);
+        expect(calls.some(msg => msg.includes('ENABLE_2FA'))).toBe(true);
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT emit ENABLE_2FA warning when ENABLE_2FA=true', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        ENABLE_2FA: 'true',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        const calls = warnSpy.mock.calls.map(args => args[0] as string);
+        expect(calls.some(msg => msg.includes('ENABLE_2FA'))).toBe(false);
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT emit ENABLE_2FA warning when ENABLE_2FA is unset', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+      }, () => {
+        // Ensure ENABLE_2FA is not set
+        const orig = process.env.ENABLE_2FA;
+        delete process.env.ENABLE_2FA;
+        try {
+          expect(() => validateConfig()).not.toThrow();
+          const calls = warnSpy.mock.calls.map(args => args[0] as string);
+          expect(calls.some(msg => msg.includes('ENABLE_2FA'))).toBe(false);
+        } finally {
+          if (orig !== undefined) process.env.ENABLE_2FA = orig;
+        }
+      });
+      warnSpy.mockRestore();
+    });
+  });
 });
