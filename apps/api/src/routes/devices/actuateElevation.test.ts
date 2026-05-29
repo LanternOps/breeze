@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const {
@@ -174,12 +174,80 @@ function rigTransaction(opts: {
 
 describe('POST /devices/:id/actuate-elevation', () => {
   let app: Hono;
+  let savedPamEnv: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: enable the PAM actuator so existing tests continue to pass.
+    savedPamEnv = process.env.PAM_ACTUATOR_ENABLED;
+    process.env.PAM_ACTUATOR_ENABLED = 'true';
     setAuth();
     app = new Hono();
     app.route('/devices', actuateElevationRoutes);
+  });
+
+  afterEach(() => {
+    if (savedPamEnv === undefined) {
+      delete process.env.PAM_ACTUATOR_ENABLED;
+    } else {
+      process.env.PAM_ACTUATOR_ENABLED = savedPamEnv;
+    }
+  });
+
+  describe('env guard (PAM_ACTUATOR_ENABLED)', () => {
+    it('returns 403 and does NOT call db.transaction when PAM_ACTUATOR_ENABLED is unset', async () => {
+      delete process.env.PAM_ACTUATOR_ENABLED;
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elevationRequestId: ELEVATION_ID,
+          username: 'u',
+          password: 'p',
+        }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('PAM actuator is disabled');
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 and does NOT call db.transaction when PAM_ACTUATOR_ENABLED is "false"', async () => {
+      process.env.PAM_ACTUATOR_ENABLED = 'false';
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elevationRequestId: ELEVATION_ID,
+          username: 'u',
+          password: 'p',
+        }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('PAM actuator is disabled');
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('passes through to route logic when PAM_ACTUATOR_ENABLED is "true"', async () => {
+      process.env.PAM_ACTUATOR_ENABLED = 'true';
+      // Device lookup returns nothing → 404, but crucially the guard did NOT block (403).
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(undefined as never);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elevationRequestId: ELEVATION_ID,
+          username: 'u',
+          password: 'p',
+        }),
+      });
+      // 404 means the guard passed and route logic ran (device not found).
+      expect(res.status).toBe(404);
+    });
   });
 
   describe('gate registration', () => {
