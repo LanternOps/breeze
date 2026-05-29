@@ -323,7 +323,7 @@ func SetAndPersist(key string, value any) error {
 
 func SetSecretAndPersist(key string, value any) error {
 	path := secretsFilePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	if err := enforceConfigDirPermissions(filepath.Dir(path)); err != nil {
@@ -404,7 +404,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		cfgPath = cfgFile
 		dir := filepath.Dir(cfgPath)
 		if dir != "." {
-			if err := os.MkdirAll(dir, 0750); err != nil {
+			if err := os.MkdirAll(dir, 0755); err != nil {
 				return err
 			}
 			if err := enforceConfigDirPermissions(dir); err != nil {
@@ -413,7 +413,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		}
 	} else {
 		cfgPath = filepath.Join(configDir(), "agent.yaml")
-		if err := os.MkdirAll(configDir(), 0750); err != nil {
+		if err := os.MkdirAll(configDir(), 0755); err != nil {
 			return err
 		}
 		if err := enforceConfigDirPermissions(configDir()); err != nil {
@@ -430,7 +430,10 @@ func SaveTo(cfg *Config, cfgFile string) error {
 		return fmt.Errorf("marshaling agent config: %w", err)
 	}
 	cfgYAML = stripSecretsFromAgentConfig(cfgYAML)
-	if err := atomicWriteFile(cfgPath, cfgYAML, 0640); err != nil {
+	// agent.yaml is world-readable (0644) so the Breeze Helper, running as the
+	// logged-in user, can read it. It carries only the helper-scoped token;
+	// full tokens and mTLS keys are written to root-only secrets.yaml below.
+	if err := atomicWriteFile(cfgPath, cfgYAML, 0644); err != nil {
 		return fmt.Errorf("writing agent config: %w", err)
 	}
 
@@ -660,7 +663,7 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 	}
 
 	if secretFileExists || len(secretValues) > 0 {
-		if err := os.MkdirAll(filepath.Dir(secretPath), 0750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(secretPath), 0755); err != nil {
 			return err
 		}
 		if err := enforceConfigDirPermissions(filepath.Dir(secretPath)); err != nil {
@@ -673,7 +676,7 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 			return err
 		}
 	}
-	if err := writeYAMLFile(cfgPath, cfgValues, 0640); err != nil {
+	if err := writeYAMLFile(cfgPath, cfgValues, 0644); err != nil {
 		return err
 	}
 	return enforceConfigFilePermissions(cfgPath)

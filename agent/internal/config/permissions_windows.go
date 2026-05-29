@@ -8,9 +8,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// The Breeze Helper ("Breeze Assist") runs in the logged-in user's session,
+// while the agent (SYSTEM) writes these files. The config dir and agent.yaml
+// grant BUILTIN\Users read so the Helper can read the server URL, agent ID, and
+// helper-scoped token — restoring the default ProgramData ACL that #568's
+// PROTECTED DACL stripped. SYSTEM and Administrators keep full control. The
+// directory's Users ACE is read+traverse (FRFX) and intentionally NOT
+// inheritable, so it never propagates to secrets.yaml. The full agent/watchdog
+// tokens and mTLS keys live ONLY in secrets.yaml, which stays SYSTEM +
+// Administrators (never Users).
 const (
-	windowsConfigDirSDDL  = `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`
-	windowsConfigFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)`
+	windowsConfigDirSDDL  = `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FRFX;;;BU)`
+	windowsConfigFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)`
+	windowsSecretFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)`
 )
 
 func enforceConfigDirPermissions(path string) error {
@@ -22,7 +32,7 @@ func enforceConfigFilePermissions(path string) error {
 }
 
 func enforceSecretFilePermissions(path string) error {
-	return applyWindowsDACL(path, windowsConfigFileSDDL)
+	return applyWindowsDACL(path, windowsSecretFileSDDL)
 }
 
 func applyWindowsDACL(path, sddl string) error {

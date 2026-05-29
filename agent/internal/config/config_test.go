@@ -225,17 +225,84 @@ func TestSaveToWritesAtomicallyWithoutLeftoverTempFiles(t *testing.T) {
 		t.Fatalf("Load returned incomplete config: %+v", loaded)
 	}
 
-	// On POSIX, the perm set at OpenFile time must survive — preserving the
-	// TOCTOU-permission property the previous code's comment called out.
-	// Skip on Windows where POSIX mode bits don't map directly.
+	// On POSIX, agent.yaml must be world-readable (0644) so the Breeze Helper
+	// ("Breeze Assist"), which runs as the logged-in user and is neither the
+	// owner (root) nor in the owning group (wheel), can read it. secrets.yaml
+	// holds the full agent/watchdog tokens and mTLS keys and stays root-only
+	// (0600). Skip on Windows where POSIX mode bits don't map directly.
 	if runtime.GOOS != "windows" {
-		if mode := agentInfo.Mode().Perm(); mode != 0o640 {
-			t.Errorf("agent.yaml mode = %o, want 0640", mode)
+		if mode := agentInfo.Mode().Perm(); mode != 0o644 {
+			t.Errorf("agent.yaml mode = %o, want 0644 (Helper runs as logged-in user)", mode)
 		}
 		if mode := secretsInfo.Mode().Perm(); mode != 0o600 {
 			t.Errorf("secrets.yaml mode = %o, want 0600", mode)
 		}
 	}
+}
+
+// TestEnforceConfigPermissionsAreHelperReadable guards the bug where the
+// SR-001..SR-024 hardening (#568) tightened agent.yaml to 0640 in a 0750 dir,
+// which the Breeze Helper (running as the logged-in user, not root/wheel) could
+// not read — surfacing as "Breeze Assist requires the Breeze agent...". The
+// config dir must be traversable and agent.yaml world-readable, while
+// secrets.yaml stays owner-only.
+func TestEnforceConfigPermissionsAreHelperReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits don't apply on Windows; DACLs covered separately")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+
+	// Start from deliberately over-tight perms to prove the enforce funcs loosen
+	// the config (and keep the secret locked).
+	if err := os.WriteFile(cfgPath, []byte("server_url: x\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	if err := os.WriteFile(secretsPath, []byte("auth_token: x\n"), 0o644); err != nil {
+		t.Fatalf("write secrets.yaml: %v", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+
+	if err := enforceConfigDirPermissions(dir); err != nil {
+		t.Fatalf("enforceConfigDirPermissions: %v", err)
+	}
+	if err := enforceConfigFilePermissions(cfgPath); err != nil {
+		t.Fatalf("enforceConfigFilePermissions: %v", err)
+	}
+	if err := enforceSecretFilePermissions(secretsPath); err != nil {
+		t.Fatalf("enforceSecretFilePermissions: %v", err)
+	}
+
+	dirMode := statPerm(t, dir)
+	if dirMode != 0o755 {
+		t.Errorf("config dir mode = %o, want 0755 (others must traverse to reach agent.yaml)", dirMode)
+	}
+	cfgMode := statPerm(t, cfgPath)
+	if cfgMode != 0o644 {
+		t.Errorf("agent.yaml mode = %o, want 0644 (Helper must read it as the logged-in user)", cfgMode)
+	}
+	if cfgMode&0o004 == 0 {
+		t.Errorf("agent.yaml mode = %o is not other-readable; Helper cannot read it", cfgMode)
+	}
+	secretsMode := statPerm(t, secretsPath)
+	if secretsMode != 0o600 {
+		t.Errorf("secrets.yaml mode = %o, want 0600 (full tokens/keys must stay owner-only)", secretsMode)
+	}
+	if secretsMode&0o077 != 0 {
+		t.Errorf("secrets.yaml mode = %o leaks group/other access to real secrets", secretsMode)
+	}
+}
+
+func statPerm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.Mode().Perm()
 }
 
 // TestAtomicWriteFileOverwritesExistingFile verifies the helper correctly
