@@ -103,6 +103,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'config_policy_backup_settings',
   'configuration_policies',
   'custom_field_definitions',
+  'delegant_m365_connections',
   'deployment_invites',
   'deployments',
   'device_boot_metrics',
