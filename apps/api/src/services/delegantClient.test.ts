@@ -157,6 +157,13 @@ describe('invokeDelegantTool response mapping', () => {
     expect(JSON.parse(init.body)).toEqual({ toolName: 'get_user', parameters: { userId: 'u1' } });
   });
 
+  it('pins redirect:error so a 3xx cannot forward the bearer token + principal JWT off-host', async () => {
+    const fetchMock = mockFetchOnce(200, { isError: false, data: {} });
+    await invokeDelegantTool(baseArgs(), { env, fetchImpl: fetchMock });
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.redirect).toBe('error');
+  });
+
   it('does not log tool parameters', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const args = baseArgs();

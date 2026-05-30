@@ -108,6 +108,11 @@ export async function invokeDelegantTool(
       },
       body: JSON.stringify({ toolName: args.toolName, parameters: args.parameters }),
       signal: controller.signal,
+      // Never follow redirects: a 3xx from a misconfigured/compromised Delegant
+      // endpoint would otherwise re-send the Authorization bearer token AND the
+      // signed principal JWT to the redirect target (arbitrary host). A redirect
+      // is treated as a network error (-> delegant_unreachable).
+      redirect: 'error',
     });
     result = await mapResponse(resp);
   } catch {

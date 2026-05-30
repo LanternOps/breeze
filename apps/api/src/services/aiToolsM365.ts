@@ -33,13 +33,18 @@ export const m365ToolTiers: Record<string, 1 | 3> = {
   m365_reset_password: 3,
 };
 
+// v1 single-customer seeding: every action is attributed to one static acting
+// principal + one agent principal sourced from env. This is a deliberate v1
+// shortcut (per-technician principal mapping is a known follow-up) — see the
+// operator runbook. Named DELEGANT_* (not DELEGANT_TEST_*) because these are
+// real production config, not test scaffolding.
 function principals(auth: AuthContext) {
   return {
     actingUser: {
       breezeUserId: auth.user.id,
-      delegantPrincipalId: process.env.DELEGANT_TEST_ACTING_USER_ID ?? '',
+      delegantPrincipalId: process.env.DELEGANT_ACTING_USER_ID ?? '',
     },
-    agent: { delegantPrincipalId: process.env.DELEGANT_TEST_AGENT_ID ?? '' },
+    agent: { delegantPrincipalId: process.env.DELEGANT_AGENT_ID ?? '' },
   };
 }
 

@@ -1082,6 +1082,31 @@ describe('validateConfig', () => {
       });
     });
 
+    // --- Delegant M365 (DELEGANT_BASE_URL as soft-enable indicator) ----------
+    it('refuses to boot when DELEGANT_BASE_URL is set but a companion secret is missing', () => {
+      withEnv({
+        ...prodBase,
+        DELEGANT_BASE_URL: 'https://delegant.internal',
+        DELEGANT_SERVICE_TOKEN: 'svc',
+        DELEGANT_PRINCIPAL_SIGNING_KEY: '',
+        DELEGANT_PRINCIPAL_KID: 'kid-1',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/DELEGANT_PRINCIPAL_SIGNING_KEY/);
+      });
+    });
+
+    it('does not require Delegant secrets when DELEGANT_BASE_URL is unset', () => {
+      withEnv({
+        ...prodBase,
+        DELEGANT_BASE_URL: '',
+        DELEGANT_SERVICE_TOKEN: '',
+        DELEGANT_PRINCIPAL_SIGNING_KEY: '',
+        DELEGANT_PRINCIPAL_KID: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
     // --- Dev mode never enforces ----------------------------------------------
     it('does not enforce feature-flagged secrets in development', () => {
       withEnv({

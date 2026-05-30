@@ -12,7 +12,7 @@ vi.mock(import('./permissions'), async (importOriginal) => {
   };
 });
 
-import { checkToolPermission } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission } from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
 
 const auth = {
@@ -79,5 +79,36 @@ describe('m365 RBAC', () => {
     );
     expect(err).toBeFalsy();
     expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'm365', 'execute');
+  });
+});
+
+// Regression guard for the tier-resolution gap: M365 tools are registered for
+// the SDK runtime (TOOL_TIERS) but live OUTSIDE the `aiTools` registry that
+// getToolTier reads, so checkGuardrails used to fail-close every M365 call as
+// tier-4 "Unknown tool" — blocking the feature entirely. These assert the real
+// guardrail tiers so the registry/SDK tier sources can't silently drift apart.
+describe('m365 guardrail tiers', () => {
+  it('treats read-only M365 tools as tier 1 (no approval)', () => {
+    for (const name of ['m365_lookup_user', 'm365_recent_signins', 'm365_list_group_memberships']) {
+      const check = checkGuardrails(name, {});
+      expect(check.allowed).toBe(true);
+      expect(check.tier).toBe(1);
+      expect(check.requiresApproval).toBe(false);
+    }
+  });
+
+  it('treats mutating M365 tools as tier 3 (per-step approval)', () => {
+    for (const name of ['m365_disable_user', 'm365_reset_password']) {
+      const check = checkGuardrails(name, { userIdentifier: 'x', reason: 'y' });
+      expect(check.allowed).toBe(true);
+      expect(check.tier).toBe(3);
+      expect(check.requiresApproval).toBe(true);
+    }
+  });
+
+  it('still fail-closes a genuinely unknown tool as tier 4', () => {
+    const check = checkGuardrails('m365_not_a_real_tool', {});
+    expect(check.allowed).toBe(false);
+    expect(check.tier).toBe(4);
   });
 });

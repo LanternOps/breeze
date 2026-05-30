@@ -432,6 +432,15 @@ const envSchema = z
     MSI_SIGNING_URL: z.string().optional(),
     MSI_SIGNING_CF_ACCESS_SECRET: z.string().optional(),
 
+    // Delegant M365 helpdesk — DELEGANT_BASE_URL is the soft-enable indicator.
+    // When set, the service token + principal signing material are required;
+    // without them every M365 tool call mints an empty/invalid principal JWT
+    // and 5xxs (auth_failed) at first use instead of failing at boot.
+    DELEGANT_BASE_URL: z.string().optional(),
+    DELEGANT_SERVICE_TOKEN: z.string().optional(),
+    DELEGANT_PRINCIPAL_SIGNING_KEY: z.string().optional(),
+    DELEGANT_PRINCIPAL_KID: z.string().optional(),
+
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
     REDIS_URL: z.string().default('redis://localhost:6379'),
@@ -913,6 +922,33 @@ const envSchema = z
         'MSI_SIGNING_URL is set (Cloudflare Access service-token auth to the signing tunnel)',
         ctx,
       );
+
+      // Delegant M365 helpdesk (DELEGANT_BASE_URL as indicator). When the
+      // feature is soft-enabled, all transport + principal-signing material is
+      // required; a partial config mints an empty/invalid principal JWT and
+      // auth_fails at first M365 tool call instead of failing at boot.
+      const delegantEnabled = Boolean(data.DELEGANT_BASE_URL?.trim());
+      requireIf(
+        delegantEnabled,
+        'DELEGANT_SERVICE_TOKEN',
+        data.DELEGANT_SERVICE_TOKEN,
+        'DELEGANT_BASE_URL is set (service-to-service auth to Delegant)',
+        ctx,
+      );
+      requireIf(
+        delegantEnabled,
+        'DELEGANT_PRINCIPAL_SIGNING_KEY',
+        data.DELEGANT_PRINCIPAL_SIGNING_KEY,
+        'DELEGANT_BASE_URL is set (Ed25519 PKCS8 key that signs the principal JWT)',
+        ctx,
+      );
+      requireIf(
+        delegantEnabled,
+        'DELEGANT_PRINCIPAL_KID',
+        data.DELEGANT_PRINCIPAL_KID,
+        'DELEGANT_BASE_URL is set (key id Delegant uses to verify the principal JWT)',
+        ctx,
+      );
     }
   });
 
@@ -1056,6 +1092,10 @@ export function validateConfig(): AppConfig {
     CLOUDFLARE_ZONE_ID: env.CLOUDFLARE_ZONE_ID,
     MSI_SIGNING_URL: env.MSI_SIGNING_URL,
     MSI_SIGNING_CF_ACCESS_SECRET: env.MSI_SIGNING_CF_ACCESS_SECRET,
+    DELEGANT_BASE_URL: env.DELEGANT_BASE_URL,
+    DELEGANT_SERVICE_TOKEN: env.DELEGANT_SERVICE_TOKEN,
+    DELEGANT_PRINCIPAL_SIGNING_KEY: env.DELEGANT_PRINCIPAL_SIGNING_KEY,
+    DELEGANT_PRINCIPAL_KID: env.DELEGANT_PRINCIPAL_KID,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,

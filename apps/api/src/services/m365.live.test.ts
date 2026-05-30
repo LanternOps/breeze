@@ -9,8 +9,8 @@ const LIVE = process.env.DELEGANT_LIVE_TEST === '1'
   && !!process.env.DELEGANT_SERVICE_TOKEN
   && !!process.env.DELEGANT_PRINCIPAL_SIGNING_KEY
   && !!process.env.DELEGANT_PRINCIPAL_KID
-  && !!process.env.DELEGANT_TEST_AGENT_ID
-  && !!process.env.DELEGANT_TEST_ACTING_USER_ID;
+  && !!process.env.DELEGANT_AGENT_ID
+  && !!process.env.DELEGANT_ACTING_USER_ID;
 
 // Mutations (password reset) require an EXTRA explicit opt-in so a stray live
 // run can never reset a real account.
@@ -43,11 +43,11 @@ function liveConnection(): DelegantM365ConnectionRow {
 }
 
 function liveActingUser() {
-  return { breezeUserId: 'live-tech', delegantPrincipalId: process.env.DELEGANT_TEST_ACTING_USER_ID! };
+  return { breezeUserId: 'live-tech', delegantPrincipalId: process.env.DELEGANT_ACTING_USER_ID! };
 }
 
 function liveAgent() {
-  return { delegantPrincipalId: process.env.DELEGANT_TEST_AGENT_ID! };
+  return { delegantPrincipalId: process.env.DELEGANT_AGENT_ID! };
 }
 
 describe.skipIf(!LIVE)('m365 live (sandbox tenant)', () => {

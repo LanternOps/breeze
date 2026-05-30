@@ -29,13 +29,13 @@ Configure these in `apps/api/src/config/env.ts` before deploying:
 
 - **`DELEGANT_PRINCIPAL_KID`** — the key id; must match the `kid` of the public key registered in Delegant's `jwtKeySet`.
 
-- **`DELEGANT_TEST_AGENT_ID`** — (v1 single-customer seeding) the Delegant `principals` row id of the `breeze_ai_agent` principal. Used as the JWT `sub` claim.
+- **`DELEGANT_AGENT_ID`** — (v1 single-customer seeding) the Delegant `principals` row id of the `breeze_ai_agent` principal. Used as the JWT `sub` claim.
 
-- **`DELEGANT_TEST_ACTING_USER_ID`** — (v1 single-customer seeding) the Delegant `principals` row id (a UUID) of the `breeze_user` principal representing the acting technician. Used as the JWT `breeze_acting_user_id` claim (chains the agent to the acting user).
+- **`DELEGANT_ACTING_USER_ID`** — (v1 single-customer seeding) the Delegant `principals` row id (a UUID) of the `breeze_user` principal representing the acting technician. Used as the JWT `breeze_acting_user_id` claim (chains the agent to the acting user).
 
 ### Single-Customer Shortcut (v1)
 
-The current version uses `DELEGANT_TEST_AGENT_ID` and `DELEGANT_TEST_ACTING_USER_ID` as a **single-customer shortcut**. This is because v1 lacks a per-technician principal mapping table — a known follow-up. Bulk principal provisioning is deferred to a Delegant-side slice.
+The current version uses `DELEGANT_AGENT_ID` and `DELEGANT_ACTING_USER_ID` as a **single-customer shortcut**. This is because v1 lacks a per-technician principal mapping table — a known follow-up. Bulk principal provisioning is deferred to a Delegant-side slice.
 
 Example configuration:
 ```bash
@@ -45,8 +45,8 @@ export DELEGANT_PRINCIPAL_SIGNING_KEY="-----BEGIN PRIVATE KEY-----
 ...
 -----END PRIVATE KEY-----"
 export DELEGANT_PRINCIPAL_KID="key-id-matching-public-in-delegant-jwtkeyset"
-export DELEGANT_TEST_AGENT_ID="breeze-ai-agent-principals-id"
-export DELEGANT_TEST_ACTING_USER_ID="breeze-user-principals-id-uuid"
+export DELEGANT_AGENT_ID="breeze-ai-agent-principals-id"
+export DELEGANT_ACTING_USER_ID="breeze-user-principals-id-uuid"
 ```
 
 ---
@@ -57,11 +57,11 @@ Before Breeze can invoke helpdesk tools, an operator **must** set up the followi
 
 ### 1. Create the Agent Principal
 
-Create a `breeze_ai_agent` principal in Delegant. Record its `principals` row id → `DELEGANT_TEST_AGENT_ID`.
+Create a `breeze_ai_agent` principal in Delegant. Record its `principals` row id → `DELEGANT_AGENT_ID`.
 
 ### 2. Create a Technician Principal
 
-Create a `breeze_user` principal per technician in Delegant. Record its id (a UUID) → `DELEGANT_TEST_ACTING_USER_ID`. The principal **must**:
+Create a `breeze_user` principal per technician in Delegant. Record its id (a UUID) → `DELEGANT_ACTING_USER_ID`. The principal **must**:
 - Belong to the **same Delegant org** as the M365 connection being onboarded.
 - Have type `breeze_user` (Delegant's wireAuth rejects mismatches with 403).
 
@@ -271,6 +271,6 @@ Before going live:
 - [ ] `delegant_m365_connections` row seeded via SQL (Section 3)
 - [ ] Migrations applied (`_migrations` table contains 2026-05-27-b-* and 2026-05-27-c-*) (Section 5)
 - [ ] Sandbox M365 tenant available for testing (Section 7)
-- [ ] Technician `breeze_user` principal linked in `DELEGANT_TEST_ACTING_USER_ID`
+- [ ] Technician `breeze_user` principal linked in `DELEGANT_ACTING_USER_ID`
 
 For live troubleshooting, use the audit trail in Section 6 to correlate actions across Breeze and Delegant.

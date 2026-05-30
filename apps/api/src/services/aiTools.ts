@@ -55,6 +55,11 @@ import { registerDocsTools } from './aiToolsDocs';
 import { registerRemoteTools } from './aiToolsRemote';
 import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 import { registerUITools } from './aiToolsUI';
+// M365 helpdesk tools are session-aware (handler signature includes a sessionId)
+// so they are NOT registered in the `aiTools` execution registry — they run via
+// makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
+// getToolTier so checkGuardrails can gate them; import the tier table for fallback.
+import { m365ToolTiers } from './aiToolsM365';
 
 // ============================================
 // Shared Types
@@ -181,7 +186,7 @@ export function getToolDefinitions(): Anthropic.Tool[] {
 }
 
 export function getToolTier(toolName: string): AiToolTier | undefined {
-  return aiTools.get(toolName)?.tier;
+  return aiTools.get(toolName)?.tier ?? m365ToolTiers[toolName];
 }
 
 export async function executeTool(
