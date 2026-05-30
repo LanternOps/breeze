@@ -395,7 +395,7 @@ func TestDownloadBinary(t *testing.T) {
 	})
 	u.client = server.Client()
 
-	tempPath, manifest, err := u.downloadBinary("1.0.0")
+	tempPath, manifest, _, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download failed: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 	})
 	u.client = server.Client()
 
-	_, _, err = u.downloadBinary("1.0.0")
+	_, _, _, err = u.downloadBinary("1.0.0")
 	if err == nil {
 		t.Fatal("tampered manifest metadata should fail signature verification")
 	}
@@ -504,7 +504,7 @@ func TestDownloadBinaryAcceptsSignedReleaseArtifactManifest(t *testing.T) {
 	})
 	u.client = server.Client()
 
-	tempPath, manifest, err := u.downloadBinary("1.0.0")
+	tempPath, manifest, _, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download failed: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestDownloadBinaryAcceptsServerRelativeUrlWithMatchingChecksum(t *testing.T
 	})
 	u.client = server.Client()
 
-	tempPath, manifest, err := u.downloadBinary("1.0.0")
+	tempPath, manifest, _, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("server-relative URL with matching checksum should be accepted: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestDownloadBinaryRejectsWrongSignedReleaseArtifact(t *testing.T) {
 	})
 	u.client = server.Client()
 
-	_, _, err := u.downloadBinary("1.0.0")
+	_, _, _, err := u.downloadBinary("1.0.0")
 	if err == nil {
 		t.Fatal("wrong signed release artifact should fail")
 	}
@@ -635,7 +635,7 @@ func TestDownloadBinaryRejectsRedirectResponseWithoutSignedManifest(t *testing.T
 	})
 	u.client = server.Client()
 
-	_, _, err := u.downloadBinary("1.0.0")
+	_, _, _, err := u.downloadBinary("1.0.0")
 	if err == nil {
 		t.Fatal("redirect response without signed manifest should fail")
 	}
@@ -654,7 +654,7 @@ func TestDownloadBinaryMissingChecksum(t *testing.T) {
 	u := New(&Config{ServerURL: server.URL})
 	u.client = server.Client()
 
-	_, _, err := u.downloadBinary("1.0.0")
+	_, _, _, err := u.downloadBinary("1.0.0")
 	if err == nil {
 		t.Fatal("should fail when checksum missing from JSON response")
 	}
@@ -669,7 +669,7 @@ func TestDownloadBinaryServerError(t *testing.T) {
 	u := New(&Config{ServerURL: server.URL})
 	u.client = server.Client()
 
-	_, _, err := u.downloadBinary("1.0.0")
+	_, _, _, err := u.downloadBinary("1.0.0")
 	if err == nil {
 		t.Fatal("should fail on server error")
 	}
@@ -782,7 +782,7 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 
 	// We can't test the full UpdateTo because Restart() would fail,
 	// but we can test the download -> verify -> backup -> replace pipeline manually
-	tempPath, manifest, err := u.downloadBinary("1.0.0")
+	tempPath, manifest, _, err := u.downloadBinary("1.0.0")
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}

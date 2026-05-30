@@ -181,6 +181,52 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 	return map[string]struct{}{}
 }
 
+// pkgAssetName is the canonical filename of the macOS .pkg installer asset for
+// the running architecture. The .pkg is built and listed in the signed release
+// manifest's asset list alongside the bare binary (release.yml).
+func pkgAssetName() string {
+	return fmt.Sprintf("breeze-agent-darwin-%s.pkg", runtime.GOARCH)
+}
+
+// pkgAssetChecksum extracts the signed SHA-256 of the macOS .pkg installer from
+// an ALREADY-signature-verified release artifact manifest payload (the
+// info.Manifest bytes that verifyUpdateManifest checked the Ed25519 signature
+// over). It is the trust binding for the macOS update path: installViaPkg must
+// verify the downloaded .pkg against this value before running `installer` as
+// root.
+//
+// It deliberately FAILS CLOSED — returning an error when the manifest does not
+// list the .pkg (e.g. legacy single-asset manifests, or releases predating the
+// .pkg being added) — so the caller falls back to verified-binary replacement
+// rather than installing bytes never bound to the signed trust root.
+func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
+	var manifest releaseArtifactManifest
+	if err := json.Unmarshal(verifiedManifest, &manifest); err != nil {
+		return "", fmt.Errorf("invalid release artifact manifest JSON: %w", err)
+	}
+	if manifest.SchemaVersion != 1 {
+		return "", fmt.Errorf("unsupported release artifact manifest schema version %d", manifest.SchemaVersion)
+	}
+	if !releaseTagMatchesVersion(manifest.Release, version) {
+		return "", fmt.Errorf("release artifact manifest version mismatch: expected %s, got %s", version, manifest.Release)
+	}
+	name := pkgAssetName()
+	for i := range manifest.Assets {
+		if manifest.Assets[i].Name != name {
+			continue
+		}
+		sha := manifest.Assets[i].SHA256
+		if len(sha) != 64 {
+			return "", fmt.Errorf("release artifact manifest checksum for %s must be SHA-256 hex", name)
+		}
+		if _, err := hex.DecodeString(sha); err != nil {
+			return "", fmt.Errorf("release artifact manifest checksum for %s is not valid hex: %w", name, err)
+		}
+		return sha, nil
+	}
+	return "", fmt.Errorf("release artifact manifest does not include %s", name)
+}
+
 func (u *Updater) trustedManifestKeys() []ed25519.PublicKey {
 	configured := strings.TrimSpace(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"))
 	rawKeys := append([]string{}, trustedUpdateManifestPublicKeys...)
@@ -285,7 +331,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	}
 
 	// 1. Download binary to temp file
-	tempPath, manifest, err := u.downloadBinary(version)
+	tempPath, manifest, manifestPayload, err := u.downloadBinary(version)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
@@ -335,14 +381,24 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	//    The .pkg preserves the Apple Developer ID code signature and runs
 	//    pre/post-install scripts. The raw binary approach destroys the
 	//    signature, which invalidates macOS TCC permission grants.
+	//
+	//    SECURITY: the .pkg is verified against the same Ed25519-signed release
+	//    manifest as the binary before `installer` runs it as root. If the
+	//    signed .pkg checksum is unavailable (legacy manifest, or the lookup
+	//    fails), installViaPkg is skipped and we fall through to verified-binary
+	//    replacement — we never run `installer` on bytes not bound to the trust
+	//    root. (issue: macOS update RCE.)
 	if runtime.GOOS == "darwin" {
 		defer removeCleanup(tempPath)
 		writeUpdateMarker(version)
-		pkgErr := u.installViaPkg(version)
-		if pkgErr == nil {
+		pkgChecksum, pkgErr := pkgAssetChecksum(manifestPayload, version)
+		if pkgErr != nil {
+			log.Warn("signed .pkg checksum unavailable, falling back to verified-binary replacement", "error", pkgErr.Error())
+		} else if installErr := u.installViaPkg(version, pkgChecksum); installErr != nil {
+			log.Warn("pkg install failed, falling back to binary replacement", "error", installErr.Error())
+		} else {
 			return nil // .pkg install handles binary replacement + restart
 		}
-		log.Warn("pkg install failed, falling back to binary replacement", "error", pkgErr.Error())
 	} else {
 		defer removeCleanup(tempPath)
 	}
@@ -564,7 +620,7 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 // manifest-vs-file distinction. The second verify is intentional and a
 // future simplifier should not delete it as "redundant".
 func (u *Updater) DownloadBinary(version string) (string, error) {
-	tempPath, manifest, err := u.downloadBinary(version)
+	tempPath, manifest, _, err := u.downloadBinary(version)
 	if err != nil {
 		return "", err
 	}
@@ -577,9 +633,15 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
-func (u *Updater) downloadBinary(version string) (string, updateManifest, error) {
+// downloadBinary returns the temp path of the downloaded binary, the verified
+// single-asset manifest view, and the raw signature-VERIFIED release manifest
+// payload (info.Manifest). The payload is returned so the macOS update path can
+// look up the .pkg asset's signed checksum from the same trust root without a
+// second round-trip; it is safe to use because verifyUpdateManifest has already
+// checked its Ed25519 signature.
+func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte, error) {
 	if u.config.AuthToken == nil {
-		return "", updateManifest{}, fmt.Errorf("auth token not available")
+		return "", updateManifest{}, nil, fmt.Errorf("auth token not available")
 	}
 	// Step 1: Get download URL + checksum from API.
 	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s&component=%s",
@@ -587,45 +649,48 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, error)
 
 	req, err := http.NewRequest("GET", infoURL, nil)
 	if err != nil {
-		return "", updateManifest{}, err
+		return "", updateManifest{}, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
 	resp, err := u.requestWithoutRedirect(req)
 	if err != nil {
-		return "", updateManifest{}, err
+		return "", updateManifest{}, nil, err
 	}
 	defer resp.Body.Close()
 
 	info, err := u.parseDownloadInfo(resp)
 	if err != nil {
-		return "", updateManifest{}, err
+		return "", updateManifest{}, nil, err
 	}
 
 	manifest, err := u.verifyUpdateManifest(info, version)
 	if err != nil {
-		return "", updateManifest{}, err
+		return "", updateManifest{}, nil, err
 	}
+	// info.Manifest is now signature-verified; capture it for the macOS .pkg
+	// checksum lookup in UpdateTo.
+	verifiedPayload := []byte(info.Manifest)
 
 	// Step 2: Download the actual binary from the manifest URL. downloadFromURL
 	// enforces scheme and origin against the configured control-plane URL.
 	tempPath, err := u.downloadFromURL(info.URL)
 	if err != nil {
-		return "", updateManifest{}, err
+		return "", updateManifest{}, nil, err
 	}
 	if manifest.Size > 0 {
 		stat, err := os.Stat(tempPath)
 		if err != nil {
 			removeCleanup(tempPath)
-			return "", updateManifest{}, err
+			return "", updateManifest{}, nil, err
 		}
 		if stat.Size() != manifest.Size {
 			removeCleanup(tempPath)
-			return "", updateManifest{}, fmt.Errorf("downloaded binary size mismatch: expected %d, got %d", manifest.Size, stat.Size())
+			return "", updateManifest{}, nil, fmt.Errorf("downloaded binary size mismatch: expected %d, got %d", manifest.Size, stat.Size())
 		}
 	}
 
-	return tempPath, manifest, nil
+	return tempPath, manifest, verifiedPayload, nil
 }
 
 // verifyChecksum verifies the SHA256 checksum of a file
