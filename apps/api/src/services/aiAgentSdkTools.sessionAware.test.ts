@@ -34,7 +34,6 @@ const { makeSessionAwareHandler } = __test__;
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 const fakeAuth = { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as any;
 const fakeSession = { breezeSessionId: 'sess-123', auth: fakeAuth } as any;
 
