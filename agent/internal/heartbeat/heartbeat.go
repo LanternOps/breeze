@@ -244,6 +244,18 @@ type Heartbeat struct {
 	// install (copy into place + broker hash-allowlist refresh). nil in
 	// production. Signature is (tempPath, installPath, version).
 	userHelperInstaller func(tempPath, installPath, version string) error
+
+	// userHelperInstallMu serializes installUserHelperBinary so a manual
+	// dev_update and the periodic reconcile can't run the
+	// taskkill→copy→rename→allowlist-refresh sequence concurrently and race on
+	// the shared backup target / install path.
+	userHelperInstallMu sync.Mutex
+
+	// userHelperReconcileFailures counts consecutive reconcileUserHelper
+	// failures so a permanently-unfetchable helper escalates from WARN to a
+	// distinct, greppable ERROR instead of looping at WARN forever. Reset to 0
+	// on the first success.
+	userHelperReconcileFailures atomic.Int32
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -3151,10 +3163,12 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 //
 // ANY download failure is non-fatal — we log a WARN and return nil. This is
 // intentional and covers more than just 404s:
-//   (a) pre-#816 releases legitimately lack the user-helper artifact, so we
-//       don't want to block their upgrades, and
-//   (b) we'd rather degrade than fail an agent upgrade on a transient
-//       helper-fetch glitch.
+//
+//	(a) pre-#816 releases legitimately lack the user-helper artifact, so we
+//	    don't want to block their upgrades, and
+//	(b) we'd rather degrade than fail an agent upgrade on a transient
+//	    helper-fetch glitch.
+//
 // `currentVersion` is included in the WARN so operators can tell the
 // "legitimately pre-#816, ignore" case apart from the "this release SHOULD
 // have shipped the artifact, something's broken" case.
@@ -3226,9 +3240,17 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	}
 
 	helperPath := filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
-	switch _, statErr := os.Stat(helperPath); {
+	switch fi, statErr := os.Stat(helperPath); {
+	case statErr == nil && fi.Size() > 0:
+		return // present and non-empty — nothing to heal
 	case statErr == nil:
-		return // present — nothing to heal
+		// Present but zero-length: a previous install was interrupted mid-write
+		// (or an external truncation). Treat as absent and re-fetch — otherwise
+		// the corpse blocks self-heal forever, since the spawn would load a
+		// broken binary. (The atomic install path makes us-produced truncation
+		// impossible, so this is defense-in-depth against external causes.)
+		log.Warn("user-helper reconciliation: helper present but zero-length, re-fetching",
+			"path", helperPath)
 	case !os.IsNotExist(statErr):
 		// An unexpected stat error (permissions, transient IO) is not a
 		// confirmed absence — don't risk fetching/clobbering over a binary we
@@ -3239,8 +3261,12 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	}
 
 	// Fetch the binary matching the CURRENTLY-installed agent version, not
-	// "latest" — the broker's hash allowlist is version-specific, so a helper
-	// from a different version would be rejected at the IPC handshake.
+	// "latest". The helper shares the agent's IPC protocol and behavior, so it
+	// must track the running agent — pulling a newer release's helper risks a
+	// protocol/behavior skew against the older agent still in place. (Note: the
+	// broker's hash allowlist is content-based, not version-gated —
+	// installUserHelperBinary copies then RefreshAllowedHashes admits whatever
+	// landed on disk — so the allowlist is NOT the reason to prefer current.)
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
@@ -3256,24 +3282,65 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	tempPath, dlErr := download(h.agentVersion)
 	if dlErr != nil {
 		// Non-fatal: a transient fetch failure (network, server hiccup) should
-		// not wedge the heartbeat. The next reconcile tick retries.
-		log.Warn("user-helper reconciliation: download failed, will retry on a later tick",
-			"currentVersion", h.agentVersion, "error", dlErr.Error())
+		// not wedge the heartbeat. The next reconcile tick retries. A version
+		// whose user-helper artifact genuinely doesn't exist (pre-#816 release)
+		// would 404 every tick — noteUserHelperReconcileFailure escalates that
+		// from WARN to a distinct ERROR so it doesn't loop silently forever.
+		h.noteUserHelperReconcileFailure("download_failed", dlErr)
 		return
 	}
 	defer func() { _ = os.Remove(tempPath) }()
 
 	install := h.userHelperInstaller
 	if install == nil {
-		install = h.installUserHelperBinary
+		install = func(temp, ip, ver string) error {
+			_, err := h.installUserHelperBinary(temp, ip, ver)
+			return err
+		}
 	}
 	if err := install(tempPath, helperPath, h.agentVersion); err != nil {
-		log.Warn("user-helper reconciliation: install failed",
-			"path", helperPath, "error", err.Error())
+		h.noteUserHelperReconcileFailure("install_failed", err)
 		return
+	}
+	if prev := h.userHelperReconcileFailures.Swap(0); prev >= userHelperReconcilePersistentThreshold {
+		log.Info("user-helper reconciliation recovered after persistent failures", "previousFailures", prev)
 	}
 	log.Info("user-helper reconciliation: installed missing helper binary; next SYSTEM-context spawn will use it",
 		"path", helperPath, "version", h.agentVersion)
+}
+
+// userHelperReconcilePersistentThreshold is the consecutive-failure count at
+// which reconcileUserHelper escalates from a routine WARN to a distinct ERROR
+// (~2h at the 30-min reconcile cadence). userHelperReconcileReLogEvery re-emits
+// the ERROR periodically thereafter (~daily) so a stuck device stays visible
+// without logging every tick.
+const (
+	userHelperReconcilePersistentThreshold = 4
+	userHelperReconcileReLogEvery          = 48
+)
+
+// noteUserHelperReconcileFailure records a consecutive reconcile failure and
+// logs it at a level that escalates with persistence: WARN on the first, ERROR
+// once the failure count crosses the threshold (and periodically after), DEBUG
+// in between so a permanently-unfetchable helper doesn't spam an indistinct
+// WARN every tick. The ERROR carries a stable reason + consecutiveFailures so
+// fleet telemetry can GROUP BY and alert on it.
+func (h *Heartbeat) noteUserHelperReconcileFailure(reason string, err error) {
+	n := h.userHelperReconcileFailures.Add(1)
+	switch {
+	case n >= userHelperReconcilePersistentThreshold &&
+		(n == userHelperReconcilePersistentThreshold || n%userHelperReconcileReLogEvery == 0):
+		log.Error("user-helper reconciliation persistently failing — device cannot self-heal its missing helper",
+			"reason", reason, "consecutiveFailures", n,
+			"currentVersion", h.agentVersion, "error", err.Error())
+	case n == 1:
+		log.Warn("user-helper reconciliation failed; will retry on a later tick",
+			"reason", reason, "consecutiveFailures", n,
+			"currentVersion", h.agentVersion, "error", err.Error())
+	default:
+		log.Debug("user-helper reconciliation still failing",
+			"reason", reason, "consecutiveFailures", n, "error", err.Error())
+	}
 }
 
 // reconcileUserHelperFromExecutable is the production entry point for
