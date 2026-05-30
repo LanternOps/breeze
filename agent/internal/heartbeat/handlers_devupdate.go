@@ -107,12 +107,32 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 	defer os.Remove(tempPath)
 
 	installPath := windowsUserHelperInstallPath
+	if err := h.installUserHelperBinary(tempPath, installPath, version); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 
+	return tools.NewSuccessResult(map[string]any{
+		"message":   "user-helper binary replaced; new binary takes effect on next scheduled-task firing",
+		"component": devUpdateComponentUserHelper,
+		"version":   version,
+		"path":      installPath,
+	}, time.Since(start).Milliseconds())
+}
+
+// installUserHelperBinary places a freshly-downloaded breeze-user-helper.exe at
+// installPath and makes it usable: it backs up any existing binary, stops a
+// running helper so the copy can't hit a sharing violation, copies the new bytes
+// into place, and refreshes the broker's binary-hash allowlist so the next
+// SYSTEM-context / scheduled-task spawn of the new binary is admitted over IPC.
+// Windows-only in practice (callers gate on GOOS). Shared by the dev-push path
+// (handleDevUpdateUserHelper) and the reconciliation path (reconcileUserHelper).
+// Does not remove tempPath — the caller owns that.
+func (h *Heartbeat) installUserHelperBinary(tempPath, installPath, version string) error {
 	// Backup the existing helper binary so a failed swap can be rolled back
 	// manually. First-install case will have no backup target — best effort.
 	backupDir := config.GetDataDir()
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to create backup directory %s: %w", backupDir, err), time.Since(start).Milliseconds())
+		return fmt.Errorf("failed to create backup directory %s: %w", backupDir, err)
 	}
 	backupPath := filepath.Join(backupDir, "breeze-user-helper.backup.exe")
 	if _, statErr := os.Stat(installPath); statErr == nil {
@@ -139,14 +159,14 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 			"output", string(killOut),
 			"error", killErr.Error())
 	} else {
-		log.Info("stopped running breeze-user-helper.exe before in-place upgrade",
+		log.Info("stopped running breeze-user-helper.exe before install",
 			"output", string(killOut))
 	}
 
 	if err := copyFile(tempPath, installPath); err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to install user helper at %s: %w", installPath, err), time.Since(start).Milliseconds())
+		return fmt.Errorf("failed to install user helper at %s: %w", installPath, err)
 	}
-	log.Info("installed new user-helper binary", "path", installPath, "version", version)
+	log.Info("installed user-helper binary", "path", installPath, "version", version)
 
 	// Refresh the broker's binary hash allowlist so the newly spawned helper
 	// is accepted when it reconnects on the next user logon. Without this,
@@ -157,30 +177,24 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 	// directory). A zero-count refresh, or a refresh whose recomputed
 	// allowlist doesn't include the freshly-installed binary, means the
 	// next helper spawn will be rejected silently at the IPC handshake —
-	// we surface that as an explicit dev-update failure rather than
-	// reporting success and discovering the rejection hours later.
+	// we surface that as an explicit failure rather than reporting success
+	// and discovering the rejection hours later.
 	if h.sessionBroker == nil {
 		log.Warn("session broker unavailable — helper reconnection may be rejected until agent restart")
-	} else {
-		if _, refreshErr := h.sessionBroker.RefreshAllowedHashes(); refreshErr != nil {
-			return tools.NewErrorResult(fmt.Errorf("user-helper installed but broker allowlist refresh failed: %w", refreshErr), time.Since(start).Milliseconds())
-		}
-		installedHash, allowed, hashErr := h.sessionBroker.HashAndVerifyAllowed(installPath)
-		if hashErr != nil {
-			return tools.NewErrorResult(fmt.Errorf("user-helper installed but hash verification failed: %w", hashErr), time.Since(start).Milliseconds())
-		}
-		if !allowed {
-			return tools.NewErrorResult(fmt.Errorf("user-helper installed but its hash %s is not in the refreshed allowlist; next spawn will be rejected", installedHash), time.Since(start).Milliseconds())
-		}
-		log.Info("user-helper hash verified in refreshed allowlist", "hash", installedHash)
+		return nil
 	}
-
-	return tools.NewSuccessResult(map[string]any{
-		"message":   "user-helper binary replaced; new binary takes effect on next scheduled-task firing",
-		"component": devUpdateComponentUserHelper,
-		"version":   version,
-		"path":      installPath,
-	}, time.Since(start).Milliseconds())
+	if _, refreshErr := h.sessionBroker.RefreshAllowedHashes(); refreshErr != nil {
+		return fmt.Errorf("user-helper installed but broker allowlist refresh failed: %w", refreshErr)
+	}
+	installedHash, allowed, hashErr := h.sessionBroker.HashAndVerifyAllowed(installPath)
+	if hashErr != nil {
+		return fmt.Errorf("user-helper installed but hash verification failed: %w", hashErr)
+	}
+	if !allowed {
+		return fmt.Errorf("user-helper installed but its hash %s is not in the refreshed allowlist; next spawn will be rejected", installedHash)
+	}
+	log.Info("user-helper hash verified in refreshed allowlist", "hash", installedHash)
+	return nil
 }
 
 // applyDevUpdateAutoUpdatePolicy decides whether a dev_update should leave

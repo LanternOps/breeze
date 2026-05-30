@@ -238,6 +238,12 @@ type Heartbeat struct {
 	// runtime.GOOS in prefetchUserHelper. nil/"" in production — the real
 	// runtime.GOOS value is used so the prefetch only runs on Windows.
 	userHelperGOOS string
+
+	// userHelperInstaller is an optional test seam: when non-nil,
+	// reconcileUserHelper calls this instead of performing the real on-disk
+	// install (copy into place + broker hash-allowlist refresh). nil in
+	// production. Signature is (tempPath, installPath, version).
+	userHelperInstaller func(tempPath, installPath, version string) error
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -722,6 +728,11 @@ func (h *Heartbeat) Start() {
 	defer ticker.Stop()
 	const bootCheckInterval = 5 * time.Minute
 	var lastBootCheck time.Time
+	// Self-heal a missing breeze-user-helper.exe (Windows), decoupled from
+	// upgrades. Zero-valued timer → fires on the first tick (≈startup), then
+	// every interval after (issue #816 follow-up).
+	const userHelperCheckInterval = 30 * time.Minute
+	var lastUserHelperCheck time.Time
 
 	// Send initial heartbeat after jitter
 	h.sendHeartbeatWithWatchdog()
@@ -801,6 +812,19 @@ func (h *Heartbeat) Start() {
 						}()
 					}
 				}
+			}
+
+			// Reconcile a missing user-helper binary on Windows (issue #816
+			// follow-up). Gated on an interval; the download only happens on the
+			// genuine-absence path. Runs in a goroutine because it does network
+			// I/O on the miss path. The auth-dead skip above already prevents
+			// this block from running without a valid token.
+			if now.Sub(lastUserHelperCheck) >= userHelperCheckInterval {
+				lastUserHelperCheck = now
+				go func() {
+					defer observability.Recoverer("heartbeat.reconcileUserHelper")
+					h.reconcileUserHelperFromExecutable()
+				}()
 			}
 
 			if shouldSendInventory {
@@ -3177,6 +3201,98 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		"target", pair.Target,
 	)
 	return pair
+}
+
+// reconcileUserHelper self-heals a Windows agent whose breeze-user-helper.exe
+// sibling is missing from disk, decoupled from any version upgrade. The MSI
+// installer and the in-place upgrade prefetch (see prefetchUserHelper) are the
+// only two vectors that ever place the helper, so an agent installed via a
+// vector that skips it (direct-exe enrollment, pre-#816 MSI) and already at the
+// latest version has no path to acquire it — it falls back to spawning
+// breeze-agent.exe as the helper every ~30s, which is unstable (issue #816
+// follow-up). This reconciliation closes that gap: if the helper is absent next
+// to the agent, fetch the matching CURRENT version via the user-helper update
+// component and drop it in. All failure modes are non-fatal — we log and return
+// so a fetch glitch never wedges the heartbeat.
+func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
+	goos := h.userHelperGOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "windows" {
+		// macOS/Linux have no sibling helper binary — the helper runs as a
+		// breeze-agent subcommand — so there is nothing to reconcile.
+		return
+	}
+
+	helperPath := filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
+	switch _, statErr := os.Stat(helperPath); {
+	case statErr == nil:
+		return // present — nothing to heal
+	case !os.IsNotExist(statErr):
+		// An unexpected stat error (permissions, transient IO) is not a
+		// confirmed absence — don't risk fetching/clobbering over a binary we
+		// merely couldn't read.
+		log.Warn("user-helper reconciliation: cannot stat helper, skipping this tick",
+			"path", helperPath, "error", statErr.Error())
+		return
+	}
+
+	// Fetch the binary matching the CURRENTLY-installed agent version, not
+	// "latest" — the broker's hash allowlist is version-specific, so a helper
+	// from a different version would be rejected at the IPC handshake.
+	download := h.userHelperDownloader
+	if download == nil {
+		helperCfg := &updater.Config{
+			ServerURL:             h.config.ServerURL,
+			AuthToken:             h.secureToken,
+			CurrentVersion:        h.agentVersion,
+			Component:             "user-helper",
+			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		}
+		download = updater.New(helperCfg).DownloadBinary
+	}
+
+	tempPath, dlErr := download(h.agentVersion)
+	if dlErr != nil {
+		// Non-fatal: a transient fetch failure (network, server hiccup) should
+		// not wedge the heartbeat. The next reconcile tick retries.
+		log.Warn("user-helper reconciliation: download failed, will retry on a later tick",
+			"currentVersion", h.agentVersion, "error", dlErr.Error())
+		return
+	}
+	defer func() { _ = os.Remove(tempPath) }()
+
+	install := h.userHelperInstaller
+	if install == nil {
+		install = h.installUserHelperBinary
+	}
+	if err := install(tempPath, helperPath, h.agentVersion); err != nil {
+		log.Warn("user-helper reconciliation: install failed",
+			"path", helperPath, "error", err.Error())
+		return
+	}
+	log.Info("user-helper reconciliation: installed missing helper binary; next SYSTEM-context spawn will use it",
+		"path", helperPath, "version", h.agentVersion)
+}
+
+// reconcileUserHelperFromExecutable is the production entry point for
+// reconcileUserHelper: it resolves the running agent's on-disk path (following
+// symlinks) and delegates. Split out so reconcileUserHelper stays a pure
+// function of an injected binaryPath for testing.
+func (h *Heartbeat) reconcileUserHelperFromExecutable() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Warn("user-helper reconciliation: cannot resolve executable path", "error", err.Error())
+		return
+	}
+	if resolved, symErr := filepath.EvalSymlinks(binaryPath); symErr == nil {
+		binaryPath = resolved
+	}
+	h.reconcileUserHelper(binaryPath)
 }
 
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.

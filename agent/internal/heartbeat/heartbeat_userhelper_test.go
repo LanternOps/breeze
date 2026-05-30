@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -118,5 +119,116 @@ func TestPrefetchUserHelper_DefaultGOOSMatchesRuntime(t *testing.T) {
 	pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/breeze-agent")
 	if pair != nil {
 		t.Fatalf("expected nil BinaryPair on non-Windows runtime, got %+v", pair)
+	}
+}
+
+// --- reconcileUserHelper: decoupled self-heal of a missing helper binary ---
+
+// TestReconcileUserHelper_NonWindows_NoOp: macOS/Linux have no sibling helper
+// binary (the helper runs as a breeze-agent subcommand), so reconciliation must
+// short-circuit before any download or install — even when the sibling path
+// happens not to exist.
+func TestReconcileUserHelper_NonWindows_NoOp(t *testing.T) {
+	var dlCalls, instCalls atomic.Int32
+	h := &Heartbeat{
+		config:               &config.Config{},
+		agentVersion:         "1.2.3",
+		userHelperGOOS:       "darwin",
+		userHelperDownloader: func(string) (string, error) { dlCalls.Add(1); return "", nil },
+		userHelperInstaller:  func(string, string, string) error { instCalls.Add(1); return nil },
+	}
+
+	h.reconcileUserHelper(filepath.Join(t.TempDir(), "breeze-agent"))
+
+	if dlCalls.Load() != 0 || instCalls.Load() != 0 {
+		t.Fatalf("non-windows must be a no-op; downloader=%d installer=%d", dlCalls.Load(), instCalls.Load())
+	}
+}
+
+// TestReconcileUserHelper_Present_NoOp: when breeze-user-helper.exe already
+// exists next to the agent there is nothing to heal — no download, no install.
+func TestReconcileUserHelper_Present_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "breeze-agent.exe")
+	if err := os.WriteFile(filepath.Join(dir, "breeze-user-helper.exe"), []byte("MZ"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var dlCalls, instCalls atomic.Int32
+	h := &Heartbeat{
+		config:               &config.Config{},
+		agentVersion:         "1.2.3",
+		userHelperGOOS:       "windows",
+		userHelperDownloader: func(string) (string, error) { dlCalls.Add(1); return "", nil },
+		userHelperInstaller:  func(string, string, string) error { instCalls.Add(1); return nil },
+	}
+
+	h.reconcileUserHelper(binaryPath)
+
+	if dlCalls.Load() != 0 || instCalls.Load() != 0 {
+		t.Fatalf("present helper must be a no-op; downloader=%d installer=%d", dlCalls.Load(), instCalls.Load())
+	}
+}
+
+// TestReconcileUserHelper_Missing_DownloadsAndInstalls: the core self-heal path.
+// A Windows agent missing the sibling helper fetches the CURRENT agent version
+// (not "latest") and installs it next to the agent binary.
+func TestReconcileUserHelper_Missing_DownloadsAndInstalls(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "breeze-agent.exe")
+	tempDL := filepath.Join(dir, "breeze-user-helper-dl-999")
+	wantInstall := filepath.Join(dir, "breeze-user-helper.exe")
+
+	var instCalls atomic.Int32
+	var gotDLVersion, gotTemp, gotInstallPath, gotInstallVersion string
+	h := &Heartbeat{
+		config:               &config.Config{},
+		agentVersion:         "1.2.3",
+		userHelperGOOS:       "windows",
+		userHelperDownloader: func(v string) (string, error) { gotDLVersion = v; return tempDL, nil },
+		userHelperInstaller: func(temp, installPath, version string) error {
+			instCalls.Add(1)
+			gotTemp, gotInstallPath, gotInstallVersion = temp, installPath, version
+			return nil
+		},
+	}
+
+	h.reconcileUserHelper(binaryPath)
+
+	if gotDLVersion != "1.2.3" {
+		t.Fatalf("download version: want current 1.2.3, got %q", gotDLVersion)
+	}
+	if instCalls.Load() != 1 {
+		t.Fatalf("installer calls: want 1, got %d", instCalls.Load())
+	}
+	if gotTemp != tempDL {
+		t.Fatalf("install temp: want %q, got %q", tempDL, gotTemp)
+	}
+	if gotInstallPath != wantInstall {
+		t.Fatalf("install path: want %q, got %q", wantInstall, gotInstallPath)
+	}
+	if gotInstallVersion != "1.2.3" {
+		t.Fatalf("install version: want 1.2.3, got %q", gotInstallVersion)
+	}
+}
+
+// TestReconcileUserHelper_DownloadFails_NoInstall: a failed fetch (404 on a
+// pre-#816 release, transient network error, checksum mismatch) is non-fatal —
+// nothing is installed and the call returns without panicking.
+func TestReconcileUserHelper_DownloadFails_NoInstall(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "breeze-agent.exe")
+	var instCalls atomic.Int32
+	h := &Heartbeat{
+		config:               &config.Config{},
+		agentVersion:         "1.2.3",
+		userHelperGOOS:       "windows",
+		userHelperDownloader: func(string) (string, error) { return "", errors.New("404 not found") },
+		userHelperInstaller:  func(string, string, string) error { instCalls.Add(1); return nil },
+	}
+
+	h.reconcileUserHelper(binaryPath)
+
+	if instCalls.Load() != 0 {
+		t.Fatalf("installer must not run when download fails; got %d calls", instCalls.Load())
 	}
 }
