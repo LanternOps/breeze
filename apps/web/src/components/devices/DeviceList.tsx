@@ -111,7 +111,8 @@ const statusLabels: Record<DeviceStatus, string> = {
   maintenance: 'Maint',
   decommissioned: 'Decom',
   quarantined: 'Quar',
-  updating: 'Upd'
+  updating: 'Upd',
+  pending: 'Pend'
 };
 const statusFullLabels: Record<DeviceStatus, string> = {
   online: 'Online',
@@ -122,6 +123,11 @@ const statusFullLabels: Record<DeviceStatus, string> = {
   updating: 'Updating',
   pending: 'Pending'
 };
+
+// Cap visible tag chips per row; the rest collapse into a +N chip, with the
+// full comma-joined list on the cell's title attribute (same overflow trick
+// as the status pill). Keeps row height and column width bounded.
+const TAG_CHIP_CAP = 3;
 
 /**
  * "Agent silent (watchdog OK)" amber badge. Fires when the server-side
@@ -680,9 +686,23 @@ export default function DeviceList({
     tags: {
       header: () => <th key="tags" className="px-3 py-3">Tags</th>,
       cell: (device) => (
-        <td key="tags" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground">
+        <td key="tags" className="max-w-[220px] px-3 py-3 text-sm text-muted-foreground">
           {device.tags && device.tags.length > 0 ? (
-            <span className="block truncate" title={device.tags.join(', ')}>{device.tags.join(', ')}</span>
+            <div className="flex flex-wrap items-center gap-1" title={device.tags.join(', ')}>
+              {device.tags.slice(0, TAG_CHIP_CAP).map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium text-foreground"
+                >
+                  {tag}
+                </span>
+              ))}
+              {device.tags.length > TAG_CHIP_CAP && (
+                <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  +{device.tags.length - TAG_CHIP_CAP}
+                </span>
+              )}
+            </div>
           ) : dash}
         </td>
       ),
