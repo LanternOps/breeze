@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -421,5 +422,56 @@ func TestReconcileUserHelper_ConsecutiveFailures_TrackedAndReset(t *testing.T) {
 	h.reconcileUserHelper(binaryPath)
 	if got := h.userHelperReconcileFailures.Load(); got != 0 {
 		t.Fatalf("failure counter: want reset to 0 after success, got %d", got)
+	}
+}
+
+// TestReconcileUserHelper_PresentHealthy_ResetsFailureCounter: when the helper
+// is fixed out-of-band (dev_update / MSI repair / manual copy), the next
+// reconcile sees a healthy present binary and must clear any stale consecutive-
+// failure count so a later transient failure starts fresh rather than tripping
+// the ERROR escalation prematurely.
+func TestReconcileUserHelper_PresentHealthy_ResetsFailureCounter(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "breeze-agent.exe")
+	if err := os.WriteFile(filepath.Join(dir, "breeze-user-helper.exe"), []byte("MZ"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &Heartbeat{
+		config:               &config.Config{},
+		agentVersion:         "1.2.3",
+		userHelperGOOS:       "windows",
+		userHelperDownloader: func(string) (string, error) { t.Fatal("must not download when helper is present"); return "", nil },
+		userHelperInstaller:  func(string, string, string) error { t.Fatal("must not install when helper is present"); return nil },
+	}
+	h.userHelperReconcileFailures.Store(5)
+
+	h.reconcileUserHelper(binaryPath)
+
+	if got := h.userHelperReconcileFailures.Load(); got != 0 {
+		t.Fatalf("present healthy helper must reset stale failure counter, got %d", got)
+	}
+}
+
+// TestTaskkillProcessNotFound characterizes the benign-vs-real classification:
+// exit 128 / "not found" output is the no-helper-running case (Debug); anything
+// else (access denied, could-not-terminate) is a real failure (Warn).
+func TestTaskkillProcessNotFound(t *testing.T) {
+	if !taskkillProcessNotFound([]byte(`ERROR: The process "breeze-user-helper.exe" not found.`), errors.New("exit status 128")) {
+		t.Fatal("'not found' output must classify as process-not-found")
+	}
+	if !taskkillProcessNotFound([]byte("not FOUND"), errors.New("x")) {
+		t.Fatal("'not found' match must be case-insensitive")
+	}
+	if taskkillProcessNotFound([]byte("ERROR: access is denied"), errors.New("exit status 1")) {
+		t.Fatal("access-denied must NOT classify as process-not-found")
+	}
+	if runtime.GOOS != "windows" {
+		err := exec.Command("sh", "-c", "exit 128").Run()
+		if err == nil {
+			t.Fatal("expected non-nil error from `exit 128`")
+		}
+		if !taskkillProcessNotFound(nil, err) {
+			t.Fatalf("a real *exec.ExitError with code 128 must classify as process-not-found, err=%v", err)
+		}
 	}
 }

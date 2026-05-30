@@ -393,11 +393,12 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 // copyFile alone opens dst with O_TRUNC, so a mid-write failure would leave a
 // corrupt/zero-length binary on disk — and reconcileUserHelper's existence
 // check would then treat that corpse as "present" and never re-heal it. Instead
-// copy to a sibling staging file and os.Rename it into place: rename is atomic
-// on the same volume (Windows os.Rename uses MoveFileEx with
-// MOVEFILE_REPLACE_EXISTING), so dst is always either the old binary or the
-// fully-written new one. On any failure dst is left untouched and the staging
-// file is cleaned up.
+// copy to a sibling staging file (copyFile fsyncs it before returning) and
+// os.Rename it into place: rename is atomic on the same volume (Windows
+// os.Rename uses MoveFileEx with MOVEFILE_REPLACE_EXISTING), so dst is always
+// either the old binary or the fully-written new one — including across a crash,
+// since the staging bytes are flushed before the rename. On any failure dst is
+// left untouched and the staging file is cleaned up.
 func atomicReplaceFile(src, dst string) error {
 	stage := dst + ".new"
 	if err := copyFile(src, stage); err != nil {
@@ -438,6 +439,15 @@ func copyFile(src, dst string) error {
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		return fmt.Errorf("copy: %w", err)
+	}
+	// fsync before close so the bytes are durably on disk — atomicReplaceFile
+	// renames the staging file immediately after this returns, and without the
+	// flush a crash between the buffered write and the rename could publish a
+	// full-length-but-garbage file (which the zero-length re-fetch check would
+	// not catch).
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return fmt.Errorf("sync dst: %w", err)
 	}
 	return out.Close()
 }

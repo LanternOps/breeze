@@ -3242,7 +3242,14 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	helperPath := filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
 	switch fi, statErr := os.Stat(helperPath); {
 	case statErr == nil && fi.Size() > 0:
-		return // present and non-empty — nothing to heal
+		// Present and non-empty — nothing to heal. If we'd been failing (e.g.
+		// the helper was restored out-of-band via dev_update / MSI repair /
+		// manual copy), clear the consecutive-failure counter so a later
+		// transient failure starts fresh rather than from a stale high count.
+		if prev := h.userHelperReconcileFailures.Swap(0); prev >= userHelperReconcilePersistentThreshold {
+			log.Info("user-helper present again after persistent reconcile failures", "previousFailures", prev)
+		}
+		return
 	case statErr == nil:
 		// Present but zero-length: a previous install was interrupted mid-write
 		// (or an external truncation). Treat as absent and re-fetch — otherwise
@@ -3305,7 +3312,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	if prev := h.userHelperReconcileFailures.Swap(0); prev >= userHelperReconcilePersistentThreshold {
 		log.Info("user-helper reconciliation recovered after persistent failures", "previousFailures", prev)
 	}
-	log.Info("user-helper reconciliation: installed missing helper binary; next SYSTEM-context spawn will use it",
+	log.Info("user-helper reconciliation: installed missing helper binary",
 		"path", helperPath, "version", h.agentVersion)
 }
 
