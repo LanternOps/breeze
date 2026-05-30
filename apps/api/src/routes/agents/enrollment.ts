@@ -369,6 +369,42 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // the prior device's audit history (agent_logs, alerts, etc.).
     let decomBypassFreshRow = false;
     if (existingDevice) {
+      // Containment guard: a quarantined device must NOT be able to clear its
+      // own containment by re-enrolling. Even with a valid existing-device
+      // token, re-enrollment must be refused — only the admin /approve endpoint
+      // (mtls.ts POST /:id/approve) may clear quarantinedAt/quarantinedReason
+      // and return the device to 'online'. Without this gate, the quarantined
+      // row (or anyone holding its brz_ token — exactly what quarantine is
+      // meant to contain) re-POSTs /enroll and the in-place UPDATE below flips
+      // status back to 'online', resuming heartbeat/commands/remote-desktop
+      // with no operator approval and leaving stale quarantinedAt/Reason
+      // columns that mask the bypass in the UI.
+      if (existingDevice.status === 'quarantined') {
+        writeAuditEvent(c, {
+          orgId: key.orgId,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceId: existingDevice.id,
+          resourceName: data.hostname,
+          details: {
+            reason: 'quarantined_device_reenroll_refused',
+            siteId,
+          },
+          result: 'denied',
+          errorMessage:
+            'Re-enrollment refused: device is quarantined and awaiting administrator approval',
+        });
+        return c.json(
+          {
+            error:
+              'Device is quarantined and awaiting administrator approval. Re-enrollment cannot clear quarantine; an administrator must approve the device.',
+            reason: 'device_quarantined',
+          },
+          403,
+        );
+      }
+
       const tokenSuspended = !!existingDevice.agentTokenSuspendedAt;
 
       if (tokenSuspended) {

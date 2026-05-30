@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { createHash } from 'node:crypto';
 
 // ---------- mocks ----------
 
@@ -677,6 +678,80 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       expect.objectContaining({
         details: expect.objectContaining({
           reason: 'decommissioned_row_reenrolled_fresh_id',
+        }),
+      })
+    );
+  });
+
+  it('refuses re-enrollment of a quarantined device even with a valid existing-device token (containment escape)', async () => {
+    // A quarantined device (mTLS expired-cert policy, or admin security
+    // quarantine) must NOT be able to clear its own containment by
+    // re-enrolling. Even presenting a VALID existing-device token,
+    // re-enrollment must be refused — only the admin /approve endpoint may
+    // clear quarantinedAt/quarantinedReason and return the device to service.
+    // Without this guard the quarantined row (or anyone holding its brz_
+    // token — exactly what quarantine is meant to contain) re-POSTs /enroll
+    // and the in-place UPDATE flips status back to 'online', resuming
+    // heartbeat/commands/remote-desktop with no operator approval.
+    const validToken = 'valid-existing-device-token';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+
+    mockKeyLookup({
+      id: 'key-quarantined',
+      orgId: 'org-quarantined',
+      siteId: 'site-quarantined',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'key-quarantined',
+            orgId: 'org-quarantined',
+            siteId: 'site-quarantined',
+          }]),
+        })),
+      })),
+    } as any);
+
+    mockSelectRows([{ partnerId: 'partner-quarantined' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    // Existing row: QUARANTINED, token NOT suspended, with a matching token —
+    // i.e. the device would otherwise authenticate and be flipped online.
+    mockSelectRows([{
+      id: 'device-quarantined',
+      status: 'quarantined',
+      agentTokenHash: validHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+    }]);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-reenrollment-token': validToken,
+      },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.reason).toBe('device_quarantined');
+    // Refusal is audited, not silently allowed.
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'agent.enroll',
+        resourceId: 'device-quarantined',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'quarantined_device_reenroll_refused',
         }),
       })
     );
