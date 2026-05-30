@@ -236,6 +236,35 @@ describe('agent websocket handshake', () => {
     expect(payload.type).toBe('connected');
     expect(payload.capabilities).toEqual([...AGENT_WS_CAPABILITIES]);
   });
+
+  it('decodes base64 terminal_output and relays UTF-8 to the terminal consumer', async () => {
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(getActiveTerminalSession).mockReturnValue({
+      agentId: 'agent-123',
+      userId: 'user-1',
+      deviceId: 'device-123',
+      startedAt: new Date(),
+      lastPongAt: Date.now(),
+      userWs: wsMock() as any,
+    } as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    const base64Payload = Buffer.from('café\n', 'utf8').toString('base64');
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'terminal_output',
+        sessionId,
+        data: base64Payload,
+        encoding: 'base64',
+      }),
+    } as any, ws as any);
+
+    expect(vi.mocked(handleTerminalOutput)).toHaveBeenCalledWith(sessionId, 'café\n');
+  });
 });
 
 describe('agent websocket command results', () => {

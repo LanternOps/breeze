@@ -696,11 +696,17 @@ const terminalOutputSchema = z.object({
   encoding: z.enum(['base64']).optional(),
 });
 
-function decodeTerminalOutput(data: string, encoding?: 'base64'): string {
-  if (encoding === 'base64') {
-    return Buffer.from(data, 'base64').toString('utf8');
+function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null {
+  if (encoding !== 'base64') {
+    return data;
   }
-  return data;
+  const decoded = Buffer.from(data, 'base64');
+  const roundTrip = decoded.toString('base64');
+  const normalizeBase64 = (value: string) => value.replace(/\s/g, '').replace(/=+$/, '');
+  if (normalizeBase64(roundTrip) !== normalizeBase64(data)) {
+    return null;
+  }
+  return decoded.toString('utf8');
 }
 
 const agentMessageSchema = z.discriminatedUnion('type', [
@@ -1592,9 +1598,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'terminal_output');
             return;
           }
+          const decodedOutput = decodeTerminalOutput(termData, encoding);
+          if (decodedOutput === null) {
+            console.warn(`[AgentWs] Dropping terminal_output with invalid base64 from agent ${agentId} session ${sessionId}`);
+            return;
+          }
           handleTerminalOutput(
             sessionId,
-            decodeTerminalOutput(termData, encoding),
+            decodedOutput,
           );
           return;
         }
@@ -2101,6 +2112,7 @@ const terminalOutputFastPathSchema = z.object({
   type: z.literal('terminal_output'),
   sessionId: z.string().min(SESSION_ID_MIN).max(SESSION_ID_MAX),
   data: z.string().max(TERMINAL_OUTPUT_MAX_BYTES),
+  encoding: z.enum(['base64']).optional(),
 });
 
 const terminalCommandResultSchema = z.object({

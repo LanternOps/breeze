@@ -13,6 +13,10 @@ func BytesToUTF8(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
+	// When bytes are already valid UTF-8, passthrough even though some Windows
+	// code pages (e.g. CP1252) can produce byte sequences that happen to decode
+	// as valid UTF-8. Transcoding speculatively without a reliable locale hint
+	// would corrupt genuinely UTF-8 output, so passthrough is the safer trade-off.
 	if utf8.Valid(b) {
 		return string(b)
 	}
