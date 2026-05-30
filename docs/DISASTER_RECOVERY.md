@@ -138,7 +138,8 @@ The local `pg_dump` written by `scripts/backup.sh` lives on the droplet and does
 
 - `scripts/ops/offsite-backup.sh` — runs `backup.sh --db`, then uploads the dump
   to an **off-region** S3-compatible bucket. On DO, create a **Spaces bucket in a
-  different region than the droplet** (droplet FRA1 → Spaces AMS3/NYC3). Enable
+  different region than the droplet** (e.g. a droplet in region A → a Spaces
+  bucket in region B). Enable
   **bucket versioning** + a lifecycle rule to expire noncurrent versions, so a
   corrupt or attacker-encrypted dump can't overwrite good history. It also writes
   a stable `db/latest.dump` pointer.
@@ -153,13 +154,21 @@ Spaces endpoint or the DO control panel): create the bucket in a foreign region,
 enable versioning, add a Spaces access key. Put the credentials in the droplet's
 backup environment:
 
+# Point each droplet at a Spaces bucket in a DIFFERENT region than that droplet.
+# Use a separate, scoped Spaces key per bucket.
 ```bash
-OFFSITE_S3_ENDPOINT=https://nyc3.digitaloceanspaces.com
-OFFSITE_S3_BUCKET=breeze-dr-offsite
-OFFSITE_S3_ACCESS_KEY=...
+OFFSITE_S3_ENDPOINT=https://<region>.digitaloceanspaces.com   # off-region endpoint (required)
+OFFSITE_S3_BUCKET=<your-offsite-backup-bucket>                # off-region bucket (required)
+OFFSITE_S3_ACCESS_KEY=...                                     # scoped Spaces key for this bucket
 OFFSITE_S3_SECRET_KEY=...
+OFFSITE_BACKUP_GPG_PASSPHRASE=...   # gpg AES256 for the dump; store offline too
 RESTORE_TEST_ALERT_URL=https://hooks.slack.com/services/...   # optional
 ```
+
+> The dumps are gpg-encrypted before they leave the droplet (the dump contains all
+> tenant data in the clear; app-layer field encryption only covers secret columns).
+> `restore-test.sh` decrypts with the same passphrase. Losing the passphrase makes
+> the off-region copies unrecoverable — keep it in an offline vault as well.
 
 **Cron (on the droplet):**
 

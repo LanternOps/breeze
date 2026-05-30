@@ -28,6 +28,14 @@
 #   OFFSITE_S3_ACCESS_KEY     Spaces access key                      (required)
 #   OFFSITE_S3_SECRET_KEY     Spaces secret key                      (required)
 #   OFFSITE_S3_PREFIX         Key prefix in the bucket (default: db)
+#   OFFSITE_BACKUP_GPG_PASSPHRASE
+#                             If set, the dump is gpg-encrypted (AES256) before
+#                             upload and stored as <name>.gpg / latest.dump.gpg.
+#                             Strongly recommended — the dump contains all tenant
+#                             data in the clear (app-layer field encryption only
+#                             covers designated secret columns). KEEP THIS
+#                             PASSPHRASE IN AN OFFLINE VAULT TOO — losing it makes
+#                             every off-region backup unrecoverable.
 #
 # Exit codes:
 #   0 — backup created and uploaded
@@ -73,6 +81,28 @@ latest_dump="$(find "${BACKUP_DIR}" -maxdepth 1 -name 'db_*.dump' -type f -print
   | xargs -0 ls -t 2>/dev/null | head -1 || true)"
 [ -n "${latest_dump}" ] || die "No db_*.dump found in ${BACKUP_DIR} to upload"
 
+# 2b) Encrypt the dump before it leaves the host. App-layer field encryption only
+#     covers designated secret columns; the dump still contains all tenant PII and
+#     operational data in the clear, so we gpg the whole artifact (defense in depth).
+upload_dump="${latest_dump}"
+upload_suffix=""
+if [ -n "${OFFSITE_BACKUP_GPG_PASSPHRASE:-}" ]; then
+  command -v gpg >/dev/null 2>&1 || die "gpg required when OFFSITE_BACKUP_GPG_PASSPHRASE is set"
+  log "Encrypting dump with gpg (AES256)"
+  if printf '%s' "${OFFSITE_BACKUP_GPG_PASSPHRASE}" \
+       | gpg --batch --yes --no-symkey-cache --passphrase-fd 0 \
+             --cipher-algo AES256 --symmetric \
+             --output "${latest_dump}.gpg" "${latest_dump}"; then
+    upload_dump="${latest_dump}.gpg"
+    upload_suffix=".gpg"
+  else
+    rm -f "${latest_dump}.gpg"
+    die "gpg encryption failed"
+  fi
+else
+  log "WARNING: OFFSITE_BACKUP_GPG_PASSPHRASE not set — uploading an UNENCRYPTED dump"
+fi
+
 export AWS_ACCESS_KEY_ID="${OFFSITE_S3_ACCESS_KEY}"
 export AWS_SECRET_ACCESS_KEY="${OFFSITE_S3_SECRET_KEY}"
 s3() { aws --endpoint-url "${OFFSITE_S3_ENDPOINT}" s3 "$@"; }
@@ -84,11 +114,11 @@ upload() {
 }
 
 rc=0
-dump_key="${OFFSITE_S3_PREFIX}/$(basename "${latest_dump}")"
-upload "${latest_dump}" "${dump_key}" || rc=1
+dump_key="${OFFSITE_S3_PREFIX}/$(basename "${upload_dump}")"
+upload "${upload_dump}" "${dump_key}" || rc=1
 # A stable pointer to the most recent dump so the restore test doesn't have to
 # list+sort the bucket. Versioning keeps prior 'latest.dump' contents.
-upload "${latest_dump}" "${OFFSITE_S3_PREFIX}/latest.dump" || rc=1
+upload "${upload_dump}" "${OFFSITE_S3_PREFIX}/latest.dump${upload_suffix}" || rc=1
 
 if $PUSH_CONFIG; then
   latest_cfg="$(find "${BACKUP_DIR}" -maxdepth 1 -name 'config_*.tar.gz.enc' -type f -print0 \
@@ -100,6 +130,10 @@ if $PUSH_CONFIG; then
     rc=1
   fi
 fi
+
+# Drop the local encrypted copy; the plaintext db_*.dump stays for local
+# retention/restore and is pruned by backup.sh's retention sweep.
+[ -n "${upload_suffix}" ] && rm -f "${latest_dump}.gpg"
 
 if [ $rc -eq 0 ]; then
   log "Off-region backup complete"

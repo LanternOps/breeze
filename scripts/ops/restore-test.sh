@@ -19,7 +19,11 @@
 #   OFFSITE_S3_ACCESS_KEY     Spaces access key                         (required)
 #   OFFSITE_S3_SECRET_KEY     Spaces secret key                         (required)
 #   OFFSITE_S3_PREFIX         key prefix (default: db)
-#   OFFSITE_S3_KEY            dump key to test (default: <prefix>/latest.dump)
+#   OFFSITE_S3_KEY            dump key to test (default: <prefix>/latest.dump, or
+#                             <prefix>/latest.dump.gpg when encryption is enabled)
+#   OFFSITE_BACKUP_GPG_PASSPHRASE
+#                             if set, the downloaded artifact is gpg-decrypted
+#                             before restore (must match offsite-backup.sh)
 #
 #   RESTORE_TEST_PG_IMAGE     postgres image (default: postgres:16)
 #   RESTORE_TEST_MIN_DEVICES  minimum device rows to consider the restore sane
@@ -38,7 +42,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 OFFSITE_S3_PREFIX="${OFFSITE_S3_PREFIX:-db}"
-OFFSITE_S3_KEY="${OFFSITE_S3_KEY:-${OFFSITE_S3_PREFIX}/latest.dump}"
+if [ -n "${OFFSITE_BACKUP_GPG_PASSPHRASE:-}" ]; then
+  OFFSITE_S3_KEY="${OFFSITE_S3_KEY:-${OFFSITE_S3_PREFIX}/latest.dump.gpg}"
+else
+  OFFSITE_S3_KEY="${OFFSITE_S3_KEY:-${OFFSITE_S3_PREFIX}/latest.dump}"
+fi
 PG_IMAGE="${RESTORE_TEST_PG_IMAGE:-postgres:16}"
 MIN_DEVICES="${RESTORE_TEST_MIN_DEVICES:-1}"
 
@@ -89,6 +97,19 @@ log "Downloaded dump (${dump_size})"
 # Guard against a truncated/empty object passing as a "backup".
 dump_bytes="$(wc -c < "${DUMP_FILE}" | tr -d ' ')"
 [ "${dump_bytes}" -gt 1024 ] || fail "downloaded dump is suspiciously small (${dump_bytes} bytes)" 1
+
+# Decrypt if the artifact is gpg-encrypted (must match offsite-backup.sh).
+if [ -n "${OFFSITE_BACKUP_GPG_PASSPHRASE:-}" ]; then
+  command -v gpg >/dev/null 2>&1 || fail "gpg required to decrypt backup" 2
+  log "Decrypting dump"
+  DEC_FILE="${WORKDIR}/latest.decrypted.dump"
+  if ! printf '%s' "${OFFSITE_BACKUP_GPG_PASSPHRASE}" \
+       | gpg --batch --yes --no-symkey-cache --passphrase-fd 0 \
+             --decrypt --output "${DEC_FILE}" "${DUMP_FILE}"; then
+    fail "gpg decryption failed (wrong passphrase?)" 1
+  fi
+  DUMP_FILE="${DEC_FILE}"
+fi
 
 # --- 2) spin up scratch postgres ---
 log "Starting scratch ${PG_IMAGE} (container ${CONTAINER})"
