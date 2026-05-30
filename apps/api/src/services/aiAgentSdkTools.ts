@@ -472,6 +472,55 @@ export const __test__ = { makeSessionAwareHandler };
 // ============================================
 
 /**
+ * The Microsoft 365 helpdesk tool definitions, gated on the Delegant
+ * integration being configured. Returns [] (so the tools are NOT advertised to
+ * the model) on instances where DELEGANT_BASE_URL is unset/blank — without a
+ * configured Delegant endpoint + a seeded customer connection the tools can
+ * only ever no-op with `no_customer_selected`, so there's no reason to surface
+ * them. Read from process.env at call time so it tracks runtime config.
+ */
+export function m365ToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!(process.env.DELEGANT_BASE_URL ?? '').trim()) return [];
+  return [
+    tool(
+      'm365_lookup_user',
+      'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
+      { userIdentifier: z.string() },
+      makeSessionAwareHandler('m365_lookup_user', getAuth, getActiveSession, m365LookupUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_recent_signins',
+      "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
+      { userIdentifier: z.string() },
+      makeSessionAwareHandler('m365_recent_signins', getAuth, getActiveSession, m365RecentSigninsHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_list_group_memberships',
+      'List the groups in the customer tenant selected for this session.',
+      {},
+      makeSessionAwareHandler('m365_list_group_memberships', getAuth, getActiveSession, m365ListGroupMembershipsHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_disable_user',
+      'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
+      { userIdentifier: z.string(), reason: z.string() },
+      makeSessionAwareHandler('m365_disable_user', getAuth, getActiveSession, m365DisableUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_reset_password',
+      'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
+      { userIdentifier: z.string(), reason: z.string() },
+      makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
+    ),
+  ];
+}
+
+/**
  * Creates an SDK MCP server instance with all Breeze tools.
  * Auth context is fetched lazily via the getAuth thunk so all tool handlers
  * see the latest org-scoped access even when the session is reused.
@@ -1568,44 +1617,13 @@ export function createBreezeMcpServer(
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
-    // to the active AI session). Routed through makeSessionAwareHandler so they
-    // get the SAME enforcement as every other tool: onPreToolUse (TOOL_TIERS gate,
-    // guardrails, RBAC, rate limits, tier-3 approval) and onPostToolUse
-    // (ai_tool_executions persistence + delegant_tool_call_id correlation).
-    tool(
-      'm365_lookup_user',
-      'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
-      { userIdentifier: z.string() },
-      makeSessionAwareHandler('m365_lookup_user', getAuth, getActiveSession, m365LookupUserHandler, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'm365_recent_signins',
-      "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
-      { userIdentifier: z.string() },
-      makeSessionAwareHandler('m365_recent_signins', getAuth, getActiveSession, m365RecentSigninsHandler, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'm365_list_group_memberships',
-      'List the groups in the customer tenant selected for this session.',
-      {},
-      makeSessionAwareHandler('m365_list_group_memberships', getAuth, getActiveSession, m365ListGroupMembershipsHandler, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'm365_disable_user',
-      'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
-      { userIdentifier: z.string(), reason: z.string() },
-      makeSessionAwareHandler('m365_disable_user', getAuth, getActiveSession, m365DisableUserHandler, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'm365_reset_password',
-      'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
-      { userIdentifier: z.string(), reason: z.string() },
-      makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
-    ),
+    // to the active AI session). Only advertised when the Delegant integration
+    // is configured — see m365ToolDefinitions. Routed through
+    // makeSessionAwareHandler so they get the SAME enforcement as every other
+    // tool: onPreToolUse (TOOL_TIERS gate, guardrails, RBAC, rate limits, tier-3
+    // approval) and onPostToolUse (ai_tool_executions persistence +
+    // delegant_tool_call_id correlation).
+    ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
   ];
 
   return createSdkMcpServer({
