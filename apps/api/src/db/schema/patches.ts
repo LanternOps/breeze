@@ -48,6 +48,23 @@ export const devicePatchStatusEnum = pgEnum('device_patch_status', [
   'missing'
 ]);
 
+/**
+ * device_patches.status values that mean "the device still needs this patch
+ * installed" — the set that counts toward outstanding / "missing patch" metrics
+ * and that patch automation is allowed to act on.
+ *
+ * IMPORTANT: 'missing' is deliberately NOT in this set. Despite its name,
+ * 'missing' is a TOMBSTONE, not "a patch the device is missing". Agent scan
+ * ingestion (routes/agents/patches.ts) marks ALL of a device's existing rows
+ * 'missing' at the start of every scan, then re-inserts the rows the current
+ * scan actually reports as 'pending' / 'installed'. Rows left at 'missing' are
+ * stale records from a prior scan that the latest scan no longer reports (e.g.
+ * a package upgraded to a new externalId) — they never get cleaned up and grow
+ * unbounded. Counting them as outstanding made a fully-patched Linux box report
+ * ~960 "missing" patches in the compliance view. Only 'pending' is outstanding.
+ */
+export const OUTSTANDING_DEVICE_PATCH_STATUSES = ['pending'] as const;
+
 export const patchJobStatusEnum = pgEnum('patch_job_status', [
   'scheduled',
   'running',

@@ -107,7 +107,8 @@ vi.mock('../../db/schema', () => ({
     initiatedBy: 'patchRollbacks.initiatedBy',
     status: 'patchRollbacks.status',
     reason: 'patchRollbacks.reason'
-  }
+  },
+  OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending']
 }));
 
 vi.mock('../../services/commandQueue', () => ({
