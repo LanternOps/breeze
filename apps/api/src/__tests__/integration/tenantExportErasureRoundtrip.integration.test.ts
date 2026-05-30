@@ -71,7 +71,7 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
 function rowCount(db: ReturnType<typeof getTestDb>, table: string, orgId: string) {
   return db
     .execute(sql`SELECT count(*)::int AS n FROM ${sql.raw(`"${table}"`)} WHERE org_id = ${orgId}`)
-    .then((r) => (r as unknown as Array<{ n: number }>)[0].n);
+    .then((r) => (r as unknown as Array<{ n: number }>)[0]?.n ?? 0);
 }
 
 describe('tenant export + erasure round-trip (live DB)', () => {
@@ -118,7 +118,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const orgARows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgA}`,
     )) as unknown as Array<{ n: number }>;
-    expect(orgARows[0].n).toBe(0);
+    expect(orgARows[0]?.n).toBe(0);
 
     // Cross-tenant rows untouched.
     expect(await rowCount(db, 'sites', orgB)).toBe(1);
@@ -126,7 +126,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const orgBRows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgB}`,
     )) as unknown as Array<{ n: number }>;
-    expect(orgBRows[0].n).toBe(1);
+    expect(orgBRows[0]?.n).toBe(1);
 
     // Stats account for at least the 5 rows we seeded into org A.
     expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(5);
