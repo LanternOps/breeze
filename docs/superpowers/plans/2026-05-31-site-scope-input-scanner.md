@@ -1,8 +1,32 @@
 # Plan: extend the site-scope contract scanner to catch input-sourced / list-style device reads
 
-**Status:** PROPOSED — awaiting review before implementation.
+**Status:** IMPLEMENTED (detector + baseline ratchet) — triage/burn-down ongoing.
 **Date:** 2026-05-31
-**Related:** PR #864/#868 (original SP2 site-scope sweep + `:deviceId` scanner); this branch (`fix/browser-security-site-scope`) which fixed 6 handlers the current scanner can't see.
+**Related:** PR #864/#868 (original SP2 site-scope sweep + `:deviceId` scanner); PR #1036 (fixed the first 6 input-sourced handlers); branch `chore/site-scope-input-scanner` (this scanner).
+
+## What shipped vs. what's deferred
+
+**Shipped (this PR):**
+- `analyzeRouteSource` (pure, unit-tested) + `findDeviceScopedTables` (schema-derived) + the
+  `touchesDeviceData` detector + `findRoutesTouchingDeviceData` in `routeScan.ts`.
+- A second contract test in `site-scope-coverage.integration.test.ts` wired into CI (the
+  `test-api` job — it's static analysis, no DB, so it gates PRs there rather than in the
+  non-blocking smoke-test where `rls-coverage` lives). **Note:** neither site-scope contract test
+  ran in CI before this PR — the `test:site-scope-coverage` script existed but was never invoked.
+- **Baseline ratchet:** the detector found **93** pre-existing handlers. Rather than block on
+  triaging all 93 at once, they're enumerated in `SITE_SCOPE_INPUT_BASELINE` (frozen, shrink-only,
+  explicitly labeled *not vetted safe*). The test fails on any NEW offender, so the blind spot is
+  closed for all new/edited code immediately. A "no stale entries" test makes the ratchet
+  one-directional — fixing a handler forces removal of its baseline entry.
+
+**Deferred (burn-down backlog — the 93):** triage each baseline entry into either a real
+site-scope fix (narrow by accessible devices) or a vetted `SITE_SCOPE_INPUT_EXEMPT` entry
+(agent/system token path, or org-wide aggregate). Calibration during this PR showed the 93 is a
+genuine mix: e.g. `routes/agents/*` are agent-token paths (likely exempt), while `softwareInventory`,
+`remote/sessions`, and `metrics` have **zero** site-scope references anywhere (likely real gaps).
+Detector caveat: it's coarse — a flagged handler in a file that gates *other* handlers may be a
+false positive (gate via a helper/path the slice misses) or a real per-handler miss; triage
+confirms which.
 
 ## Problem
 

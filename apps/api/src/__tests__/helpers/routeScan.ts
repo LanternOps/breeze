@@ -35,16 +35,42 @@ export interface RouteInfo {
   line: number;
   /** True iff the handler body references at least one site-scope gate. */
   usesSiteScopeGate: boolean;
+  /** True iff the URL pattern names a device (`:deviceId`) or sits under `/sites/:param`. */
+  deviceOrSiteUrlParam: boolean;
+  /**
+   * True iff the handler body reads/writes device-scoped data sourced from
+   * request input or a join — i.e. a Drizzle condition on a device/site column
+   * of a known device-scoped table, or a join to `devices`. This is the
+   * input-sourced / list-style class the `:deviceId`-URL scan can't see.
+   */
+  touchesDeviceData: boolean;
 }
 
 const ROUTE_DIR = path.resolve(__dirname, '../../routes');
 const SRC_DIR = path.resolve(__dirname, '../..');
+const SCHEMA_DIR = path.resolve(__dirname, '../../db/schema');
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// A join to the devices table exposes device rows alongside child-table data,
+// so it counts as touching device-scoped data.
+const JOIN_DEVICES_PATTERN = /\b(?:inner|left|right)Join\s*\(\s*devices\b/;
 
 const CANONICAL_GATE_NAMES = [
   'requireSiteAccess',
   'canAccessDeviceSite',
   'getDeviceWithOrgAndSiteCheck',
   'canAccessSite',
+  // Site-narrowing helpers established by the 2026-05 input-sourced sweep.
+  'resolveSiteAllowedDeviceIds',
+  'hasDeniedDeviceSite',
+  'hasDeniedThreatDeviceSite',
+  // Bare token: every correct gate path references `allowedSiteIds` (directly
+  // or through a helper), so this is a safe catch-all that keeps gated
+  // handlers green even if they use a bespoke local helper.
+  'allowedSiteIds',
 ] as const;
 
 const CANONICAL_GATE_PATTERNS: readonly RegExp[] = CANONICAL_GATE_NAMES.map(
@@ -142,65 +168,134 @@ function findLocalGateWrappers(text: string): string[] {
   return names;
 }
 
-export async function findRoutesTouchingDevices(): Promise<RouteInfo[]> {
-  const files = await listTsFiles(ROUTE_DIR);
+/**
+ * Pure analysis of one route file's source. Returns one {@link RouteInfo} per
+ * Hono route definition, with all three flags computed. Kept side-effect-free
+ * (no fs) so it can be unit-tested with inline source fixtures.
+ *
+ * @param deviceTables export names of device/site-scoped Drizzle tables (from
+ *   {@link findDeviceScopedTables}); a condition on `<table>.deviceId` /
+ *   `<table>.siteId` for one of these is the device-data signal.
+ */
+export function analyzeRouteSource(
+  relFile: string,
+  text: string,
+  deviceTables: ReadonlySet<string>,
+): RouteInfo[] {
+  // File-local helpers that wrap a canonical gate (e.g. `assertDeviceAccess`).
+  const localGateNames = findLocalGateWrappers(text);
+  const gatePatterns = [
+    ...CANONICAL_GATE_PATTERNS,
+    ...localGateNames.map((n) => new RegExp(`\\b${n}\\b`)),
+  ];
+
+  const tableColPattern =
+    deviceTables.size > 0
+      ? new RegExp(
+          `\\b(${[...deviceTables].map(escapeRegExp).join('|')})\\.(?:deviceId|siteId)\\b`,
+        )
+      : null;
+
+  type RouteMatch = { index: number; method: string; urlPattern: string };
+  const routeMatches: RouteMatch[] = [];
+  ROUTE_DEF_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ROUTE_DEF_PATTERN.exec(text)) !== null) {
+    const method = match[1];
+    const urlPattern = match[2];
+    if (!method || !urlPattern) continue;
+    routeMatches.push({ index: match.index, method, urlPattern });
+  }
+
   const results: RouteInfo[] = [];
+  for (let i = 0; i < routeMatches.length; i++) {
+    const cur = routeMatches[i];
+    if (!cur) continue;
 
-  for (const file of files) {
-    const text = await fs.readFile(file, 'utf8');
+    // Each slice is bounded by the start of the next route so a handler that
+    // drops its gate cannot inherit a sibling's gate string.
+    const nextStart = routeMatches[i + 1]?.index ?? text.length;
+    const sliceEnd = Math.min(cur.index + HANDLER_SLICE_BYTES, nextStart);
+    const slice = text.slice(cur.index, sliceEnd);
 
-    // Discover file-local helpers that wrap a canonical gate (e.g.
-    // `assertDeviceAccess` in cisHardening.ts). Routes that call these
-    // are gated even though the handler slice doesn't show the gate name
-    // directly.
-    const localGateNames = findLocalGateWrappers(text);
-    const gatePatterns = [
-      ...CANONICAL_GATE_PATTERNS,
-      ...localGateNames.map((n) => new RegExp(`\\b${n}\\b`)),
-    ];
+    const usesSiteScopeGate = gatePatterns.some((re) => re.test(slice));
+    const deviceOrSiteUrlParam =
+      DEVICE_PARAM_IN_URL.test(cur.urlPattern) || SITE_PARAM_IN_URL.test(cur.urlPattern);
+    const touchesDeviceData =
+      (tableColPattern !== null && tableColPattern.test(slice)) ||
+      JOIN_DEVICES_PATTERN.test(slice);
 
-    // Collect all route definitions in this file first, so each slice is
-    // bounded by the start of the next route. Without this bound, a
-    // handler that drops its gate inherits the gate string from the
-    // following route's slice and falsely passes the contract test.
-    type RouteMatch = { index: number; method: string; urlPattern: string };
-    const routeMatches: RouteMatch[] = [];
-    ROUTE_DEF_PATTERN.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = ROUTE_DEF_PATTERN.exec(text)) !== null) {
-      const method = match[1];
-      const urlPattern = match[2];
-      if (!method || !urlPattern) continue;
-      routeMatches.push({ index: match.index, method, urlPattern });
-    }
+    const line = text.slice(0, cur.index).split('\n').length;
 
-    for (let i = 0; i < routeMatches.length; i++) {
-      const cur = routeMatches[i];
-      if (!cur) continue;
-      // Only flag routes whose URL pattern names a device explicitly
-      // (`:deviceId` etc) OR is a per-site handler under `/sites/:<param>`.
-      // Body-level references would catch list/filter routes too (which
-      // deserve site-scope checks but are too numerous to lock in via a
-      // single contract test); scope this test to per-device and per-site
-      // handlers — the audit's known offender classes.
-      if (!DEVICE_PARAM_IN_URL.test(cur.urlPattern) && !SITE_PARAM_IN_URL.test(cur.urlPattern)) continue;
-
-      const nextStart = routeMatches[i + 1]?.index ?? text.length;
-      const sliceEnd = Math.min(cur.index + HANDLER_SLICE_BYTES, nextStart);
-      const slice = text.slice(cur.index, sliceEnd);
-
-      const usesSiteScopeGate = gatePatterns.some((re) => re.test(slice));
-      const line = text.slice(0, cur.index).split('\n').length;
-      const relFile = path.relative(SRC_DIR, file).split(path.sep).join('/');
-
-      results.push({
-        id: `${relFile}:${cur.method.toUpperCase()} ${cur.urlPattern}`,
-        file: relFile,
-        line,
-        usesSiteScopeGate,
-      });
-    }
+    results.push({
+      id: `${relFile}:${cur.method.toUpperCase()} ${cur.urlPattern}`,
+      file: relFile,
+      line,
+      usesSiteScopeGate,
+      deviceOrSiteUrlParam,
+      touchesDeviceData,
+    });
   }
 
   return results;
+}
+
+/**
+ * Export names of every Drizzle table declaring a `device_id`/`deviceId` or
+ * `site_id`/`siteId` column. Derived from the schema source so the device-data
+ * detector can't drift as tables are added.
+ */
+export async function findDeviceScopedTables(): Promise<Set<string>> {
+  const files = await listTsFiles(SCHEMA_DIR);
+  const tables = new Set<string>();
+  // Split each schema file into per-table segments (`export const X = pgTable(`
+  // … up to the next such declaration) and keep names whose segment declares a
+  // device/site column.
+  const declPattern = /export\s+const\s+(\w+)\s*=\s*pgTable\(/g;
+  const colPattern = /\b(?:device_id|deviceId|site_id|siteId)\b/;
+  for (const file of files) {
+    const text = await fs.readFile(file, 'utf8');
+    type Decl = { index: number; name: string };
+    const decls: Decl[] = [];
+    declPattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = declPattern.exec(text)) !== null) {
+      if (m[1]) decls.push({ index: m.index, name: m[1] });
+    }
+    for (let i = 0; i < decls.length; i++) {
+      const decl = decls[i]!;
+      const end = decls[i + 1]?.index ?? text.length;
+      if (colPattern.test(text.slice(decl.index, end))) tables.add(decl.name);
+    }
+  }
+  return tables;
+}
+
+async function scanAllRoutes(): Promise<RouteInfo[]> {
+  const files = await listTsFiles(ROUTE_DIR);
+  const deviceTables = await findDeviceScopedTables();
+  const results: RouteInfo[] = [];
+  for (const file of files) {
+    const text = await fs.readFile(file, 'utf8');
+    const relFile = path.relative(SRC_DIR, file).split(path.sep).join('/');
+    results.push(...analyzeRouteSource(relFile, text, deviceTables));
+  }
+  return results;
+}
+
+/**
+ * Routes whose URL pattern names a device (`:deviceId`) or a site
+ * (`/sites/:param`). Backs the original per-device/per-site contract test.
+ */
+export async function findRoutesTouchingDevices(): Promise<RouteInfo[]> {
+  return (await scanAllRoutes()).filter((r) => r.deviceOrSiteUrlParam);
+}
+
+/**
+ * Routes that read/write device-scoped data sourced from request input or a
+ * `devices` join — the query/body/list-style class the `:deviceId`-URL scan
+ * misses. Backs the input-sourced contract test.
+ */
+export async function findRoutesTouchingDeviceData(): Promise<RouteInfo[]> {
+  return (await scanAllRoutes()).filter((r) => r.touchesDeviceData);
 }
