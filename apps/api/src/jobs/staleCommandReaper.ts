@@ -533,9 +533,16 @@ async function reapStaleRemoteSessions(): Promise<number> {
   // Revoke viewer tokens for every session we just force-disconnected so a
   // lingering (up to 2h) viewer token can't resurrect it via /viewer/offer (#5).
   // The agent's max-session-duration timer is the authoritative teardown for the
-  // live peer-to-peer stream of a zombie session (#2).
+  // live peer-to-peer stream of a zombie session (when a max-session-duration
+  // policy is set; default 8h) (#2).
   const reapedIds = [...pendingResult, ...activeResult].map((r) => r.id);
-  await Promise.all(reapedIds.map((id) => revokeViewerSession(id).catch(() => {})));
+  await Promise.all(
+    reapedIds.map((id) =>
+      revokeViewerSession(id).catch((err) =>
+        console.warn('[reaper] viewer revoke failed', id, err)
+      )
+    )
+  );
 
   return pendingResult.length + activeResult.length;
 }

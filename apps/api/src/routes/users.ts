@@ -24,7 +24,7 @@ import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { revokeUserAccess } from '../services/userSuspension';
-import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
+import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 
 export const userRoutes = new Hono();
@@ -1061,8 +1061,18 @@ userRoutes.patch(
       // Kill any live remote-desktop sessions immediately so a suspended /
       // deactivated operator loses screen, input and clipboard control right
       // away — revoking JWT/OAuth alone does not touch viewer tokens or the
-      // peer-to-peer WebRTC stream. Best-effort (never throws). Finding #3.
-      await terminateUserRemoteSessions(updated.id);
+      // peer-to-peer WebRTC stream. Finding #3. The teardown is best-effort
+      // per session, but a hard enumeration/disconnect failure returns the
+      // TEARDOWN_FAILED sentinel (already reported to Sentry inside the
+      // service). Surface it the same way as the partial-revocation path
+      // below — the operator MUST know control may still be live.
+      const teardownResult = await terminateUserRemoteSessions(updated.id);
+      if (teardownResult === TEARDOWN_FAILED) {
+        return c.json(
+          { error: 'Failed to terminate active remote sessions; suspension is partial. Retry.' },
+          503
+        );
+      }
       try {
         oauthRevocation = await revokeUserAccess(updated.id);
       } catch (err) {

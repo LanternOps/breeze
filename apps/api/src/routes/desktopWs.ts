@@ -196,8 +196,9 @@ async function validateViewerSessionAccess(
 
     // Do not let a still-valid viewer token re-attach to a session that has
     // already ended. A 'disconnected'/'failed' row requires a freshly created
-    // session to reconnect; otherwise a lingering (up to 2h) viewer token
-    // resurrects a session the operator believes is over. Finding #5.
+    // session to reconnect; otherwise a lingering viewer token (valid for up to
+    // the viewer-token TTL, see getViewerAccessTokenExpirySeconds()) resurrects
+    // a session the operator believes is over. Finding #5.
     if (session.status === 'disconnected' || session.status === 'failed') {
       return { valid: false as const, status: 401 as const, error: 'Session ended' };
     }
@@ -501,19 +502,39 @@ function createDesktopWsHandlers(
           // revoke (operator suspended #3, policy disabled #1, session ended
           // elsewhere #2/#5) would otherwise keep frames + input flowing until
           // pong timeout — or indefinitely while the client answers pings.
-          // Bounds post-revoke exposure to one ping interval. Finding #4.
+          // A revoked socket closes within at most one ping interval
+          // (`PING_INTERVAL_MS`, ~30s). Finding #4.
           // (isViewerSessionRevoked fails closed, matching the connect gate.)
-          void isViewerSessionRevoked(sessionId).then((revoked) => {
-            if (revoked && activeDesktopSessions.has(sessionId)) {
-              console.warn(`[DesktopWs] Session ${sessionId} revoked mid-session, closing socket`);
-              if (pingInterval) clearInterval(pingInterval);
-              try {
-                ws.close(4003, 'Session revoked');
-              } catch (closeErr) {
-                console.error(`[DesktopWs] Failed to close revoked session ${sessionId}:`, closeErr);
+          void isViewerSessionRevoked(sessionId)
+            .then((revoked) => {
+              if (revoked && activeDesktopSessions.has(sessionId)) {
+                console.warn(`[DesktopWs] Session ${sessionId} revoked mid-session, closing socket`);
+                if (pingInterval) clearInterval(pingInterval);
+                activeDesktopSessions.delete(sessionId);
+                try {
+                  ws.close(4003, 'Session revoked');
+                } catch (closeErr) {
+                  console.error(`[DesktopWs] Failed to close revoked session ${sessionId}:`, closeErr);
+                }
               }
-            }
-          });
+            })
+            .catch((revErr) => {
+              // I3: a thrown rejection (not just Redis-down, which already
+              // resolves `true`) must also fail CLOSED. Tear the socket down
+              // this tick rather than leaving it streaming on an unhandled
+              // rejection. Finding #4 / I3.
+              console.error(
+                `[DesktopWs] Revocation check failed for session ${sessionId}, closing socket (fail-closed):`,
+                revErr
+              );
+              if (pingInterval) clearInterval(pingInterval);
+              activeDesktopSessions.delete(sessionId);
+              try {
+                ws.close(4003, 'Session revocation check failed');
+              } catch (closeErr) {
+                console.error(`[DesktopWs] Failed to close session ${sessionId} after revocation-check failure:`, closeErr);
+              }
+            });
           try {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
           } catch (err) {

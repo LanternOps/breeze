@@ -171,10 +171,16 @@ vi.mock('../services/userSuspension', () => ({
   })
 }));
 
+vi.mock('../services/remoteSessionTeardown', () => ({
+  terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
+  TEARDOWN_FAILED: -1,
+}));
+
 import { db } from '../db';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 
 describe('user routes', () => {
   let app: Hono;
@@ -1286,6 +1292,141 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
       expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('PATCH /users/:id remote session teardown on deactivation', () => {
+    const teardownMock = vi.mocked(terminateUserRemoteSessions);
+
+    // getScopedUser (partner scope) → select().from().innerJoin().innerJoin().where().limit()
+    // returns the existing record. Then update(users).set().where().returning()
+    // returns the updated row. Seed both so the becameInactive branch runs.
+    function seedPatch(
+      recordStatus: 'active' | 'invited' | 'disabled',
+      updatedStatus: 'active' | 'invited' | 'disabled',
+    ) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: '11111111-1111-1111-1111-111111111111',
+                    email: 'u@example.com',
+                    name: 'User',
+                    status: recordStatus,
+                    roleId: 'role-1',
+                    roleName: 'Admin',
+                    orgAccess: 'all',
+                    orgIds: null,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'u@example.com',
+                name: 'User',
+                status: updatedStatus,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+    }
+
+    function patchStatus(status: string) {
+      return app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status }),
+      });
+    }
+
+    it('tears down remote sessions on the active→disabled transition', async () => {
+      seedPatch('active', 'disabled');
+
+      const res = await patchStatus('disabled');
+
+      expect(res.status).toBe(200);
+      expect(teardownMock).toHaveBeenCalledTimes(1);
+      expect(teardownMock).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    it('returns 503 when teardown reports the failure sentinel', async () => {
+      teardownMock.mockResolvedValueOnce(-1);
+      seedPatch('active', 'disabled');
+
+      const res = await patchStatus('disabled');
+
+      expect(res.status).toBe(503);
+      expect(teardownMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT tear down sessions on a no-op update (name only, still active)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: '11111111-1111-1111-1111-111111111111',
+                    email: 'u@example.com',
+                    name: 'User',
+                    status: 'active',
+                    roleId: 'role-1',
+                    roleName: 'Admin',
+                    orgAccess: 'all',
+                    orgIds: null,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'u@example.com',
+                name: 'Renamed',
+                status: 'active',
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(teardownMock).not.toHaveBeenCalled();
+    });
+
+    it('does NOT tear down sessions on a reactivation (disabled→active)', async () => {
+      seedPatch('disabled', 'active');
+
+      const res = await patchStatus('active');
+
+      expect(res.status).toBe(200);
+      expect(teardownMock).not.toHaveBeenCalled();
     });
   });
 });

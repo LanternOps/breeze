@@ -18,6 +18,11 @@ const VIEWER_ACCESS_TOKEN_EXPIRY = `${VIEWER_ACCESS_TOKEN_EXPIRY_HOURS}h`;
 // instead of a stale 15-minute value. Security finding #6: the advertised
 // `expiresInSeconds` (was 900) understated the actual 2h TTL by 8x. Derived
 // from the same hours constant as the JWT itself so the two can never drift.
+//
+// NOTE: finding #6 concerns the VIEWER-TOKEN exchange responses only. The
+// regular login access token (ACCESS_TOKEN_EXPIRY, below) is legitimately 15m
+// and `createTokenPair`'s advertised `expiresInSeconds` of 900 is correct for
+// it — don't "fix" that value to match this constant.
 export const VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS = VIEWER_ACCESS_TOKEN_EXPIRY_HOURS * 60 * 60;
 
 // ---------------------------------------------------------------------------

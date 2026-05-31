@@ -14,6 +14,7 @@ import {
 export * from './reliability';
 export * from './businessEmail';
 export * from './remoteAccessLauncherScheme';
+export * from './remoteAccessInlineSettings';
 
 // ============================================
 // Device Roles

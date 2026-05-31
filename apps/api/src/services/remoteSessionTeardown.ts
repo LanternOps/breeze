@@ -1,10 +1,17 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { captureException } from './sentry';
 
-const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
+/**
+ * Sentinel returned by {@link terminateUserRemoteSessions} when teardown
+ * FAILED (enumeration / bulk-disconnect threw). Distinct from `0`, which
+ * means "nothing to do". Callers MUST surface this — a silent `0` on failure
+ * would let a suspended operator keep live remote control with no alert.
+ */
+export const TEARDOWN_FAILED = -1;
 
 /**
  * Force-terminate every live remote session owned by a user. Called from
@@ -29,71 +36,114 @@ const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as co
  * `withSystemDbAccessContext` establishes system scope on a separate
  * connection (same pattern as `logSessionAudit`).
  *
- * Best-effort by design: never throws to its caller — the suspend/deactivate
- * has already cut new access via JWT/OAuth/API-key revocation, and the agent's
- * max-session-duration timer is the ultimate backstop. Returns the number of
- * sessions it tore down.
+ * The per-row viewer-revoke / agent-signal calls are best-effort: a failure on
+ * one session does not prevent the others from being torn down, and an
+ * unexpected throw is logged rather than swallowed bare.
+ *
+ * @returns the number of sessions marked disconnected (`0` = nothing to do),
+ *   or {@link TEARDOWN_FAILED} (`-1`) when the bulk disconnect itself failed.
+ *   A `-1` is reported to Sentry here and MUST be surfaced by callers.
  */
 export async function terminateUserRemoteSessions(userId: string): Promise<number> {
-  let active: Array<{ id: string; type: string; agentId: string | null }> = [];
+  let disconnected: Array<{ id: string; type: string; deviceId: string }>;
+
+  // Single statement: mark this user's active sessions disconnected and return
+  // the rows we touched. Collapses the previous SELECT+innerJoin enumeration
+  // followed by a second UPDATE that re-evaluated the same predicate.
   try {
-    active = await runOutsideDbContext(() =>
+    disconnected = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
-        const rows = await db
-          .select({
-            id: remoteSessions.id,
-            type: remoteSessions.type,
-            agentId: devices.agentId,
-          })
-          .from(remoteSessions)
-          .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
+        return db
+          .update(remoteSessions)
+          .set({ status: 'disconnected', endedAt: new Date() })
           .where(
             and(
               eq(remoteSessions.userId, userId),
-              inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
+              ne(remoteSessions.status, 'disconnected')
             )
-          );
-
-        if (rows.length > 0) {
-          await db
-            .update(remoteSessions)
-            .set({ status: 'disconnected', endedAt: new Date() })
-            .where(
-              and(
-                eq(remoteSessions.userId, userId),
-                inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
-              )
-            );
-        }
-        return rows;
+          )
+          .returning({
+            id: remoteSessions.id,
+            type: remoteSessions.type,
+            deviceId: remoteSessions.deviceId,
+          });
       })
     );
   } catch (err) {
-    console.error(`[remoteSessionTeardown] Failed to enumerate/disconnect sessions for user ${userId}:`, err);
+    // Hard failure: the suspend-time teardown did not run. Alert via Sentry so
+    // it is not silently swallowed, and signal the caller (sentinel) so it can
+    // surface a degraded/partial result instead of reporting a clean success
+    // while the operator may retain live screen/input/clipboard control.
+    console.error(
+      `[remoteSessionTeardown] Failed to disconnect sessions for user ${userId}:`,
+      err
+    );
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return TEARDOWN_FAILED;
+  }
+
+  if (disconnected.length === 0) {
     return 0;
   }
 
+  // Resolve the owning agent id for each affected device so we can signal the
+  // OS-level desktop teardown. One targeted SELECT keyed on the device ids we
+  // just disconnected (agentId lives on devices, not remoteSessions). A failure
+  // here is non-fatal: the rows are already disconnected and viewer tokens are
+  // revoked below regardless — we just can't push stop_desktop.
+  const agentByDevice = new Map<string, string | null>();
+  try {
+    const deviceIds = Array.from(new Set(disconnected.map((s) => s.deviceId)));
+    const deviceRows = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        return db
+          .select({ id: devices.id, agentId: devices.agentId })
+          .from(devices)
+          .where(inArray(devices.id, deviceIds));
+      })
+    );
+    for (const row of deviceRows) {
+      agentByDevice.set(row.id, row.agentId ?? null);
+    }
+  } catch (err) {
+    console.error(
+      `[remoteSessionTeardown] Failed to resolve agents for user ${userId} (stop_desktop skipped):`,
+      err
+    );
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
+  // Best-effort viewer-token revocation per session. A rejection on one does
+  // not block the rest; an unexpected throw is logged, never swallowed bare.
   await Promise.all(
-    active.map((row) =>
+    disconnected.map((row) =>
       revokeViewerSession(row.id).catch((err) =>
-        console.error(`[remoteSessionTeardown] Failed to revoke viewer session ${row.id}:`, err)
+        console.error(
+          `[remoteSessionTeardown] Failed to revoke viewer session ${row.id}:`,
+          err
+        )
       )
     )
   );
 
-  for (const row of active) {
-    if (row.type === 'desktop' && row.agentId) {
+  // Signal each desktop session's agent to tear down the peer-to-peer stream.
+  for (const row of disconnected) {
+    const agentId = agentByDevice.get(row.deviceId);
+    if (row.type === 'desktop' && agentId) {
       try {
-        sendCommandToAgent(row.agentId, {
+        sendCommandToAgent(agentId, {
           id: `desk-stop-${row.id}`,
           type: 'stop_desktop',
           payload: { sessionId: row.id },
         });
       } catch (err) {
-        console.error(`[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`, err);
+        console.error(
+          `[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`,
+          err
+        );
       }
     }
   }
 
-  return active.length;
+  return disconnected.length;
 }

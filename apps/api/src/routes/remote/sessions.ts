@@ -992,6 +992,10 @@ sessionRoutes.post(
       return c.json({ error: 'Failed to update session' }, 500);
     }
 
+    // Revoke the viewer token immediately on End. Without this, a minted viewer
+    // token stays valid for its full lifetime (VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS
+    // in services/jwt.ts — not a hard-coded "2h" here so the two can't drift)
+    // and could be replayed to reconnect after the operator clicked End.
     await revokeViewerSession(sessionId);
 
     // Tell the agent to tear down the live stream. Revoking the viewer token
