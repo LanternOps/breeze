@@ -58,6 +58,28 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			},
 		},
 		{
+			name: "idle timeout clamps to direct-mode cap",
+			payload: map[string]any{
+				"idleTimeoutMinutes": float64(100000),
+			},
+			want: desktop.SessionPolicy{
+				ClipboardHostToViewer: true,
+				ClipboardViewerToHost: true,
+				IdleTimeout:           1440 * time.Minute,
+			},
+		},
+		{
+			name: "max session duration clamps to direct-mode cap",
+			payload: map[string]any{
+				"maxSessionDurationHours": float64(100000),
+			},
+			want: desktop.SessionPolicy{
+				ClipboardHostToViewer: true,
+				ClipboardViewerToHost: true,
+				MaxDuration:           168 * time.Hour,
+			},
+		},
+		{
 			name: "zero/absent timeouts mean disabled",
 			payload: map[string]any{
 				"idleTimeoutMinutes":      float64(0),

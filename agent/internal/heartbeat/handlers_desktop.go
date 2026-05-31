@@ -19,6 +19,14 @@ const (
 	maxDesktopKeyBytes      = 64
 	maxDesktopModifierBytes = 16
 	maxDesktopModifiers     = 8
+
+	// Caps for caller-supplied session-lifetime limits in the direct-mode
+	// (map-payload) decoder. Same maxima as the IPC path (userhelper), but note
+	// the enforcement DIFFERS: this decoder has no error channel so it CLAMPS to
+	// these bounds, whereas the IPC path REJECTS out-of-range input with an
+	// error. Either way the agent can't be pushed past these. 0 = disabled.
+	maxIdleTimeoutMinutes   = 1440 // 24h
+	maxSessionDurationHours = 168  // 7d
 )
 
 var desktopInputTypes = map[string]struct{}{
@@ -224,11 +232,12 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 			policy.ClipboardViewerToHost = v
 		}
 	}
+	// Clamp direct-mode lifetime limits to the same maxima enforced by IPC validation.
 	if v, ok := payload["idleTimeoutMinutes"].(float64); ok && v > 0 {
-		policy.IdleTimeout = time.Duration(v) * time.Minute
+		policy.IdleTimeout = time.Duration(math.Min(v, maxIdleTimeoutMinutes)) * time.Minute
 	}
 	if v, ok := payload["maxSessionDurationHours"].(float64); ok && v > 0 {
-		policy.MaxDuration = time.Duration(v) * time.Hour
+		policy.MaxDuration = time.Duration(math.Min(v, maxSessionDurationHours)) * time.Hour
 	}
 	return policy
 }
