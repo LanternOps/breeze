@@ -2280,7 +2280,16 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		if h.manifestTrustRotationRejected.Load() {
+		if isDowngrade(response.UpgradeTo, h.agentVersion) {
+			// SECURITY: never auto-downgrade. A compromised/MITM'd control plane
+			// could otherwise force a fleet-wide rollback to an older,
+			// still-validly-signed, known-vulnerable build. Deliberate rollback
+			// is an operator action via the (default-off) dev_update path.
+			log.Error("SECURITY: refusing server-directed auto-update downgrade",
+				"currentVersion", h.agentVersion,
+				"targetVersion", response.UpgradeTo,
+				"hint", "deliberate rollback uses the operator dev_update path")
+		} else if h.manifestTrustRotationRejected.Load() {
 			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
 				"targetVersion", response.UpgradeTo)
 		} else if h.config.AutoUpdate {
