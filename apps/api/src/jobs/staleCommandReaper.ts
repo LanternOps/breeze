@@ -17,6 +17,7 @@ import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
@@ -528,6 +529,13 @@ async function reapStaleRemoteSessions(): Promise<number> {
       ),
     )
     .returning({ id: remoteSessions.id });
+
+  // Revoke viewer tokens for every session we just force-disconnected so a
+  // lingering (up to 2h) viewer token can't resurrect it via /viewer/offer (#5).
+  // The agent's max-session-duration timer is the authoritative teardown for the
+  // live peer-to-peer stream of a zombie session (#2).
+  const reapedIds = [...pendingResult, ...activeResult].map((r) => r.id);
+  await Promise.all(reapedIds.map((id) => revokeViewerSession(id).catch(() => {})));
 
   return pendingResult.length + activeResult.length;
 }

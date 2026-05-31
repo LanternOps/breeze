@@ -11,7 +11,14 @@ const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
 // poll and the auto-handoff with it. The token is scoped to purpose='viewer'
 // and a specific sessionId. TTL reduced to 2h (from 8h) and jti revocation
 // is enforced on tunnel close, so the window of exposure is now bounded.
-const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '2h';
+const VIEWER_ACCESS_TOKEN_EXPIRY_HOURS = e2eMode ? 24 : 2;
+const VIEWER_ACCESS_TOKEN_EXPIRY = `${VIEWER_ACCESS_TOKEN_EXPIRY_HOURS}h`;
+// Numeric seconds form of the *real* signed viewer-token TTL, exported so the
+// /connect/exchange (and VNC exchange) responses advertise the true lifetime
+// instead of a stale 15-minute value. Security finding #6: the advertised
+// `expiresInSeconds` (was 900) understated the actual 2h TTL by 8x. Derived
+// from the same hours constant as the JWT itself so the two can never drift.
+export const VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS = VIEWER_ACCESS_TOKEN_EXPIRY_HOURS * 60 * 60;
 
 // ---------------------------------------------------------------------------
 // Signing keyring (zero-downtime rotation via `kid` header)

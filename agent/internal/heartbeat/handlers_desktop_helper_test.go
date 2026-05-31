@@ -64,7 +64,7 @@ func TestStartDesktopViaHelperPreservesTargetSessionOnRetry(t *testing.T) {
 		},
 	}
 
-	result := h.startDesktopViaHelper("desktop-1", "offer", nil, 0, map[string]any{
+	result := h.startDesktopViaHelper("desktop-1", "offer", nil, 0, desktop.SessionPolicy{ClipboardHostToViewer: true, ClipboardViewerToHost: true}, map[string]any{
 		"targetSessionId": float64(42),
 	})
 
@@ -155,7 +155,7 @@ func TestStartDesktopViaHelperPassesDisplayIndex(t *testing.T) {
 	h := &Heartbeat{
 		helperFinder: func(string) *sessionbroker.Session { return session },
 	}
-	result := h.startDesktopViaHelper("desktop-display", "offer", []desktop.ICEServerConfig{}, 3, map[string]any{})
+	result := h.startDesktopViaHelper("desktop-display", "offer", []desktop.ICEServerConfig{}, 3, desktop.SessionPolicy{ClipboardHostToViewer: true, ClipboardViewerToHost: true}, map[string]any{})
 
 	<-done
 	_ = session.Close()
@@ -194,7 +194,7 @@ func TestStartDesktopViaHelperDoesNotReuseWrongTargetSessionHelper(t *testing.T)
 		},
 	}
 
-	result := h.startDesktopViaHelper("desktop-target", "offer", nil, 0, map[string]any{
+	result := h.startDesktopViaHelper("desktop-target", "offer", nil, 0, desktop.SessionPolicy{ClipboardHostToViewer: true, ClipboardViewerToHost: true}, map[string]any{
 		"targetSessionId": float64(42),
 	})
 

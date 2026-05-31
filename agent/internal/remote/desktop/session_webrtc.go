@@ -13,9 +13,19 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
+// SessionPolicy is the server-resolved, agent-enforced policy for a desktop
+// session. The API server is not in the peer-to-peer data path, so the agent is
+// the enforcement point (the viewer is untrusted). Findings #2 and #7.
+type SessionPolicy struct {
+	ClipboardHostToViewer bool
+	ClipboardViewerToHost bool
+	IdleTimeout           time.Duration // 0 = disabled
+	MaxDuration           time.Duration // 0 = disabled
+}
+
 // StartSession creates and starts a new remote desktop session.
 // iceServers is optional; if nil, falls back to Google STUN.
-func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex ...int) (answer string, err error) {
+func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex int, policy SessionPolicy) (answer string, err error) {
 	// Serialize concurrent StartSession calls. Without this, two retries
 	// with the same sessionID (e.g. heartbeat-poll + WS fast path delivering
 	// the same dedup-bypassed start_desktop command) would both drain the
@@ -115,6 +125,50 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	}()
 
+	// Session-lifetime enforcement (finding #2). The API server is NOT in the
+	// peer-to-peer media/input path, so these agent-side timers are the
+	// authoritative backstop bounding how long an operator can hold control —
+	// even when the server can't reach the agent to send stop_desktop. The
+	// goroutine exits on session.done (closed by Stop) and is intentionally not
+	// in session.wg, so the StopSession call below cannot deadlock on wg.Wait.
+	session.lastInputUnixNano.Store(time.Now().UnixNano())
+	if policy.MaxDuration > 0 || policy.IdleTimeout > 0 {
+		startWall := time.Now()
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-session.done:
+					return
+				case <-ticker.C:
+					now := time.Now()
+					if policy.MaxDuration > 0 && now.Sub(startWall) >= policy.MaxDuration {
+						slog.Warn("Desktop session reached max duration, stopping",
+							"session", sessionID, "maxDuration", policy.MaxDuration)
+						m.StopSession(sessionID)
+						if m.OnSessionStopped != nil {
+							go m.OnSessionStopped(sessionID)
+						}
+						return
+					}
+					if policy.IdleTimeout > 0 {
+						idleFor := now.Sub(time.Unix(0, session.lastInputUnixNano.Load()))
+						if idleFor >= policy.IdleTimeout {
+							slog.Warn("Desktop session idle timeout, stopping",
+								"session", sessionID, "idleFor", idleFor.Round(time.Second))
+							m.StopSession(sessionID)
+							if m.OnSessionStopped != nil {
+								go m.OnSessionStopped(sessionID)
+							}
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+
 	// Create H264 video track
 	videoTrack, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{
@@ -181,8 +235,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	// Create screen capturer (optionally targeting a specific display)
 	capConfig := m.CaptureConfig()
-	if len(displayIndex) > 0 && displayIndex[0] > 0 {
-		capConfig.DisplayIndex = displayIndex[0]
+	if displayIndex > 0 {
+		capConfig.DisplayIndex = displayIndex
 	}
 	capturerStart := time.Now()
 	capturer, err := NewScreenCapturer(capConfig)
@@ -197,10 +251,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	// Set display offset so input handler translates viewer-relative coords
 	// to virtual screen coords (required for multi-monitor setups).
-	displayIdx := 0
-	if len(displayIndex) > 0 {
-		displayIdx = displayIndex[0]
-	}
+	displayIdx := displayIndex
 	applyDisplayOffset(session.inputHandler, displayIdx, &session.cursorOffsetX, &session.cursorOffsetY)
 
 	// Get screen bounds first — needed for bitrate scaling and encoder init.
@@ -338,15 +389,28 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	}
 
-	// Create clipboard DataChannel
-	clipboardDC, err := peerConn.CreateDataChannel("clipboard", nil)
-	if err != nil {
-		slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", err.Error())
-	} else if clipboardDC != nil {
-		session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard())
-		clipboardDC.OnOpen(func() {
-			session.clipboardSync.Watch()
-		})
+	// Create clipboard DataChannel — gated by policy (finding #7). The viewer is
+	// untrusted, so the agent enforces direction here: with host→viewer off we
+	// never run the watcher (no passive exfiltration of whatever the end user
+	// copies); with viewer→host off inbound writes are dropped. Skip the channel
+	// entirely when both directions are disabled.
+	if policy.ClipboardHostToViewer || policy.ClipboardViewerToHost {
+		clipboardDC, cbErr := peerConn.CreateDataChannel("clipboard", nil)
+		if cbErr != nil {
+			slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", cbErr.Error())
+		} else if clipboardDC != nil {
+			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard(), clipboard.Policy{
+				HostToViewer: policy.ClipboardHostToViewer,
+				ViewerToHost: policy.ClipboardViewerToHost,
+			})
+			if policy.ClipboardHostToViewer {
+				clipboardDC.OnOpen(func() {
+					session.clipboardSync.Watch()
+				})
+			}
+		}
+	} else {
+		slog.Info("Clipboard sync disabled by policy", "session", sessionID)
 	}
 
 	// Create filedrop DataChannel
@@ -401,6 +465,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.dataChannel = dc
 			session.mu.Unlock()
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				session.lastInputUnixNano.Store(time.Now().UnixNano())
 				session.handleInputMessage(msg.Data)
 			})
 		case "control":

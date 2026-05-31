@@ -15,6 +15,7 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
@@ -210,6 +211,14 @@ abuseRoutes.post(
       oauthRevocationError = err instanceof Error ? err.message : String(err);
       captureException(err, c);
     }
+
+    // Terminate any live remote-desktop sessions held by the suspended users so
+    // a rogue operator can't keep screen / input / clipboard control after the
+    // partner is suspended for abuse. Best-effort (never throws); the
+    // OAuth/JWT/API-key revocation above already cut new access. Finding #3.
+    await Promise.allSettled(
+      result.affectedUserIds.map((id) => terminateUserRemoteSessions(id))
+    );
 
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null

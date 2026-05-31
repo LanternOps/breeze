@@ -125,6 +125,10 @@ type Session struct {
 	lastEncodedFrame []byte
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
+
+	// Nanoseconds since epoch of the last inbound input event from the viewer.
+	// Drives the idle-session watchdog (finding #2).
+	lastInputUnixNano atomic.Int64
 }
 
 // SessionManager manages remote desktop sessions

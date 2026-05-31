@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"regexp"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -49,7 +50,20 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 		h.mgr.SetGPUVendor(req.GPUVendor)
 	}
 
-	answer, err := h.mgr.StartSession(req.SessionID, req.Offer, iceServers, req.DisplayIndex)
+	// Build the agent-enforced policy from the IPC request. Absent clipboard
+	// fields (older service) default to permissive to preserve behavior.
+	policy := desktop.SessionPolicy{
+		ClipboardHostToViewer: req.ClipboardHostToViewer == nil || *req.ClipboardHostToViewer,
+		ClipboardViewerToHost: req.ClipboardViewerToHost == nil || *req.ClipboardViewerToHost,
+	}
+	if req.IdleTimeoutMinutes > 0 {
+		policy.IdleTimeout = time.Duration(req.IdleTimeoutMinutes) * time.Minute
+	}
+	if req.MaxSessionDurationHours > 0 {
+		policy.MaxDuration = time.Duration(req.MaxSessionDurationHours) * time.Hour
+	}
+
+	answer, err := h.mgr.StartSession(req.SessionID, req.Offer, iceServers, req.DisplayIndex, policy)
 	if err != nil {
 		return nil, fmt.Errorf("start desktop session: %w", err)
 	}

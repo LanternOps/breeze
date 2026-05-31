@@ -102,7 +102,7 @@ func (h *Heartbeat) desktopOwnerSession(desktopSessionID string) *sessionbroker.
 // If the helper crashes during the request, it automatically respawns and retries.
 // On macOS, it pre-checks TCC Screen Recording permission and returns a clear error
 // if the required permissions haven't been configured yet.
-func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, payload map[string]any) tools.CommandResult {
+func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy, payload map[string]any) tools.CommandResult {
 	// Log TCC status for diagnostics but don't gate — the cached status may be
 	// stale (e.g. permission just granted). Let the capturer attempt and fail
 	// with the real error instead of blocking on a potentially outdated check.
@@ -137,12 +137,18 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		iceRaw = data
 	}
 
+	clipHostToViewer := policy.ClipboardHostToViewer
+	clipViewerToHost := policy.ClipboardViewerToHost
 	req := ipc.DesktopStartRequest{
-		SessionID:    sessionID,
-		Offer:        offer,
-		ICEServers:   iceRaw,
-		DisplayIndex: displayIndex,
-		GPUVendor:    gpuVendor,
+		SessionID:               sessionID,
+		Offer:                   offer,
+		ICEServers:              iceRaw,
+		DisplayIndex:            displayIndex,
+		GPUVendor:               gpuVendor,
+		ClipboardHostToViewer:   &clipHostToViewer,
+		ClipboardViewerToHost:   &clipViewerToHost,
+		IdleTimeoutMinutes:      int(policy.IdleTimeout / time.Minute),
+		MaxSessionDurationHours: int(policy.MaxDuration / time.Hour),
 	}
 
 	// Retry up to 2 times: if the helper crashes during SendCommand, respawn

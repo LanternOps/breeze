@@ -27,11 +27,19 @@ type dcSender interface {
 	SendText(s string) error
 }
 
+// Policy gates clipboard sync per direction. Enforced agent-side because the
+// viewer is untrusted. Finding #7.
+type Policy struct {
+	HostToViewer bool // stream the host's clipboard to the viewer
+	ViewerToHost bool // accept viewer clipboard writes onto the host
+}
+
 type ClipboardSync struct {
 	sender       dcSender
 	provider     Provider
 	pollInterval time.Duration
 	stop         chan struct{}
+	policy       Policy
 
 	mu           sync.Mutex
 	lastSentHash [32]byte
@@ -45,12 +53,13 @@ type clipboardPayload struct {
 	ImageFormat string      `json:"image_format,omitempty"`
 }
 
-func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync {
+func NewClipboardSync(dc *webrtc.DataChannel, provider Provider, policy Policy) *ClipboardSync {
 	syncer := &ClipboardSync{
 		sender:       dc,
 		provider:     provider,
 		pollInterval: defaultPollInterval,
 		stop:         make(chan struct{}),
+		policy:       policy,
 	}
 	if dc != nil {
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -63,17 +72,26 @@ func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync 
 }
 
 // newClipboardSyncWithSender is used by tests to inject a mock sender.
-func newClipboardSyncWithSender(sender dcSender, provider Provider) *ClipboardSync {
+func newClipboardSyncWithSender(sender dcSender, provider Provider, policy Policy) *ClipboardSync {
 	return &ClipboardSync{
 		sender:       sender,
 		provider:     provider,
 		pollInterval: defaultPollInterval,
 		stop:         make(chan struct{}),
+		policy:       policy,
 	}
 }
 
 func (c *ClipboardSync) Watch() {
 	if c.provider == nil {
+		return
+	}
+
+	// Host→viewer streaming disabled by policy: never poll or forward the host
+	// clipboard. This is the silent-exfiltration guard — without it, whatever
+	// the end user copies (passwords, MFA codes, secrets) streams to the
+	// operator within ~500ms. Finding #7.
+	if !c.policy.HostToViewer {
 		return
 	}
 
@@ -150,6 +168,13 @@ func (c *ClipboardSync) Send(content Content) error {
 		return err
 	}
 
+	// Audit the egress transfer (finding #8). Host→viewer is the silent
+	// exfiltration direction, so make each transfer forensically visible
+	// (type + size). NOTE: this lands in the agent diagnostic log stream, not
+	// yet the tamper-evident central audit_logs table (follow-up).
+	log.Printf("[audit] clipboard transfer direction=host_to_viewer type=%s bytes=%d",
+		content.Type, len(content.Text)+len(content.RTF)+len(content.Image))
+
 	c.mu.Lock()
 	c.lastSentHash = fingerprint(content)
 	c.mu.Unlock()
@@ -160,6 +185,11 @@ func (c *ClipboardSync) Send(content Content) error {
 func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	if c.provider == nil {
 		return errClipboardSyncUnconfigured
+	}
+	// Viewer→host writes disabled by policy: drop inbound clipboard silently
+	// rather than overwriting the host clipboard. Finding #7.
+	if !c.policy.ViewerToHost {
+		return nil
 	}
 	if len(msg.Data) > maxClipboardMessageBytes {
 		return fmt.Errorf("clipboard payload exceeds maximum %d bytes", maxClipboardMessageBytes)
@@ -195,6 +225,11 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	if err := c.provider.SetContent(content); err != nil {
 		return err
 	}
+
+	// Audit the ingress transfer (finding #8): the viewer writing the host
+	// clipboard. Same diagnostic-log caveat as the egress path above.
+	log.Printf("[audit] clipboard transfer direction=viewer_to_host type=%s bytes=%d",
+		content.Type, len(content.Text)+len(content.RTF)+len(content.Image))
 
 	fp := fingerprint(content)
 	c.mu.Lock()

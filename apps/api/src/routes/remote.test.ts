@@ -77,6 +77,11 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/remoteAccessPolicy', () => ({
   checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+  resolveDesktopSessionPolicy: vi.fn().mockResolvedValue({
+    clipboard: { hostToViewer: true, viewerToHost: true },
+    idleTimeoutMinutes: 5,
+    maxSessionDurationHours: 8,
+  }),
   resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({
     settings: { webrtcDesktop: true, vncRelay: true, remoteTools: true, enableProxy: true, defaultAllowedPorts: [], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 },
     policyName: null,

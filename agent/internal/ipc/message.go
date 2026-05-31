@@ -236,6 +236,13 @@ type DesktopStartRequest struct {
 	ICEServers   json.RawMessage `json:"iceServers,omitempty"`
 	DisplayIndex int             `json:"displayIndex"`
 	GPUVendor    string          `json:"gpuVendor,omitempty"`
+	// Agent-enforced session policy (findings #2, #7). Clipboard direction gates
+	// are pointers so an older service that doesn't set them leaves the helper at
+	// permissive defaults (preserve existing behavior). Timeouts of 0 = disabled.
+	ClipboardHostToViewer   *bool `json:"clipboardHostToViewer,omitempty"`
+	ClipboardViewerToHost   *bool `json:"clipboardViewerToHost,omitempty"`
+	IdleTimeoutMinutes      int   `json:"idleTimeoutMinutes,omitempty"`
+	MaxSessionDurationHours int   `json:"maxSessionDurationHours,omitempty"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the
