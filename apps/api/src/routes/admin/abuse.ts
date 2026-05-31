@@ -15,11 +15,8 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
-<<<<<<< HEAD
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
-=======
 import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
->>>>>>> origin/main
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';

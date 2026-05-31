@@ -8,18 +8,13 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
-<<<<<<< HEAD
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
-=======
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
-import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
->>>>>>> origin/main
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
