@@ -1,6 +1,6 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { devices, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships } from '../db/schema';
+import { devices, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
   FilterFieldCategory,
@@ -91,9 +91,14 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'metrics.ramPercent', label: 'RAM %', category: 'metrics', type: 'number', operators: OPERATORS_BY_TYPE.number },
   { key: 'metrics.diskPercent', label: 'Disk %', category: 'metrics', type: 'number', operators: OPERATORS_BY_TYPE.number },
 
-  // Software fields
-  { key: 'software.installed', label: 'Has Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains'], description: 'Check if software name contains value' },
-  { key: 'software.notInstalled', label: 'Missing Software', category: 'software', type: 'string', operators: ['contains'], description: 'Check if software is not installed' },
+  // Software fields (EXISTS against software_inventory)
+  { key: 'software.installed', label: 'Has Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains', 'equals', 'in', 'hasAny', 'hasAll'], description: 'Match devices with matching installed software' },
+  { key: 'software.notInstalled', label: 'Missing Software', category: 'software', type: 'string', operators: ['contains', 'equals', 'in', 'hasAny'], description: 'Match devices missing the named software' },
+
+  // Device-state predicates (virtual EXISTS fields against related tables)
+  { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
+  { key: 'alerts.critical', label: 'Has Critical Alerts', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an active critical alert' },
+  { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has a completed patch awaiting reboot' },
 
   // Hierarchy fields
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
@@ -183,9 +188,69 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
   return { table: 'devices', column: field };
 }
 
-function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
+export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   const { field, operator, value } = condition;
+
+  // Virtual boolean predicates resolved as self-contained EXISTS subqueries.
+  // The outer query selects from `devices` only (no joins), so each correlates
+  // on devices.id and needs no join. The chip bar emits `equals 'yes'`/`'no'`;
+  // the advanced builder may send a real boolean — treat false/'no'/'false' as
+  // the negative, and `notEquals` flips the polarity.
+  if (field === 'patches.pending' || field === 'alerts.critical' || field === 'system.rebootRequired') {
+    let inner: SQL<unknown>;
+    if (field === 'patches.pending') {
+      inner = sql`EXISTS (SELECT 1 FROM device_patches WHERE device_id = ${devices.id} AND status = 'pending')`;
+    } else if (field === 'alerts.critical') {
+      inner = sql`EXISTS (SELECT 1 FROM alerts WHERE device_id = ${devices.id} AND status = 'active' AND severity = 'critical')`;
+    } else {
+      inner = sql`EXISTS (SELECT 1 FROM patch_job_results WHERE device_id = ${devices.id} AND reboot_required = true AND rebooted_at IS NULL)`;
+    }
+    const negative = value === false || value === 'no' || value === 'false';
+    const negate = (operator === 'notEquals') !== negative;
+    return negate ? sql`NOT (${inner})` : inner;
+  }
+
   const fieldInfo = getColumnForField(field);
+
+  // Installed-software predicates use an EXISTS subquery against
+  // software_inventory — the table the agent inventory ingest actually
+  // populates (device_software is unused). `software.notInstalled` is the
+  // negation of `software.installed`. Self-contained, so no outer join.
+  if (fieldInfo.table === 'software') {
+    const positive = field === 'software.installed';
+    let match: SQL<unknown>;
+    switch (operator) {
+      case 'contains':
+      case 'notContains':
+        match = sql`${softwareInventory.name} ILIKE ${'%' + String(value) + '%'}`;
+        break;
+      case 'equals':
+        match = sql`${softwareInventory.name} = ${String(value)}`;
+        break;
+      case 'in':
+      case 'hasAny': {
+        if (!Array.isArray(value) || value.length === 0) return sql`TRUE`;
+        // Explicit IN list — an ANY($1) array binding inside EXISTS doesn't
+        // infer the text[] cast and errors with "malformed array literal".
+        const names = (value as unknown[]).map((v) => sql`${String(v)}`);
+        match = sql`${softwareInventory.name} IN (${sql.join(names, sql`, `)})`;
+        break;
+      }
+      case 'hasAll': {
+        if (!Array.isArray(value) || value.length === 0) return sql`TRUE`;
+        const all = (value as unknown[])
+          .map((v) => sql`EXISTS (SELECT 1 FROM ${softwareInventory} WHERE ${softwareInventory.deviceId} = ${devices.id} AND ${softwareInventory.name} = ${String(v)})`)
+          .reduce((acc, part) => sql`${acc} AND ${part}`);
+        return positive ? all : sql`NOT (${all})`;
+      }
+      default:
+        throw new Error(`Unsupported software operator: ${operator}`);
+    }
+    const inner = sql`EXISTS (SELECT 1 FROM ${softwareInventory} WHERE ${softwareInventory.deviceId} = ${devices.id} AND ${match})`;
+    // notContains is its own negation regardless of installed/notInstalled.
+    if (operator === 'notContains') return sql`NOT (${inner})`;
+    return positive ? inner : sql`NOT (${inner})`;
+  }
 
   // Get the actual column reference
   let columnRef: SQL<unknown>;

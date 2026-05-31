@@ -9,7 +9,8 @@ import {
   pgEnum,
   integer,
   date,
-  uniqueIndex
+  uniqueIndex,
+  index
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
@@ -204,7 +205,9 @@ export const devicePatches = pgTable('device_patches', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  devicePatchUnique: uniqueIndex('device_patches_device_patch_unique').on(table.deviceId, table.patchId)
+  devicePatchUnique: uniqueIndex('device_patches_device_patch_unique').on(table.deviceId, table.patchId),
+  // Backs the `patches.pending` device-filter field (#968).
+  pendingIdx: index('idx_device_patches_pending').on(table.deviceId).where(sql`status = 'pending'`)
 }));
 
 export const patchJobs = pgTable('patch_jobs', {
@@ -242,7 +245,12 @@ export const patchJobResults = pgTable('patch_job_results', {
   rebootRequired: boolean('reboot_required').notNull().default(false),
   rebootedAt: timestamp('rebooted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Backs the `system.rebootRequired` device-filter field (#968).
+  rebootPendingIdx: index('idx_patch_job_results_reboot_pending')
+    .on(table.deviceId)
+    .where(sql`reboot_required = true AND rebooted_at IS NULL`)
+}));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {
   id: uuid('id').primaryKey().defaultRandom(),

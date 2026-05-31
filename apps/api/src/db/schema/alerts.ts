@@ -11,6 +11,7 @@ import {
   index,
   numeric
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 import { organizations } from './orgs';
 import { devices } from './devices';
@@ -74,7 +75,12 @@ export const alerts = pgTable('alerts', {
   resolutionNote: text('resolution_note'),
   suppressedUntil: timestamp('suppressed_until'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Backs the `alerts.critical` device-filter field (#968).
+  activeCriticalIdx: index('idx_alerts_active_critical')
+    .on(table.deviceId)
+    .where(sql`status = 'active' AND severity = 'critical'`)
+}));
 
 export const alertCorrelations = pgTable('alert_correlations', {
   id: uuid('id').primaryKey().defaultRandom(),
