@@ -905,7 +905,13 @@ func enrollDevice(enrollmentKey string) {
 			err)
 	}
 
-	client := api.NewClient(cfg.ServerURL, "", "")
+	// Carry any existing device token into the enroll client. On a fresh
+	// enroll cfg.AuthToken is empty (no-op); on `--force` re-enroll it holds
+	// the token loaded from secrets.yaml, which Enroll presents as
+	// x-agent-reenrollment-token so the server re-enrolls the existing device
+	// row instead of 409-ing on a hostname collision with the agent's own
+	// active row (e.g. after a rename/re-image). See #1028.
+	client := api.NewClient(cfg.ServerURL, cfg.AuthToken, cfg.AgentID)
 
 	secret := enrollmentSecret
 	if secret == "" {

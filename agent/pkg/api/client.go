@@ -143,6 +143,18 @@ func (c *Client) Enroll(req *EnrollRequest) (*EnrollResponse, error) {
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	// On a forced re-enrollment the agent still holds its existing device
+	// token (loaded from secrets.yaml into the client). Present it so the
+	// server can match the existing device row and re-enroll it in place
+	// rather than treating this as a brand-new device and 409-ing on the
+	// hostname collision with the agent's own active row. The server reads
+	// this header in the enrollment route's existing-device branch. Empty on
+	// a fresh enroll (no stored token) -> header omitted, behaviour
+	// unchanged. See #1028.
+	if c.authToken != "" {
+		httpReq.Header.Set("x-agent-reenrollment-token", c.authToken)
+	}
+
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
