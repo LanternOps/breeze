@@ -135,6 +135,12 @@ function rigDeviceLookup(device: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({ from } as never);
 }
 
+function conditionText(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) =>
+    typeof nested === 'function' ? '[function]' : nested
+  );
+}
+
 describe('CIS hardening — site-scope enforcement', () => {
   let app: Hono;
 
@@ -142,6 +148,106 @@ describe('CIS hardening — site-scope enforcement', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/cis', cisHardeningRoutes);
+  });
+
+  describe('GET /cis/compliance', () => {
+    it('narrows ranked compliance results to devices in the caller site allowlist', async () => {
+      let rankedWhere: unknown;
+      const as = vi.fn().mockReturnValue({
+        rn: 'ranked.rn',
+        score: 'ranked.score',
+        failedChecks: 'ranked.failedChecks',
+        checkedAt: 'ranked.checkedAt',
+      });
+      const where = vi.fn((condition: unknown) => {
+        rankedWhere = condition;
+        return { as };
+      });
+
+      vi.mocked(db.select)
+        // ranked results subquery
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({ where }),
+            }),
+          }),
+        } as never)
+        // summary query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ total: 0, averageScore: 100, failingDevices: 0 }]),
+          }),
+        } as never)
+        // rows query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([]),
+                }),
+              }),
+            }),
+          }),
+        } as never);
+
+      const res = await app.request('/cis/compliance', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': DEVICE_SITE_ID },
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(rankedWhere)).toContain('devices.siteId');
+      expect(conditionText(rankedWhere)).toContain(DEVICE_SITE_ID);
+    });
+
+    it('leaves unrestricted compliance reads unchanged', async () => {
+      let rankedWhere: unknown;
+      const as = vi.fn().mockReturnValue({
+        rn: 'ranked.rn',
+        score: 'ranked.score',
+        failedChecks: 'ranked.failedChecks',
+        checkedAt: 'ranked.checkedAt',
+      });
+      const where = vi.fn((condition: unknown) => {
+        rankedWhere = condition;
+        return { as };
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({ where }),
+            }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ total: 0, averageScore: 100, failingDevices: 0 }]),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([]),
+                }),
+              }),
+            }),
+          }),
+        } as never);
+
+      const res = await app.request('/cis/compliance', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(rankedWhere)).not.toContain('devices.siteId');
+    });
   });
 
   describe('GET /cis/devices/:deviceId/report', () => {
@@ -222,6 +328,114 @@ describe('CIS hardening — site-scope enforcement', () => {
         }),
       });
       expect(res.status).toBe(403);
+    });
+  });
+
+  describe('GET /cis/remediations', () => {
+    it('returns 403 when an explicit deviceId is outside the site allowlist', async () => {
+      rigDeviceLookup({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        osType: 'windows',
+        hostname: 'host-1',
+        siteId: FORBIDDEN_SITE_ID,
+      });
+
+      const res = await app.request(`/cis/remediations?deviceId=${DEVICE_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': DEVICE_SITE_ID },
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Device not found or access denied');
+    });
+
+    it('narrows remediation list and count to devices in the caller site allowlist', async () => {
+      let countWhere: unknown;
+      let listWhere: unknown;
+
+      vi.mocked(db.select)
+        // Count query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                countWhere = condition;
+                return Promise.resolve([{ count: 0 }]);
+              }),
+            }),
+          }),
+        } as never)
+        // List query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn((condition: unknown) => {
+                  listWhere = condition;
+                  return {
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([]),
+                      }),
+                    }),
+                  };
+                }),
+              }),
+            }),
+          }),
+        } as never);
+
+      const res = await app.request('/cis/remediations', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': DEVICE_SITE_ID },
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(countWhere)).toContain('devices.siteId');
+      expect(conditionText(countWhere)).toContain(DEVICE_SITE_ID);
+      expect(conditionText(listWhere)).toContain('devices.siteId');
+      expect(conditionText(listWhere)).toContain(DEVICE_SITE_ID);
+    });
+
+    it('leaves unrestricted remediation reads unchanged', async () => {
+      let countWhere: unknown;
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                countWhere = condition;
+                return Promise.resolve([{ count: 0 }]);
+              }),
+            }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([]),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        } as never);
+
+      const res = await app.request('/cis/remediations', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(countWhere)).not.toContain('devices.siteId');
     });
   });
 

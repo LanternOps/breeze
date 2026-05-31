@@ -259,6 +259,7 @@ function getNextIntervalRun(lastRunAt: Date | null, intervalMinutes: number, now
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
+  siteId: z.string().uuid().optional(),
   approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
   assetType: z.enum([
     'workstation', 'server', 'printer', 'router', 'switch',
@@ -823,12 +824,24 @@ discoveryRoutes.get(
   zValidator('query', listAssetsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: SQL[] = [];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+    if (query.siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      conditions.push(eq(discoveredAssets.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: [] });
+      }
+      conditions.push(inArray(discoveredAssets.siteId, perms.allowedSiteIds));
+    }
     if (query.approvalStatus) conditions.push(eq(discoveredAssets.approvalStatus, query.approvalStatus));
     if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
 

@@ -15,13 +15,23 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devices: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    hostname: 'devices.hostname',
+    status: 'devices.status',
+    osType: 'devices.osType',
+  },
   softwareComplianceStatus: {
-    policyId: 'policyId',
-    deviceId: 'deviceId',
-    status: 'status',
-    remediationStatus: 'remediationStatus',
-    lastRemediationAttempt: 'lastRemediationAttempt',
+    id: 'softwareComplianceStatus.id',
+    policyId: 'softwareComplianceStatus.policyId',
+    deviceId: 'softwareComplianceStatus.deviceId',
+    status: 'softwareComplianceStatus.status',
+    violations: 'softwareComplianceStatus.violations',
+    lastChecked: 'softwareComplianceStatus.lastChecked',
+    remediationStatus: 'softwareComplianceStatus.remediationStatus',
+    lastRemediationAttempt: 'softwareComplianceStatus.lastRemediationAttempt',
   },
   softwarePolicies: { id: 'id', orgId: 'orgId', mode: 'mode', name: 'name', isActive: 'isActive' },
 }));
@@ -387,5 +397,141 @@ describe('POST /:id/remediate — site scope', () => {
     expect(vi.mocked(scheduleSoftwareRemediation)).toHaveBeenCalledTimes(1);
     const targeted = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1];
     expect(targeted).toEqual(expect.arrayContaining([DEVICE_ALLOWED, DEVICE_DENIED]));
+  });
+});
+
+// ───────────────── GET /violations — site scope ─────────────────
+describe('GET /violations — site scope', () => {
+  const ORG_ID = '11111111-1111-1111-1111-111111111111';
+  const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+  const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+  const DEVICE_ALLOWED = '33333333-3333-3333-3333-333333333333';
+  const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
+
+  let app: Hono;
+
+  function dumpSql(value: unknown, seen = new WeakSet<object>()): string {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'function') return '';
+    if (typeof value !== 'object') return String(value);
+    if (seen.has(value)) return '';
+    seen.add(value);
+
+    const parts: string[] = [value.constructor?.name ?? 'Object'];
+    for (const key of Reflect.ownKeys(value)) {
+      const prop = (value as Record<PropertyKey, unknown>)[key];
+      parts.push(String(key), dumpSql(prop, seen));
+    }
+    return parts.join(' ');
+  }
+
+  function setAuth(allowedSiteIds?: string[]) {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        user: { id: 'user-123', email: 'test@example.com' },
+      });
+      if (allowedSiteIds) c.set('permissions', { allowedSiteIds });
+      return next();
+    });
+  }
+
+  function mockSiteResolution(rows: Array<{ id: string; siteId: string | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
+      }),
+    } as any);
+  }
+
+  function mockViolationsSelect(rows: any[], whereArgs: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn((where) => {
+            whereArgs.push(where);
+            return {
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue(rows),
+              }),
+            };
+          }),
+        }),
+      }),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    app = new Hono();
+    app.route('/software-policies', softwarePoliciesRoutes);
+  });
+
+  it('returns 403 when an explicit deviceId is outside the caller site allowlist', async () => {
+    setAuth([SITE_ALLOWED]);
+    mockSiteResolution([
+      { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+      { id: DEVICE_DENIED, siteId: SITE_DENIED },
+    ]);
+
+    const res = await app.request(`/software-policies/violations?deviceId=${DEVICE_DENIED}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+  });
+
+  it('narrows violation list reads to allowed sites for a restricted caller', async () => {
+    setAuth([SITE_ALLOWED]);
+    mockSiteResolution([
+      { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+      { id: DEVICE_DENIED, siteId: SITE_DENIED },
+    ]);
+    const whereArgs: unknown[] = [];
+    mockViolationsSelect([
+      {
+        device: { id: DEVICE_ALLOWED, hostname: 'allowed-device' },
+        compliance: { id: 'compliance-1', status: 'violation' },
+      },
+    ], whereArgs);
+
+    const res = await app.request('/software-policies/violations', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).total).toBe(1);
+    expect(whereArgs).toHaveLength(1);
+    const rendered = dumpSql(whereArgs[0]);
+    expect(rendered).toContain('devices.siteId');
+    expect(rendered).toContain(SITE_ALLOWED);
+    expect(rendered).not.toContain(SITE_DENIED);
+  });
+
+  it('keeps unrestricted violation reads unchanged with no site predicate', async () => {
+    const whereArgs: unknown[] = [];
+    mockViolationsSelect([
+      { device: { id: DEVICE_ALLOWED }, compliance: { id: 'compliance-1' } },
+      { device: { id: DEVICE_DENIED }, compliance: { id: 'compliance-2' } },
+    ], whereArgs);
+
+    const res = await app.request('/software-policies/violations', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).total).toBe(2);
+    expect(whereArgs).toHaveLength(1);
+    expect(dumpSql(whereArgs[0])).not.toContain('devices.siteId');
   });
 });

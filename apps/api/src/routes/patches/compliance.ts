@@ -6,7 +6,7 @@ import { requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   patches,
   devicePatches,
@@ -41,6 +41,7 @@ complianceRoutes.get(
 
     // Get devices scoped to org (or all accessible orgs for partner/system)
     const deviceConditions = [];
+    const perms = c.get('permissions') as UserPermissions | undefined;
     if (query.orgId) {
       deviceConditions.push(eq(devices.orgId, query.orgId));
     } else {
@@ -50,6 +51,22 @@ complianceRoutes.get(
       } else if (auth.scope !== 'system') {
         return c.json({ error: 'Organization context required' }, 400);
       }
+    }
+    if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          data: {
+            summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
+            compliancePercent: 100,
+            totalDevices: 0,
+            compliantDevices: 0,
+            criticalSummary: { total: 0, patched: 0, pending: 0 },
+            importantSummary: { total: 0, patched: 0, pending: 0 },
+            devicesNeedingPatches: []
+          }
+        });
+      }
+      deviceConditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const orgDevices = await db

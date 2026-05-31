@@ -12,6 +12,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { canAccessSite, type UserPermissions } from '../services/permissions';
 import {
   networkEventTypes,
   optionalQueryBooleanSchema,
@@ -73,6 +74,7 @@ networkChangeRoutes.get(
   zValidator('query', listNetworkChangesSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgResult = resolveOrgId(auth, query.orgId);
@@ -108,7 +110,22 @@ networkChangeRoutes.get(
           return c.json({ error: 'Site not found for this organization' }, 404);
         }
       }
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       conditions.push(eq(networkChangeEvents.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: {
+            limit: query.limit ?? 100,
+            offset: query.offset ?? 0,
+            total: 0
+          }
+        });
+      }
+      conditions.push(inArray(networkChangeEvents.siteId, perms.allowedSiteIds));
     }
 
     if (query.baselineId) {

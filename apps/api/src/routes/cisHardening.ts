@@ -412,6 +412,27 @@ cisHardeningRoutes.get(
     if (query.baselineId) conditions.push(eq(cisBaselineResults.baselineId, query.baselineId));
     if (query.osType) conditions.push(eq(cisBaselines.osType, query.osType));
 
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      if (permissions.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          summary: {
+            devicesAudited: 0,
+            averageScore: 100,
+            failingDevices: 0,
+            compliantDevices: 0,
+          },
+          pagination: {
+            limit: query.limit ?? 200,
+            offset: query.offset ?? 0,
+            total: 0,
+          },
+        });
+      }
+      conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
+    }
+
     const rankedResults = db
       .select({
         resultId: cisBaselineResults.id,
@@ -941,6 +962,27 @@ cisHardeningRoutes.get(
     if (query.approvalStatus) conditions.push(eq(cisRemediationActions.approvalStatus, query.approvalStatus));
     if (query.deviceId) conditions.push(eq(cisRemediationActions.deviceId, query.deviceId));
     if (query.baselineId) conditions.push(eq(cisRemediationActions.baselineId, query.baselineId));
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      if (query.deviceId) {
+        const device = await assertDeviceAccess(c, query.deviceId, auth);
+        if (!device || device === CIS_SITE_DENIED) {
+          return c.json({ error: 'Device not found or access denied' }, 403);
+        }
+      }
+      if (permissions.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: {
+            limit: query.limit ?? 100,
+            offset: query.offset ?? 0,
+            total: 0,
+          },
+        });
+      }
+      conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
+    }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = query.limit ?? 100;

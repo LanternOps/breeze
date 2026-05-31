@@ -22,7 +22,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   tunnelSessions: {},
-  tunnelAllowlists: {},
+  tunnelAllowlists: { orgId: 'tunnelAllowlists.orgId', siteId: 'tunnelAllowlists.siteId', createdAt: 'tunnelAllowlists.createdAt' },
   devices: {},
   users: {},
   remoteSessions: {},
@@ -31,6 +31,7 @@ vi.mock('../db/schema', () => ({
 // --- Auth middleware ---
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
@@ -38,6 +39,14 @@ vi.mock('../middleware/auth', () => ({
       user: { id: USER_ID, email: 'test@example.com' },
       canAccessOrg: (id: string) => id === ORG_ID,
     });
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: ORG_ID,
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -279,6 +288,17 @@ describe('Malformed UUID params and query strings', () => {
     vi.mocked(db.select).mockReturnValue(makeSelectChain([]) as any);
     const res = await testApp.request(`/tunnels/allowlist?siteId=${validSiteId}`, { method: 'GET' });
     expect(res.status).toBe(200);
+  });
+
+  it('returns 403 when GET /allowlist filters to a site outside the allowlist', async () => {
+    const deniedSiteId = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+    const res = await app.request(`/tunnels/allowlist?siteId=${deniedSiteId}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });
 

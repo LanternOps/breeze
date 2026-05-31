@@ -22,7 +22,18 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization',
+      ...(restrict ? { allowedSiteIds: restrict === '__empty__' ? [] : [restrict] } : {}),
+    });
+    return next();
+  }),
 }));
 
 import { db } from '../db';
@@ -50,11 +61,11 @@ function mockCountSelect(total: number) {
   } as any;
 }
 
-function mockDeviceLookup(found: boolean) {
+function mockDeviceLookup(found: boolean, siteId = 'site-allowed') {
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(found ? [{ id: 'device-123' }] : []),
+        limit: vi.fn().mockResolvedValue(found ? [{ id: 'device-123', siteId }] : []),
       }),
     }),
   } as any;
@@ -138,6 +149,28 @@ describe('changesRoutes', () => {
 
     const res = await app.request('/changes?deviceId=8f5f9b9e-53be-4554-bf9e-421f2f74d8bb');
     expect(res.status).toBe(404);
+  });
+
+  it('returns 403 when a site-restricted caller filters to an out-of-scope device', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(mockDeviceLookup(true, 'site-denied'));
+
+    const res = await app.request('/changes?deviceId=8f5f9b9e-53be-4554-bf9e-421f2f74d8bb', {
+      headers: { 'x-restrict-site': 'site-allowed' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+  });
+
+  it('returns an empty list when the site allowlist is empty', async () => {
+    const res = await app.request('/changes', {
+      headers: { 'x-restrict-site': '__empty__' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.changes).toEqual([]);
+    expect(body.total).toBe(0);
   });
 
   it('returns 400 for invalid cursor', async () => {

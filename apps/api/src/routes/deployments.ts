@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments, deploymentDevices, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -747,21 +747,34 @@ deploymentRoutes.get(
       return c.json({ error: 'Deployment not found' }, 404);
     }
 
-    const conditions = [eq(deploymentDevices.deploymentId, id)] as ReturnType<typeof eq>[];
+    const conditions: SQL[] = [eq(deploymentDevices.deploymentId, id)];
     if (query.status) {
       conditions.push(eq(deploymentDevices.status, query.status));
     }
     if (query.batchNumber) {
       conditions.push(eq(deploymentDevices.batchNumber, query.batchNumber));
     }
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds) {
+      if (userPerms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], total: 0, limit: query.limit, offset: query.offset });
+      }
+      conditions.push(inArray(devices.siteId, userPerms.allowedSiteIds));
+    }
 
     const whereCondition = and(...conditions);
 
     // Get total count
-    const [countResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(deploymentDevices)
-      .where(whereCondition);
+    const [countResult] = userPerms?.allowedSiteIds
+      ? await db
+        .select({ count: sql<number>`count(*)` })
+        .from(deploymentDevices)
+        .innerJoin(devices, eq(deploymentDevices.deviceId, devices.id))
+        .where(whereCondition)
+      : await db
+        .select({ count: sql<number>`count(*)` })
+        .from(deploymentDevices)
+        .where(whereCondition);
 
     const total = Number(countResult?.count ?? 0);
 

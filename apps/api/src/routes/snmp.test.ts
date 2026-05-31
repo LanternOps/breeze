@@ -38,8 +38,9 @@ vi.mock('../db/schema', () => ({
     isBuiltIn: 'isBuiltIn',
     createdAt: 'createdAt'
   },
-  snmpDevices: { id: 'id', orgId: 'orgId', lastPolled: 'lastPolled', lastStatus: 'lastStatus', isActive: 'isActive' },
-  snmpMetrics: { deviceId: 'deviceId', timestamp: 'timestamp' },
+  discoveredAssets: { id: 'discoveredAssets.id', siteId: 'discoveredAssets.siteId' },
+  snmpDevices: { id: 'id', orgId: 'orgId', assetId: 'assetId', templateId: 'templateId', name: 'name', lastPolled: 'lastPolled', lastStatus: 'lastStatus', isActive: 'isActive' },
+  snmpMetrics: { deviceId: 'deviceId', timestamp: 'timestamp', oid: 'oid', name: 'metricName', value: 'value' },
   snmpAlertThresholds: { deviceId: 'deviceId' }
 }));
 
@@ -56,7 +57,18 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
+    return next();
+  }),
   requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
     if (!scopes.includes(c.get('auth')?.scope)) {
       return c.json({ error: 'Insufficient scope' }, 403);
@@ -233,5 +245,43 @@ describe('snmp routes', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  it('narrows dashboard SNMP device reads through discovered asset sites', async () => {
+    const makeDashboardChain = (rows: unknown[], terminalWhere = false) => {
+      const chain: Record<string, any> = {};
+      chain.from = vi.fn(() => chain);
+      chain.innerJoin = vi.fn(() => chain);
+      chain.leftJoin = vi.fn(() => chain);
+      chain.where = terminalWhere ? vi.fn(async () => rows) : vi.fn(() => chain);
+      chain.groupBy = vi.fn(async () => rows);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(async () => rows);
+      return chain;
+    };
+
+    const deviceCount = makeDashboardChain([{ count: 1 }], true);
+    const templateCount = makeDashboardChain([{ count: 1 }], true);
+    const thresholdCount = makeDashboardChain([{ count: 0 }], true);
+    const statusCounts = makeDashboardChain([]);
+    const templateUsage = makeDashboardChain([]);
+    const recentPolls = makeDashboardChain([]);
+    const recentMetrics = makeDashboardChain([]);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(deviceCount as any)
+      .mockReturnValueOnce(templateCount as any)
+      .mockReturnValueOnce(thresholdCount as any)
+      .mockReturnValueOnce(statusCounts as any)
+      .mockReturnValueOnce(templateUsage as any)
+      .mockReturnValueOnce(recentPolls as any)
+      .mockReturnValueOnce(recentMetrics as any);
+
+    const res = await app.request('/snmp/dashboard', {
+      headers: { 'x-restrict-site': 'site-allowed' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(deviceCount.innerJoin).toHaveBeenCalled();
+    expect(recentMetrics.innerJoin).toHaveBeenCalledTimes(2);
   });
 });

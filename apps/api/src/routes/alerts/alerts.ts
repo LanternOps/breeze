@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   alertRules,
@@ -17,6 +17,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
+import { canAccessSite, type UserPermissions } from '../../services/permissions';
 
 export const alertsRoutes = new Hono();
 
@@ -29,11 +30,12 @@ alertsRoutes.get(
   zValidator('query', listAlertsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
     // Build conditions array
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: SQL[] = [];
 
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
@@ -75,6 +77,29 @@ alertsRoutes.get(
       conditions.push(eq(alerts.deviceId, query.deviceId));
     }
 
+    if (perms?.allowedSiteIds) {
+      if (query.deviceId && auth.orgId) {
+        const [device] = await db
+          .select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.id, query.deviceId), eq(devices.orgId, auth.orgId)))
+          .limit(1);
+
+        if (!device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId)) {
+          return c.json({ error: 'Device not found or access denied' }, 403);
+        }
+      }
+
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: { page, limit, total: 0 }
+        });
+      }
+
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+    }
+
     if (query.startDate) {
       conditions.push(gte(alerts.triggeredAt, new Date(query.startDate)));
     }
@@ -86,10 +111,12 @@ alertsRoutes.get(
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     // Get total count
-    const countResult = await db
+    const countQuery = db
       .select({ count: sql<number>`count(*)` })
-      .from(alerts)
-      .where(whereCondition);
+      .from(alerts);
+    const countResult = await (perms?.allowedSiteIds
+      ? countQuery.leftJoin(devices, eq(alerts.deviceId, devices.id)).where(whereCondition)
+      : countQuery.where(whereCondition));
     const total = Number(countResult[0]?.count ?? 0);
 
     // Get alerts with device and rule info

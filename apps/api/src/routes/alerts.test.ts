@@ -84,13 +84,19 @@ vi.mock('../db/schema', () => ({
   notificationChannels: {},
   escalationPolicies: {},
   alertNotifications: {},
-  devices: {},
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    hostname: 'devices.hostname',
+  },
   organizations: {},
   partners: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -99,6 +105,14 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
@@ -106,6 +120,15 @@ vi.mock('../middleware/auth', () => ({
     if (permissionGate.deny) {
       return c.json({ error: 'Permission denied' }, 403);
     }
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireMfa: vi.fn(() => (c: any, next: any) => {
@@ -132,6 +155,7 @@ describe('alert routes', () => {
       failedCount: 0
     });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      const restrict = c.req.header('x-restrict-site');
       c.set('auth', {
         scope: 'organization',
         orgId: '11111111-1111-1111-1111-111111111111',
@@ -140,6 +164,14 @@ describe('alert routes', () => {
         accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
         canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
       });
+      c.set('permissions', restrict ? {
+        permissions: [{ resource: 'devices', action: 'read' }],
+        partnerId: null,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+      } : undefined);
       return next();
     });
     app = new Hono();
@@ -234,6 +266,30 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.data[0].status).toBe('acknowledged');
       expect(body.data[0].severity).toBe('critical');
+    });
+
+    it('returns 403 when a site-restricted caller filters to an out-of-scope device', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '22222222-2222-2222-2222-222222222222',
+              siteId: '33333333-3333-3333-3333-333333333333'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/alerts?deviceId=22222222-2222-2222-2222-222222222222', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token',
+          'x-restrict-site': '11111111-1111-1111-1111-111111111111'
+        }
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
     });
   });
 

@@ -171,6 +171,17 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // helper (routes/remote/helpers.ts), which the file-local scanner can't see.
   'routes/remote/sessions.ts:POST /sessions',
   'routes/remote/transfers.ts:POST /transfers',
+  // ---- Org-wide AGGREGATE reads: return only counts/summaries (no
+  // per-device rows), so no cross-site device data is disclosed (returns
+  // re-verified 2026-05-31). NB: totals still span the org incl. other
+  // sites — site-scoping the aggregates themselves is a separate product call.
+  'routes/huntress.ts:GET /status',
+  'routes/metrics.ts:GET /',
+  'routes/metrics.ts:GET /trends',
+  'routes/reports/data.ts:GET /data/compliance',
+  'routes/sentinelOne.ts:GET /status',
+  'routes/softwarePolicies.ts:GET /compliance/overview',
+  'routes/updateRings.ts:GET /:id/compliance',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -207,39 +218,6 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
 // the ratchet one-directional — a fixed handler's baseline entry must be removed.
 // Full plan + triage guidance: docs/superpowers/plans/2026-05-31-site-scope-input-scanner.md
 const SITE_SCOPE_INPUT_BASELINE: ReadonlySet<string> = new Set<string>([
-  'routes/alerts/alerts.ts:GET /',
-  'routes/auditLogs.ts:GET /logs/:id',
-  'routes/changes.ts:GET /',
-  'routes/cisHardening.ts:GET /compliance',
-  'routes/cisHardening.ts:GET /remediations',
-  'routes/deployments.ts:GET /:id/devices',
-  'routes/discovery.ts:GET /assets',
-  'routes/groups.ts:GET /',
-  'routes/groups.ts:GET /:id/devices',
-  'routes/groups.ts:GET /:id/membership-log',
-  'routes/huntress.ts:GET /status',
-  'routes/metrics.ts:GET /',
-  'routes/metrics.ts:GET /trends',
-  'routes/networkBaselines.ts:GET /',
-  'routes/networkChanges.ts:GET /',
-  'routes/patches/compliance.ts:GET /compliance',
-  'routes/playbooks.ts:GET /executions',
-  'routes/playbooks.ts:GET /executions/:id',
-  'routes/policyManagement/compliance.ts:GET /:id/compliance',
-  'routes/psa.ts:GET /connections/:id/tickets',
-  'routes/psa.ts:GET /tickets',
-  'routes/remote/sessions.ts:GET /sessions',
-  'routes/remote/sessions.ts:GET /sessions/history',
-  'routes/remote/transfers.ts:GET /transfers',
-  'routes/reports/data.ts:GET /data/compliance',
-  'routes/sentinelOne.ts:GET /status',
-  'routes/snmp.ts:GET /dashboard',
-  'routes/softwareInventory.ts:GET /',
-  'routes/softwareInventory.ts:GET /:name/devices',
-  'routes/softwarePolicies.ts:GET /compliance/overview',
-  'routes/softwarePolicies.ts:GET /violations',
-  'routes/tunnels.ts:GET /allowlist',
-  'routes/updateRings.ts:GET /:id/compliance',
 ]);
 
 describe('site-scope coverage — input-sourced / list-style', () => {

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, asc, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, desc, asc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   configPolicyAssignments,
@@ -12,7 +12,7 @@ import {
   softwarePolicies,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 export const softwareInventoryRoutes = new Hono();
 const requireSoftwareInventoryRead = requirePermission(
@@ -190,6 +190,7 @@ async function ensureDefaultConfigPolicyLink(
 
 softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query', listQuerySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
+  const perms = c.get('permissions') as UserPermissions | undefined;
   const { search, vendor, limit, offset, sortBy, sortOrder } = c.req.valid('query');
 
   const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -199,6 +200,12 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   const { orgId } = orgResult;
 
   const conditions: SQL[] = [eq(devices.orgId, orgId)];
+  if (perms?.allowedSiteIds) {
+    if (perms.allowedSiteIds.length === 0) {
+      return c.json({ data: [], pagination: { total: 0, limit, offset } });
+    }
+    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+  }
 
   if (search) {
     const escaped = search.replace(/[%_\\]/g, '\\$&');
@@ -506,6 +513,7 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
 
 softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zValidator('query', deviceDrilldownQuerySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
+  const perms = c.get('permissions') as UserPermissions | undefined;
   const softwareName = decodeURIComponent(c.req.param('name'));
   const { vendor, limit, offset } = c.req.valid('query');
 
@@ -519,6 +527,15 @@ softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zVal
     eq(devices.orgId, orgId),
     sql`LOWER(${softwareInventory.name}) = LOWER(${softwareName})`,
   ];
+  if (perms?.allowedSiteIds) {
+    if (perms.allowedSiteIds.length === 0) {
+      return c.json({
+        data: [],
+        pagination: { total: 0, limit, offset },
+      });
+    }
+    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+  }
 
   if (vendor) {
     conditions.push(sql`LOWER(COALESCE(${softwareInventory.vendor}, '')) = LOWER(${vendor})`);

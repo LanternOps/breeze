@@ -53,7 +53,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   auditLogs: { orgId: 'orgId', actorId: 'actorId', timestamp: 'timestamp', id: 'id' },
   users: { id: 'id', name: 'name' },
-  devices: { agentId: 'agentId', hostname: 'hostname', displayName: 'displayName' }
+  devices: { agentId: 'agentId', hostname: 'hostname', displayName: 'displayName', siteId: 'siteId' }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -67,7 +67,18 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'audit', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -148,6 +159,45 @@ describe('audit log routes', () => {
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error).toBe('Audit log not found');
+    });
+
+    it('returns 403 for an agent-attributed log whose device site is outside the allowlist', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{
+                log: {
+                  id: 'audit-001',
+                  timestamp: new Date('2026-05-02T12:00:00Z'),
+                  actorId: '11111111-1111-1111-1111-111111111111',
+                  actorEmail: null,
+                  actorType: 'agent',
+                  action: 'device.command',
+                  resourceType: 'device',
+                  resourceId: '22222222-2222-2222-2222-222222222222',
+                  resourceName: 'Device',
+                  result: 'success',
+                  ipAddress: null,
+                  userAgent: null,
+                  initiatedBy: 'agent',
+                  details: { rawActorId: 'agent-1' }
+                },
+                userName: null,
+                deviceHostname: 'device-1',
+                deviceDisplayName: null,
+                deviceSiteId: 'site-denied'
+              }]),
+            }),
+          }),
+        }),
+      } as never);
+
+      const res = await app.request('/audit-logs/logs/audit-001', {
+        headers: { 'x-restrict-site': 'site-allowed' },
+      });
+
+      expect(res.status).toBe(403);
     });
   });
 

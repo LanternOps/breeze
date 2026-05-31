@@ -55,6 +55,9 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const allowedSiteIds = c.req.header('x-restrict-site')
+      ? (c.req.header('x-restrict-site') === '__empty__' ? [] : [c.req.header('x-restrict-site') as string])
+      : undefined;
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -64,6 +67,14 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
+    c.set('permissions', allowedSiteIds ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-111',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds,
+    } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -148,6 +159,28 @@ describe('Network baselines — POST / site-scope enforcement', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/baselines', networkBaselineRoutes);
+  });
+
+  it('returns 403 on GET / when a site-restricted caller filters to an out-of-scope site', async () => {
+    rigSiteLookup({ id: FORBIDDEN_SITE_ID });
+
+    const res = await app.request(`/baselines?siteId=${FORBIDDEN_SITE_ID}`, {
+      headers: { 'x-restrict-site': SITE_ID },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty GET / list when the site allowlist is empty', async () => {
+    const res = await app.request('/baselines', {
+      headers: { 'x-restrict-site': '__empty__' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([]);
+    expect(body.pagination.total).toBe(0);
   });
 
   it('returns 403 when a site-restricted caller targets a site outside the allowlist', async () => {

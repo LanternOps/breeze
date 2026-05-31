@@ -115,6 +115,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -122,6 +123,14 @@ vi.mock('../middleware/auth', () => ({
       partnerId: null,
       canAccessOrg: (orgId: string) => orgId === '00000000-0000-0000-0000-000000000000'
     });
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '00000000-0000-0000-0000-000000000000',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -149,6 +158,26 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.nodes).toEqual([]);
       expect(body.edges).toEqual([]);
+    });
+  });
+
+  describe('GET /discovery/assets site-scope', () => {
+    it('returns 403 when a site-restricted caller filters to an out-of-scope site', async () => {
+      const res = await app.request('/discovery/assets?siteId=00000000-0000-0000-0000-000000000099', {
+        headers: { 'x-restrict-site': '00000000-0000-0000-0000-000000000001' },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns an empty asset list when the site allowlist is empty', async () => {
+      const res = await app.request('/discovery/assets', {
+        headers: { 'x-restrict-site': '__empty__' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
     });
   });
 

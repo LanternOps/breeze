@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -219,6 +219,7 @@ groupRoutes.get(
   zValidator('query', listGroupsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
@@ -226,9 +227,20 @@ groupRoutes.get(
       return c.json({ data: [], total: 0 });
     }
 
-    const conditions = [] as ReturnType<typeof eq>[];
+    if (query.siteId && perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+
+    const conditions: SQL[] = [];
     if (orgIds) {
       conditions.push(inArray(deviceGroups.orgId, orgIds));
+    }
+    if (perms?.allowedSiteIds) {
+      conditions.push(
+        perms.allowedSiteIds.length > 0
+          ? (or(isNull(deviceGroups.siteId), inArray(deviceGroups.siteId, perms.allowedSiteIds)) as SQL)
+          : isNull(deviceGroups.siteId)
+      );
     }
     if (query.siteId) {
       conditions.push(eq(deviceGroups.siteId, query.siteId));
@@ -249,6 +261,11 @@ groupRoutes.get(
       .orderBy(desc(deviceGroups.createdAt));
 
     let results = groups;
+    if (perms?.allowedSiteIds) {
+      results = results.filter((group) =>
+        group.siteId === null || (typeof group.siteId === 'string' && canAccessSite(perms, group.siteId))
+      );
+    }
     if (query.search) {
       const term = query.search.toLowerCase();
       results = results.filter((group) => group.name.toLowerCase().includes(term));
@@ -257,14 +274,31 @@ groupRoutes.get(
     // Get device counts for all groups
     const groupIds = results.map((g) => g.id);
     const countRows = groupIds.length
-      ? await db
-          .select({
-            groupId: deviceGroupMemberships.groupId,
-            count: sql<number>`count(*)`
-          })
-          .from(deviceGroupMemberships)
-          .where(inArray(deviceGroupMemberships.groupId, groupIds))
-          .groupBy(deviceGroupMemberships.groupId)
+      ? perms?.allowedSiteIds
+        ? perms.allowedSiteIds.length > 0
+          ? await db
+              .select({
+                groupId: deviceGroupMemberships.groupId,
+                count: sql<number>`count(*)`
+              })
+              .from(deviceGroupMemberships)
+              .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+              .where(
+                and(
+                  inArray(deviceGroupMemberships.groupId, groupIds),
+                  inArray(devices.siteId, perms.allowedSiteIds)
+                )
+              )
+              .groupBy(deviceGroupMemberships.groupId)
+          : []
+        : await db
+            .select({
+              groupId: deviceGroupMemberships.groupId,
+              count: sql<number>`count(*)`
+            })
+            .from(deviceGroupMemberships)
+            .where(inArray(deviceGroupMemberships.groupId, groupIds))
+            .groupBy(deviceGroupMemberships.groupId)
       : [];
 
     const countMap = new Map(countRows.map((row) => [row.groupId, Number(row.count)]));
@@ -276,16 +310,36 @@ groupRoutes.get(
     // Optionally fetch device memberships
     let membershipMap: Map<string, string[]> | null = null;
     if (query.includeMemberships === 'true' && groupIds.length > 0) {
-      const membershipRows = await db
-        .select({
-          groupId: deviceGroupMemberships.groupId,
-          deviceId: deviceGroupMemberships.deviceId
-        })
-        .from(deviceGroupMemberships)
-        .where(inArray(deviceGroupMemberships.groupId, groupIds));
+      const membershipRows = perms?.allowedSiteIds
+        ? perms.allowedSiteIds.length > 0
+          ? await db
+              .select({
+                groupId: deviceGroupMemberships.groupId,
+                deviceId: deviceGroupMemberships.deviceId,
+                siteId: devices.siteId
+              })
+              .from(deviceGroupMemberships)
+              .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+              .where(
+                and(
+                  inArray(deviceGroupMemberships.groupId, groupIds),
+                  inArray(devices.siteId, perms.allowedSiteIds)
+                )
+              )
+          : []
+        : await db
+            .select({
+              groupId: deviceGroupMemberships.groupId,
+              deviceId: deviceGroupMemberships.deviceId
+            })
+            .from(deviceGroupMemberships)
+            .where(inArray(deviceGroupMemberships.groupId, groupIds));
 
       membershipMap = new Map<string, string[]>();
       for (const row of membershipRows) {
+        if (perms?.allowedSiteIds && !canAccessSite(perms, (row as { siteId?: string }).siteId ?? '')) {
+          continue;
+        }
         const existing = membershipMap.get(row.groupId) ?? [];
         existing.push(row.deviceId);
         membershipMap.set(row.groupId, existing);
@@ -586,11 +640,21 @@ groupRoutes.get(
   zValidator('param', groupIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
 
     const group = await getGroupWithAccess(id, auth);
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
+    }
+
+    if (perms?.allowedSiteIds && perms.allowedSiteIds.length === 0) {
+      return c.json({ data: [], total: 0 });
+    }
+
+    const conditions: SQL[] = [eq(deviceGroupMemberships.groupId, id)];
+    if (perms?.allowedSiteIds) {
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const memberships = await db
@@ -599,6 +663,7 @@ groupRoutes.get(
         isPinned: deviceGroupMemberships.isPinned,
         addedAt: deviceGroupMemberships.addedAt,
         addedBy: deviceGroupMemberships.addedBy,
+        siteId: devices.siteId,
         hostname: devices.hostname,
         displayName: devices.displayName,
         status: devices.status,
@@ -606,10 +671,14 @@ groupRoutes.get(
       })
       .from(deviceGroupMemberships)
       .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
-      .where(eq(deviceGroupMemberships.groupId, id))
+      .where(and(...conditions))
       .orderBy(desc(deviceGroupMemberships.addedAt));
 
-    const data = memberships.map((m) => ({
+    const scopedMemberships = perms?.allowedSiteIds
+      ? memberships.filter((m) => typeof m.siteId === 'string' && canAccessSite(perms, m.siteId))
+      : memberships;
+
+    const data = scopedMemberships.map((m) => ({
       deviceId: m.deviceId,
       hostname: m.hostname,
       displayName: m.displayName,
@@ -985,6 +1054,7 @@ groupRoutes.get(
   zValidator('query', membershipLogQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
     const query = c.req.valid('query');
 
@@ -993,8 +1063,21 @@ groupRoutes.get(
       return c.json({ error: 'Group not found' }, 404);
     }
 
+    if (query.deviceId && perms?.allowedSiteIds && !(await canAccessDeviceSite(c, query.deviceId))) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+
+    if (perms?.allowedSiteIds && perms.allowedSiteIds.length === 0) {
+      return c.json({
+        data: [],
+        total: 0,
+        limit: query.limit,
+        offset: query.offset
+      });
+    }
+
     // Build conditions
-    const conditions = [eq(groupMembershipLog.groupId, id)];
+    const conditions: SQL[] = [eq(groupMembershipLog.groupId, id)];
     if (query.deviceId) {
       conditions.push(eq(groupMembershipLog.deviceId, query.deviceId));
     }
@@ -1003,33 +1086,65 @@ groupRoutes.get(
     }
 
     // Get total count
-    const [countResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(groupMembershipLog)
-      .where(and(...conditions));
+    const [countResult] = perms?.allowedSiteIds
+      ? await db
+          .select({ count: sql<number>`count(*)` })
+          .from(groupMembershipLog)
+          .innerJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
+          .where(and(...conditions, inArray(devices.siteId, perms.allowedSiteIds)))
+      : await db
+          .select({ count: sql<number>`count(*)` })
+          .from(groupMembershipLog)
+          .where(and(...conditions));
 
     const total = Number(countResult?.count ?? 0);
 
     // Get log entries with device info
-    const logEntries = await db
-      .select({
-        id: groupMembershipLog.id,
-        groupId: groupMembershipLog.groupId,
-        deviceId: groupMembershipLog.deviceId,
-        action: groupMembershipLog.action,
-        reason: groupMembershipLog.reason,
-        createdAt: groupMembershipLog.createdAt,
-        hostname: devices.hostname,
-        displayName: devices.displayName
-      })
-      .from(groupMembershipLog)
-      .leftJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
-      .where(and(...conditions))
-      .orderBy(desc(groupMembershipLog.createdAt))
-      .limit(query.limit)
-      .offset(query.offset);
+    const logEntries = perms?.allowedSiteIds
+      ? await db
+          .select({
+            id: groupMembershipLog.id,
+            groupId: groupMembershipLog.groupId,
+            deviceId: groupMembershipLog.deviceId,
+            action: groupMembershipLog.action,
+            reason: groupMembershipLog.reason,
+            createdAt: groupMembershipLog.createdAt,
+            siteId: devices.siteId,
+            hostname: devices.hostname,
+            displayName: devices.displayName
+          })
+          .from(groupMembershipLog)
+          .innerJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
+          .where(and(...conditions, inArray(devices.siteId, perms.allowedSiteIds)))
+          .orderBy(desc(groupMembershipLog.createdAt))
+          .limit(query.limit)
+          .offset(query.offset)
+      : await db
+          .select({
+            id: groupMembershipLog.id,
+            groupId: groupMembershipLog.groupId,
+            deviceId: groupMembershipLog.deviceId,
+            action: groupMembershipLog.action,
+            reason: groupMembershipLog.reason,
+            createdAt: groupMembershipLog.createdAt,
+            hostname: devices.hostname,
+            displayName: devices.displayName
+          })
+          .from(groupMembershipLog)
+          .leftJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
+          .where(and(...conditions))
+          .orderBy(desc(groupMembershipLog.createdAt))
+          .limit(query.limit)
+          .offset(query.offset);
 
-    const data = logEntries.map((entry) => ({
+    const scopedLogEntries = perms?.allowedSiteIds
+      ? logEntries.filter((entry) => {
+          const siteId = (entry as { siteId?: string }).siteId;
+          return typeof siteId === 'string' && canAccessSite(perms, siteId);
+        })
+      : logEntries;
+
+    const data = scopedLogEntries.map((entry) => ({
       id: entry.id,
       groupId: entry.groupId,
       deviceId: entry.deviceId,

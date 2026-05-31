@@ -9,6 +9,7 @@ const ORG_ID_2 = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
 const SCRIPT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const AUTOMATION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const SITE_ALLOWED = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 vi.mock('../services', () => ({}));
 
@@ -98,7 +99,8 @@ vi.mock('../db/schema', () => ({
     hostname: 'hostname',
     status: 'status',
     osType: 'osType',
-    orgId: 'orgId'
+    orgId: 'orgId',
+    siteId: 'siteId'
   },
   automations: {
     id: 'id',
@@ -125,6 +127,8 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
+    const restrictedSite = c.req.header('x-restrict-site');
+    if (restrictedSite) c.set('permissions', { allowedSiteIds: [restrictedSite] });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -152,6 +156,12 @@ function makePolicy(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function conditionText(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) =>
+    typeof nested === 'function' ? '[function]' : nested
+  );
+}
+
 
 describe('policyManagement routes', () => {
   let app: Hono;
@@ -167,6 +177,8 @@ describe('policyManagement routes', () => {
         accessibleOrgIds: [ORG_ID],
         canAccessOrg: (orgId: string) => orgId === ORG_ID
       });
+      const restrictedSite = c.req.header('x-restrict-site');
+      if (restrictedSite) c.set('permissions', { allowedSiteIds: [restrictedSite] });
       return next();
     });
     app = new Hono();
@@ -235,6 +247,144 @@ describe('policyManagement routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.overall).toBeDefined();
       expect(body.policyName).toBe('Test Policy');
+    });
+
+    it('narrows legacy compliance rows and count to devices in the caller site allowlist', async () => {
+      const policy = makePolicy();
+      let countWhere: unknown;
+      let rowsWhere: unknown;
+
+      vi.mocked(db.select)
+        // getPolicyWithOrgCheck
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([policy])
+            })
+          })
+        } as any)
+        // count query with device join
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                countWhere = condition;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          })
+        } as any)
+        // compliance rows
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                rowsWhere = condition;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([])
+                    })
+                  })
+                };
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/compliance`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED }
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(countWhere)).toContain('siteId');
+      expect(conditionText(countWhere)).toContain(SITE_ALLOWED);
+      expect(conditionText(rowsWhere)).toContain('siteId');
+      expect(conditionText(rowsWhere)).toContain(SITE_ALLOWED);
+    });
+
+    it('narrows configuration policy compliance rows and count to devices in the caller site allowlist', async () => {
+      let countWhere: unknown;
+      let rowsWhere: unknown;
+
+      vi.mocked(db.select)
+        // getPolicyWithOrgCheck returns no legacy policy
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // configuration policy lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: POLICY_ID,
+                orgId: ORG_ID,
+                name: 'Configuration Policy',
+                status: 'active'
+              }])
+            })
+          })
+        } as any)
+        // feature links
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: 'feature-link-1' }])
+          })
+        } as any)
+        // count query with device join
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                countWhere = condition;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          })
+        } as any)
+        // compliance rows
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                rowsWhere = condition;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([])
+                    })
+                  })
+                };
+              })
+            })
+          })
+        } as any)
+        // getConfigPolicyComplianceRuleInfo
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([])
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/compliance`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED }
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(countWhere)).toContain('siteId');
+      expect(conditionText(countWhere)).toContain(SITE_ALLOWED);
+      expect(conditionText(rowsWhere)).toContain('siteId');
+      expect(conditionText(rowsWhere)).toContain(SITE_ALLOWED);
     });
 
     it('should return 404 for non-existent policy', async () => {

@@ -81,6 +81,15 @@ vi.mock('../middleware/auth', () => ({
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
       orgCondition: () => null,
     });
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -144,10 +153,48 @@ describe('networkChange routes', () => {
         canAccessOrg: (orgId: string) => orgId === ORG_ID,
         orgCondition: () => null,
       });
+      const restrict = c.req.header('x-restrict-site');
+      c.set('permissions', restrict ? {
+        permissions: [{ resource: 'devices', action: 'read' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+      } : undefined);
       return next();
     });
     app = new Hono();
     app.route('/changes', networkChangeRoutes);
+  });
+
+  describe('GET /changes site-scope', () => {
+    it('returns 403 when a site-restricted caller filters to an out-of-scope site', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: SITE_ID }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/changes?siteId=${SITE_ID}`, {
+        headers: { 'x-restrict-site': '99999999-9999-4999-8999-999999999999' },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns an empty list when the site allowlist is empty', async () => {
+      const res = await app.request('/changes', {
+        headers: { 'x-restrict-site': '__empty__' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
+    });
   });
 
   // ----------------------------------------------------------------

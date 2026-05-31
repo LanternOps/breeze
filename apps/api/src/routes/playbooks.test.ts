@@ -18,6 +18,7 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     hostname: 'devices.hostname',
+    siteId: 'devices.siteId',
   },
   playbookDefinitions: {
     id: 'playbookDefinitions.id',
@@ -58,6 +59,8 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: () => true,
     });
+    const restrictedSite = c.req.header('x-restrict-site');
+    if (restrictedSite) c.set('permissions', { allowedSiteIds: [restrictedSite] });
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
@@ -75,6 +78,14 @@ import { checkPlaybookRequiredPermissions } from '../services/playbookPermission
 const PLAYBOOK_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const EXECUTION_ID = '33333333-3333-3333-3333-333333333333';
+const SITE_ALLOWED = '44444444-4444-4444-8444-444444444444';
+const SITE_FORBIDDEN = '55555555-5555-4555-8555-555555555555';
+
+function conditionText(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) =>
+    typeof nested === 'function' ? '[function]' : nested
+  );
+}
 
 describe('playbook routes', () => {
   let app: Hono;
@@ -487,6 +498,84 @@ describe('playbook routes', () => {
     });
 
     expect(res.status).toBe(404);
+  });
+
+  it('returns 403 when listing executions for an explicit out-of-scope deviceId', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: DEVICE_ID,
+            orgId: '11111111-1111-1111-1111-111111111111',
+            siteId: SITE_FORBIDDEN,
+          }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions?deviceId=${DEVICE_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Device not found or access denied');
+  });
+
+  it('narrows execution history to devices in the caller site allowlist', async () => {
+    let listWhere: unknown;
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn((condition: unknown) => {
+              listWhere = condition;
+              return {
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([]),
+                }),
+              };
+            }),
+          }),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/playbooks/executions?limit=10', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+    });
+
+    expect(res.status).toBe(200);
+    expect(conditionText(listWhere)).toContain('devices.siteId');
+    expect(conditionText(listWhere)).toContain(SITE_ALLOWED);
+  });
+
+  it('returns 403 when execution details belong to an out-of-scope device', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                execution: { id: EXECUTION_ID, status: 'completed' },
+                playbook: { id: PLAYBOOK_ID, name: 'Disk Cleanup', category: 'disk' },
+                device: { id: DEVICE_ID, hostname: 'server-01', siteId: SITE_FORBIDDEN },
+              }]),
+            }),
+          }),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/playbooks/executions/${EXECUTION_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+    });
+
+    expect(res.status).toBe(403);
   });
 
   it('lists playbook execution history', async () => {

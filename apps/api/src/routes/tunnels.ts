@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, desc, inArray } from 'drizzle-orm';
+import { and, eq, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -329,6 +329,7 @@ tunnelRoutes.get(
   zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }
@@ -336,7 +337,15 @@ tunnelRoutes.get(
     const { siteId } = c.req.valid('query');
     const conditions: ReturnType<typeof eq>[] = [eq(tunnelAllowlists.orgId, auth.orgId)];
     if (siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       conditions.push(eq(tunnelAllowlists.siteId, siteId));
+    } else if (perms?.allowedSiteIds) {
+      conditions.push(or(
+        isNull(tunnelAllowlists.siteId),
+        inArray(tunnelAllowlists.siteId, perms.allowedSiteIds)
+      )! as ReturnType<typeof eq>);
     }
 
     const rules = await db

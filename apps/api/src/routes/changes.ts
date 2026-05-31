@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, lt, lte, or, sql, SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, lte, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceChangeLog, devices } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 const changeTypeValues = [
   'software',
@@ -48,6 +48,7 @@ changesRoutes.get(
   zValidator('query', listChangesQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const conditions: SQL[] = [];
 
@@ -64,7 +65,7 @@ changesRoutes.get(
       }
 
       const [device] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
@@ -73,7 +74,24 @@ changesRoutes.get(
         return c.json({ error: 'Device not found' }, 404);
       }
 
+      if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+
       conditions.push(eq(deviceChangeLog.deviceId, query.deviceId));
+    }
+
+    if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          changes: [],
+          total: 0,
+          showing: 0,
+          hasMore: false,
+          nextCursor: null
+        });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     if (query.startTime) {
@@ -145,10 +163,16 @@ changesRoutes.get(
         .where(whereClause)
         .orderBy(desc(deviceChangeLog.timestamp), desc(deviceChangeLog.id))
         .limit(fetchLimit),
-      db
-        .select({ total: sql<number>`count(*)::int` })
-        .from(deviceChangeLog)
-        .where(whereClause)
+      perms?.allowedSiteIds
+        ? db
+            .select({ total: sql<number>`count(*)::int` })
+            .from(deviceChangeLog)
+            .innerJoin(devices, eq(deviceChangeLog.deviceId, devices.id))
+            .where(whereClause)
+        : db
+            .select({ total: sql<number>`count(*)::int` })
+            .from(deviceChangeLog)
+            .where(whereClause)
     ]);
 
     const page = changes.slice(0, limit);

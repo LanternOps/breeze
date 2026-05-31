@@ -25,12 +25,14 @@ const {
   revokeViewerSession,
   checkRemoteAccess,
   sendCommandToAgent,
+  getPagination,
 } = vi.hoisted(() => ({
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck: vi.fn(),
   revokeViewerSession: vi.fn(() => Promise.resolve()),
   checkRemoteAccess: vi.fn(() => Promise.resolve({ allowed: true })),
   sendCommandToAgent: vi.fn(() => true),
+  getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
 }));
 
 vi.mock('../../db', () => ({
@@ -46,18 +48,26 @@ vi.mock('../../db/schema', () => ({
     status: 'remoteSessions.status',
     deviceId: 'remoteSessions.deviceId',
     userId: 'remoteSessions.userId',
+    type: 'remoteSessions.type',
     webrtcOffer: 'remoteSessions.webrtcOffer',
     webrtcAnswer: 'remoteSessions.webrtcAnswer',
+    startedAt: 'remoteSessions.startedAt',
     endedAt: 'remoteSessions.endedAt',
+    durationSeconds: 'remoteSessions.durationSeconds',
+    bytesTransferred: 'remoteSessions.bytesTransferred',
+    recordingUrl: 'remoteSessions.recordingUrl',
+    createdAt: 'remoteSessions.createdAt',
   },
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
     agentId: 'devices.agentId',
+    hostname: 'devices.hostname',
+    osType: 'devices.osType',
   },
   deviceHardware: { deviceId: 'deviceHardware.deviceId', gpuModel: 'deviceHardware.gpuModel' },
-  users: {},
+  users: { id: 'users.id', name: 'users.name', email: 'users.email' },
 }));
 
 // requireScope seeds auth + permissions; x-restrict-site opts into a single-site allowlist.
@@ -91,7 +101,7 @@ vi.mock('../../services/permissions', () => ({
 }));
 
 vi.mock('./helpers', () => ({
-  getPagination: vi.fn(),
+  getPagination,
   getIceServers: vi.fn(() => []),
   getDeviceWithOrgCheck,
   getSessionWithOrgCheck,
@@ -136,6 +146,35 @@ const DEVICE_IN_ALLOWED = '11111111-1111-4111-8111-111111111111';
 const DEVICE_IN_FORBIDDEN = '22222222-2222-4222-8222-222222222222';
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+function conditionContainsSiteScope(condition: unknown, siteId = ALLOWED_SITE): boolean {
+  if (!condition || typeof condition !== 'object') return false;
+  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks;
+  if (!Array.isArray(chunks)) return false;
+  const hasSiteColumn = chunks.some((chunk) => chunk === 'devices.siteId' || conditionContainsSiteScope(chunk, siteId));
+  const hasAllowedSites = chunks.some((chunk) => Array.isArray(chunk) && chunk.includes(siteId));
+  return hasSiteColumn && (hasAllowedSites || chunks.some((chunk) => conditionContainsSiteScope(chunk, siteId)));
+}
+
+function makeRemoteSessionRow(deviceId: string) {
+  return {
+    id: SESSION_ID,
+    deviceId,
+    userId: 'user-1',
+    type: 'desktop',
+    status: 'active',
+    startedAt: new Date('2026-01-01T00:00:00Z'),
+    endedAt: null,
+    durationSeconds: null,
+    bytesTransferred: null,
+    recordingUrl: null,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    deviceHostname: 'host-1',
+    deviceOsType: 'linux',
+    userName: 'Test User',
+    userEmail: 'test@example.com',
+  };
+}
+
 // DELETE /sessions/stale, no deviceId: first select resolves org devices (id+siteId),
 // then select of stale session ids, then update().returning().
 function rigStaleNarrowing(orgDevices: Array<{ id: string; siteId: string | null }>, staleIds: string[]) {
@@ -175,12 +214,260 @@ describe('remote sessions — site-scope enforcement', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
     getDeviceWithOrgCheck.mockReset();
     getSessionWithOrgCheck.mockReset();
+    getPagination.mockReturnValue({ page: 1, limit: 50, offset: 0 });
     checkRemoteAccess.mockReturnValue(Promise.resolve({ allowed: true }));
     sendCommandToAgent.mockReturnValue(true);
     app = new Hono();
     app.route('/remote', sessionRoutes);
+  });
+
+  describe('GET /sessions', () => {
+    function rigListSessions(
+      orgDevices: Array<{ id: string; siteId: string | null }> | null,
+      rows: Array<ReturnType<typeof makeRemoteSessionRow>>,
+    ) {
+      if (orgDevices) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(orgDevices) }),
+        } as never);
+      }
+
+      const countWhere = vi.fn((condition: unknown) => {
+        expect(conditionContainsSiteScope(condition)).toBe(true);
+        return Promise.resolve([{ count: rows.length }]);
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: countWhere }),
+        }),
+      } as never);
+
+      const listWhere = vi.fn((condition: unknown) => {
+        expect(conditionContainsSiteScope(condition)).toBe(true);
+        return {
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }),
+          }),
+        };
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({ where: listWhere }),
+          }),
+        }),
+      } as never);
+      return { countWhere, listWhere };
+    }
+
+    function rigListSessionsUnrestricted(rows: Array<ReturnType<typeof makeRemoteSessionRow>>) {
+      const countWhere = vi.fn().mockResolvedValue([{ count: rows.length }]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: countWhere }),
+        }),
+      } as never);
+
+      const listWhere = vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }),
+        }),
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({ where: listWhere }),
+          }),
+        }),
+      } as never);
+      return { countWhere, listWhere };
+    }
+
+    it('returns 403 when a site-restricted caller filters by an out-of-scope deviceId', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE },
+            { id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE },
+          ]),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions?deviceId=${DEVICE_IN_FORBIDDEN}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    });
+
+    it('narrows the active session list to the caller allowed sites', async () => {
+      const { countWhere, listWhere } = rigListSessions(
+        [
+          { id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE },
+          { id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE },
+        ],
+        [makeRemoteSessionRow(DEVICE_IN_ALLOWED)]
+      );
+
+      const res = await app.request('/remote/sessions', {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceId).toBe(DEVICE_IN_ALLOWED);
+      expect(body.pagination.total).toBe(1);
+      expect(countWhere).toHaveBeenCalledTimes(1);
+      expect(listWhere).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not narrow the active session list for unrestricted callers', async () => {
+      const { countWhere, listWhere } = rigListSessionsUnrestricted([
+        makeRemoteSessionRow(DEVICE_IN_ALLOWED),
+        makeRemoteSessionRow(DEVICE_IN_FORBIDDEN),
+      ]);
+
+      const res = await app.request('/remote/sessions', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      expect(body.pagination.total).toBe(2);
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(countWhere).toHaveBeenCalledTimes(1);
+      expect(listWhere).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('GET /sessions/history', () => {
+    function rigSessionHistory(
+      orgDevices: Array<{ id: string; siteId: string | null }> | null,
+      rows: Array<ReturnType<typeof makeRemoteSessionRow>>,
+    ) {
+      if (orgDevices) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(orgDevices) }),
+        } as never);
+      }
+
+      const statsWhere = vi.fn((condition: unknown) => {
+        expect(conditionContainsSiteScope(condition)).toBe(true);
+        return Promise.resolve([{ count: rows.length, totalDuration: 90, avgDuration: 45 }]);
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: statsWhere }),
+        }),
+      } as never);
+
+      const listWhere = vi.fn((condition: unknown) => {
+        expect(conditionContainsSiteScope(condition)).toBe(true);
+        return {
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }),
+          }),
+        };
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({ where: listWhere }),
+          }),
+        }),
+      } as never);
+      return { statsWhere, listWhere };
+    }
+
+    function rigSessionHistoryUnrestricted(rows: Array<ReturnType<typeof makeRemoteSessionRow>>) {
+      const statsWhere = vi.fn().mockResolvedValue([{ count: rows.length, totalDuration: 90, avgDuration: 45 }]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: statsWhere }),
+        }),
+      } as never);
+
+      const listWhere = vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }),
+        }),
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({ where: listWhere }),
+          }),
+        }),
+      } as never);
+      return { statsWhere, listWhere };
+    }
+
+    it('returns 403 when a site-restricted caller filters history by an out-of-scope deviceId', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE },
+            { id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE },
+          ]),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/history?deviceId=${DEVICE_IN_FORBIDDEN}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    });
+
+    it('narrows session history and stats to the caller allowed sites', async () => {
+      const row = { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected' };
+      const { statsWhere, listWhere } = rigSessionHistory(
+        [
+          { id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE },
+          { id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE },
+        ],
+        [row]
+      );
+
+      const res = await app.request('/remote/sessions/history', {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceId).toBe(DEVICE_IN_ALLOWED);
+      expect(body.stats.totalSessions).toBe(1);
+      expect(statsWhere).toHaveBeenCalledTimes(1);
+      expect(listWhere).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not narrow session history for unrestricted callers', async () => {
+      const { statsWhere, listWhere } = rigSessionHistoryUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected' },
+        { ...makeRemoteSessionRow(DEVICE_IN_FORBIDDEN), status: 'failed' },
+      ]);
+
+      const res = await app.request('/remote/sessions/history', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      expect(body.stats.totalSessions).toBe(2);
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(statsWhere).toHaveBeenCalledTimes(1);
+      expect(listWhere).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('DELETE /sessions/stale', () => {

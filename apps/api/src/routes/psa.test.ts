@@ -7,7 +7,7 @@ vi.mock('../services', () => ({}));
 const { permissionGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
   function chainMock(resolvedValue: unknown = []) {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
     }
     return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -61,6 +61,10 @@ vi.mock('../db/schema', () => ({
     updatedAt: 'psa_ticket_mappings.updated_at',
     createdAt: 'psa_ticket_mappings.created_at',
   },
+  devices: {
+    id: 'devices.id',
+    siteId: 'devices.site_id',
+  },
   organizations: {
     id: 'id',
     partnerId: 'partnerId'
@@ -105,6 +109,15 @@ vi.mock('../middleware/auth', () => ({
   }),
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     if (permissionGate.deny) return c.json({ error: 'Permission denied' }, 403);
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'organizations', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -338,6 +351,34 @@ describe.skip('psa routes', () => {
     const body = await res.json();
     expect(Array.isArray(body.data)).toBe(true);
     expect(body.pagination).toBeDefined();
+  });
+
+  it('narrows PSA ticket lists through mapped device sites for site-restricted callers', async () => {
+    const makeTicketChain = (rows: unknown[]) => {
+      const chain: Record<string, any> = {};
+      chain.innerJoin = vi.fn(() => chain);
+      chain.leftJoin = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      chain.offset = vi.fn(async () => rows);
+      chain.from = vi.fn(() => chain);
+      return chain;
+    };
+    const rowsChain = makeTicketChain([]);
+    const countChain = makeTicketChain([{ count: 0 }]);
+    selectMock
+      .mockReturnValueOnce(rowsChain as never)
+      .mockReturnValueOnce(countChain as never);
+
+    const res = await app.request('/psa/tickets?page=1&limit=10', {
+      method: 'GET',
+      headers: { 'x-restrict-site': 'site-allowed' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(rowsChain.leftJoin).toHaveBeenCalled();
+    expect(countChain.leftJoin).toHaveBeenCalled();
   });
 
   it('should deny partner access when organization is not linked', async () => {

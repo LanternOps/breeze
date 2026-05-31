@@ -1,11 +1,16 @@
 # Site-scope baseline triage (the 93 input-sourced offenders)
 
-**Status:** TRIAGED — batch 1 done (8 high-sev mutations fixed; 34 exempts vetted). 44 reads + 7 aggregates remain in the baseline.
+**Status:** ✅ COMPLETE — baseline fully burned down (0 entries). All 93 resolved: **52 fixed**, **41 vetted-exempt**.
 
 **Progress:**
 - ✅ **Batch 1 (PR #1041, `fix/site-scope-mutations`):** all 8 high-severity MUTATIONS fixed (TDD); 24 EXEMPT-AGENT + 10 EXEMPT-FALSE-POSITIVE moved to `SITE_SCOPE_INPUT_EXEMPT`. Baseline: 93 → 51.
-- ✅ **Batch 2 wave 1 (`fix/site-scope-reads`, delegated to Codex gpt-5.5, reviewed):** 18 READ gaps fixed across backup (8), mobile (3), monitoring (3), reports (4). Baseline: 51 → 33.
-- ⏳ **Remaining (33):** 26 REAL-GAP reads — software (3), remote (3), groups (3), misc (17: alerts, changes, cisHardening×2, deployments, networkChanges, patches/compliance, playbooks×2, policyManagement/compliance, psa×2, snmp, discovery GET /assets, networkBaselines GET /, tunnels, auditLogs) — plus 7 EXEMPT-AGGREGATE (re-confirm "counts only" → move to exempt).
+- ✅ **Batch 2 wave 1 (PR #1042, `fix/site-scope-reads`, Codex gpt-5.5, reviewed):** 18 READ gaps — backup (8), mobile (3), monitoring (3), reports (4). Baseline: 51 → 33.
+- ✅ **Batch 2 wave 2 (PR #1042, Codex gpt-5.5, reviewed):** 26 READ gaps — software (3), remote-lists (3), groups (3), and misc (17: alerts, changes, cisHardening×2, deployments, networkChanges, patches/compliance, playbooks×2, policyManagement/compliance, psa×2, snmp, discovery `/assets`, networkBaselines `/`, tunnels, auditLogs). Baseline: 33 → 7.
+- ✅ **Aggregates vetted:** the 7 EXEMPT-AGGREGATE handlers re-verified as counts/summaries-only (no per-device rows) and moved to `SITE_SCOPE_INPUT_EXEMPT`. Baseline: 7 → **0**.
+
+**`SITE_SCOPE_INPUT_EXEMPT` now holds 41 entries** (24 agent + 10 false-positive + 7 aggregate). The input-sourced detector now gates all new code with no remaining debt.
+
+**Noted follow-up (not a gap):** the 7 aggregate endpoints return org-wide totals that still span sites a restricted user can't see — counts only, no per-device disclosure. If product wants the aggregates themselves site-scoped, that's a separate, lower-priority change.
 **Date:** 2026-05-31
 **Source:** Codex `gpt-5.5`, `model_reasoning_effort=high`, read-only, over the worktree at this branch.
 **Validation:** Claude spot-checked a sample (5/5 correct): the agent-auth mount

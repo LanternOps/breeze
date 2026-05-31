@@ -361,11 +361,22 @@ softwarePoliciesRoutes.get(
   zValidator('query', violationsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const conditions: SQL[] = [eq(softwareComplianceStatus.status, 'violation')];
     const orgCondition = auth.orgCondition(devices.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], total: 0 });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+    }
     if (query.policyId) conditions.push(eq(softwareComplianceStatus.policyId, query.policyId));
     if (query.deviceId) conditions.push(eq(softwareComplianceStatus.deviceId, query.deviceId));
 

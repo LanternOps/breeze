@@ -43,6 +43,12 @@ export const sessionRoutes = new Hono();
 const sessionIdParamSchema = z.object({ id: z.string().uuid() });
 const iceServersQuerySchema = z.object({ sessionId: z.string().uuid() });
 
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
 // DELETE /remote/sessions/stale - Cleanup stale sessions, optionally scoped to a device
 sessionRoutes.delete(
   '/sessions/stale',
@@ -268,6 +274,7 @@ sessionRoutes.get(
   zValidator('query', listSessionsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -293,6 +300,23 @@ sessionRoutes.get(
 
     if (auth.scope !== 'system') {
       conditions.push(eq(remoteSessions.userId, auth.user.id));
+    }
+
+    if (perms?.allowedSiteIds) {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: { page, limit, total: 0 }
+        });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     // Additional filters
@@ -384,6 +408,7 @@ sessionRoutes.get(
   zValidator('query', sessionHistorySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -410,6 +435,24 @@ sessionRoutes.get(
 
     if (auth.scope !== 'system') {
       conditions.push(eq(remoteSessions.userId, auth.user.id));
+    }
+
+    if (perms?.allowedSiteIds) {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: { page, limit, total: 0 },
+          stats: { totalSessions: 0, totalDurationSeconds: 0, avgDurationSeconds: 0 }
+        });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     // Additional filters
