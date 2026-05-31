@@ -22,6 +22,11 @@ import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
 } from './aiToolsM365';
+import {
+  googleLookupUserHandler, googleResetPasswordHandler, googleSuspendUserHandler,
+  googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
+  googleSetVacationHandler, googleUpdateUserHandler,
+} from './aiToolsGoogle';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -143,6 +148,15 @@ export const TOOL_TIERS = {
   m365_list_group_memberships: 1,
   m365_disable_user: 3,
   m365_reset_password: 3,
+  // Google Workspace helpdesk tools (DWD service-account-backed)
+  google_lookup_user: 1,
+  google_reset_password: 3,
+  google_suspend_user: 3,
+  google_restore_user: 3,
+  google_signout: 3,
+  google_set_forwarding: 3,
+  google_set_vacation: 3,
+  google_update_user: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -516,6 +530,83 @@ export function m365ToolDefinitions(
       'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
       { userIdentifier: z.string(), reason: z.string() },
       makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
+    ),
+  ];
+}
+
+/**
+ * The Google Workspace helpdesk tool definitions, gated on
+ * GOOGLE_WORKSPACE_ENABLED. Returns [] (tools NOT advertised to the model) when
+ * the flag is off — without the flag + a per-org google_workspace_connections
+ * row the tools can only no-op with `no_google_connection`. Read from
+ * process.env at call time so it tracks runtime config (mirrors
+ * m365ToolDefinitions).
+ */
+export function googleToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  const flag = (process.env.GOOGLE_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+  if (!['1', 'true', 'yes', 'on'].includes(flag)) return [];
+  return [
+    tool(
+      'google_lookup_user',
+      "Look up a Google Workspace user (profile, suspended/admin status, 2-step enrollment, last login, OU, aliases) for this organization's connected Workspace domain.",
+      { userEmail: z.string() },
+      makeSessionAwareHandler('google_lookup_user', getAuth, getActiveSession, googleLookupUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_reset_password',
+      'Reset a Google Workspace user\'s password (forces change at next sign-in). Returns a temporary password. Requires approval.',
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_reset_password', getAuth, getActiveSession, googleResetPasswordHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_suspend_user',
+      'Suspend (block sign-in for) a Google Workspace user. Requires approval.',
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_suspend_user', getAuth, getActiveSession, googleSuspendUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_restore_user',
+      'Restore (un-suspend) a Google Workspace user. Requires approval.',
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_restore_user', getAuth, getActiveSession, googleRestoreUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_signout',
+      'Sign a Google Workspace user out of all sessions (the supported substitute for "turn off login challenge", which has no API). Useful for lockout/offboarding. Requires approval.',
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_signout', getAuth, getActiveSession, googleSignOutHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_set_forwarding',
+      'Enable Gmail forwarding from one user to another, optionally keeping a copy in the original mailbox. Requires approval.',
+      { userEmail: z.string(), forwardTo: z.string(), keepCopy: z.boolean().optional(), reason: z.string() },
+      makeSessionAwareHandler('google_set_forwarding', getAuth, getActiveSession, googleSetForwardingHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_set_vacation',
+      'Set or clear a Google Workspace user\'s out-of-office / vacation responder. Requires approval.',
+      { userEmail: z.string(), enable: z.boolean().optional(), subject: z.string().optional(), message: z.string().optional(), reason: z.string() },
+      makeSessionAwareHandler('google_set_vacation', getAuth, getActiveSession, googleSetVacationHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_update_user',
+      'Update a Google Workspace user\'s profile (given/family name, recovery email/phone) and/or add or remove an email alias. Requires approval.',
+      {
+        userEmail: z.string(),
+        givenName: z.string().optional(),
+        familyName: z.string().optional(),
+        recoveryEmail: z.string().optional(),
+        recoveryPhone: z.string().optional(),
+        addAlias: z.string().optional(),
+        removeAlias: z.string().optional(),
+        reason: z.string(),
+      },
+      makeSessionAwareHandler('google_update_user', getAuth, getActiveSession, googleUpdateUserHandler, onPreToolUse, onPostToolUse)
     ),
   ];
 }
@@ -1624,6 +1715,9 @@ export function createBreezeMcpServer(
     // approval) and onPostToolUse (ai_tool_executions persistence +
     // delegant_tool_call_id correlation).
     ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
+    // per-org connection). Same enforcement path as every other tool.
+    ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
   ];
 
   return createSdkMcpServer({

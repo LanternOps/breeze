@@ -376,6 +376,15 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   m365_list_group_memberships: { resource: 'm365', action: 'read' },
   m365_disable_user: { resource: 'm365', action: 'execute' },
   m365_reset_password: { resource: 'm365', action: 'execute' },
+  // Google Workspace helpdesk tools (DWD service-account-backed)
+  google_lookup_user: { resource: 'google', action: 'read' },
+  google_reset_password: { resource: 'google', action: 'execute' },
+  google_suspend_user: { resource: 'google', action: 'execute' },
+  google_restore_user: { resource: 'google', action: 'execute' },
+  google_signout: { resource: 'google', action: 'execute' },
+  google_set_forwarding: { resource: 'google', action: 'execute' },
+  google_set_vacation: { resource: 'google', action: 'execute' },
+  google_update_user: { resource: 'google', action: 'execute' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
