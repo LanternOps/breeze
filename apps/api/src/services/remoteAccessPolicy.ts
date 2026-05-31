@@ -10,6 +10,7 @@
 
 import { resolveEffectiveConfig } from './configurationPolicy';
 import type { AuthContext } from '../middleware/auth';
+import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,6 +88,23 @@ interface CacheEntry {
   expiresAt: number;
 }
 
+// Defensive clamps for the agent-enforced session-lifetime fields. Even after
+// Zod validation these are clamped again here so a future schema relaxation (or
+// a DEFAULTS edit) can never push the agent into never-idle-out / never-expire
+// territory. 0 is a legitimate "disabled" sentinel for both.
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(Math.trunc(value), min), max);
+}
+
+function clampSettings(settings: RemoteAccessSettings): RemoteAccessSettings {
+  return {
+    ...settings,
+    idleTimeoutMinutes: clamp(settings.idleTimeoutMinutes, 0, 1440),
+    maxSessionDurationHours: clamp(settings.maxSessionDurationHours, 0, 168),
+  };
+}
+
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30_000;
 
@@ -148,8 +166,21 @@ export async function resolveRemoteAccessForDevice(deviceId: string): Promise<Re
 
   if (effective?.features?.remote_access) {
     const feature = effective.features.remote_access;
-    const inline = (feature.inlineSettings ?? {}) as Partial<RemoteAccessSettings>;
-    settings = { ...DEFAULTS, ...inline };
+    // The inlineSettings blob is untyped JSONB — validate it through Zod before
+    // it can flow to the agent. A bad value (non-boolean clipboard flag, a
+    // zero/negative/huge maxSessionDurationHours) would otherwise be trusted
+    // verbatim. On parse failure fall back to DEFAULTS rather than shipping
+    // garbage. Numeric lifetime fields are additionally clamped below.
+    const parsed = remoteAccessInlineSettingsSchema.safeParse(feature.inlineSettings ?? {});
+    if (parsed.success) {
+      settings = clampSettings({ ...DEFAULTS, ...parsed.data });
+    } else {
+      console.warn(
+        `[RemoteAccessPolicy] Invalid remote_access inlineSettings for device ${deviceId}; falling back to defaults:`,
+        parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
+      );
+      settings = { ...DEFAULTS };
+    }
     policyName = feature.sourcePolicyName ?? null;
     policyId = feature.sourcePolicyId ?? null;
   }
@@ -221,14 +252,42 @@ export interface DesktopSessionPolicy {
   maxSessionDurationHours: number;
 }
 
+// Safe-but-restrictive policy shipped to the agent when policy resolution
+// fails. Clipboard is OFF in both directions (no silent exfil, no paste) and
+// the session gets a short idle timeout + the default max duration so a
+// resolution outage can't leave a long-lived, fully-permissive session. The
+// capability gate itself is already enforced fail-closed by `checkRemoteAccess`
+// (which the offer handlers call first), so this only governs the in-session
+// clipboard/lifetime knobs.
+const FAILSAFE_DESKTOP_POLICY: DesktopSessionPolicy = {
+  clipboard: { hostToViewer: false, viewerToHost: false },
+  idleTimeoutMinutes: 5,
+  maxSessionDurationHours: 8,
+};
+
 export async function resolveDesktopSessionPolicy(deviceId: string): Promise<DesktopSessionPolicy> {
-  const { settings } = await resolveRemoteAccessForDevice(deviceId);
+  // Fail-closed: `resolveRemoteAccessForDevice` can throw (e.g. config-engine
+  // DB error). The offer handlers `await` this without their own guard, so an
+  // unhandled throw here would 500 the request. Degrade to a restrictive policy
+  // instead and let the request proceed (the capability check already gated it).
+  let settings: RemoteAccessSettings;
+  try {
+    ({ settings } = await resolveRemoteAccessForDevice(deviceId));
+  } catch (err) {
+    console.error(
+      `[RemoteAccessPolicy] Failed to resolve desktop session policy for device ${deviceId}; using failsafe restrictive policy:`,
+      err instanceof Error ? err.message : err
+    );
+    return FAILSAFE_DESKTOP_POLICY;
+  }
+
+  const clamped = clampSettings(settings);
   return {
     clipboard: {
-      hostToViewer: settings.clipboardHostToViewer,
-      viewerToHost: settings.clipboardViewerToHost,
+      hostToViewer: clamped.clipboardHostToViewer,
+      viewerToHost: clamped.clipboardViewerToHost,
     },
-    idleTimeoutMinutes: settings.idleTimeoutMinutes,
-    maxSessionDurationHours: settings.maxSessionDurationHours,
+    idleTimeoutMinutes: clamped.idleTimeoutMinutes,
+    maxSessionDurationHours: clamped.maxSessionDurationHours,
   };
 }
