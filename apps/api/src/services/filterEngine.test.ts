@@ -144,3 +144,23 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(sql).toMatch(/ilike/i);
   });
 });
+
+describe('filterEngine device-row catalog completion', () => {
+  it('registers the new device-column fields', () => {
+    for (const key of ['lastUser', 'isHeadless', 'uptimeSeconds', 'watchdogStatus', 'quarantinedAt', 'lastSeenIp']) {
+      expect(getFieldDefinition(key), key).toBeDefined();
+    }
+  });
+
+  it('status enum offers all seven device statuses', () => {
+    const def = getFieldDefinition('status');
+    expect(def?.enumValues).toEqual(['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
+  });
+
+  it('new device-column fields compile as direct comparisons (no subquery)', () => {
+    expect(render({ field: 'lastUser', operator: 'equals', value: 'bdunn' })).toMatch(/"last_user" = \$/i);
+    expect(render({ field: 'watchdogStatus', operator: 'equals', value: 'failover' })).toMatch(/"watchdog_status" = \$/i);
+    expect(render({ field: 'quarantinedAt', operator: 'isNotNull', value: '' })).toMatch(/"quarantined_at" is not null/i);
+    expect(render({ field: 'lastUser', operator: 'equals', value: 'x' })).not.toMatch(/exists/i);
+  });
+});
