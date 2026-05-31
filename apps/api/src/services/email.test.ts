@@ -203,6 +203,58 @@ describe('email service', () => {
     expect(body.getAll('h:Reply-To')).toEqual(['support@example.com', 'help@example.com']);
   });
 
+  it('sendEmailChanged notifies the old address with a security notice', async () => {
+    process.env.EMAIL_PROVIDER = 'smtp';
+    process.env.SMTP_HOST = 'smtp.example.com';
+    process.env.SMTP_FROM = 'smtp-from@example.com';
+
+    const { getEmailService } = await import('./email');
+    const service = getEmailService();
+
+    expect(service).not.toBeNull();
+    await service!.sendEmailChanged({
+      to: 'old@example.com',
+      name: 'Jane Operator',
+      newEmail: 'new@example.com'
+    });
+
+    expect(smtpSendMailMock).toHaveBeenCalledTimes(1);
+    const sent = smtpSendMailMock.mock.calls[0]![0] as {
+      to: string;
+      subject: string;
+      html: string;
+      text: string;
+    };
+    expect(sent.to).toBe('old@example.com');
+    expect(sent.subject).toMatch(/email was changed/i);
+    // The new address appears in both HTML and text bodies.
+    expect(sent.html).toContain('new@example.com');
+    expect(sent.text).toContain('new@example.com');
+    // Security-notice tone: tells the user what to do if it wasn't them.
+    expect(sent.text).toMatch(/did not make this change/i);
+    expect(sent.html).toMatch(/did not make this change/i);
+  });
+
+  it('sendEmailChanged tolerates a null name', async () => {
+    process.env.EMAIL_PROVIDER = 'smtp';
+    process.env.SMTP_HOST = 'smtp.example.com';
+    process.env.SMTP_FROM = 'smtp-from@example.com';
+
+    const { getEmailService } = await import('./email');
+    const service = getEmailService();
+
+    await service!.sendEmailChanged({
+      to: 'old@example.com',
+      name: null,
+      newEmail: 'new@example.com'
+    });
+
+    expect(smtpSendMailMock).toHaveBeenCalledTimes(1);
+    const sent = smtpSendMailMock.mock.calls[0]![0] as { text: string };
+    // Falls back to the generic greeting rather than crashing on null.
+    expect(sent.text).toContain('Hi there,');
+  });
+
   it('falls back to Mailgun in auto mode when resend and smtp are not configured', async () => {
     process.env.MAILGUN_API_KEY = 'mg-key-123';
     process.env.MAILGUN_DOMAIN = 'mg.example.com';

@@ -6,7 +6,7 @@ import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
 import {
   clearPermissionCache,
   getUserPermissions,
@@ -20,7 +20,8 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
+import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { revokeUserAccess } from '../services/userSuspension';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 
@@ -450,6 +451,9 @@ const updateMeSchema = z
         z.null(),
       ])
       .optional(),
+    // Account-takeover step-up for the email-change path. NEVER persisted and
+    // excluded from the audit changedFields — it is verified, then dropped.
+    currentPassword: z.string().optional(),
   })
   .strict();
 
@@ -457,9 +461,28 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
 
+  // Load the caller's own row once: needed to detect a real email change and to
+  // choose the right step-up factor (local password vs MFA).
+  const [self] = await db
+    .select({ email: users.email, passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  if (!self) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
   const updates: { name?: string; email?: string; avatarUrl?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
     updatedAt: new Date()
   };
+
+  // Tracks how identity was re-proven for the email change so the dedicated
+  // audit can record it. Stays undefined for non-email changes.
+  let stepUpMethod: 'password' | 'mfa' | undefined;
+  // The address that owned the account before the change — used for the audit
+  // detail and the security notification to the OLD address.
+  let previousEmail: string | undefined;
 
   if (body.name) {
     updates.name = body.name.slice(0, 255);
@@ -492,15 +515,50 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
 
   if (body.email) {
     const normalizedEmail = body.email.toLowerCase().trim().slice(0, 255);
-    // Check uniqueness
-    const [existing] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1);
-    if (existing && existing.id !== auth.user.id) {
-      return c.json({ error: 'Email already in use' }, 409);
+    // self.email is already normalized in the DB; only step-up + notify when the
+    // email is genuinely changing. A same-email "change" is a no-op here.
+    const emailChanging = normalizedEmail !== self.email;
+
+    if (emailChanging) {
+      // Account-takeover step-up — mirror change-password's SSO/password/MFA
+      // ordering, BEFORE any write.
+      // (a) SSO-enforced org: email is managed at the IdP.
+      if (await isPasswordAuthDisabledBySso({ scope: auth.scope, orgId: auth.orgId })) {
+        return c.json({ error: 'Email changes for this organization are managed through your SSO provider.' }, 403);
+      }
+
+      if (self.passwordHash) {
+        // (b) Local-password user: require + verify the current password.
+        if (!body.currentPassword) {
+          return c.json({ error: 'Current password is required to change your email address.' }, 400);
+        }
+        const stepUp = await requireCurrentPasswordStepUp(c, auth.user.id, body.currentPassword, 'email-change:pwd');
+        if (stepUp) return stepUp; // 401 / 429 / 503 Response, or null on success
+        stepUpMethod = 'password';
+      } else {
+        // (c) Passwordless, non-SSO-enforced user: require satisfied MFA.
+        if (!hasSatisfiedMfa(auth)) {
+          return c.json({ error: 'MFA verification is required to change your email address.' }, 403);
+        }
+        stepUpMethod = 'mfa';
+      }
+
+      previousEmail = self.email;
+
+      // Uniqueness check (only matters when the email is actually changing).
+      const [existing] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, normalizedEmail))
+        .limit(1);
+      if (existing && existing.id !== auth.user.id) {
+        return c.json({ error: 'Email already in use' }, 409);
+      }
     }
+
+    // Always include the (normalized) email in the write. When it's unchanged
+    // this is a harmless no-op that keeps a same-email PATCH a valid 200 rather
+    // than a "No valid updates provided" 400, and it requires no step-up.
     updates.email = normalizedEmail;
   }
 
@@ -547,6 +605,38 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
+
+  // Dedicated email-change audit + security notification to the OLD address.
+  // Only fires on a genuine, step-up-cleared email change (previousEmail set).
+  if (previousEmail !== undefined) {
+    createAuditLogAsync({
+      orgId: auditOrgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.email.change',
+      resourceType: 'user',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        previousEmail,
+        newEmail: updated.email,
+        stepUp: stepUpMethod
+      },
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'success'
+    });
+
+    // Notify the OLD address (best-effort: must never block or fail the request).
+    const emailService = getEmailService();
+    if (emailService) {
+      try {
+        await emailService.sendEmailChanged({ to: previousEmail, name: updated.name, newEmail: updated.email });
+      } catch (err) {
+        console.warn('Failed to send email-change notice', err);
+      }
+    }
+  }
 
   return c.json(updated);
 });

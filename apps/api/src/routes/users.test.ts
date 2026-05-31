@@ -2,10 +2,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { userRoutes } from './users';
 
-const { sendInviteMock, createAuditLogAsyncMock, resolveUserAuditOrgIdMock } = vi.hoisted(() => ({
+const {
+  sendInviteMock,
+  sendEmailChangedMock,
+  createAuditLogAsyncMock,
+  resolveUserAuditOrgIdMock,
+  requireCurrentPasswordStepUpMock,
+  isPasswordAuthDisabledBySsoMock,
+  hasSatisfiedMfaMock
+} = vi.hoisted(() => ({
   sendInviteMock: vi.fn().mockResolvedValue(undefined),
+  sendEmailChangedMock: vi.fn().mockResolvedValue(undefined),
   createAuditLogAsyncMock: vi.fn().mockResolvedValue(undefined),
-  resolveUserAuditOrgIdMock: vi.fn().mockResolvedValue(null)
+  resolveUserAuditOrgIdMock: vi.fn().mockResolvedValue(null),
+  // Default: step-up succeeds (returns null). Tests override to return a
+  // Response to simulate a wrong password / rate-limit / Redis-down outcome.
+  requireCurrentPasswordStepUpMock: vi.fn().mockResolvedValue(null),
+  // Default: org does NOT enforce SSO.
+  isPasswordAuthDisabledBySsoMock: vi.fn().mockResolvedValue(false),
+  // Default: MFA is considered satisfied. Tests override to false.
+  hasSatisfiedMfaMock: vi.fn().mockReturnValue(true)
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -106,12 +122,18 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  requireMfa: vi.fn(() => (_c: any, next: any) => next())
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
+  hasSatisfiedMfa: hasSatisfiedMfaMock
+}));
+
+vi.mock('./auth/ssoPolicy', () => ({
+  isPasswordAuthDisabledBySso: isPasswordAuthDisabledBySsoMock
 }));
 
 vi.mock('../services/email', () => ({
   getEmailService: vi.fn(() => ({
-    sendInvite: sendInviteMock
+    sendInvite: sendInviteMock,
+    sendEmailChanged: sendEmailChangedMock
   }))
 }));
 
@@ -127,7 +149,8 @@ vi.mock('./auth/helpers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./auth/helpers')>();
   return {
     ...actual,
-    resolveUserAuditOrgId: resolveUserAuditOrgIdMock
+    resolveUserAuditOrgId: resolveUserAuditOrgIdMock,
+    requireCurrentPasswordStepUp: requireCurrentPasswordStepUpMock
   };
 });
 
@@ -153,6 +176,31 @@ describe('user routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks only clears call history — it does NOT drain queued
+    // mockReturnValueOnce implementations or reset mockReturnValue. Re-seed the
+    // db builders to safe defaults so each test starts from a clean chain and is
+    // order-independent (prevents leftover select/update mocks from one test
+    // poisoning the next, e.g. POST /users/:id/role).
+    vi.mocked(db.select).mockReset().mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    } as any);
+    vi.mocked(db.update).mockReset().mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    } as any);
+    // Re-establish the step-up defaults each test: SSO off, MFA satisfied,
+    // password step-up passes.
+    requireCurrentPasswordStepUpMock.mockResolvedValue(null);
+    isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
+    hasSatisfiedMfaMock.mockReturnValue(true);
+    sendEmailChangedMock.mockResolvedValue(undefined);
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
@@ -386,6 +434,16 @@ describe('user routes', () => {
         });
         return next();
       });
+      // The handler loads the caller's own row first; provide it so body-level
+      // validation (e.g. the preferences-size guard) is reached. Zod-rejected
+      // cases short-circuit before the handler and are unaffected.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ email: 'test@example.com', passwordHash: 'hash' }])
+          })
+        })
+      } as any);
     });
 
     it('rejects avatarUrl with javascript: scheme', async () => {
@@ -432,17 +490,31 @@ describe('user routes', () => {
     // regardless of caller scope. Partner-scope callers have orgId === null,
     // so the audit must resolve an attribution org via resolveUserAuditOrgId
     // rather than being skipped entirely (the SOC2 coverage gap).
-    function mockProfileUpdateReturning(row: Record<string, unknown>) {
-      // db.select(...).from(...).where(...).limit(...) is hit only for an email
-      // uniqueness check; mock it to return no conflicting row. Then
-      // db.update(...).set(...).where(...).returning() yields the updated row.
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
+
+    // Builds a select(...) chain node that resolves to `rows`.
+    const selectNode = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
         })
-      } as any);
+      })
+    });
+
+    function mockProfileUpdateReturning(
+      row: Record<string, unknown>,
+      self: { email: string; passwordHash: string | null } = {
+        email: 'test@example.com',
+        passwordHash: 'hash'
+      }
+    ) {
+      // The handler now issues db.select twice when the email changes:
+      //   1) load the caller's own row ({ email, passwordHash })
+      //   2) email uniqueness check (no conflicting row → [])
+      // Name-only changes only issue (1). Fall through default returns [] so the
+      // uniqueness check (when reached) never reports a conflict.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectNode([self]) as any)
+        .mockReturnValue(selectNode([]) as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -498,7 +570,12 @@ describe('user routes', () => {
       );
     });
 
-    it('audits a partner-scope self email change', async () => {
+    it('audits a partner-scope self avatar change (non-email, no step-up)', async () => {
+      // Previously this test PATCHed { email } with no password. The email-change
+      // step-up now requires currentPassword, so the email-change audit behavior
+      // moved into the dedicated "email change step-up" describe below. This test
+      // preserves the original INTENT — partner-scope self-changes are audited as
+      // user.profile.update — by exercising a non-email field instead.
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'partner',
@@ -511,9 +588,9 @@ describe('user routes', () => {
       resolveUserAuditOrgIdMock.mockResolvedValueOnce('resolved-org-2');
       mockProfileUpdateReturning({
         id: 'user-123',
-        email: 'new@example.com',
+        email: 'test@example.com',
         name: 'Test User',
-        avatarUrl: null,
+        avatarUrl: 'https://cdn.example.com/avatar.png',
         status: 'active',
         mfaEnabled: false,
         preferences: null
@@ -522,16 +599,18 @@ describe('user routes', () => {
       const res = await app.request('/users/me', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ email: 'new@example.com' })
+        body: JSON.stringify({ avatarUrl: 'https://cdn.example.com/avatar.png' })
       });
 
       expect(res.status).toBe(200);
+      // No email change → no step-up of any kind.
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
       expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
       expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
         expect.objectContaining({
           orgId: 'resolved-org-2',
           action: 'user.profile.update',
-          details: expect.objectContaining({ changedFields: ['email'] })
+          details: expect.objectContaining({ changedFields: ['avatarUrl'] })
         })
       );
     });
@@ -573,6 +652,267 @@ describe('user routes', () => {
           details: expect.objectContaining({ changedFields: ['name'] })
         })
       );
+    });
+  });
+
+  describe('PATCH /users/me email-change step-up (ATO hardening)', () => {
+    // Account-takeover step-up: changing the account email requires re-proving
+    // identity. Mirrors change-password — SSO-enforced orgs are blocked (managed
+    // at the IdP), local-password users must supply currentPassword, passwordless
+    // users must have satisfied MFA. On success the OLD address is notified.
+    const selectNode = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    });
+
+    const updateReturning = (row: Record<string, unknown>) => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([row])
+          })
+        })
+      } as any);
+    };
+
+    // First select = self load ({ email, passwordHash }); second select (only
+    // reached past the step-up gate) = email-uniqueness check.
+    const mockSelfAndUniqueness = (
+      self: { email: string; passwordHash: string | null },
+      uniqueness: unknown[] = []
+    ) => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectNode([self]) as any)
+        .mockReturnValue(selectNode(uniqueness) as any);
+    };
+
+    const orgScopeAuth = () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-1',
+          user: { id: 'user-123', email: 'old@example.com' }
+        });
+        return next();
+      });
+    };
+
+    const updatedRow = (email: string) => ({
+      id: 'user-123',
+      email,
+      name: 'Test User',
+      avatarUrl: null,
+      status: 'active',
+      mfaEnabled: false,
+      preferences: null
+    });
+
+    it('case 1: email change with NO currentPassword ⇒ 400, email not updated', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/current password is required/i);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
+      expect(sendEmailChangedMock).not.toHaveBeenCalled();
+    });
+
+    it('case 2: email change with correct currentPassword ⇒ 200, audited, old address notified', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(requireCurrentPasswordStepUpMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-123',
+        'correct-horse',
+        'email-change:pwd'
+      );
+      // Dedicated email-change audit fired with stepUp === 'password'.
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'user.email.change',
+          resourceId: 'user-123',
+          details: expect.objectContaining({
+            previousEmail: 'old@example.com',
+            newEmail: 'new@example.com',
+            stepUp: 'password'
+          })
+        })
+      );
+      // Both audits: the generic profile-update + the dedicated email-change.
+      const actions = createAuditLogAsyncMock.mock.calls.map((c: any[]) => c[0].action);
+      expect(actions).toContain('user.profile.update');
+      expect(actions).toContain('user.email.change');
+      // Notify the OLD address.
+      expect(sendEmailChangedMock).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'old@example.com', newEmail: 'new@example.com' })
+      );
+    });
+
+    it('case 3: email change with wrong password ⇒ 401, not updated, no email-change audit/notice', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      // Simulate a wrong-password step-up: helper returns a 401 Response.
+      requireCurrentPasswordStepUpMock.mockImplementationOnce(async (c: any) =>
+        c.json({ error: 'Invalid credentials' }, 401)
+      );
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com', currentPassword: 'wrong' })
+      });
+
+      expect(res.status).toBe(401);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      const actions = createAuditLogAsyncMock.mock.calls.map((c: any[]) => c[0].action);
+      expect(actions).not.toContain('user.email.change');
+      expect(sendEmailChangedMock).not.toHaveBeenCalled();
+    });
+
+    it('case 4a: passwordless user WITHOUT satisfied MFA ⇒ 403, not updated', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: null });
+      updateReturning(updatedRow('new@example.com'));
+      hasSatisfiedMfaMock.mockReturnValue(false);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/mfa/i);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      // Passwordless → password step-up must not be attempted.
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
+      expect(sendEmailChangedMock).not.toHaveBeenCalled();
+    });
+
+    it('case 4b: passwordless user WITH satisfied MFA ⇒ 200, audited stepUp === mfa', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: null });
+      updateReturning(updatedRow('new@example.com'));
+      hasSatisfiedMfaMock.mockReturnValue(true);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'user.email.change',
+          details: expect.objectContaining({
+            previousEmail: 'old@example.com',
+            newEmail: 'new@example.com',
+            stepUp: 'mfa'
+          })
+        })
+      );
+      expect(sendEmailChangedMock).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'old@example.com', newEmail: 'new@example.com' })
+      );
+    });
+
+    it('case 5: enforce-SSO org ⇒ 403, email not updated', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      isPasswordAuthDisabledBySsoMock.mockResolvedValue(true);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/sso/i);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
+      expect(sendEmailChangedMock).not.toHaveBeenCalled();
+    });
+
+    it('case 6: name-only change ⇒ 200, no step-up invoked, audited as user.profile.update', async () => {
+      orgScopeAuth();
+      // Only the self-load select runs for a name-only change.
+      vi.mocked(db.select).mockReturnValue(
+        selectNode([{ email: 'old@example.com', passwordHash: 'hash' }]) as any
+      );
+      updateReturning({
+        id: 'user-123',
+        email: 'old@example.com',
+        name: 'Renamed',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        preferences: null
+      });
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
+      expect(isPasswordAuthDisabledBySsoMock).not.toHaveBeenCalled();
+      expect(sendEmailChangedMock).not.toHaveBeenCalled();
+      const actions = createAuditLogAsyncMock.mock.calls.map((c: any[]) => c[0].action);
+      expect(actions).toContain('user.profile.update');
+      expect(actions).not.toContain('user.email.change');
+    });
+
+    it('case 7: same-email "change" ⇒ no step-up required, 200', async () => {
+      orgScopeAuth();
+      // body.email === current email (after normalization) → not a real change.
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('old@example.com'));
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'OLD@example.com' })
+      });
+
+      expect(res.status).toBe(200);
+      // No real email change → no step-up gate, no notification, no dedicated audit.
+      expect(requireCurrentPasswordStepUpMock).not.toHaveBeenCalled();
+      expect(isPasswordAuthDisabledBySsoMock).not.toHaveBeenCalled();
+      expect(sendEmailChangedMock).not.toHaveBeenCalled();
+      const actions = createAuditLogAsyncMock.mock.calls.map((c: any[]) => c[0].action);
+      expect(actions).not.toContain('user.email.change');
     });
   });
 
