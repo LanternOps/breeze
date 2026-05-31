@@ -7,7 +7,7 @@ import AiApprovalDialog from './AiApprovalDialog';
 import AiPlanReviewCard from './AiPlanReviewCard';
 import AiPlanProgressBar from './AiPlanProgressBar';
 import type { ActionPlanStep } from '@breeze/shared';
-import { DOCS_BASE_URL } from '@breeze/shared';
+import { isDocsUrl } from '@/lib/safeHref';
 import { useHelpStore } from '@/stores/helpStore';
 
 interface Message {
@@ -128,7 +128,11 @@ export default function AiChatMessages({
                     remarkPlugins={[remarkGfm]}
                     components={{
                       a: ({ href, children }) => {
-                        if (href && DOCS_BASE_URL && href.startsWith(DOCS_BASE_URL)) {
+                        // Origin check (not a string prefix): a docs-lookalike host
+                        // (e.g. docs.breezermm.com.evil.com) is NOT treated as a
+                        // trusted in-app docs link and instead falls through to the
+                        // safe external-link branch below.
+                        if (isDocsUrl(href)) {
                           return (
                             <a
                               href={href}
