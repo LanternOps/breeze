@@ -6,6 +6,11 @@ import { thirdPartyCatalogRoutes } from './index';
 
 const mockPlatformAdminState = vi.hoisted(() => ({
   isPlatformAdmin: true,
+  // Step-up state on the auth token. List (read) routes are gated by
+  // platformAdminMiddleware ONLY — the router-level requireMfa() lives on
+  // operations.ts (writes). Reads must stay ungated, so an unsatisfied-MFA
+  // token must still read fine. Defaults to true; the asymmetry test flips it.
+  tokenMfa: true as boolean,
 }));
 
 const mockCatalogTable = vi.hoisted(() => ({
@@ -60,6 +65,7 @@ vi.mock('../../middleware/platformAdmin', () => ({
         email: 'platform@example.com',
         isPlatformAdmin: true,
       },
+      token: { mfa: mockPlatformAdminState.tokenMfa },
     });
     return next();
   }),
@@ -134,6 +140,7 @@ describe('third-party catalog routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPlatformAdminState.isPlatformAdmin = true;
+    mockPlatformAdminState.tokenMfa = true;
     app = new Hono();
     app.route('/third-party-catalog', thirdPartyCatalogRoutes);
   });
@@ -144,6 +151,21 @@ describe('third-party catalog routes', () => {
     const res = await app.request('/third-party-catalog');
 
     expect([401, 403]).toContain(res.status);
+  });
+
+  it('allows a GET read even when MFA step-up is NOT satisfied (reads bypass requireMfa)', async () => {
+    // The router-level requireMfa() gate lives on operations.ts (writes) only.
+    // This locks the read/write asymmetry: a future move of requireMfa to a
+    // shared parent router would start gating reads and fail this test.
+    mockPlatformAdminState.tokenMfa = false;
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectCatalogRows([catalogRow({})]) as never)
+      .mockReturnValueOnce(selectCount(1) as never);
+
+    const res = await app.request('/third-party-catalog');
+
+    expect(res.status).toBe(200);
   });
 
   it('lists catalog items with limit pagination', async () => {

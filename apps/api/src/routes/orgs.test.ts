@@ -59,8 +59,25 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   partners: {},
   organizations: {},
-  sites: {}
+  // Give sites.id a recognizable sentinel so the site-allowlist test can assert
+  // inArray was called against the sites.id column specifically.
+  sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } }
 }));
+
+// Spy on inArray so the site-allowlist test can assert the GET /orgs/sites
+// handler actually intersects the query with inArray(sites.id, allowedSiteIds).
+// Keep every other drizzle-orm export real.
+vi.mock('drizzle-orm', async (importActual) => {
+  const actual = await importActual<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    // Return an opaque sentinel instead of building a real SQL fragment: the db
+    // is fully mocked, so the return value is never executed, but the sentinel
+    // columns ({ __column: ... }) aren't real Drizzle columns and would make the
+    // real inArray throw on introspection.
+    inArray: vi.fn((column: unknown, values: unknown) => ({ __inArray: { column, values } }))
+  };
+});
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -88,7 +105,9 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
+import { inArray } from 'drizzle-orm';
 import { db } from '../db';
+import { sites } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
 import { captureException } from '../services/sentry';
@@ -1223,6 +1242,10 @@ describe('org routes', () => {
         const body = await res.json();
         expect(body.data).toEqual([{ id: 'site-x' }]);
         expect(body.data).not.toContainEqual({ id: 'site-y' });
+        // Meaningful assertion: the handler must have intersected the query with
+        // inArray(sites.id, allowedSiteIds). This fails if the intersection in
+        // orgs.ts is removed (mocked DB would echo site-x regardless otherwise).
+        expect(inArray).toHaveBeenCalledWith(sites.id, ['site-x']);
       });
 
       it('does not restrict the list for an unconfined user (allowedSiteIds undefined)', async () => {

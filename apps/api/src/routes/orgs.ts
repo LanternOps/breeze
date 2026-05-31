@@ -973,7 +973,8 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // Per-user site confinement. ensureOrgAccess (above) is org-axis only and
   // RLS on `sites` is also org-axis only, so a site-confined user would
   // otherwise enumerate every sibling site in the org. Intersect the org
-  // filter with allowedSiteIds. Mirrors scripts.ts:858-869.
+  // filter with allowedSiteIds. Mirrors the allowedSiteIds intersection in the
+  // GET /scripts/:id/executions list handler.
   const permissions = c.get('permissions') as UserPermissions | undefined;
   const allowedSiteIds = permissions?.allowedSiteIds;
   if (allowedSiteIds?.length === 0) {

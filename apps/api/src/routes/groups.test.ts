@@ -163,6 +163,34 @@ describe('group routes', () => {
       expect(insertSpy).not.toHaveBeenCalled();
     });
 
+    it('rejects (403) the whole batch when one of several devices is out of scope (partial batch)', async () => {
+      setAuth(['site-x']);
+      const insertSpy = vi.mocked(db.insert);
+      vi.mocked(db.select)
+        // 1. group lookup
+        .mockReturnValueOnce(mockGroupSelect())
+        // 2. device {id, orgId} lookup — both devices belong to the right org
+        .mockReturnValueOnce(mockWhereResolves([
+          { id: DEVICE_IN_SITE_X, orgId: ORG },
+          { id: DEVICE_IN_SITE_Y, orgId: ORG }
+        ]))
+        // 3. canAccessDeviceSite for device-x — site-x, allowed
+        .mockReturnValueOnce(mockSiteSelect('site-x'))
+        // 4. canAccessDeviceSite for device-y — site-y, NOT allowed
+        .mockReturnValueOnce(mockSiteSelect('site-y'));
+
+      const res = await app.request(`/groups/${GROUP_ID}/devices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_IN_SITE_X, DEVICE_IN_SITE_Y] })
+      });
+
+      expect(res.status).toBe(403);
+      // Fail closed — the whole batch is rejected, NOT the in-scope device
+      // (device-x) partially added.
+      expect(insertSpy).not.toHaveBeenCalled();
+    });
+
     it('allows a confined user to add a device whose site (site-x) is in scope', async () => {
       setAuth(['site-x']);
       vi.mocked(db.select)

@@ -9,12 +9,16 @@ const {
   resolveUserAuditOrgIdMock,
   requireCurrentPasswordStepUpMock,
   isPasswordAuthDisabledBySsoMock,
-  hasSatisfiedMfaMock
+  hasSatisfiedMfaMock,
+  captureExceptionMock,
+  getEmailServiceMock
 } = vi.hoisted(() => ({
   sendInviteMock: vi.fn().mockResolvedValue(undefined),
   sendEmailChangedMock: vi.fn().mockResolvedValue(undefined),
   createAuditLogAsyncMock: vi.fn().mockResolvedValue(undefined),
   resolveUserAuditOrgIdMock: vi.fn().mockResolvedValue(null),
+  captureExceptionMock: vi.fn(),
+  getEmailServiceMock: vi.fn(),
   // Default: step-up succeeds (returns null). Tests override to return a
   // Response to simulate a wrong password / rate-limit / Redis-down outcome.
   requireCurrentPasswordStepUpMock: vi.fn().mockResolvedValue(null),
@@ -131,10 +135,11 @@ vi.mock('./auth/ssoPolicy', () => ({
 }));
 
 vi.mock('../services/email', () => ({
-  getEmailService: vi.fn(() => ({
-    sendInvite: sendInviteMock,
-    sendEmailChanged: sendEmailChangedMock
-  }))
+  getEmailService: getEmailServiceMock
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: captureExceptionMock
 }));
 
 vi.mock('../services/auditService', () => ({
@@ -201,6 +206,12 @@ describe('user routes', () => {
     isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
     hasSatisfiedMfaMock.mockReturnValue(true);
     sendEmailChangedMock.mockResolvedValue(undefined);
+    // Default: email service is configured. Tests override to null to exercise
+    // the "not configured" warning path.
+    getEmailServiceMock.mockReturnValue({
+      sendInvite: sendInviteMock,
+      sendEmailChanged: sendEmailChangedMock
+    });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
@@ -754,6 +765,7 @@ describe('user routes', () => {
         expect.objectContaining({
           action: 'user.email.change',
           resourceId: 'user-123',
+          orgId: 'org-1',
           details: expect.objectContaining({
             previousEmail: 'old@example.com',
             newEmail: 'new@example.com',
@@ -831,6 +843,7 @@ describe('user routes', () => {
       expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'user.email.change',
+          orgId: 'org-1',
           details: expect.objectContaining({
             previousEmail: 'old@example.com',
             newEmail: 'new@example.com',
@@ -913,6 +926,129 @@ describe('user routes', () => {
       expect(sendEmailChangedMock).not.toHaveBeenCalled();
       const actions = createAuditLogAsyncMock.mock.calls.map((c: any[]) => c[0].action);
       expect(actions).not.toContain('user.email.change');
+    });
+
+    it('case 8: PARTNER-scope email change resolves an attribution org for both audits', async () => {
+      // Partner-scope caller: auth.orgId === null, so the audit org must be
+      // resolved from the user's membership via resolveUserAuditOrgId — for the
+      // dedicated email-change audit too, not just the profile-update.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          orgId: null,
+          user: { id: 'user-123', email: 'old@example.com' }
+        });
+        return next();
+      });
+      resolveUserAuditOrgIdMock.mockResolvedValueOnce('resolved-org-x');
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(resolveUserAuditOrgIdMock).toHaveBeenCalledWith('user-123');
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'user.email.change',
+          orgId: 'resolved-org-x',
+          details: expect.objectContaining({
+            previousEmail: 'old@example.com',
+            newEmail: 'new@example.com',
+            stepUp: 'password'
+          })
+        })
+      );
+    });
+
+    it('case 9: MIXED name+email change ⇒ profile.update lists BOTH fields AND email.change also fires', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning({
+        id: 'user-123',
+        email: 'new@example.com',
+        name: 'New',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        preferences: null
+      });
+      // Org scope, step-up passes (null).
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'New', email: 'new@example.com', currentPassword: 'correct' })
+      });
+
+      expect(res.status).toBe(200);
+      const calls = createAuditLogAsyncMock.mock.calls.map((c: any[]) => c[0]);
+      const profileUpdate = calls.find((a) => a.action === 'user.profile.update');
+      expect(profileUpdate).toBeDefined();
+      expect(profileUpdate.details.changedFields).toEqual(
+        expect.arrayContaining(['name', 'email'])
+      );
+      const actions = calls.map((a) => a.action);
+      expect(actions).toContain('user.email.change');
+    });
+
+    it('case 10a: email service NOT configured ⇒ warns, does not attempt send, still 200', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+      getEmailServiceMock.mockReturnValue(null);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const res = await app.request('/users/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(sendEmailChangedMock).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Email service not configured')
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('case 10b: sendEmailChanged throws ⇒ console.error + captureException, request still 200', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+      const boom = new Error('smtp down');
+      sendEmailChangedMock.mockRejectedValueOnce(boom);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const res = await app.request('/users/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Failed to send email-change security notice'),
+          boom
+        );
+        expect(captureExceptionMock).toHaveBeenCalledWith(boom);
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
   });
 

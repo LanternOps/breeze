@@ -339,7 +339,7 @@ describe('admin/abuse — auth gate', () => {
   });
 
   // MFA step-up: re-enabling an abuse-suspended partner is privilege-restoring
-  // (flips status back to active + re-enables all its disabled users), so it
+  // (flips status back to active/pending + re-enables all its disabled users), so it
   // MUST require the same MFA step-up as suspend-for-abuse. requireMfa() is a
   // no-op when ENABLE_2FA is off, so this gate is free until 2FA is enabled.
   it('rejects /unsuspend when MFA is not satisfied (403)', async () => {

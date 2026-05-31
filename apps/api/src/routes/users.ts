@@ -18,6 +18,7 @@ import {
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
+import { captureException } from '../services/sentry';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
@@ -521,8 +522,9 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     const emailChanging = normalizedEmail !== self.email;
 
     if (emailChanging) {
-      // Account-takeover step-up — mirror change-password's SSO/password/MFA
-      // ordering, BEFORE any write.
+      // Account-takeover step-up — mirror change-password's SSO→password
+      // ordering; additionally allow MFA step-up for passwordless users
+      // (change-password rejects them with 400), BEFORE any write.
       // (a) SSO-enforced org: email is managed at the IdP.
       if (await isPasswordAuthDisabledBySso({ scope: auth.scope, orgId: auth.orgId })) {
         return c.json({ error: 'Email changes for this organization are managed through your SSO provider.' }, 403);
@@ -628,14 +630,19 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       result: 'success'
     });
 
-    // Notify the OLD address (best-effort: must never block or fail the request).
+    // Notify the OLD address (best-effort: never FAILs the request (errors are
+    // swallowed). It is awaited, so it adds the send latency to this (rare)
+    // email-change response).
     const emailService = getEmailService();
     if (emailService) {
       try {
         await emailService.sendEmailChanged({ to: previousEmail, name: updated.name, newEmail: updated.email });
       } catch (err) {
-        console.warn('Failed to send email-change notice', err);
+        console.error('[users] Failed to send email-change security notice', err);
+        captureException(err);
       }
+    } else {
+      console.warn('[users] Email service not configured; email-change security notice was not sent');
     }
   }
 

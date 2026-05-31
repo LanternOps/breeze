@@ -843,6 +843,91 @@ describe('automations routes', () => {
     expect(body.automation).toBeNull();
   });
 
+  it('returns 404 for an automation-backed run whose org the caller cannot access', async () => {
+    // First select: the run (automationId set).
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-ab-1',
+              automationId: 'auto-OTHER',
+              configPolicyId: null,
+              status: 'running',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      // Second select (getAutomationWithOrgCheck): the automation resolving to org-OTHER.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'auto-OTHER',
+              name: 'Other Tenant Automation',
+              orgId: 'org-OTHER',
+            }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-ab-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Automation run not found');
+    // Must not leak the automation name or the owning org id.
+    expect(JSON.stringify(body)).not.toContain('Other Tenant Automation');
+    expect(JSON.stringify(body)).not.toContain('org-OTHER');
+  });
+
+  it('returns 200 for an automation-backed run whose org the caller can access', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-ab-1',
+              automationId: 'auto-1',
+              configPolicyId: null,
+              status: 'completed',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'auto-1',
+              name: 'Automation One',
+              orgId: 'org-123',
+            }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-ab-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('run-ab-1');
+    expect(body.status).toBe('success');
+    expect(body.automation).toEqual({
+      id: 'auto-1',
+      name: 'Automation One',
+      orgId: 'org-123',
+    });
+  });
+
   // ============================================
   // F8 (audit): webhook-triggered run must be audited
   // ============================================
