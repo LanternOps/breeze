@@ -120,6 +120,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 
 /** Helper to build a fluent mock chain for db.select() */
 function mockSelectChain(result: unknown) {
@@ -365,6 +366,82 @@ describe('remote routes', () => {
       const body = await res.json();
       expect(body.status).toBe('connecting');
       expect(body.webrtcOffer).toBe('offer-sdp');
+    });
+
+    // Finding #1 (H5): the remote-access policy must be re-enforced at offer
+    // time, not just at session creation. A viewer holding an existing,
+    // still-in-flight session must NOT be able to (re)start a live stream after
+    // the webrtcDesktop policy is revoked mid-session.
+    it('rejects the offer with 403 when remote-access policy is denied (mid-session revocation)', async () => {
+      const sessionResult = {
+        session: {
+          id: SESSION_UUID,
+          userId: 'user-123',
+          status: 'active', // still in-flight — policy gate must fire BEFORE the status gate
+          type: 'desktop',
+          iceCandidates: []
+        },
+        device: { id: DEVICE_UUID, orgId: 'org-123', agentId: 'agent-abc123' }
+      };
+
+      // getSessionWithOrgCheck
+      vi.mocked(db.select).mockReturnValueOnce(
+        mockSelectInnerJoinChain([sessionResult])
+      );
+      // Policy was revoked mid-session → checkRemoteAccess denies.
+      vi.mocked(checkRemoteAccess).mockResolvedValueOnce({
+        allowed: false,
+        reason: 'Remote desktop disabled by policy',
+        policyName: 'Test Policy',
+      } as any);
+
+      const res = await app.request(`/remote/sessions/${SESSION_UUID}/offer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ offer: 'offer-sdp' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.code).toBe('REMOTE_ACCESS_POLICY_DENIED');
+      expect(body.capability).toBe('webrtcDesktop');
+      // The denied offer must NOT mutate the session (no resume of capture).
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // Finding #5 (H5): an ended ('disconnected'/'failed') session must not be
+    // resurrected to 'connecting' by a lingering offer/token — the client must
+    // create a fresh session to reconnect.
+    it('rejects the offer with 400 when the session is in a terminal (disconnected) state', async () => {
+      const sessionResult = {
+        session: {
+          id: SESSION_UUID,
+          userId: 'user-123',
+          status: 'disconnected', // terminal — must not be flipped back to connecting
+          type: 'desktop',
+          iceCandidates: []
+        },
+        device: { id: DEVICE_UUID, orgId: 'org-123', agentId: 'agent-abc123' }
+      };
+
+      // getSessionWithOrgCheck (checkRemoteAccess stays allowed by default, so
+      // we reach the status gate).
+      vi.mocked(db.select).mockReturnValueOnce(
+        mockSelectInnerJoinChain([sessionResult])
+      );
+
+      const res = await app.request(`/remote/sessions/${SESSION_UUID}/offer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ offer: 'offer-sdp' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Cannot submit offer for session in current state');
+      expect(body.status).toBe('disconnected');
+      // A terminal session must not be resurrected.
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 
