@@ -62,6 +62,18 @@ describe('state routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     app = new Hono();
+    // Simulate agentAuthMiddleware: requireAgentRole (now on stateRoutes)
+    // rejects requests without an agent-role context.
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: 'org-1',
+        siteId: 'site-1',
+        role: 'agent',
+      } as any);
+      return next();
+    });
     app.route('/agents', stateRoutes);
   });
 

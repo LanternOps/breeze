@@ -9,6 +9,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -40,6 +41,8 @@ export const elevationRequestSchema = z.object({
 export type ElevationRequestPayload = z.infer<typeof elevationRequestSchema>;
 
 export const elevationRequestsRoutes = new Hono();
+// Elevation-request ingest is the main agent's job; reject watchdog tokens.
+elevationRequestsRoutes.use('*', requireAgentRole);
 
 elevationRequestsRoutes.post(
   '/:id/elevation-requests',

@@ -7,8 +7,11 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { submitSessionsSchema } from './schemas';
 import { sanitizeTimestamp } from './helpers';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const sessionsRoutes = new Hono();
+// Session ingest is the main agent's job; reject watchdog-role tokens.
+sessionsRoutes.use('*', requireAgentRole);
 
 function getSessionIdentityKey(input: {
   username: string;
