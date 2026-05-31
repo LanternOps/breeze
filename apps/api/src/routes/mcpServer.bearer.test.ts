@@ -203,6 +203,53 @@ describe('mcpServer bearer auth routing', () => {
     expect(Array.isArray(authArg?.accessibleOrgIds)).toBe(true);
   });
 
+  it('never attributes the per-tool audit event to a client-supplied out-of-scope arguments.orgId (partner-scoped)', async () => {
+    // Regression for the cross-tenant attribution defect, exercised end-to-end
+    // through handleToolsCall (not just the unit resolver): a partner-scoped
+    // OAuth caller (apiKey.orgId null) that sets arguments.orgId to an org it
+    // cannot access must NOT have that org used as the audit_logs attribution.
+    // Proves the wiring resolveMcpExecutionOrgId -> executionOrgId ->
+    // writeMcpToolAuditEvent for the tier-1 sink reachable with mcp:read.
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      c.set('apiKey', {
+        id: 'oauth:jti-1', orgId: null, partnerId: 'partner-1',
+        name: 'OAuth bearer', keyPrefix: 'oauth',
+        scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1',
+      });
+      return next();
+    });
+    mocks.getToolTier.mockReturnValue(1);
+    mocks.executeTool.mockResolvedValue('ok');
+
+    const VICTIM_ORG = '99999999-9999-4999-8999-999999999999';
+    const { app } = await appWithMcpRoutes();
+    const { writeAuditEvent } = await import('../services/auditEvents');
+
+    const res = await app.request('/mcp/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer foo' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'inspect_scope', arguments: { orgId: VICTIM_ORG } },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    // tools/call emits two audit rows: a per-request `mcp.tools.call` (org via
+    // the safe resolveDefaultOrgId) and the per-tool `mcp.tool.<name>` written by
+    // writeMcpToolAuditEvent (org via the gated executionOrgId — the sink the fix
+    // touches). Assert the per-tool sink ran...
+    const events = ((writeAuditEvent as any).mock.calls as Array<[unknown, { orgId?: string | null; action?: string }]>)
+      .map((call) => call[1]);
+    expect(events.some((e) => e?.action === 'mcp.tool.inspect_scope')).toBe(true);
+    // ...and that NO audit row (per-tool or per-request) is attributed to the
+    // attacker-supplied org.
+    for (const e of events) {
+      expect(e?.orgId).not.toBe(VICTIM_ORG);
+    }
+  });
+
   it('no auth headers → 401 even with MCP_OAUTH_ENABLED (carve-out deleted in Phase 3)', async () => {
     process.env.MCP_OAUTH_ENABLED = 'true';
     delete process.env.IS_HOSTED;
