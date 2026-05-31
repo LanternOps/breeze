@@ -67,6 +67,14 @@ const CANONICAL_GATE_NAMES = [
   'resolveSiteAllowedDeviceIds',
   'hasDeniedDeviceSite',
   'hasDeniedThreatDeviceSite',
+  // NOTE: `getDeviceWithOrgCheck` (routes/remote/helpers.ts) is a cross-file
+  // site-aware resolver, but it is deliberately NOT listed as a gate token.
+  // It gates only the code path where a deviceId is supplied — e.g.
+  // DELETE /sessions/stale site-gates a specific device but falls back to
+  // org-only cleanup when deviceId is omitted. A global token would mask that
+  // real gap. The two genuinely-gated callers it would clear (remote POST
+  // /sessions, POST /transfers) stay in the baseline as known false positives
+  // instead. A future import-aware resolver could clear them precisely.
   // Bare token: every correct gate path references `allowedSiteIds` (directly
   // or through a helper), so this is a safe catch-all that keeps gated
   // handlers green even if they use a bespoke local helper.
