@@ -7,7 +7,8 @@ import {
   scheduleS1ActionPoll
 } from '../../jobs/s1Sync';
 import { captureException } from '../sentry';
-import type { S1ThreatAction } from './client';
+import { redactLogMessage } from '../logRedaction';
+import { SentinelOneHttpError, type S1ThreatAction } from './client';
 
 const NO_ACTIVITY_ID_WARNING = 'Provider did not return activityId; action cannot be tracked';
 
@@ -55,13 +56,48 @@ export interface S1ActionSuccessResult<TData> {
   data: TData;
 }
 
-function truncateError(err: unknown): string {
+export function truncateError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.slice(0, 2_000);
+  // Redact before truncating/persisting. S1 bearer tokens go in headers, but an
+  // error message can echo a Cookie/Authorization header; for a SentinelOneHttpError
+  // the body lives on `.responseBody` (logged server-side), never on `.message`.
+  return redactLogMessage(message).slice(0, 2_000);
 }
 
 function formatDispatchError(err: unknown): string {
   return `SentinelOne action dispatch failed: ${truncateError(err)}`;
+}
+
+/**
+ * Log full failure detail to the SERVER-SIDE log only. For an upstream HTTP error
+ * this includes the (redacted) `.responseBody` that we deliberately keep out of
+ * the tenant-visible `s1_actions.error` column / action dispatch result. The
+ * tenant-visible text is written separately via {@link truncateError}, which
+ * reads only the body-free `.message`. Mirrors `logSyncFailureServerSide` in
+ * jobs/s1Sync.ts but kept local to avoid a service→job import.
+ */
+export function logActionDispatchFailureServerSide(
+  context: Record<string, unknown>,
+  error: unknown
+): void {
+  if (error instanceof SentinelOneHttpError) {
+    console.error(
+      '[s1-actions] dispatch failed (upstream HTTP error)',
+      JSON.stringify({
+        ...context,
+        status: error.status,
+        responseBody: redactLogMessage(error.responseBody),
+      })
+    );
+    return;
+  }
+  console.error(
+    '[s1-actions] dispatch failed',
+    JSON.stringify({
+      ...context,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    })
+  );
 }
 
 export async function getActiveS1IntegrationForOrg(orgId: string): Promise<S1ActiveIntegration | null> {
@@ -166,6 +202,13 @@ export async function executeS1IsolationForOrg(params: {
       status = 'completed';
     }
   } catch (error) {
+    // Capture full detail (incl. redacted upstream body) server-side BEFORE we
+    // build the body-free tenant-visible warning — otherwise the diagnostic
+    // `.responseBody` is dropped entirely on a failed isolate dispatch.
+    logActionDispatchFailureServerSide(
+      { orgId: params.orgId, integrationId: params.integrationId },
+      error
+    );
     warning = formatDispatchError(error);
     errorText = warning;
     providerRaw = { error: warning };
@@ -314,6 +357,13 @@ export async function executeS1ThreatActionForOrg(params: {
       status = 'completed';
     }
   } catch (error) {
+    // Capture full detail (incl. redacted upstream body) server-side BEFORE we
+    // build the body-free tenant-visible warning — otherwise the diagnostic
+    // `.responseBody` is dropped entirely on a failed threat-action dispatch.
+    logActionDispatchFailureServerSide(
+      { orgId: params.orgId, integrationId: params.integrationId },
+      error
+    );
     warning = formatDispatchError(error);
     errorText = warning;
     providerRaw = { error: warning };

@@ -85,9 +85,11 @@ const DEFAULT_MAX_PAGES = 25;
  * a fixed `.sentinelone.net` vendor host (not a tenant-controlled SSRF oracle),
  * reflecting the upstream body back to tenants is an information-hygiene leak —
  * the same rule we apply to {@link DnsProviderHttpError}. `truncateError`
- * (s1Sync.ts / actions.ts) reads only `.message`, so the body is automatically
- * kept out of the tenant column; `logSyncFailureServerSide` logs `.responseBody`
- * (redacted) server-side.
+ * (s1Sync.ts / actions.ts) reads the body-free `.message` (and additionally
+ * redacts it defense-in-depth), so the `.responseBody` is automatically kept out
+ * of the tenant column; the server-side loggers (`logSyncFailureServerSide` in
+ * s1Sync.ts, `logActionDispatchFailureServerSide` in actions.ts) log
+ * `.responseBody` (redacted) server-side instead.
  */
 export class SentinelOneHttpError extends Error {
   public readonly status: number;
