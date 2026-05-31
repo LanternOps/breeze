@@ -10,7 +10,7 @@ import {
   requirePermission,
   requireScope,
 } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { provisionDeviceSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from '../agents/helpers';
@@ -78,6 +78,15 @@ provisionRoutes.post(
         { error: 'Target site not found or does not belong to the target organization' },
         400,
       );
+    }
+
+    // ----------- auth: site-scope gate (app-layer only; RLS does NOT defend it) -----------
+    // A site-restricted org user (`permissions.allowedSiteIds`) must not be able
+    // to provision a device into a site outside their allowlist. No behavior
+    // change for unrestricted callers (allowedSiteIds unset → canAccessSite true).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, data.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // ----------- server URL for the agent config (canonical pattern) -----------

@@ -33,6 +33,10 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: { DEVICES_WRITE: { resource: 'devices', action: 'write' } },
+  // Faithful re-implementation: unrestricted (no allowedSiteIds) always passes;
+  // otherwise the siteId must be in the allowlist.
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
 
 vi.mock('../agents/helpers', () => ({
@@ -77,12 +81,25 @@ const BASE_BODY = {
   osType: 'windows',
 };
 
-function setAuth(overrides: Partial<{ canAccessOrg: (id: string) => boolean }> = {}) {
+function setAuth(
+  overrides: Partial<{
+    canAccessOrg: (id: string) => boolean;
+    allowedSiteIds: string[];
+  }> = {},
+) {
   authMiddlewareMock.mockImplementation((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'a@example.com' },
       canAccessOrg: overrides.canAccessOrg ?? ((id: string) => id === ORG_ID),
     });
+    // Mirror authMiddleware: populate the per-request permissions object. A
+    // site-restricted user has `allowedSiteIds`; unrestricted users do not.
+    c.set(
+      'permissions',
+      overrides.allowedSiteIds !== undefined
+        ? { allowedSiteIds: overrides.allowedSiteIds }
+        : {},
+    );
     return next();
   });
 }
@@ -299,6 +316,74 @@ describe('POST /devices/provision', () => {
         body: JSON.stringify({ ...BASE_BODY, osType: 'bsd' }),
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('site-scope authorization (app-layer only; RLS does not defend it)', () => {
+    it('returns 403 when a site-restricted caller provisions into an out-of-scope site', async () => {
+      // Caller is restricted to a DIFFERENT site than the target.
+      setAuth({ allowedSiteIds: ['some-other-site-id'] });
+      mockSelectRows([{ id: SITE_ID }]); // site-in-org check passes (site does belong to org)
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('site');
+      // Must reject BEFORE inserting the device.
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when a site-restricted caller provisions into an in-scope site', async () => {
+      setAuth({ allowedSiteIds: [SITE_ID] });
+      mockSelectRows([{ id: SITE_ID }]); // site-in-org check
+      mockSelectRows([]);                 // hostname collision (none)
+      mockTransactionSuccess({
+        id: 'device-in-scope',
+        orgId: ORG_ID,
+        siteId: SITE_ID,
+        hostname: BASE_BODY.hostname,
+        agentId: 'agent-prov-1',
+        status: 'pending',
+      });
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.device.id).toBe('device-in-scope');
+    });
+
+    it('is unchanged for unrestricted callers (no allowedSiteIds)', async () => {
+      setAuth(); // no allowedSiteIds → unrestricted
+      mockSelectRows([{ id: SITE_ID }]);
+      mockSelectRows([]);
+      mockTransactionSuccess({
+        id: 'device-unrestricted',
+        orgId: ORG_ID,
+        siteId: SITE_ID,
+        hostname: BASE_BODY.hostname,
+        agentId: 'agent-prov-1',
+        status: 'pending',
+      });
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(201);
+      expect(db.transaction).toHaveBeenCalled();
     });
   });
 });

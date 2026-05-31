@@ -17,6 +17,7 @@ import {
 } from '../services/networkBaseline';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
+import { canAccessSite, type UserPermissions } from '../services/permissions';
 import {
   networkEventTypes,
   optionalQueryBooleanSchema,
@@ -214,6 +215,14 @@ networkBaselineRoutes.post(
 
     if (!site) {
       return c.json({ error: 'Site not found for this organization' }, 404);
+    }
+
+    // Site-scope is an app-layer-only authz axis (RLS does not defend it). A
+    // site-restricted caller must not create a baseline for a site outside
+    // their allowlist. No-op when `allowedSiteIds` is unset (unrestricted).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (body.profileId) {

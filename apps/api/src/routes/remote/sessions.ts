@@ -36,7 +36,7 @@ import {
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { normalizeRecordingUrl } from './recordingUrl';
-import type { UserPermissions } from '../../services/permissions';
+import { canAccessSite, type UserPermissions } from '../../services/permissions';
 
 export const sessionRoutes = new Hono();
 
@@ -50,6 +50,7 @@ sessionRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.query('deviceId');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const activeStatuses: Array<'pending' | 'connecting' | 'active'> = ['pending', 'connecting', 'active'];
 
     const conditions: ReturnType<typeof eq>[] = [
@@ -58,7 +59,7 @@ sessionRoutes.delete(
 
     // Scope by device if specified
     if (deviceId) {
-      const device = await getDeviceWithOrgCheck(deviceId, auth, c.get('permissions') as UserPermissions | undefined);
+      const device = await getDeviceWithOrgCheck(deviceId, auth, perms);
       if (device === 'SITE_ACCESS_DENIED') {
         return c.json({ error: 'Access to this site denied' }, 403);
       }
@@ -66,6 +67,26 @@ sessionRoutes.delete(
         return c.json({ error: 'Device not found or access denied' }, 404);
       }
       conditions.push(eq(remoteSessions.deviceId, deviceId));
+    } else if (perms?.allowedSiteIds) {
+      // Site-scope is an app-layer-only authz axis; RLS does NOT defend it.
+      // Without a deviceId the org-only scoping below would disconnect ALL
+      // stale sessions in the org regardless of site, so narrow to devices in
+      // the caller's allowed sites. `allowedSiteIds` is only set for org-scope
+      // users, so `auth.orgId` is present here. Finding #1.
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, auth.orgId));
+      const allowedDeviceIds = orgDevices
+        .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+        .map((d) => d.id);
+      if (allowedDeviceIds.length === 0) {
+        return c.json({ cleaned: 0, ids: [] });
+      }
+      conditions.push(inArray(remoteSessions.deviceId, allowedDeviceIds));
     }
 
     // Scope by org access
@@ -704,6 +725,16 @@ sessionRoutes.post(
     }
 
     const { session, device } = result;
+
+    // Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`);
+    // RLS does NOT defend it. `getSessionWithOrgCheck` only org-gates, unlike
+    // `getDeviceWithOrgCheck`, so re-enforce site scope here. A null device
+    // siteId is treated as denied for a site-restricted caller. Finding #2.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (!hasSessionOrTransferOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }

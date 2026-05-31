@@ -1,7 +1,85 @@
-import { describe, expect, it } from 'vitest';
-import { executableRuleSchema, resolveOrgIdForWrite, softwareRulesSchema } from './softwarePolicies';
-import { normalizeSoftwarePolicyRules } from '../services/softwarePolicyService';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 import type { AuthContext } from '../middleware/auth';
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  },
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../db/schema', () => ({
+  devices: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
+  softwareComplianceStatus: {
+    policyId: 'policyId',
+    deviceId: 'deviceId',
+    status: 'status',
+    remediationStatus: 'remediationStatus',
+    lastRemediationAttempt: 'lastRemediationAttempt',
+  },
+  softwarePolicies: { id: 'id', orgId: 'orgId', mode: 'mode', name: 'name', isActive: 'isActive' },
+}));
+
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: vi.fn((c: any, next: any) => next()),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+}));
+
+vi.mock('../jobs/softwareComplianceWorker', () => ({
+  scheduleSoftwareComplianceCheck: vi.fn(),
+}));
+
+vi.mock('../jobs/softwareRemediationWorker', () => ({
+  scheduleSoftwareRemediation: vi.fn(async () => 1),
+}));
+
+vi.mock('../services/softwarePolicyService', () => ({
+  normalizeSoftwarePolicyRules: (r: any) => ({
+    software: r.software ?? [],
+    executable: r.executable,
+    allowUnknown: r.allowUnknown,
+  }),
+  recordSoftwarePolicyAudit: vi.fn(async () => undefined),
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
+vi.mock('../services/permissions', () => ({
+  PERMISSIONS: {
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    DEVICES_WRITE: { resource: 'devices', action: 'write' },
+    DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+  },
+  // Faithful to the real implementation: unrestricted callers (no
+  // allowedSiteIds) always pass; otherwise the site must be in the allowlist.
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
+}));
+
+import {
+  executableRuleSchema,
+  resolveOrgIdForWrite,
+  softwarePoliciesRoutes,
+  softwareRulesSchema,
+} from './softwarePolicies';
+import { normalizeSoftwarePolicyRules } from '../services/softwarePolicyService';
+import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
+import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 
 function makeOrgAuth(orgId: string): AuthContext {
   return {
@@ -134,5 +212,180 @@ describe('softwareRulesSchema — PAM-only / inventory-only / mixed', () => {
     expect(normalized.executable?.[0]?.sha256).toBe('a'.repeat(64));
     expect(normalized.executable?.[0]?.signer).toBe('Adobe Inc.');
     expect(normalized.software).toEqual([]);
+  });
+});
+
+// ───────────────── POST /:id/remediate — site scope ─────────────────
+// A site-restricted org user (permissions.allowedSiteIds set) triggers
+// remediation actions ON target devices. Site is an app-layer-only authz
+// axis — Postgres RLS does NOT defend it — so a site-restricted caller must
+// not remediate devices in sites outside their allowlist, whether named
+// explicitly via body.deviceIds or selected implicitly from violations.
+describe('POST /:id/remediate — site scope', () => {
+  const ORG_ID = '11111111-1111-1111-1111-111111111111';
+  const POLICY_ID = '22222222-2222-2222-2222-222222222222';
+  const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+  const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+  const DEVICE_ALLOWED = '33333333-3333-3333-3333-333333333333';
+  const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
+
+  let app: Hono;
+
+  function setAuth(allowedSiteIds?: string[]) {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        user: { id: 'user-123', email: 'test@example.com' },
+      });
+      if (allowedSiteIds) c.set('permissions', { allowedSiteIds });
+      return next();
+    });
+  }
+
+  // Mocks the policy lookup that getPolicyWithAccess runs first.
+  function mockPolicyLookup() {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: POLICY_ID, orgId: ORG_ID, mode: 'blocklist', name: 'Block X' },
+          ]),
+        }),
+      }),
+    } as any);
+  }
+
+  // Mocks the site-resolution select (org devices) that a restricted caller
+  // runs after the policy lookup: db.select({id, siteId}).from(devices).where(...)
+  function mockSiteResolution(rows: Array<{ id: string; siteId: string | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
+      }),
+    } as any);
+  }
+
+  // Mocks the explicit-deviceIds resolution select:
+  // db.select({id}).from(devices).where(...)
+  function mockExplicitDeviceSelect(rows: Array<{ id: string }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
+      }),
+    } as any);
+  }
+
+  // Mocks the implicit violations select:
+  // db.select({deviceId}).from(softwareComplianceStatus).innerJoin(devices).where(...).limit(...)
+  function mockViolationsSelect(rows: Array<{ deviceId: string }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      }),
+    } as any);
+  }
+
+  // The compliance-status UPDATE the route runs after scheduling.
+  function mockComplianceUpdate() {
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(scheduleSoftwareRemediation).mockResolvedValue(1 as any);
+    mockComplianceUpdate();
+    app = new Hono();
+    app.route('/software-policies', softwarePoliciesRoutes);
+  });
+
+  it('denies the batch when an explicit deviceId is outside the caller site allowlist (403)', async () => {
+    setAuth([SITE_ALLOWED]);
+    mockPolicyLookup();
+    // Site resolution: only DEVICE_ALLOWED is in-scope.
+    mockSiteResolution([
+      { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+      { id: DEVICE_DENIED, siteId: SITE_DENIED },
+    ]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/remediate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: [DEVICE_ALLOWED, DEVICE_DENIED] }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(scheduleSoftwareRemediation)).not.toHaveBeenCalled();
+  });
+
+  it('narrows implicit remediation to in-scope devices for a restricted caller', async () => {
+    setAuth([SITE_ALLOWED]);
+    mockPolicyLookup();
+    mockSiteResolution([
+      { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+      { id: DEVICE_DENIED, siteId: SITE_DENIED },
+    ]);
+    // Implicit violations query — the route must have narrowed it to in-scope
+    // devices, so only DEVICE_ALLOWED comes back.
+    mockViolationsSelect([{ deviceId: DEVICE_ALLOWED }]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/remediate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(scheduleSoftwareRemediation)).toHaveBeenCalledTimes(1);
+    const targeted = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1];
+    expect(targeted).toEqual([DEVICE_ALLOWED]);
+    expect(targeted).not.toContain(DEVICE_DENIED);
+  });
+
+  it('allows an explicit in-scope deviceId for a restricted caller', async () => {
+    setAuth([SITE_ALLOWED]);
+    mockPolicyLookup();
+    mockSiteResolution([{ id: DEVICE_ALLOWED, siteId: SITE_ALLOWED }]);
+    mockExplicitDeviceSelect([{ id: DEVICE_ALLOWED }]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/remediate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: [DEVICE_ALLOWED] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(scheduleSoftwareRemediation)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1]).toEqual([DEVICE_ALLOWED]);
+  });
+
+  it('does not narrow for an unrestricted caller (no allowedSiteIds)', async () => {
+    // No permissions set — NO site-resolution select runs; only the policy
+    // lookup + the implicit violations query.
+    setAuth();
+    mockPolicyLookup();
+    mockViolationsSelect([{ deviceId: DEVICE_ALLOWED }, { deviceId: DEVICE_DENIED }]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/remediate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(scheduleSoftwareRemediation)).toHaveBeenCalledTimes(1);
+    const targeted = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1];
+    expect(targeted).toEqual(expect.arrayContaining([DEVICE_ALLOWED, DEVICE_DENIED]));
   });
 });

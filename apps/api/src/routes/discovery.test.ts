@@ -68,6 +68,10 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
+    })),
+    transaction: vi.fn(async (fn: any) => fn({
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
     }))
   },
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
@@ -527,6 +531,192 @@ describe('discovery routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toContain('denied');
+    });
+  });
+
+  describe('site-scope authz (app-layer, RLS does not defend)', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const ASSET_IN = '00000000-0000-0000-0000-0000000000a0';
+    const SITE_IN = '00000000-0000-0000-0000-0000000000s1';
+    const SITE_OUT = '00000000-0000-0000-0000-0000000000s9';
+    const DEVICE_ID = '00000000-0000-0000-0000-0000000000d1';
+
+    function setSiteRestrictedAuth(allowedSiteIds: string[] | undefined) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG,
+          partnerId: null,
+          canAccessOrg: (orgId: string) => orgId === ORG,
+          accessibleOrgIds: null
+        });
+        c.set('permissions', allowedSiteIds ? { allowedSiteIds } : {});
+        return next();
+      });
+    }
+
+    function mockAssetThenDevice(asset: any, device: any) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([asset]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([device]),
+            }),
+          }),
+        } as any);
+    }
+
+    describe('POST /assets/:id/link', () => {
+      it('rejects when the asset is in a site outside the caller allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_OUT },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_OUT }
+        );
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('blocks linking when the target device site is outside the caller allowlist', async () => {
+        // Asset and device share an out-of-scope site (the same-site invariant
+        // holds), so the link must still be refused for a site-restricted caller.
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_OUT },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_OUT }
+        );
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+      });
+
+      it('allows linking when both asset and device sites are in the allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+        );
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: DEVICE_ID }])
+            })
+          })
+        } as any);
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('does not gate when the caller is unrestricted (no allowedSiteIds)', async () => {
+        setSiteRestrictedAuth(undefined);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_OUT },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_OUT }
+        );
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: DEVICE_ID }])
+            })
+          })
+        } as any);
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(200);
+      });
+    });
+
+    describe('DELETE /assets/:id', () => {
+      function mockAssetOnly(asset: any) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([asset]),
+            }),
+          }),
+        } as any);
+      }
+
+      it('rejects deleting an asset in a site outside the caller allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_OUT });
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+      });
+
+      it('allows deleting an asset whose site is in the allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_IN });
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }),
+          delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+        }));
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('does not gate deletion when the caller is unrestricted', async () => {
+        setSiteRestrictedAuth(undefined);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_OUT });
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }),
+          delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+        }));
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+      });
     });
   });
 });

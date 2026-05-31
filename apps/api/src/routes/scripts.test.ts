@@ -456,6 +456,111 @@ describe('scripts routes', () => {
     expect(body.error).toBe('Access to this site denied');
   });
 
+  it('denies cancelling an execution when the device is outside the caller site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-denied'
+            }])
+          })
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Access to this site denied');
+    // Must reject before mutating
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('allows cancelling an execution when the device is within the caller site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-allowed'
+            }])
+          })
+        })
+      })
+    } as any);
+    vi.mocked(db.update)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'cancelled' }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('cancels an execution unchanged when the caller has no site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-denied'
+            }])
+          })
+        })
+      })
+    } as any);
+    vi.mocked(db.update)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'cancelled' }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+  });
+
   it('should validate create payload', async () => {
     const res = await app.request('/scripts', {
       method: 'POST',

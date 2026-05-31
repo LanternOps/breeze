@@ -20,7 +20,7 @@ import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import {
   encryptSnmpCommunities,
@@ -1053,6 +1053,19 @@ discoveryRoutes.post(
       return c.json({ error: 'Device does not belong to the same site as this asset' }, 403);
     }
 
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it. A
+    // site-restricted caller must be able to reach BOTH the asset's site and
+    // the target device's site (whichever are set).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      if (typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      if (typeof targetDevice.siteId === 'string' && !canAccessSite(perms, targetDevice.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
+
     const [updated] = await db.update(discoveredAssets)
       .set({
         approvalStatus: 'approved',
@@ -1152,11 +1165,18 @@ discoveryRoutes.delete(
     const [existing] = await db.select({
       id: discoveredAssets.id,
       orgId: discoveredAssets.orgId,
+      siteId: discoveredAssets.siteId,
       hostname: discoveredAssets.hostname,
       ipAddress: discoveredAssets.ipAddress
     }).from(discoveredAssets)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Asset not found' }, 404);
+
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     await db.transaction(async (tx) => {
       const monitoringDevices = await tx.select({ id: snmpDevices.id })

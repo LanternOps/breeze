@@ -1,6 +1,10 @@
 # Site-scope baseline triage (the 93 input-sourced offenders)
 
-**Status:** TRIAGED — fixes pending (Claude, per the auth/authz delegation rule).
+**Status:** TRIAGED — batch 1 done (8 high-sev mutations fixed; 34 exempts vetted). 44 reads + 7 aggregates remain in the baseline.
+
+**Progress:**
+- ✅ **Batch 1 (PR #3, branch `fix/site-scope-mutations`):** all 8 high-severity MUTATIONS fixed (TDD) and removed from `SITE_SCOPE_INPUT_BASELINE`; the 24 EXEMPT-AGENT + 10 EXEMPT-FALSE-POSITIVE moved to `SITE_SCOPE_INPUT_EXEMPT` with justifications. Baseline: 93 → 51.
+- ⏳ **Remaining:** 44 REAL-GAP reads + 7 EXEMPT-AGGREGATE (re-confirm "counts only" then move to exempt).
 **Date:** 2026-05-31
 **Source:** Codex `gpt-5.5`, `model_reasoning_effort=high`, read-only, over the worktree at this branch.
 **Validation:** Claude spot-checked a sample (5/5 correct): the agent-auth mount

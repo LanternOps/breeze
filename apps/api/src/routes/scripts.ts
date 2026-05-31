@@ -989,7 +989,8 @@ scriptRoutes.post(
         id: scriptExecutions.id,
         status: scriptExecutions.status,
         deviceId: scriptExecutions.deviceId,
-        deviceOrgId: devices.orgId
+        deviceOrgId: devices.orgId,
+        deviceSiteId: devices.siteId
       })
       .from(scriptExecutions)
       .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
@@ -1006,6 +1007,9 @@ scriptRoutes.post(
       if (!hasAccess) {
         return c.json({ error: 'Access denied' }, 403);
       }
+    }
+    if (!canAccessDeviceSite(execution.deviceSiteId, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Can only cancel pending, queued, or running executions
