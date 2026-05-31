@@ -7,7 +7,7 @@
  */
 
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, delegantM365Connections } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
@@ -30,6 +30,8 @@ export async function createSession(
     title?: string;
     orgId?: string;
     delegantM365ConnectionId?: string;
+    deviceId?: string;
+    approvalMode?: AiApprovalMode;
   }
 ): Promise<{ id: string; orgId: string; delegantM365ConnectionId: string | null }> {
   const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -58,6 +60,24 @@ export async function createSession(
     delegantM365ConnectionId = conn.id;
   }
 
+  // Cross-org validation (SECURITY-CRITICAL): a session may only be bound to a
+  // device that belongs to the session's org. This is what makes a dispatched
+  // "task on this computer" scoped — the device id is recorded on the session
+  // and surfaced in the system prompt/context for the agent and in the UI for
+  // the approving technician.
+  let deviceId: string | null = null;
+  if (options.deviceId) {
+    const [dev] = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, options.deviceId))
+      .limit(1);
+    if (!dev || dev.orgId !== orgId) {
+      throw new Error('Invalid device');
+    }
+    deviceId = dev.id;
+  }
+
   const [session] = await db
     .insert(aiSessions)
     .values({
@@ -67,6 +87,8 @@ export async function createSession(
       title: options.title ?? null,
       contextSnapshot: options.pageContext ?? null,
       delegantM365ConnectionId,
+      deviceId,
+      ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
       systemPrompt: await buildSystemPrompt(auth, options.pageContext)
     })
     .returning();

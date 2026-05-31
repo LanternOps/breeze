@@ -42,7 +42,13 @@ import { captureException } from '../services/sentry';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional(),
-  delegantM365ConnectionId: z.string().uuid().optional()
+  delegantM365ConnectionId: z.string().uuid().optional(),
+  // Bind the session to a specific device (a "task on this computer"). The
+  // device is org-validated in createSession.
+  deviceId: z.string().uuid().optional(),
+  // Let the caller pick the approval posture (e.g. plan-first for open-ended
+  // device tasks). Defaults to the column default (per_step) when omitted.
+  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional()
 });
 
 /**

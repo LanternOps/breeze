@@ -21,10 +21,12 @@ import {
   Layers,
   Timer,
   Usb,
+  Sparkles,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import DeviceActions from './DeviceActions';
+import { useAiStore } from '../../stores/aiStore';
 import DeviceInfoTab from './DeviceInfoTab';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
@@ -149,6 +151,7 @@ function getTabFromHash(): Tab {
 
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
   const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
+  const startDeviceTask = useAiStore((s) => s.startDeviceTask);
 
   useEffect(() => {
     const onHashChange = () => setActiveTab(getTabFromHash());
@@ -214,7 +217,27 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
               </div>
             </div>
           </div>
-          <DeviceActions device={device} onAction={onAction} />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="device-fix-with-ai"
+              onClick={() =>
+                void startDeviceTask(device.id, {
+                  type: 'device',
+                  id: device.id,
+                  hostname: device.hostname,
+                  os: device.os,
+                  status: device.status,
+                })
+              }
+              className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+              title="Start an AI task scoped to this device"
+            >
+              <Sparkles className="h-4 w-4" />
+              Fix with AI
+            </button>
+            <DeviceActions device={device} onAction={onAction} />
+          </div>
         </div>
       </div>
 

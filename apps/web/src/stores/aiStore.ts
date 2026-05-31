@@ -55,7 +55,8 @@ interface AiState {
   open: () => void;
   close: () => void;
   setPageContext: (ctx: AiPageContext | null) => void;
-  createSession: () => Promise<void>;
+  createSession: (opts?: { deviceId?: string }) => Promise<void>;
+  startDeviceTask: (deviceId: string, ctx: AiPageContext) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
@@ -117,15 +118,17 @@ export const useAiStore = create<AiState>()(
 
   setPageContext: (ctx) => set({ pageContext: ctx }),
 
-  createSession: async () => {
+  createSession: async (opts) => {
     set({ isLoading: true, error: null });
     try {
-      const { pageContext, selectedM365ConnectionId } = get();
+      const { pageContext, selectedM365ConnectionId, approvalMode } = get();
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
           pageContext: pageContext ?? undefined,
-          delegantM365ConnectionId: selectedM365ConnectionId ?? undefined
+          delegantM365ConnectionId: selectedM365ConnectionId ?? undefined,
+          deviceId: opts?.deviceId ?? undefined,
+          approvalMode
         })
       });
       if (!res.ok) {
@@ -147,6 +150,14 @@ export const useAiStore = create<AiState>()(
         isLoading: false
       });
     }
+  },
+
+  // Start a fresh AI session bound to a specific device ("Fix with AI" on the
+  // device page). Sets the device page-context, opens the panel, and creates a
+  // device-scoped session; the user then types the instruction in the chat.
+  startDeviceTask: async (deviceId, ctx) => {
+    set({ pageContext: ctx, sessionId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
+    await get().createSession({ deviceId });
   },
 
   loadSession: async (sessionId: string) => {
