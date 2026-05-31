@@ -45,6 +45,21 @@ export interface AuthContext {
    * Use when validating an orgId passed as a parameter.
    */
   canAccessOrg: (orgId: string) => boolean;
+
+  /**
+   * Site-axis allowlist (sub-org restriction). `undefined` = no site
+   * restriction (full access to every site in accessible orgs). Mirrors
+   * `UserPermissions.allowedSiteIds`. Populated for organization-scope users;
+   * left undefined for partner/system scope.
+   */
+  allowedSiteIds?: string[];
+
+  /**
+   * Check if the caller can access a specific site. Returns `true` when
+   * unrestricted (`allowedSiteIds` undefined). A site-restricted caller is
+   * denied for a null/undefined siteId (e.g. a device with no site assignment).
+   */
+  canAccessSite?: (siteId: string | null | undefined) => boolean;
 }
 
 declare module 'hono' {
