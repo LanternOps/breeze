@@ -15,7 +15,7 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
-import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
+import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
@@ -214,11 +214,20 @@ abuseRoutes.post(
 
     // Terminate any live remote-desktop sessions held by the suspended users so
     // a rogue operator can't keep screen / input / clipboard control after the
-    // partner is suspended for abuse. Best-effort (never throws); the
-    // OAuth/JWT/API-key revocation above already cut new access. Finding #3.
-    await Promise.allSettled(
+    // partner is suspended for abuse. Finding #3.
+    //
+    // A per-user TEARDOWN_FAILED (already reported to Sentry inside the service)
+    // does NOT abort the suspend, but we count it so the audit trail records
+    // that some operators may have retained live control.
+    let remoteSessionTeardownFailures = 0;
+    const teardownResults = await Promise.allSettled(
       result.affectedUserIds.map((id) => terminateUserRemoteSessions(id))
     );
+    for (const settled of teardownResults) {
+      if (settled.status === 'rejected' || settled.value === TEARDOWN_FAILED) {
+        remoteSessionTeardownFailures += 1;
+      }
+    }
 
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null
@@ -239,6 +248,7 @@ abuseRoutes.post(
           deviceCount: result.deviceCount,
           userCount: result.userCount,
           apiKeyCount: result.apiKeyCount,
+          remoteSessionTeardownFailures,
           requestedBy: callerId,
           oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
           oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
@@ -292,6 +302,7 @@ abuseRoutes.post(
           deviceCount: result.deviceCount,
           userCount: result.userCount,
           apiKeyCount: result.apiKeyCount,
+          remoteSessionTeardownFailures,
           queuedUninstalls: result.deviceCount,
         },
         500,
@@ -304,6 +315,7 @@ abuseRoutes.post(
       deviceCount: result.deviceCount,
       userCount: result.userCount,
       apiKeyCount: result.apiKeyCount,
+      remoteSessionTeardownFailures,
       queuedUninstalls: result.deviceCount,
       oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
       oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
@@ -393,4 +405,3 @@ abuseRoutes.post(
     });
   }
 );
-

@@ -10,6 +10,7 @@ const {
   requireCurrentPasswordStepUpMock,
   isPasswordAuthDisabledBySsoMock,
   hasSatisfiedMfaMock,
+  terminateUserRemoteSessionsMock,
   captureExceptionMock,
   getEmailServiceMock
 } = vi.hoisted(() => ({
@@ -25,7 +26,8 @@ const {
   // Default: org does NOT enforce SSO.
   isPasswordAuthDisabledBySsoMock: vi.fn().mockResolvedValue(false),
   // Default: MFA is considered satisfied. Tests override to false.
-  hasSatisfiedMfaMock: vi.fn().mockReturnValue(true)
+  hasSatisfiedMfaMock: vi.fn().mockReturnValue(true),
+  terminateUserRemoteSessionsMock: vi.fn().mockResolvedValue(0)
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -171,10 +173,16 @@ vi.mock('../services/userSuspension', () => ({
   })
 }));
 
+vi.mock('../services/remoteSessionTeardown', () => ({
+  TEARDOWN_FAILED: -1,
+  terminateUserRemoteSessions: terminateUserRemoteSessionsMock
+}));
+
 import { db } from '../db';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 
 describe('user routes', () => {
   let app: Hono;
@@ -205,6 +213,7 @@ describe('user routes', () => {
     requireCurrentPasswordStepUpMock.mockResolvedValue(null);
     isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
     hasSatisfiedMfaMock.mockReturnValue(true);
+    terminateUserRemoteSessionsMock.mockReset().mockResolvedValue(0);
     sendEmailChangedMock.mockResolvedValue(undefined);
     // Default: email service is configured. Tests override to null to exercise
     // the "not configured" warning path.
@@ -1053,6 +1062,54 @@ describe('user routes', () => {
   });
 
   describe('PATCH /users/:id (admin update)', () => {
+    it('returns 503 when remote-session teardown fails during suspension', async () => {
+      const scopedUser = {
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'operator@example.com',
+        name: 'Operator',
+        status: 'active',
+        roleId: 'role-1',
+        roleName: 'Admin',
+        orgAccess: 'all',
+        orgIds: [],
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          innerJoin: vi.fn(() => ({
+            innerJoin: vi.fn(() => ({
+              where: vi.fn(() => ({
+                limit: vi.fn().mockResolvedValue([scopedUser])
+              }))
+            }))
+          }))
+        }))
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-1111-1111-111111111111',
+              email: 'operator@example.com',
+              name: 'Operator',
+              status: 'disabled',
+            }])
+          }))
+        }))
+      } as any);
+      vi.mocked(terminateUserRemoteSessions).mockResolvedValueOnce(-1);
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'disabled' })
+      });
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toBe('Failed to terminate active remote sessions; suspension is partial. Retry.');
+      expect(terminateUserRemoteSessions).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
     it('rejects unknown top-level fields including roleId (strict schema)', async () => {
       // The Edit dialog historically sent { email, name, roleId } and roleId was
       // silently dropped because updateUserSchema lacked .strict(). After the

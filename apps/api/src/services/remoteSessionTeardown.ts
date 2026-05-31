@@ -3,8 +3,17 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { captureException } from './sentry';
 
 const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
+
+/**
+ * Sentinel returned by {@link terminateUserRemoteSessions} when teardown
+ * FAILED (enumeration / bulk-disconnect threw). Distinct from `0`, which
+ * means "nothing to do". Callers MUST surface this — a silent `0` on failure
+ * would let a suspended operator keep live remote control with no alert.
+ */
+export const TEARDOWN_FAILED = -1;
 
 /**
  * Force-terminate every live remote session owned by a user. Called from
@@ -29,10 +38,11 @@ const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as co
  * `withSystemDbAccessContext` establishes system scope on a separate
  * connection (same pattern as `logSessionAudit`).
  *
- * Best-effort by design: never throws to its caller — the suspend/deactivate
- * has already cut new access via JWT/OAuth/API-key revocation, and the agent's
- * max-session-duration timer is the ultimate backstop. Returns the number of
- * sessions it tore down.
+ * Per-row viewer-token revocation and stop_desktop commands are best-effort:
+ * individual failures are logged and do not throw to the caller. A hard
+ * enumerate / bulk-disconnect failure returns TEARDOWN_FAILED (and is reported
+ * to Sentry); callers MUST surface that sentinel because teardown did not run.
+ * On success, returns the number of sessions it tore down.
  */
 export async function terminateUserRemoteSessions(userId: string): Promise<number> {
   let active: Array<{ id: string; type: string; agentId: string | null }> = [];
@@ -69,8 +79,13 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
       })
     );
   } catch (err) {
+    // Hard failure: the suspend-time teardown did not run. Alert via Sentry so
+    // it is not silently swallowed, and signal the caller (sentinel) so it can
+    // surface a degraded/partial result instead of reporting a clean success
+    // while the operator may retain live screen/input/clipboard control.
     console.error(`[remoteSessionTeardown] Failed to enumerate/disconnect sessions for user ${userId}:`, err);
-    return 0;
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return TEARDOWN_FAILED;
   }
 
   await Promise.all(

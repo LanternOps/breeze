@@ -201,7 +201,8 @@ vi.mock('../../middleware/auth', () => ({
 // suite doesn't load the whole remote-desktop / agentWs / policy chain — which
 // would otherwise drag many transitive modules into this route's mocks.
 vi.mock('../../services/remoteSessionTeardown', () => ({
-  terminateUserRemoteSessions: vi.fn(async () => undefined),
+  TEARDOWN_FAILED: -1,
+  terminateUserRemoteSessions: vi.fn(async () => 0),
 }));
 
 import { Hono } from 'hono';
@@ -209,6 +210,7 @@ import { adminRoutes } from './index';
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -265,6 +267,7 @@ describe('admin/abuse — auth gate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetState();
+    vi.mocked(terminateUserRemoteSessions).mockReset().mockResolvedValue(0);
     process.env.NODE_ENV = 'test';
   });
 
@@ -413,6 +416,7 @@ describe('admin/abuse — suspend mutation behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetState();
+    vi.mocked(terminateUserRemoteSessions).mockReset().mockResolvedValue(0);
     process.env.NODE_ENV = 'test';
   });
 
@@ -474,6 +478,25 @@ describe('admin/abuse — suspend mutation behavior', () => {
       deviceCount: 3,
       userCount: 2,
       apiKeyCount: 3,
+    });
+  });
+
+  it('counts TEARDOWN_FAILED remote-session results in the audit details', async () => {
+    vi.mocked(terminateUserRemoteSessions).mockImplementation(async (userId: string) =>
+      userId === 'u-1' ? -1 : 0
+    );
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'remote session teardown failure audit' }),
+    });
+
+    expect(res.status).toBe(200);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.details).toMatchObject({
+      remoteSessionTeardownFailures: 1,
     });
   });
 
