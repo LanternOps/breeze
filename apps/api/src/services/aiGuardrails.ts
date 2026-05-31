@@ -385,6 +385,9 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   google_set_forwarding: { resource: 'google', action: 'execute' },
   google_set_vacation: { resource: 'google', action: 'execute' },
   google_update_user: { resource: 'google', action: 'execute' },
+  google_share_calendar: { resource: 'google', action: 'execute' },
+  google_offboard_user: { resource: 'google', action: 'execute' },
+  google_wipe_mobile_device: { resource: 'google', action: 'execute' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {

@@ -45,10 +45,56 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_set_vacation: 3,
   google_update_user: 3,
   google_share_calendar: 3,
+  google_offboard_user: 3,
+  google_wipe_mobile_device: 3,
 };
 
 const CALENDAR_ROLES = ['freeBusyReader', 'reader', 'writer', 'owner'] as const;
 type CalendarRole = (typeof CALENDAR_ROLES)[number];
+
+type DirectoryClient = ReturnType<typeof getDirectoryClient>;
+
+/**
+ * Issue a mobile-device action to every device enrolled to a user.
+ *   - admin_account_wipe: remove ONLY the managed corporate account + its data
+ *     (mail/Drive) from the device. Safe for BYOD; the personal device is intact.
+ *   - admin_remote_wipe: full factory reset of the entire device. STOLEN-DEVICE
+ *     use only — never part of offboarding.
+ */
+async function wipeMobileDevices(
+  dir: DirectoryClient,
+  userEmail: string,
+  action: 'admin_account_wipe' | 'admin_remote_wipe',
+): Promise<number> {
+  const list = await dir.mobiledevices.list({ customerId: 'my_customer', query: `email:${userEmail}` });
+  const devices = list.data.mobiledevices ?? [];
+  let n = 0;
+  for (const d of devices) {
+    if (!d.resourceId) continue;
+    await dir.mobiledevices.action({
+      customerId: 'my_customer',
+      resourceId: d.resourceId,
+      requestBody: { action },
+    });
+    n++;
+  }
+  return n;
+}
+
+interface StepResult {
+  step: string;
+  ok: boolean;
+  detail: string;
+}
+
+async function runStep(step: string, fn: () => Promise<string>): Promise<StepResult> {
+  try {
+    return { step, ok: true, detail: await fn() };
+  } catch (err) {
+    const norm = normalizeGoogleError(err);
+    return { step, ok: false, detail: `${norm.code}: ${norm.message}` };
+  }
+}
 
 type ResolvedContext =
   | { error: string }
@@ -379,6 +425,149 @@ export async function googleShareCalendarHandler(
     });
     const which = calendarId === 'primary' ? `${ownerEmail}'s primary calendar` : `calendar ${calendarId}`;
     return `Shared ${which} with ${shareWithEmail} as ${role}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+/**
+ * Guided offboard: a single, best-effort sequence over one departing user.
+ * Mailbox steps (OOO, forwarding) run FIRST, while the account is still active —
+ * suspending first would block per-user Gmail impersonation. The mobile step is
+ * a SELECTIVE account wipe (corporate data only), never a full device wipe,
+ * because the fleet is BYOD. Suspend is last. Each step is independent: a failure
+ * is recorded and the rest still run.
+ */
+export async function googleOffboardUserHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+
+  const forwardTo = requireString(input, 'forwardTo'); // optional manager mailbox
+  const oooMessage = requireString(input, 'oooMessage'); // optional auto-reply text
+  const accountWipeMobile = input.accountWipeMobile !== false; // default true (SELECTIVE)
+  const removeFromGroups = input.removeFromGroups !== false; // default true
+  const revokeTokens = input.revokeTokens !== false; // default true
+  const doSuspend = input.suspend !== false; // default true
+
+  const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+  const steps: StepResult[] = [];
+
+  // 1. Mailbox settings first (account still active for impersonation).
+  if (oooMessage) {
+    steps.push(await runStep('out_of_office', async () => {
+      const g = getGmailClient(ctx.keyJson, email);
+      await g.users.settings.updateVacation({
+        userId: 'me',
+        requestBody: { enableAutoReply: true, responseBodyPlainText: oooMessage },
+      });
+      return 'auto-reply enabled';
+    }));
+  }
+  if (forwardTo) {
+    steps.push(await runStep('forwarding', async () => {
+      const g = getGmailClient(ctx.keyJson, email);
+      try {
+        await g.users.settings.forwardingAddresses.create({
+          userId: 'me',
+          requestBody: { forwardingEmail: forwardTo },
+        });
+      } catch {
+        // tolerate already-exists / pending-verification; updateAutoForwarding will surface a real failure
+      }
+      await g.users.settings.updateAutoForwarding({
+        userId: 'me',
+        requestBody: { enabled: true, emailAddress: forwardTo, disposition: 'archive' },
+      });
+      return `forwarding to ${forwardTo} (no copy kept)`;
+    }));
+  }
+
+  // 2. Revoke third-party OAuth app grants.
+  if (revokeTokens) {
+    steps.push(await runStep('revoke_oauth_tokens', async () => {
+      const res = await dir.tokens.list({ userKey: email });
+      let n = 0;
+      for (const t of res.data.items ?? []) {
+        if (!t.clientId) continue;
+        await dir.tokens.delete({ userKey: email, clientId: t.clientId });
+        n++;
+      }
+      return `revoked ${n} OAuth app grant(s)`;
+    }));
+  }
+
+  // 3. Remove from all groups.
+  if (removeFromGroups) {
+    steps.push(await runStep('remove_from_groups', async () => {
+      const res = await dir.groups.list({ userKey: email, maxResults: 200 });
+      let n = 0;
+      for (const grp of res.data.groups ?? []) {
+        if (!grp.id) continue;
+        await dir.members.delete({ groupKey: grp.id, memberKey: email });
+        n++;
+      }
+      return `removed from ${n} group(s)`;
+    }));
+  }
+
+  // 4. SELECTIVE mobile account-wipe (BYOD: corporate data only).
+  if (accountWipeMobile) {
+    steps.push(await runStep('mobile_account_wipe', async () => {
+      const n = await wipeMobileDevices(dir, email, 'admin_account_wipe');
+      return n === 0 ? 'no mobile devices enrolled' : `account-wiped ${n} device(s) (corporate data only)`;
+    }));
+  }
+
+  // 5. End all sessions.
+  steps.push(await runStep('sign_out', async () => {
+    await dir.users.signOut({ userKey: email });
+    return 'all sessions ended';
+  }));
+
+  // 6. Suspend last.
+  if (doSuspend) {
+    steps.push(await runStep('suspend', async () => {
+      await dir.users.update({ userKey: email, requestBody: { suspended: true } });
+      return 'sign-in blocked';
+    }));
+  }
+
+  const okCount = steps.filter((s) => s.ok).length;
+  const lines = steps.map((s) => `  - ${s.step}: ${s.ok ? 'OK' : 'FAILED'} (${s.detail})`).join('\n');
+  return `Offboard of ${email}: ${okCount}/${steps.length} steps OK.\n${lines}\nNote: the mobile step removed only the corporate account (BYOD-safe), not the whole device.`;
+}
+
+/**
+ * STOLEN-DEVICE remote wipe: a full factory reset of every device enrolled to a
+ * user. This erases the ENTIRE device, not just corporate data — it is NOT part
+ * of offboarding (offboard uses a selective account wipe). Use only for lost or
+ * stolen hardware.
+ */
+export async function googleWipeMobileDeviceHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'The user whose lost/stolen device should be fully wiped is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    const n = await wipeMobileDevices(dir, email, 'admin_remote_wipe');
+    if (n === 0) return `No mobile devices are enrolled for ${email}; nothing to wipe.`;
+    return `Issued a FULL factory reset to ${n} device(s) for ${email} (stolen-device remote wipe). This erases the entire device, not just corporate data.`;
   } catch (err) {
     return googleError(err);
   }

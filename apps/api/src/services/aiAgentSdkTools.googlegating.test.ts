@@ -25,7 +25,7 @@ describe('Google tool registration gating', () => {
     expect(googleToolDefinitions(getAuth, getSession, undefined, undefined)).toEqual([]);
   });
 
-  it('registers all 9 Google tools (correct names) when enabled', () => {
+  it('registers all 11 Google tools (correct names) when enabled', () => {
     process.env.GOOGLE_WORKSPACE_ENABLED = 'true';
     const names = googleToolDefinitions(getAuth, getSession, undefined, undefined).map((t) => t.name);
     expect(names).toEqual([
@@ -38,6 +38,8 @@ describe('Google tool registration gating', () => {
       'google_set_vacation',
       'google_update_user',
       'google_share_calendar',
+      'google_offboard_user',
+      'google_wipe_mobile_device',
     ]);
   });
 });

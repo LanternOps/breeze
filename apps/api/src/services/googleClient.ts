@@ -24,8 +24,11 @@ import { calendar, auth as calendarAuth, type calendar_v3 } from '@googleapis/ca
 // exactly this union, so widening here widens the god-key.
 export const DIRECTORY_SCOPES = [
   'https://www.googleapis.com/auth/admin.directory.user', // read + update user (password, suspend, profile)
-  'https://www.googleapis.com/auth/admin.directory.user.security', // signOut, 2SV state
+  'https://www.googleapis.com/auth/admin.directory.user.security', // signOut, 2SV state, OAuth token revoke
   'https://www.googleapis.com/auth/admin.directory.user.alias', // aliases
+  'https://www.googleapis.com/auth/admin.directory.group', // list a user's groups (offboard)
+  'https://www.googleapis.com/auth/admin.directory.group.member', // remove from groups (offboard)
+  'https://www.googleapis.com/auth/admin.directory.device.mobile.action', // selective account-wipe / stolen-device wipe
 ] as const;
 
 export const GMAIL_USER_SCOPES = [

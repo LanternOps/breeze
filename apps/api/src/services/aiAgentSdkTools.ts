@@ -26,6 +26,7 @@ import {
   googleLookupUserHandler, googleResetPasswordHandler, googleSuspendUserHandler,
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
+  googleOffboardUserHandler, googleWipeMobileDeviceHandler,
 } from './aiToolsGoogle';
 
 /**
@@ -158,6 +159,8 @@ export const TOOL_TIERS = {
   google_set_vacation: 3,
   google_update_user: 3,
   google_share_calendar: 3,
+  google_offboard_user: 3,
+  google_wipe_mobile_device: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -620,6 +623,27 @@ export function googleToolDefinitions(
         reason: z.string(),
       },
       makeSessionAwareHandler('google_share_calendar', getAuth, getActiveSession, googleShareCalendarHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_offboard_user',
+      'Guided offboard of a departing Google Workspace user: best-effort sequence of optional out-of-office, mail forwarding to a manager (no copy kept), OAuth-token revoke, remove-from-all-groups, a SELECTIVE mobile account wipe (corporate data only, BYOD-safe — never a full device wipe), sign-out, then suspend. Each step is independent and reported. Requires approval.',
+      {
+        userEmail: z.string(),
+        forwardTo: z.string().optional(),
+        oooMessage: z.string().optional(),
+        accountWipeMobile: z.boolean().optional(),
+        removeFromGroups: z.boolean().optional(),
+        revokeTokens: z.boolean().optional(),
+        suspend: z.boolean().optional(),
+        reason: z.string(),
+      },
+      makeSessionAwareHandler('google_offboard_user', getAuth, getActiveSession, googleOffboardUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_wipe_mobile_device',
+      'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
     ),
   ];
 }

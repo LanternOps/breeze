@@ -33,6 +33,8 @@ import {
   googleSetVacationHandler,
   googleUpdateUserHandler,
   googleShareCalendarHandler,
+  googleOffboardUserHandler,
+  googleWipeMobileDeviceHandler,
 } from './aiToolsGoogle';
 
 const auth = {} as any;
@@ -208,5 +210,119 @@ describe('calendar sharing', () => {
     });
     expect(out).toContain('calendar team@x.com');
     expect(out).toContain('as writer');
+  });
+});
+
+describe('offboard workflow', () => {
+  function mockDir(overrides: Record<string, any> = {}) {
+    return {
+      users: { signOut: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}) },
+      tokens: {
+        list: vi.fn().mockResolvedValue({ data: { items: [{ clientId: 'app-1' }, { clientId: 'app-2' }] } }),
+        delete: vi.fn().mockResolvedValue({}),
+      },
+      groups: { list: vi.fn().mockResolvedValue({ data: { groups: [{ id: 'grp-1' }] } }) },
+      members: { delete: vi.fn().mockResolvedValue({}) },
+      mobiledevices: {
+        list: vi.fn().mockResolvedValue({ data: { mobiledevices: [{ resourceId: 'dev-1' }] } }),
+        action: vi.fn().mockResolvedValue({}),
+      },
+      ...overrides,
+    };
+  }
+
+  it('requires a reason', async () => {
+    const out = await googleOffboardUserHandler({ userEmail: 'u@x.com' }, auth, SESSION);
+    expect(out).toContain('missing_reason');
+  });
+
+  it('runs the full sequence, account-wipes (not remote-wipes) mobile, and suspends last', async () => {
+    const dir = mockDir();
+    const gmail = {
+      users: {
+        settings: {
+          updateVacation: vi.fn().mockResolvedValue({}),
+          forwardingAddresses: { create: vi.fn().mockResolvedValue({}) },
+          updateAutoForwarding: vi.fn().mockResolvedValue({}),
+        },
+      },
+    };
+    (client.getDirectoryClient as any).mockReturnValue(dir);
+    (client.getGmailClient as any).mockReturnValue(gmail);
+
+    const out = await googleOffboardUserHandler(
+      { userEmail: 'leaver@x.com', forwardTo: 'mgr@x.com', oooMessage: 'I have left', reason: 'departure' },
+      auth,
+      SESSION,
+    );
+
+    // selective account wipe, never a full remote wipe
+    expect(dir.mobiledevices.action).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: 'dev-1', requestBody: { action: 'admin_account_wipe' } }),
+    );
+    expect(dir.mobiledevices.action).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestBody: { action: 'admin_remote_wipe' } }),
+    );
+    // forwarding without a kept copy
+    expect(gmail.users.settings.updateAutoForwarding).toHaveBeenCalledWith(
+      expect.objectContaining({ requestBody: expect.objectContaining({ disposition: 'archive' }) }),
+    );
+    expect(dir.tokens.delete).toHaveBeenCalledTimes(2);
+    expect(dir.members.delete).toHaveBeenCalledWith({ groupKey: 'grp-1', memberKey: 'leaver@x.com' });
+    expect(dir.users.update).toHaveBeenCalledWith({ userKey: 'leaver@x.com', requestBody: { suspended: true } });
+    expect(out).toContain('steps OK');
+    expect(out).toContain('BYOD-safe');
+  });
+
+  it('is best-effort: a failed step is reported but the rest still run + suspend', async () => {
+    const dir = mockDir({ groups: { list: vi.fn().mockRejectedValue({ code: 403, message: 'no group scope' }) } });
+    (client.getDirectoryClient as any).mockReturnValue(dir);
+
+    const out = await googleOffboardUserHandler({ userEmail: 'leaver@x.com', reason: 'departure' }, auth, SESSION);
+    expect(out).toContain('remove_from_groups: FAILED');
+    // suspend still happened despite the group failure
+    expect(dir.users.update).toHaveBeenCalledWith({ userKey: 'leaver@x.com', requestBody: { suspended: true } });
+  });
+
+  it('can skip optional steps via flags', async () => {
+    const dir = mockDir();
+    (client.getDirectoryClient as any).mockReturnValue(dir);
+    await googleOffboardUserHandler(
+      { userEmail: 'leaver@x.com', reason: 'departure', accountWipeMobile: false, removeFromGroups: false, revokeTokens: false },
+      auth,
+      SESSION,
+    );
+    expect(dir.mobiledevices.action).not.toHaveBeenCalled();
+    expect(dir.members.delete).not.toHaveBeenCalled();
+    expect(dir.tokens.delete).not.toHaveBeenCalled();
+    expect(dir.users.signOut).toHaveBeenCalled();
+  });
+});
+
+describe('stolen-device full wipe', () => {
+  it('requires a reason', async () => {
+    const out = await googleWipeMobileDeviceHandler({ userEmail: 'u@x.com' }, auth, SESSION);
+    expect(out).toContain('missing_reason');
+  });
+
+  it('issues a FULL remote wipe and says it erases the whole device', async () => {
+    const action = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({
+      mobiledevices: { list: vi.fn().mockResolvedValue({ data: { mobiledevices: [{ resourceId: 'dev-1' }] } }), action },
+    });
+    const out = await googleWipeMobileDeviceHandler({ userEmail: 'u@x.com', reason: 'phone stolen' }, auth, SESSION);
+    expect(action).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: 'dev-1', requestBody: { action: 'admin_remote_wipe' } }),
+    );
+    expect(out).toContain('FULL factory reset');
+    expect(out).toContain('entire device');
+  });
+
+  it('reports when no devices are enrolled', async () => {
+    (client.getDirectoryClient as any).mockReturnValue({
+      mobiledevices: { list: vi.fn().mockResolvedValue({ data: { mobiledevices: [] } }), action: vi.fn() },
+    });
+    const out = await googleWipeMobileDeviceHandler({ userEmail: 'u@x.com', reason: 'stolen' }, auth, SESSION);
+    expect(out).toContain('nothing to wipe');
   });
 });
