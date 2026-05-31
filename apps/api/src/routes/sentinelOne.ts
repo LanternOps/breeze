@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1SiteMappings, s1Threats } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -40,6 +40,26 @@ function whereOrUndefined(conditions: SQL[]): SQL | undefined {
 function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
   if (!permissions?.allowedSiteIds) return true;
   return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
+
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted org user must not read
+// threat rows (or device hostnames) for devices in other sites within the same
+// org. Mirrors browserSecurity.ts `resolveSiteAllowedDeviceIds`.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  permissions: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!permissions?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => canAccessDeviceSite(d, permissions))
+    .map((d) => d.id);
 }
 
 async function hasDeniedDeviceSite(orgId: string, deviceIds: string[], permissions: UserPermissions | undefined): Promise<boolean> {
@@ -427,6 +447,24 @@ sentinelOneRoutes.get(
 
     const conditions: SQL[] = [eq(s1Threats.orgId, orgResult.orgId)];
     withOrgCondition(conditions, auth.orgCondition(s1Threats.orgId));
+
+    // Site-scope: site is an app-layer authz axis (RLS does not defend it).
+    // When the caller is site-restricted, deny an explicit out-of-scope
+    // deviceId and narrow the broad list to the caller's accessible devices.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgResult.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      // s1_threats.device_id is nullable; keep non-device-bound threat rows
+      // visible (they carry no site to gate on).
+      conditions.push(
+        allowedDeviceIds && allowedDeviceIds.length > 0
+          ? (or(isNull(s1Threats.deviceId), inArray(s1Threats.deviceId, allowedDeviceIds)) as SQL)
+          : isNull(s1Threats.deviceId),
+      );
+    }
 
     if (query.integrationId) conditions.push(eq(s1Threats.integrationId, query.integrationId));
     if (query.deviceId) conditions.push(eq(s1Threats.deviceId, query.deviceId));

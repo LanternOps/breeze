@@ -4,6 +4,16 @@ import { Hono } from 'hono';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const USER_ID = '11111111-1111-1111-1111-111111111112';
 
+// Site-scope test fixtures. allowedSiteIds restricts the caller to SITE_ALLOWED.
+const SITE_ALLOWED = '22222222-2222-2222-2222-222222222221';
+const SITE_DENIED = '22222222-2222-2222-2222-222222222222';
+const DEVICE_IN_SCOPE = '33333333-3333-3333-3333-333333333331';
+const DEVICE_OUT_OF_SCOPE = '33333333-3333-3333-3333-333333333332';
+
+// Mutable holder so individual tests can flip the caller's site restriction.
+// The authMiddleware mock reads this when setting c.get('permissions').
+let currentPermissions: { allowedSiteIds?: string[] } | undefined;
+
 vi.mock('drizzle-orm', () => {
   const sql = (strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
@@ -18,6 +28,8 @@ vi.mock('drizzle-orm', () => {
     lte: (left: unknown, right: unknown) => ({ type: 'lte', left, right }),
     ne: (left: unknown, right: unknown) => ({ type: 'ne', left, right }),
     inArray: (left: unknown, right: unknown[]) => ({ type: 'inArray', left, right }),
+    isNull: (column: unknown) => ({ type: 'isNull', column }),
+    or: (...conditions: unknown[]) => ({ type: 'or', conditions }),
     desc: (column: unknown) => ({ type: 'desc', column }),
     sql
   };
@@ -25,6 +37,17 @@ vi.mock('drizzle-orm', () => {
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/permissions', () => ({
+  PERMISSIONS: {
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    ORGS_WRITE: { resource: 'orgs', action: 'write' }
+  },
+  // Faithful to the real implementation: unrestricted callers (no
+  // allowedSiteIds) always pass; restricted callers pass only for listed sites.
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -141,6 +164,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     status: 'devices.status',
     enrolledAt: 'devices.enrolledAt',
     lastSeenAt: 'devices.lastSeenAt',
@@ -239,6 +263,8 @@ describe('analytics routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    currentPermissions = undefined;
+
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
@@ -249,6 +275,7 @@ describe('analytics routes', () => {
         canAccessOrg: (orgId: string) => orgId === ORG_ID,
         orgCondition: vi.fn((column: unknown) => ({ column, orgId: ORG_ID }))
       });
+      c.set('permissions', currentPermissions);
 
       return next();
     });
@@ -646,6 +673,164 @@ describe('analytics routes', () => {
       expect(body.slaId).toBe('sla-1');
       expect(body.history).toEqual([]);
       expect(body.liveUptime).toBe(50);
+    });
+  });
+
+  describe('site-scope authorization', () => {
+    // Org devices used to resolve the site allowlist into device IDs.
+    const ORG_DEVICE_ROWS = [
+      { id: DEVICE_IN_SCOPE, siteId: SITE_ALLOWED },
+      { id: DEVICE_OUT_OF_SCOPE, siteId: SITE_DENIED }
+    ];
+
+    describe('GET /analytics/capacity', () => {
+      it('returns 403 when a site-restricted caller drills into an out-of-scope deviceId', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        // Device-resolution select runs first when restricted.
+        mockSelectOnce(ORG_DEVICE_ROWS);
+
+        const res = await app.request(
+          `/analytics/capacity?deviceId=${DEVICE_OUT_OF_SCOPE}&metricType=disk`,
+          { method: 'GET', headers: { Authorization: 'Bearer token' } }
+        );
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Device not found or access denied');
+      });
+
+      it('allows a site-restricted caller to drill into an in-scope deviceId', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
+        mockSelectOnce([
+          {
+            metricName: 'disk_used_percent',
+            currentValue: 50,
+            predictedValue: 55,
+            predictionDate: new Date('2026-02-01T00:00:00.000Z'),
+            growthRate: 1
+          }
+        ]); // predictions
+        mockSelectOnce([{ warningThreshold: 80, criticalThreshold: 90 }]); // thresholds
+
+        const res = await app.request(
+          `/analytics/capacity?deviceId=${DEVICE_IN_SCOPE}&metricType=disk`,
+          { method: 'GET', headers: { Authorization: 'Bearer token' } }
+        );
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.currentValue).toBe(50);
+      });
+
+      it('leaves the org-wide capacity aggregate (no deviceId) unchanged for a restricted caller', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
+        mockSelectOnce([]); // predictions empty -> fall through to live metrics
+        mockSelectOnce([]); // live device_metrics aggregate
+
+        const res = await app.request('/analytics/capacity?metricType=disk', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Aggregate still returns a forecast envelope (no 403, not narrowed away).
+        expect(Array.isArray(body.predictions)).toBe(true);
+      });
+
+      it('does not narrow capacity for an unrestricted caller (no extra resolution query)', async () => {
+        currentPermissions = undefined; // unrestricted
+        mockSelectOnce([
+          {
+            metricName: 'disk_used_percent',
+            currentValue: 72,
+            predictedValue: 76,
+            predictionDate: new Date('2026-02-01T00:00:00.000Z'),
+            growthRate: 1.5
+          }
+        ]); // predictions (first select — no resolution select)
+        mockSelectOnce([{ warningThreshold: 80, criticalThreshold: 90 }]);
+
+        const res = await app.request(
+          `/analytics/capacity?deviceId=${DEVICE_OUT_OF_SCOPE}&metricType=disk`,
+          { method: 'GET', headers: { Authorization: 'Bearer token' } }
+        );
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.currentValue).toBe(72);
+      });
+    });
+
+    describe('POST /analytics/query (timeseries)', () => {
+      it('returns 403 when any requested deviceId is out of the site allowlist', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
+
+        const res = await app.request('/analytics/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceIds: [DEVICE_IN_SCOPE, DEVICE_OUT_OF_SCOPE],
+            metricTypes: ['cpu_usage'],
+            startTime: '2024-01-01T00:00:00Z',
+            endTime: '2024-01-02T00:00:00Z',
+            aggregation: 'avg',
+            interval: 'hour'
+          })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to one or more device sites denied');
+      });
+
+      it('allows a site-restricted caller when all requested deviceIds are in scope', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution
+        mockSelectOnce([]); // metric series query
+
+        const res = await app.request('/analytics/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceIds: [DEVICE_IN_SCOPE],
+            metricTypes: ['cpu_usage'],
+            startTime: '2024-01-01T00:00:00Z',
+            endTime: '2024-01-02T00:00:00Z',
+            aggregation: 'avg',
+            interval: 'hour'
+          })
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.series).toHaveLength(1);
+      });
+
+      it('does not narrow timeseries for an unrestricted caller', async () => {
+        currentPermissions = undefined; // unrestricted — no resolution query
+        mockSelectOnce([]); // metric series query is the first select
+
+        const res = await app.request('/analytics/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceIds: [DEVICE_OUT_OF_SCOPE],
+            metricTypes: ['cpu_usage'],
+            startTime: '2024-01-01T00:00:00Z',
+            endTime: '2024-01-02T00:00:00Z',
+            aggregation: 'avg',
+            interval: 'hour'
+          })
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.series).toHaveLength(1);
+      });
     });
   });
 });

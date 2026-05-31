@@ -20,7 +20,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devices: { id: 'id', orgId: 'orgId', hostname: 'hostname' },
+  devices: { id: 'id', orgId: 'orgId', hostname: 'hostname', siteId: 'siteId' },
   s1Actions: {
     id: 'id',
     orgId: 'orgId',
@@ -72,6 +72,7 @@ vi.mock('../middleware/auth', () => ({
       orgId: '11111111-1111-1111-1111-111111111111',
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      orgCondition: () => undefined,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -114,11 +115,16 @@ vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
     DEVICES_EXECUTE: { resource: 'devices', action: 'execute' }
-  }
+  },
+  // Faithful to the real implementation: unrestricted callers (no
+  // allowedSiteIds) always pass; otherwise the site must be in the allowlist.
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
 import { sentinelOneRoutes } from './sentinelOne';
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -371,5 +377,130 @@ describe('sentinel one routes', () => {
     const body = await res.json();
     expect(body.data.unmatchedThreatIds).toEqual(['missing-threat']);
     expect(body.data.matchedThreatIds).toEqual(['s1-threat-1']);
+  });
+
+  // ───────────────────── GET /threats — site scope ─────────────────────
+  // A site-restricted org user (permissions.allowedSiteIds set) must not list
+  // SentinelOne threats (or device hostnames) for devices in sites outside
+  // their allowlist, nor target a foreign-site device via ?deviceId=.
+  // Site is an app-layer concept only — Postgres RLS does not defend it.
+  describe('GET /threats — site scope', () => {
+    const ORG_ID = '11111111-1111-1111-1111-111111111111';
+    const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+    const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+    const DEVICE_ALLOWED = '33333333-3333-3333-3333-333333333333';
+    const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
+
+    function setAuth(allowedSiteIds?: string[]) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          orgId: ORG_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID,
+          orgCondition: () => undefined,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        if (allowedSiteIds) c.set('permissions', { allowedSiteIds });
+        return next();
+      });
+    }
+    const setRestricted = (allowedSiteIds: string[]) => setAuth(allowedSiteIds);
+
+    // Mocks the device-resolution query a restricted reader runs first:
+    // db.select({id, siteId}).from(devices).where(...) → rows
+    function mockDeviceResolution(rows: Array<{ id: string; siteId: string | null }>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      } as any);
+    }
+
+    // Mocks the main threats list select (leftJoin) + count select.
+    function mockThreatsQueries(rows: any[], count: number) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue(rows)
+                  })
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count }])
+          })
+        } as any);
+    }
+
+    it('denies an explicit deviceId outside the caller site allowlist (403)', async () => {
+      setRestricted([SITE_ALLOWED]);
+      mockDeviceResolution([{ id: DEVICE_DENIED, siteId: SITE_DENIED }]);
+
+      const res = await app.request(`/s1/threats?deviceId=${DEVICE_DENIED}`);
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Device not found or access denied');
+    });
+
+    it('narrows the broad list to the caller accessible devices', async () => {
+      setRestricted([SITE_ALLOWED]);
+      // First select: device resolution (only DEVICE_ALLOWED is in-scope)
+      mockDeviceResolution([
+        { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+        { id: DEVICE_DENIED, siteId: SITE_DENIED }
+      ]);
+      // Then the threats list + count
+      mockThreatsQueries(
+        [{ id: 'threat-1', deviceId: DEVICE_ALLOWED, deviceName: 'PC-01' }],
+        1
+      );
+
+      const res = await app.request('/s1/threats');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceId).toBe(DEVICE_ALLOWED);
+    });
+
+    it('allows an explicit in-scope deviceId for a restricted caller', async () => {
+      setRestricted([SITE_ALLOWED]);
+      mockDeviceResolution([{ id: DEVICE_ALLOWED, siteId: SITE_ALLOWED }]);
+      mockThreatsQueries(
+        [{ id: 'threat-1', deviceId: DEVICE_ALLOWED, deviceName: 'PC-01' }],
+        1
+      );
+
+      const res = await app.request(`/s1/threats?deviceId=${DEVICE_ALLOWED}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+    });
+
+    it('does not narrow for an unrestricted caller (no allowedSiteIds)', async () => {
+      // No permissions set — only the threats list + count run, with NO
+      // device-resolution select beforehand.
+      setAuth();
+      mockThreatsQueries(
+        [
+          { id: 'threat-1', deviceId: DEVICE_ALLOWED, deviceName: 'PC-01' },
+          { id: 'threat-2', deviceId: DEVICE_DENIED, deviceName: 'PC-02' }
+        ],
+        2
+      );
+
+      const res = await app.request('/s1/threats');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      expect(body.pagination.total).toBe(2);
+    });
   });
 });

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, ilike, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { escapeLike } from '../utils/sql';
 import { db } from '../db';
 import {
@@ -20,7 +21,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { checkSsrfSafe, type SsrfMode } from '../services/ssrfGuard';
 
 // Per-provider URL guard mode.
@@ -88,6 +89,39 @@ function withOrgCondition(conditions: SQL[], condition: SQL | undefined): SQL[] 
 
 function whereOrUndefined(conditions: SQL[]): SQL | undefined {
   return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted user must not read DNS
+// events (or device hostnames) for devices in other sites within the same org.
+// Mirrors browserSecurity.ts `resolveSiteAllowedDeviceIds`.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  perms: UserPermissions | undefined
+): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+    .map((d) => d.id);
+}
+
+// Build the site-scope narrowing condition for a NULLABLE deviceId column.
+// Keeps provider-level (null-device) rows visible while excluding rows for
+// devices in sites outside the caller's allowlist.
+function siteNarrowCondition(
+  column: PgColumn,
+  allowedDeviceIds: string[]
+): SQL {
+  if (allowedDeviceIds.length === 0) {
+    return isNull(column);
+  }
+  return or(isNull(column), inArray(column, allowedDeviceIds))!;
 }
 
 function resolveOrgId(
@@ -484,6 +518,18 @@ dnsSecurityRoutes.get(
     if (query.integrationId) conditions.push(eq(dnsSecurityEvents.integrationId, query.integrationId));
     if (query.domain) conditions.push(ilike(dnsSecurityEvents.domain, `%${escapeLike(query.domain)}%`));
 
+    // Site-scope narrowing (app-layer authz axis — RLS does not defend it).
+    // Only applies when the caller has `allowedSiteIds`. deviceId is NULLABLE,
+    // so provider-level (null-device) rows stay visible.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      conditions.push(siteNarrowCondition(dnsSecurityEvents.deviceId, allowedDeviceIds!));
+    }
+
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
     const where = whereOrUndefined(conditions);
@@ -562,6 +608,19 @@ dnsSecurityRoutes.get(
     if (query.action) conditions.push(eq(dnsSecurityEvents.action, query.action));
     if (query.category) conditions.push(eq(dnsSecurityEvents.category, query.category));
 
+    // Site-scope narrowing (app-layer authz axis — RLS does not defend it).
+    // Resolved once and applied to both the raw and aggregation code paths.
+    // deviceId is NULLABLE, so provider-level (null-device) rows stay visible.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    let allowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && auth.orgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      conditions.push(siteNarrowCondition(dnsSecurityEvents.deviceId, allowedDeviceIds!));
+    }
+
     const topN = query.topN ?? 10;
     const where = whereOrUndefined(conditions);
 
@@ -573,6 +632,9 @@ dnsSecurityRoutes.get(
       if (query.integrationId) aggConditions.push(eq(dnsEventAggregations.integrationId, query.integrationId));
       if (query.deviceId) aggConditions.push(eq(dnsEventAggregations.deviceId, query.deviceId));
       if (query.category) aggConditions.push(eq(dnsEventAggregations.category, query.category));
+      if (allowedDeviceIds !== null) {
+        aggConditions.push(siteNarrowCondition(dnsEventAggregations.deviceId, allowedDeviceIds));
+      }
 
       const aggWhere = whereOrUndefined(aggConditions);
       const [aggCountRow] = await db

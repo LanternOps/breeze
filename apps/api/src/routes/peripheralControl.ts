@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -10,13 +10,14 @@ import {
   peripheralPolicies,
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
+  devices,
   type PeripheralExceptionRule,
   type PeripheralPolicyTargetIds
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { publishEvent } from '../services/eventBus';
 
 export const peripheralControlRoutes = new Hono();
@@ -163,6 +164,27 @@ function resolveOrgIdForWrite(
   return { error: 'orgId is required for this scope', status: 400 };
 }
 
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted org user must not read
+// peripheral/USB events for devices in other sites within the same org.
+// `allowedSiteIds` is only ever set for org-scope users (see permissions.ts), so
+// `orgId` is guaranteed present whenever narrowing applies. Mirrors browserSecurity.ts.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  perms: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+    .map((d) => d.id);
+}
+
 function combineWarning(current: string | undefined, next: string): string {
   return current ? `${current}; ${next}` : next;
 }
@@ -219,6 +241,7 @@ peripheralControlRoutes.get(
   zValidator('query', listActivityQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     if (query.orgId && !auth.canAccessOrg(query.orgId)) {
@@ -255,9 +278,28 @@ peripheralControlRoutes.get(
     conditions.push(gte(peripheralEvents.occurredAt, effectiveStart));
     conditions.push(lte(peripheralEvents.occurredAt, effectiveEnd));
 
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = query.limit ?? 200;
     const offset = query.offset ?? 0;
+
+    // Narrow to the caller's accessible devices when site-restricted. RLS does
+    // not defend the site axis, so a site-scoped org user must not read events
+    // for devices outside their `allowedSiteIds`. Only org-scope users carry
+    // `allowedSiteIds`, so `auth.orgId` is present whenever this applies.
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: { total: 0, limit, offset }
+        });
+      }
+      conditions.push(inArray(peripheralEvents.deviceId, allowedDeviceIds));
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [countRow] = await db
       .select({ count: sql<number>`count(*)` })

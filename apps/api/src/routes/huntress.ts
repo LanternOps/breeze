@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, ilike, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
 import {
@@ -22,7 +22,7 @@ import {
 } from '../services/huntressClient';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { captureException } from '../services/sentry';
 import { escapeLike } from '../utils/sql';
 import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
@@ -623,6 +623,37 @@ huntressRoutes.get(
     }
     const orgCondition = auth.orgCondition(huntressIncidents.orgId);
     if (orgCondition) conditions.push(orgCondition);
+
+    // Site is an app-layer-only authz axis — Postgres RLS does NOT defend it.
+    // A site-restricted caller (org user with `permissions.allowedSiteIds`)
+    // must not read incident detail/hostnames for devices in sites outside
+    // their allowlist. `deviceId` is NULLABLE (provider-level incidents are not
+    // device-bound), so we keep null-device rows visible and only exclude rows
+    // attributed to foreign-site devices. Mirrors browserSecurity.ts (PR #864/#868).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, orgResult.orgId));
+      const allowedDeviceIds = orgDevices
+        .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+        .map((d) => d.id);
+
+      if (query.deviceId && !allowedDeviceIds.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+
+      // Keep provider-level (null-device) rows; exclude foreign-site devices.
+      // With an empty allowedDeviceIds, `inArray(..., [])` matches nothing, so
+      // only the null-device branch remains — exactly the intended behavior.
+      conditions.push(
+        or(
+          isNull(huntressIncidents.deviceId),
+          inArray(huntressIncidents.deviceId, allowedDeviceIds)
+        )!
+      );
+    }
 
     const where = and(...conditions);
 
