@@ -286,7 +286,7 @@ describe('agent websocket handshake', () => {
     await handlers.onOpen({}, ws as any);
 
     expect(ws.send).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(vi.mocked(ws.send).mock.calls[0][0] as string);
+    const payload = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
     expect(payload.type).toBe('connected');
     expect(payload.capabilities).toEqual([...AGENT_WS_CAPABILITIES]);
   });
