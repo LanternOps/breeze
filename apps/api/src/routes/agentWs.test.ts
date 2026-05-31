@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 
@@ -149,12 +150,18 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  isAgentTenantActive: vi.fn(async () => true),
+}));
+
 import { db } from '../db';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
+  validateAgentToken,
   __resetCrossTenantDropsForTest,
 } from './agentWs';
+import { isAgentTenantActive } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
@@ -171,6 +178,53 @@ function wsMock() {
     close: vi.fn()
   };
 }
+
+describe('validateAgentToken — tenant-status gate', () => {
+  const TOKEN = 'brz_ws_test_token';
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    agentTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    watchdogTokenHash: null,
+    previousWatchdogTokenHash: null,
+    previousWatchdogTokenExpiresAt: null,
+    status: 'online',
+    agentTokenSuspendedAt: null,
+  };
+
+  function queueDeviceSelect(row: unknown | undefined) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) })),
+      })),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+  });
+
+  it('accepts a valid agent token for an active tenant', async () => {
+    queueDeviceSelect(deviceRow);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result).toEqual({ ok: true, ctx: { deviceId: 'device-1', orgId: 'org-1', role: 'agent' } });
+    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+  });
+
+  it('refuses the upgrade when the device tenant is not active', async () => {
+    queueDeviceSelect(deviceRow);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(false);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+});
 
 function selectOwnedCommandResult(rows: unknown[]) {
   return {

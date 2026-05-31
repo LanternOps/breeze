@@ -42,6 +42,10 @@ vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => 'unknown'),
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  isAgentTenantActive: vi.fn(async () => true),
+}));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((left, right) => ({ left, right })),
   and: vi.fn((...args) => ({ and: args })),
@@ -55,6 +59,7 @@ import { db } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
+import { isAgentTenantActive } from '../services/tenantStatus';
 import {
   agentAuthMiddleware,
   isAgentTokenRotationDue,
@@ -230,11 +235,54 @@ function createContext(opts: { agentId?: string; token?: string } = {}): TestCon
   } as unknown as TestContext;
 }
 
+describe('agentAuthMiddleware - tenant-status gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  it('rejects with an opaque 401 when the device org/partner tenant is not active', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(false);
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'Invalid agent credentials',
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+  });
+
+  it('proceeds to next() when the device tenant is active', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+  });
+});
+
 describe('agentAuthMiddleware - per-org rate limit', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
   });
 
   it('returns 429 with org_rate_limit_exceeded body and Retry-After:60 when org limit is exceeded', async () => {

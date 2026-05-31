@@ -12,6 +12,7 @@ import {
   organizations,
   partners,
 } from '../../db/schema';
+import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurity';
 import { getTrustedClientIp } from '../../services/clientIp';
@@ -301,6 +302,25 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     };
 
     const siteId = key.siteId!; // non-null asserted: matchingKey.siteId guard above
+
+    // Tenant-status gate (finding: enrollment ignored tenant lifecycle). A
+    // still-valid enrollment key for a suspended/churned/soft-deleted org or
+    // partner must NOT mint fresh full-capability agent tokens — that path let
+    // a suspended-for-abuse tenant re-establish a fleet the uninstall sweep
+    // tore down. getActiveOrgTenant cascades org -> partner status.
+    if (!(await getActiveOrgTenant(key.orgId))) {
+      writeAuditEvent(c, {
+        orgId: key.orgId,
+        actorType: 'system',
+        action: 'agent.enroll',
+        resourceType: 'device',
+        resourceName: data.hostname,
+        details: { reason: 'tenant_inactive', enrollmentKeyId: key.id },
+        result: 'denied',
+        errorMessage: 'Enrollment tenant is not active',
+      });
+      return c.json({ error: 'Enrollment tenant is not active', reason: 'tenant_inactive' }, 403);
+    }
 
     // Fetch partner device limit (used inside transaction below)
     let deviceLimitPartnerId: string | null = null;

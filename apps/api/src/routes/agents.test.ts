@@ -24,6 +24,14 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
+// Enrollment now gates on tenant status; default to an active tenant so these
+// existing enroll tests exercise the success path. Suspended-tenant gating is
+// covered in routes/agents/enrollment.test.ts. agentAuth (the other
+// tenantStatus consumer) is mocked separately below, so getActiveOrgTenant is
+// the only export reachable here.
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
+}));
 vi.mock('../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),

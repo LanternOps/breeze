@@ -9,7 +9,12 @@ import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS } from '../services/permissions';
-import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
+import {
+  restoreOrganizationTenantAccess,
+  restorePartnerTenantAccess,
+  revokeOrganizationTenantAccess,
+  revokePartnerTenantAccess,
+} from '../services/tenantLifecycle';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
@@ -496,8 +501,15 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
 
   // Invalidate the OAuth scope-policy cache (settings may have changed).
   clearPartnerScopePolicyCache(partner.id);
-  if ('status' in data && data.status && data.status !== 'active') {
+  // Only the terminal-ish states sever the fleet. `pending` is reversible
+  // (signup/billing limbo) and is already blocked for agents by the live
+  // tenant cascade (getActivePartner is strict) — severing here would expire
+  // enrollment keys irreversibly on a transient state.
+  if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
     await revokePartnerTenantAccess(partner.id);
+  } else if ('status' in data && data.status === 'active') {
+    // Reactivation: restore agent tokens this partner's revoke suspended.
+    await restorePartnerTenantAccess(partner.id);
   }
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -875,6 +887,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
 
   if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
     await revokeOrganizationTenantAccess(organization.id);
+  } else if (data.status === 'active' || data.status === 'trial') {
+    // Reactivation: restore agent tokens this org's revoke suspended.
+    await restoreOrganizationTenantAccess(organization.id);
   }
 
   writeRouteAudit(c, {

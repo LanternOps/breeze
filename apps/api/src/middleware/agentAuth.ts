@@ -7,6 +7,7 @@ import { devices } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
+import { isAgentTenantActive } from '../services/tenantStatus';
 
 export interface AgentAuthContext {
   deviceId: string;
@@ -384,6 +385,17 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     });
     c.header('Retry-After', '60');
     return c.json({ error: 'org_rate_limit_exceeded' }, 429);
+  }
+
+  // Tenant-status gate: a suspended/churned/soft-deleted org or partner must
+  // not keep authenticating its agent fleet. The device-level checks above
+  // (token suspension, decommission, quarantine) don't cover the org/partner
+  // lifecycle; mirror the API-key path (apiKeyAuth → getActiveOrgTenant) and
+  // fail closed. Runs after the rate limiters so a flood from an inactive
+  // tenant can't drive uncached lookups, and returns the same opaque 401 as a
+  // stale token so the agent cannot distinguish suspension from a bad token.
+  if (!(await isAgentTenantActive(device.orgId))) {
+    throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
   if (match.tokenRotationRequired) {

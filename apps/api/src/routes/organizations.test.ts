@@ -57,6 +57,31 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+// orgRoutes' suspend/delete paths call tenant revocation, which now also severs
+// the agent fleet (devices/enrollmentKeys). Mock the whole service so this route
+// test doesn't have to mock those schema tables; severance behavior is covered
+// in tenantLifecycle.test.ts.
+vi.mock('../services/tenantLifecycle', () => ({
+  revokeOrganizationTenantAccess: vi.fn().mockResolvedValue({
+    apiKeysRevoked: 0,
+    userSessionsRevoked: 0,
+    oauthGrantsRevoked: 0,
+    oauthRefreshTokensRevoked: 0,
+    agentTokensSuspended: 0,
+    enrollmentKeysInvalidated: 0
+  }),
+  revokePartnerTenantAccess: vi.fn().mockResolvedValue({
+    apiKeysRevoked: 0,
+    userSessionsRevoked: 0,
+    oauthGrantsRevoked: 0,
+    oauthRefreshTokensRevoked: 0,
+    agentTokensSuspended: 0,
+    enrollmentKeysInvalidated: 0
+  }),
+  restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
+  restorePartnerTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {

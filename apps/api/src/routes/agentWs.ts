@@ -21,6 +21,7 @@ import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
+import { isAgentTenantActive } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
@@ -720,7 +721,7 @@ type AgentTokenValidation =
  * Returns `re_enrollment_required` when the device row exists but predates the
  * token-hash migration so the agent can prompt the operator instead of looping.
  */
-async function validateAgentToken(agentId: string, token: string): Promise<AgentTokenValidation> {
+export async function validateAgentToken(agentId: string, token: string): Promise<AgentTokenValidation> {
   if (!token || !token.startsWith('brz_')) {
     return { ok: false, reason: 'unauthorized' };
   }
@@ -784,6 +785,13 @@ async function validateAgentToken(agentId: string, token: string): Promise<Agent
     tokenHash,
   });
   if (!match || match.role !== 'agent') {
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  // Tenant-status gate (mirror of the REST agent-auth path): refuse the WS
+  // upgrade for a suspended/churned/soft-deleted org or partner before we
+  // accept the persistent control channel.
+  if (!(await isAgentTenantActive(device.orgId))) {
     return { ok: false, reason: 'unauthorized' };
   }
 
