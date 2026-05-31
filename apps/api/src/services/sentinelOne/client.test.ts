@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SentinelOneClient } from './client';
+import { SentinelOneClient, SentinelOneHttpError } from './client';
 
 const ORIGINAL_MAX_PAGES = process.env.S1_SYNC_MAX_PAGES;
 const { safeFetchMock } = vi.hoisted(() => ({
@@ -113,11 +113,12 @@ describe('SentinelOneClient error handling', () => {
     })).not.toThrow();
   });
 
-  it('throws on non-OK HTTP response with status and body', async () => {
+  it('throws a SentinelOneHttpError with body-free message and status on non-OK HTTP response', async () => {
+    const bodyMarker = 'Unauthorized: Invalid API token';
     safeFetchMock.mockResolvedValue({
       ok: false,
       status: 401,
-      text: async () => 'Unauthorized: Invalid API token',
+      text: async () => bodyMarker,
     });
 
     const client = new SentinelOneClient({
@@ -125,8 +126,21 @@ describe('SentinelOneClient error handling', () => {
       apiToken: 'bad-token',
     });
 
-    await expect(client.listAgents()).rejects.toThrow('failed (401)');
-    await expect(client.listAgents()).rejects.toThrow('Unauthorized');
+    const error = await client.listAgents().then(
+      () => { throw new Error('expected listAgents to reject'); },
+      (err: unknown) => err,
+    );
+
+    // Typed error with structured status + raw body retained for server-side logging.
+    expect(error).toBeInstanceOf(SentinelOneHttpError);
+    const httpError = error as SentinelOneHttpError;
+    expect(httpError.status).toBe(401);
+    expect(httpError.responseBody).toContain(bodyMarker);
+
+    // SECURITY: the upstream body must NOT be reflected into `.message` (the
+    // tenant-visible surface). `.message` is the body-free status line only.
+    expect(httpError.message).toBe('SentinelOne API GET /web/api/v2.1/agents failed (401)');
+    expect(httpError.message).not.toContain(bodyMarker);
   });
 
   it('throws on non-object JSON response', async () => {

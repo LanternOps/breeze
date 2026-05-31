@@ -6,6 +6,8 @@ vi.mock('./sentry', () => ({
 
 import {
   M365_TENANT_ID_REGEX,
+  type M365TenantId,
+  isM365TenantId,
   acquireClientCredentialsToken,
   ensureFreshToken,
   testGraphAccess,
@@ -32,6 +34,24 @@ describe('M365_TENANT_ID_REGEX', () => {
   });
 });
 
+describe('isM365TenantId', () => {
+  it('accepts (and narrows) a canonical Entra tenant GUID', () => {
+    expect(isM365TenantId('72f988bf-86f1-41af-91ab-2d7cd011db47')).toBe(true);
+  });
+
+  it('rejects the well-known alias `common`', () => {
+    expect(isM365TenantId('common')).toBe(false);
+  });
+
+  it('rejects a malformed value', () => {
+    expect(isM365TenantId('not-a-guid')).toBe(false);
+  });
+
+  it('rejects the empty string', () => {
+    expect(isM365TenantId('')).toBe(false);
+  });
+});
+
 describe('acquireClientCredentialsToken', () => {
   const fetchMock = vi.fn();
 
@@ -47,7 +67,9 @@ describe('acquireClientCredentialsToken', () => {
   it('throws on a non-GUID tenantId before performing any fetch', async () => {
     await expect(
       acquireClientCredentialsToken({
-        tenantId: 'not-a-guid',
+        // Cast to simulate a caller that bypassed validation — proves the
+        // runtime assertion still fails closed even when the brand is forged.
+        tenantId: 'not-a-guid' as M365TenantId,
         clientId: 'client',
         clientSecret: 'secret',
       })
@@ -63,7 +85,7 @@ describe('acquireClientCredentialsToken', () => {
     });
 
     const result = await acquireClientCredentialsToken({
-      tenantId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '11111111-1111-1111-1111-111111111111' as M365TenantId,
       clientId: 'client',
       clientSecret: 'secret',
     });

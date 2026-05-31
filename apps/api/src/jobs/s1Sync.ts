@@ -13,7 +13,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
-import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
+import { S1_THREAT_ACTIONS, SentinelOneClient, SentinelOneHttpError, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
 import { redactLogMessage } from '../services/logRedaction';
 import { publishEvent } from '../services/eventBus';
@@ -130,8 +130,42 @@ export function truncateError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   // Redact before truncating. S1 bearer tokens go in headers (not URL), but
   // an HTTP error message can still echo back a Cookie or Authorization
-  // header — strip those before persisting to DB.
+  // header — strip those before persisting to DB. For a SentinelOneHttpError
+  // the `.message` is body-free by construction (status line only), so the
+  // upstream response body never reaches the tenant-visible column.
   return redactLogMessage(message).slice(0, 2_000);
+}
+
+/**
+ * Log full failure detail to the SERVER-SIDE log only. For an upstream HTTP
+ * error this includes the (redacted) response body that we deliberately keep
+ * out of the tenant-visible column (`s1_integrations.lastSyncError` /
+ * `s1_actions.error`). The tenant column is written separately via
+ * {@link truncateError}, which reads only the body-free `.message`.
+ */
+export function logSyncFailureServerSide(
+  context: Record<string, unknown>,
+  error: unknown
+): void {
+  if (error instanceof SentinelOneHttpError) {
+    console.error(
+      '[S1SyncJob] sync failed (upstream HTTP error)',
+      JSON.stringify({
+        ...context,
+        status: error.status,
+        // Redacted defense-in-depth: an upstream body could echo back a header.
+        responseBody: redactLogMessage(error.responseBody),
+      })
+    );
+    return;
+  }
+  console.error(
+    '[S1SyncJob] sync failed',
+    JSON.stringify({
+      ...context,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    })
+  );
 }
 
 export function dedupeThreatDetections<T extends { s1ThreatId: string }>(rows: T[]): T[] {
@@ -611,6 +645,10 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
       truncated: wasTruncated
     };
   } catch (error) {
+    // Full detail (including the upstream response body, redacted) goes to the
+    // SERVER-SIDE log only. The tenant-visible column gets a body-free message
+    // via truncateError — a SentinelOneHttpError's `.message` carries no body.
+    logSyncFailureServerSide({ integrationId: integration.id, orgId: integration.orgId }, error);
     try {
       await db
         .update(s1Integrations)
@@ -806,7 +844,10 @@ async function processPollActions() {
         }
       }
     } catch (error) {
-      console.error('[S1SyncJob] Action status polling failed:', error);
+      // Full detail (incl. redacted upstream body) → server-side log only. The
+      // tenant-visible s1_actions.error is set via applyPollFailure →
+      // truncateError, which reads the body-free `.message`.
+      logSyncFailureServerSide({ actionId: action.id, orgId: action.orgId }, error);
       const failure = applyPollFailure(action.payload, error);
       const nextStatus: S1ActionStatus = failure.shouldFail ? 'failed' : 'in_progress';
 

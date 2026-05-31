@@ -102,8 +102,11 @@ vi.mock('../../services/c2cM365', () => ({
   getFrontendBaseUrl: (...args: unknown[]) => getFrontendBaseUrlMock(...(args as [])),
   acquireClientCredentialsToken: (...args: unknown[]) => acquireClientCredentialsTokenMock(...(args as [])),
   testGraphAccess: (...args: unknown[]) => testGraphAccessMock(...(args as [])),
-  // The callback validates the tenant query param against this regex, so the
-  // mock must expose the real pattern rather than a stub.
+  // The callback validates the tenant query param via isM365TenantId, so the
+  // mock must apply the real GUID pattern rather than a stub.
+  isM365TenantId: (x: string) =>
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x),
+  // Retained because schemas.ts (imported transitively) still reads the regex.
   M365_TENANT_ID_REGEX:
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
 }));

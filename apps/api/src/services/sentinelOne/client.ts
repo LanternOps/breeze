@@ -73,6 +73,35 @@ interface S1ClientOptions {
 
 const DEFAULT_MAX_PAGES = 25;
 
+/**
+ * Error thrown for a non-OK SentinelOne API HTTP response.
+ *
+ * SECURITY: `.message` is deliberately body-free — it is just our own request
+ * metadata (`SentinelOne API <method> <pathname> failed (<status>)`), none of
+ * which is attacker-influenced. The raw upstream response body is preserved on
+ * `.responseBody` for SERVER-SIDE logging ONLY. It must never be persisted to a
+ * tenant-visible column (e.g. `s1_integrations.lastSyncError`, the action
+ * dispatch result surfaced via routes/AI tools): although SentinelOne's host is
+ * a fixed `.sentinelone.net` vendor host (not a tenant-controlled SSRF oracle),
+ * reflecting the upstream body back to tenants is an information-hygiene leak —
+ * the same rule we apply to {@link DnsProviderHttpError}. `truncateError`
+ * (s1Sync.ts / actions.ts) reads only `.message`, so the body is automatically
+ * kept out of the tenant column; `logSyncFailureServerSide` logs `.responseBody`
+ * (redacted) server-side.
+ */
+export class SentinelOneHttpError extends Error {
+  public readonly status: number;
+  public readonly responseBody: string;
+
+  constructor(method: HttpMethod, pathname: string, status: number, responseBody: string) {
+    // Body-free message: only our own request metadata, never the upstream body.
+    super(`SentinelOne API ${method} ${pathname} failed (${status})`);
+    this.name = 'SentinelOneHttpError';
+    this.status = status;
+    this.responseBody = responseBody;
+  }
+}
+
 function normalizeManagementUrl(rawUrl: string): string {
   let parsed: URL;
   try {
@@ -403,7 +432,9 @@ export class SentinelOneClient {
 
       if (!response.ok) {
         const text = await response.text().catch(() => '');
-        throw new Error(`SentinelOne API ${method} ${url.pathname} failed (${response.status}): ${text.slice(0, 500)}`);
+        // Body-free `.message` (status line); raw body kept on `.responseBody`
+        // for server-side logging only — never reflect it to the tenant.
+        throw new SentinelOneHttpError(method, url.pathname, response.status, text);
       }
 
       const payload = await response.json() as unknown;
