@@ -6,6 +6,7 @@ import {
   ALL_DWD_SCOPES_CSV,
   DIRECTORY_SCOPES,
   GMAIL_USER_SCOPES,
+  CALENDAR_SCOPES,
   getDirectoryClient,
   getGmailClient,
 } from './googleClient';
@@ -50,10 +51,13 @@ describe('normalizeGoogleError', () => {
 });
 
 describe('scopes', () => {
-  it('CSV is the union of directory + gmail scopes', () => {
-    expect(ALL_DWD_SCOPES_CSV).toBe([...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES].join(','));
+  it('CSV is the union of directory + gmail + calendar scopes', () => {
+    expect(ALL_DWD_SCOPES_CSV).toBe(
+      [...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES, ...CALENDAR_SCOPES].join(','),
+    );
     expect(ALL_DWD_SCOPES_CSV).toContain('admin.directory.user');
     expect(ALL_DWD_SCOPES_CSV).toContain('gmail.settings.sharing');
+    expect(ALL_DWD_SCOPES_CSV).toContain('calendar.acls');
   });
 });
 

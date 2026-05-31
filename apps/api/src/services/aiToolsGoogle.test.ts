@@ -18,6 +18,7 @@ vi.mock('./googleClient', async (importOriginal) => {
     ...actual,
     getDirectoryClient: vi.fn(),
     getGmailClient: vi.fn(),
+    getCalendarClient: vi.fn(),
   };
 });
 
@@ -31,6 +32,7 @@ import {
   googleSetForwardingHandler,
   googleSetVacationHandler,
   googleUpdateUserHandler,
+  googleShareCalendarHandler,
 } from './aiToolsGoogle';
 
 const auth = {} as any;
@@ -153,5 +155,58 @@ describe('gmail operations', () => {
       expect.objectContaining({ requestBody: expect.objectContaining({ enableAutoReply: true, responseBodyPlainText: 'Out until Monday' }) }),
     );
     expect(out).toContain('Enabled the out-of-office');
+  });
+});
+
+describe('calendar sharing', () => {
+  it('requires a reason', async () => {
+    const out = await googleShareCalendarHandler(
+      { ownerEmail: 'a@x.com', shareWithEmail: 'b@x.com' },
+      auth,
+      SESSION,
+    );
+    expect(out).toContain('missing_reason');
+  });
+
+  it('rejects an invalid role', async () => {
+    const out = await googleShareCalendarHandler(
+      { ownerEmail: 'a@x.com', shareWithEmail: 'b@x.com', role: 'admin', reason: 'share' },
+      auth,
+      SESSION,
+    );
+    expect(out).toContain('invalid_role');
+  });
+
+  it('shares the primary calendar as reader by default, impersonating the owner', async () => {
+    const insert = vi.fn().mockResolvedValue({});
+    (client.getCalendarClient as any).mockReturnValue({ acl: { insert } });
+    const out = await googleShareCalendarHandler(
+      { ownerEmail: 'a@x.com', shareWithEmail: 'b@x.com', reason: 'team coverage' },
+      auth,
+      SESSION,
+    );
+    expect(client.getCalendarClient).toHaveBeenCalledWith('KEYJSON', 'a@x.com');
+    expect(insert).toHaveBeenCalledWith({
+      calendarId: 'primary',
+      requestBody: { role: 'reader', scope: { type: 'user', value: 'b@x.com' } },
+    });
+    expect(out).toContain("a@x.com's primary calendar");
+    expect(out).toContain('as reader');
+  });
+
+  it('honors an explicit calendarId and writer role', async () => {
+    const insert = vi.fn().mockResolvedValue({});
+    (client.getCalendarClient as any).mockReturnValue({ acl: { insert } });
+    const out = await googleShareCalendarHandler(
+      { ownerEmail: 'a@x.com', shareWithEmail: 'b@x.com', calendarId: 'team@x.com', role: 'writer', reason: 'shared cal' },
+      auth,
+      SESSION,
+    );
+    expect(insert).toHaveBeenCalledWith({
+      calendarId: 'team@x.com',
+      requestBody: { role: 'writer', scope: { type: 'user', value: 'b@x.com' } },
+    });
+    expect(out).toContain('calendar team@x.com');
+    expect(out).toContain('as writer');
   });
 });

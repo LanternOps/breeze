@@ -18,6 +18,7 @@
 
 import { admin, auth as adminAuth, type admin_directory_v1 } from '@googleapis/admin';
 import { gmail, auth as gmailAuth, type gmail_v1 } from '@googleapis/gmail';
+import { calendar, auth as calendarAuth, type calendar_v3 } from '@googleapis/calendar';
 
 // Least-privilege scope sets. Keep these minimal; the DWD grant authorizes
 // exactly this union, so widening here widens the god-key.
@@ -32,8 +33,16 @@ export const GMAIL_USER_SCOPES = [
   'https://www.googleapis.com/auth/gmail.settings.sharing', // forwarding addresses + auto-forwarding
 ] as const;
 
+export const CALENDAR_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.acls', // share a calendar (ACL insert), nothing more
+] as const;
+
 /** Comma-separated scope list for the operator's DWD setup instructions. */
-export const ALL_DWD_SCOPES_CSV = [...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES].join(',');
+export const ALL_DWD_SCOPES_CSV = [
+  ...DIRECTORY_SCOPES,
+  ...GMAIL_USER_SCOPES,
+  ...CALENDAR_SCOPES,
+].join(',');
 
 interface ServiceAccountKey {
   client_email: string;
@@ -101,6 +110,25 @@ export function getGmailClient(
     subject: targetUserEmail, // DWD: impersonate the end user
   });
   return gmail({ version: 'v1', auth });
+}
+
+/**
+ * Calendar client impersonating the calendar OWNER (the user whose calendar is
+ * being shared). Sharing = inserting an ACL rule on the owner's calendar, so the
+ * subject is the owner, not the admin. Scope is the narrow calendar.acls only.
+ */
+export function getCalendarClient(
+  decryptedKeyJson: string,
+  ownerEmail: string,
+): calendar_v3.Calendar {
+  const key = parseServiceAccountKey(decryptedKeyJson);
+  const auth = new calendarAuth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: [...CALENDAR_SCOPES],
+    subject: ownerEmail, // DWD: impersonate the calendar owner
+  });
+  return calendar({ version: 'v3', auth });
 }
 
 /** Tagged error for Google operations; carries a stable code + safe message. */

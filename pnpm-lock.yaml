@@ -89,6 +89,9 @@ importers:
       '@googleapis/admin':
         specifier: ^31.0.0
         version: 31.0.0
+      '@googleapis/calendar':
+        specifier: ^15.0.0
+        version: 15.0.0
       '@googleapis/gmail':
         specifier: ^17.0.0
         version: 17.0.0
@@ -2780,6 +2783,10 @@ packages:
 
   '@googleapis/admin@31.0.0':
     resolution: {integrity: sha512-PPskdEyKkuzHb6zSDT7AjzPlgkTOqr42CO86Iyyt3lFtJJ3NzkcVT7JKsG55K03osHH/sCPkc/2W/qUxP6hcnQ==}
+    engines: {node: '>=12.0.0'}
+
+  '@googleapis/calendar@15.0.0':
+    resolution: {integrity: sha512-K5FVIhFOgAaNsfshvOEmGkT7kkowM69MzMYATGDA6Ol3ZwqIK0nZJnS9/keFVYkId6MT2elAy+omcAMUdadHww==}
     engines: {node: '>=12.0.0'}
 
   '@googleapis/gmail@17.0.0':
@@ -13759,6 +13766,12 @@ snapshots:
     optional: true
 
   '@googleapis/admin@31.0.0':
+    dependencies:
+      googleapis-common: 8.0.1
+    transitivePeerDependencies:
+      - supports-color
+
+  '@googleapis/calendar@15.0.0':
     dependencies:
       googleapis-common: 8.0.1
     transitivePeerDependencies:

@@ -25,7 +25,7 @@ import {
 import {
   googleLookupUserHandler, googleResetPasswordHandler, googleSuspendUserHandler,
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
-  googleSetVacationHandler, googleUpdateUserHandler,
+  googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
 } from './aiToolsGoogle';
 
 /**
@@ -157,6 +157,7 @@ export const TOOL_TIERS = {
   google_set_forwarding: 3,
   google_set_vacation: 3,
   google_update_user: 3,
+  google_share_calendar: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -607,6 +608,18 @@ export function googleToolDefinitions(
         reason: z.string(),
       },
       makeSessionAwareHandler('google_update_user', getAuth, getActiveSession, googleUpdateUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_share_calendar',
+      "Share a Google Workspace user's calendar with another user. Inserts an ACL rule on the owner's calendar (default: their primary calendar). role is one of freeBusyReader, reader, writer, owner (default reader). Requires approval.",
+      {
+        ownerEmail: z.string(),
+        shareWithEmail: z.string(),
+        calendarId: z.string().optional(),
+        role: z.enum(['freeBusyReader', 'reader', 'writer', 'owner']).optional(),
+        reason: z.string(),
+      },
+      makeSessionAwareHandler('google_share_calendar', getAuth, getActiveSession, googleShareCalendarHandler, onPreToolUse, onPostToolUse)
     ),
   ];
 }

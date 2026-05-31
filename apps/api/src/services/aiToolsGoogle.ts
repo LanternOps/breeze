@@ -29,6 +29,7 @@ import {
 import {
   getDirectoryClient,
   getGmailClient,
+  getCalendarClient,
   normalizeGoogleError,
   type GoogleApiError,
 } from './googleClient';
@@ -43,7 +44,11 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_set_forwarding: 3,
   google_set_vacation: 3,
   google_update_user: 3,
+  google_share_calendar: 3,
 };
+
+const CALENDAR_ROLES = ['freeBusyReader', 'reader', 'writer', 'owner'] as const;
+type CalendarRole = (typeof CALENDAR_ROLES)[number];
 
 type ResolvedContext =
   | { error: string }
@@ -339,6 +344,41 @@ export async function googleUpdateUserHandler(
       return errorString('no_changes', 'No fields to update were provided.');
     }
     return `Updated ${email}: ${changes.join(', ')}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleShareCalendarHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const ownerEmail = requireString(input, 'ownerEmail');
+  const shareWithEmail = requireString(input, 'shareWithEmail');
+  if (!ownerEmail) return errorString('missing_owner', 'The calendar owner email is required.');
+  if (!shareWithEmail) return errorString('missing_share_with', 'The email to share the calendar with is required.');
+  // Default to a read share of the owner's primary calendar.
+  const calendarId = requireString(input, 'calendarId') ?? 'primary';
+  const roleInput = requireString(input, 'role') ?? 'reader';
+  if (!CALENDAR_ROLES.includes(roleInput as CalendarRole)) {
+    return errorString('invalid_role', `role must be one of: ${CALENDAR_ROLES.join(', ')}.`);
+  }
+  const role = roleInput as CalendarRole;
+
+  try {
+    // Calendar ACL writes impersonate the calendar OWNER, not the admin.
+    const cal = getCalendarClient(ctx.keyJson, ownerEmail);
+    await cal.acl.insert({
+      calendarId,
+      requestBody: { role, scope: { type: 'user', value: shareWithEmail } },
+    });
+    const which = calendarId === 'primary' ? `${ownerEmail}'s primary calendar` : `calendar ${calendarId}`;
+    return `Shared ${which} with ${shareWithEmail} as ${role}.`;
   } catch (err) {
     return googleError(err);
   }
