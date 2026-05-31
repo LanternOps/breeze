@@ -15,6 +15,7 @@ export * from './reliability';
 export * from './businessEmail';
 export * from './remoteAccessLauncherScheme';
 export * from './remoteAccessInlineSettings';
+export * from './safeRelativePath';
 
 // ============================================
 // Device Roles
