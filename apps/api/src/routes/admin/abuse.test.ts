@@ -168,11 +168,25 @@ vi.mock('../../services/clientIp', () => ({
 }));
 
 // Stub authMiddleware to short-circuit; the test injects its own auth context.
-// `requireMfa` is referenced by `tenantErasureRoutes` which is now mounted on
-// adminRoutes — provide a noop pass-through so the import resolves.
+// `requireMfa` is used by both `/partners/:id/suspend-for-abuse` and
+// `/partners/:id/unsuspend` (and by tenantErasureRoutes, mounted on
+// adminRoutes). Mirror the REAL requireMfa() behavior so the MFA step-up
+// gate is actually exercised: 401 when no auth, 403 when the token's
+// `mfa` claim is unsatisfied, pass-through otherwise. (requireMfa() is a
+// no-op when ENABLE_2FA is off, but our injected `auth.token.mfa` drives
+// this mock regardless, so the gate is tested deterministically.)
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
-  requireMfa: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
+  requireMfa: vi.fn(() => async (c: any, next: () => Promise<void>) => {
+    const auth = c.get('auth');
+    if (!auth) {
+      return c.json({ error: 'Not authenticated' }, 401);
+    }
+    if (auth.token?.mfa === false) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    await next();
+  }),
   hasSatisfiedMfa: vi.fn(() => true),
 }));
 
@@ -184,6 +198,7 @@ import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
+  token: { mfa: boolean };
 };
 
 function buildApp(authToInject: FakeAuth | null) {
@@ -200,10 +215,17 @@ function buildApp(authToInject: FakeAuth | null) {
 
 const platformAdminAuth: FakeAuth = {
   user: { id: 'admin-1', email: 'admin@breeze.test', name: 'PA', isPlatformAdmin: true },
+  token: { mfa: true },
+};
+
+const platformAdminAuthNoMfa: FakeAuth = {
+  user: { id: 'admin-1', email: 'admin@breeze.test', name: 'PA', isPlatformAdmin: true },
+  token: { mfa: false },
 };
 
 const partnerAdminAuth: FakeAuth = {
   user: { id: 'pa-1', email: 'partner@x.com', name: 'PartnerAdmin', isPlatformAdmin: false },
+  token: { mfa: true },
 };
 
 function resetState() {
@@ -299,6 +321,51 @@ describe('admin/abuse — auth gate', () => {
       body: JSON.stringify({ reason: 'restoring legit customer' }),
     });
     expect(res.status).toBe(403);
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
+  // MFA step-up: re-enabling an abuse-suspended partner is privilege-restoring
+  // (flips status back to active + re-enables all its disabled users), so it
+  // MUST require the same MFA step-up as suspend-for-abuse. requireMfa() is a
+  // no-op when ENABLE_2FA is off, so this gate is free until 2FA is enabled.
+  it('rejects /unsuspend when MFA is not satisfied (403)', async () => {
+    const app = buildApp(platformAdminAuthNoMfa);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restoring legit customer mid-incident' }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('MFA required');
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('allows /unsuspend when MFA IS satisfied (proceeds past the gate)', async () => {
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restoring legit customer after review' }),
+    });
+    expect(res.status).toBe(200);
+    expect(createAuditLog).toHaveBeenCalledTimes(1);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.action).toBe('partner.unsuspended');
+  });
+
+  // Parallel assertion for suspend-for-abuse — proves the MFA harness is wired
+  // correctly and that the EXISTING requireMfa() on suspend is exercised.
+  it('rejects /suspend-for-abuse when MFA is not satisfied (403)', async () => {
+    const app = buildApp(platformAdminAuthNoMfa);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'mfa step-up gate on suspend' }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('MFA required');
     expect(createAuditLog).not.toHaveBeenCalled();
   });
 

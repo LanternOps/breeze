@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { userRoutes } from './users';
 
-const { sendInviteMock } = vi.hoisted(() => ({
-  sendInviteMock: vi.fn().mockResolvedValue(undefined)
+const { sendInviteMock, createAuditLogAsyncMock, resolveUserAuditOrgIdMock } = vi.hoisted(() => ({
+  sendInviteMock: vi.fn().mockResolvedValue(undefined),
+  createAuditLogAsyncMock: vi.fn().mockResolvedValue(undefined),
+  resolveUserAuditOrgIdMock: vi.fn().mockResolvedValue(null)
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -112,6 +114,22 @@ vi.mock('../services/email', () => ({
     sendInvite: sendInviteMock
   }))
 }));
+
+vi.mock('../services/auditService', () => ({
+  createAuditLogAsync: createAuditLogAsyncMock
+}));
+
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIpOrUndefined: vi.fn(() => undefined)
+}));
+
+vi.mock('./auth/helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./auth/helpers')>();
+  return {
+    ...actual,
+    resolveUserAuditOrgId: resolveUserAuditOrgIdMock
+  };
+});
 
 vi.mock('../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
@@ -406,6 +424,155 @@ describe('user routes', () => {
         body: JSON.stringify({ preferences: { blob: big } })
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('PATCH /users/me audit coverage (SOC2)', () => {
+    // Every successful self-profile change MUST produce an audit_logs row,
+    // regardless of caller scope. Partner-scope callers have orgId === null,
+    // so the audit must resolve an attribution org via resolveUserAuditOrgId
+    // rather than being skipped entirely (the SOC2 coverage gap).
+    function mockProfileUpdateReturning(row: Record<string, unknown>) {
+      // db.select(...).from(...).where(...).limit(...) is hit only for an email
+      // uniqueness check; mock it to return no conflicting row. Then
+      // db.update(...).set(...).where(...).returning() yields the updated row.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([row])
+          })
+        })
+      } as any);
+    }
+
+    it('audits a partner-scope self-profile change (orgId resolved via resolveUserAuditOrgId)', async () => {
+      // Partner-scope caller: auth.orgId === null. Pre-fix the handler skips
+      // the audit because it is guarded by `if (auth.orgId)`. This asserts the
+      // audit fires with an org resolved from the user's membership.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          orgId: null,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+      resolveUserAuditOrgIdMock.mockResolvedValueOnce('resolved-org-1');
+      mockProfileUpdateReturning({
+        id: 'user-123',
+        email: 'test@example.com',
+        name: 'New Partner Name',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        preferences: null
+      });
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'New Partner Name' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(resolveUserAuditOrgIdMock).toHaveBeenCalledWith('user-123');
+      expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orgId: 'resolved-org-1',
+          actorId: 'user-123',
+          action: 'user.profile.update',
+          resourceType: 'user',
+          resourceId: 'user-123',
+          result: 'success',
+          details: expect.objectContaining({ changedFields: ['name'] })
+        })
+      );
+    });
+
+    it('audits a partner-scope self email change', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          orgId: null,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+      resolveUserAuditOrgIdMock.mockResolvedValueOnce('resolved-org-2');
+      mockProfileUpdateReturning({
+        id: 'user-123',
+        email: 'new@example.com',
+        name: 'Test User',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        preferences: null
+      });
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orgId: 'resolved-org-2',
+          action: 'user.profile.update',
+          details: expect.objectContaining({ changedFields: ['email'] })
+        })
+      );
+    });
+
+    it('still audits an org-scope self-profile change (no regression, no resolve needed)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-1',
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+      mockProfileUpdateReturning({
+        id: 'user-123',
+        email: 'test@example.com',
+        name: 'New Org Name',
+        avatarUrl: null,
+        status: 'active',
+        mfaEnabled: false,
+        preferences: null
+      });
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'New Org Name' })
+      });
+
+      expect(res.status).toBe(200);
+      // Org context is present, so no fallback resolution is required.
+      expect(resolveUserAuditOrgIdMock).not.toHaveBeenCalled();
+      expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orgId: 'org-1',
+          action: 'user.profile.update',
+          details: expect.objectContaining({ changedFields: ['name'] })
+        })
+      );
     });
   });
 

@@ -31,6 +31,15 @@ actionRoutes.post(
       .where(eq(automationPolicies.id, id))
       .returning();
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'policy.activate',
+      resourceType: 'policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+      details: { enabled: { from: policy.enabled, to: true } },
+    });
+
     return c.json(updated ? normalizePolicyResponse(updated) : policy);
   }
 );
@@ -54,6 +63,15 @@ actionRoutes.post(
       .set({ enabled: false, updatedAt: new Date() })
       .where(eq(automationPolicies.id, id))
       .returning();
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'policy.deactivate',
+      resourceType: 'policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+      details: { enabled: { from: policy.enabled, to: false } },
+    });
 
     return c.json(updated ? normalizePolicyResponse(updated) : policy);
   }

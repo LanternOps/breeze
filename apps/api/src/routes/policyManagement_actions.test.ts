@@ -133,6 +133,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { writeRouteAudit } from '../services/auditEvents';
 
 function makePolicy(overrides: Record<string, unknown> = {}) {
   return {
@@ -204,6 +205,41 @@ describe('policyManagement routes', () => {
       expect(body.enabled).toBe(true);
     });
 
+    it('should write a policy.activate audit event', async () => {
+      const policy = makePolicy({ enabled: false });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([policy])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...policy, enabled: true }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'policy.activate',
+          resourceType: 'policy',
+          resourceId: POLICY_ID,
+          resourceName: policy.name,
+          orgId: ORG_ID,
+        })
+      );
+    });
+
     it('should return 404 for non-existent policy', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -251,6 +287,41 @@ describe('policyManagement routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.enabled).toBe(false);
+    });
+
+    it('should write a policy.deactivate audit event', async () => {
+      const policy = makePolicy({ enabled: true });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([policy])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...policy, enabled: false }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/deactivate`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'policy.deactivate',
+          resourceType: 'policy',
+          resourceId: POLICY_ID,
+          resourceName: policy.name,
+          orgId: ORG_ID,
+        })
+      );
     });
   });
 

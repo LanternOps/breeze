@@ -304,6 +304,7 @@ abuseRoutes.post(
 
 abuseRoutes.post(
   '/partners/:id/unsuspend',
+  requireMfa(),
   zValidator('json', reasonSchema),
   async (c) => {
     const partnerId = c.req.param('id');

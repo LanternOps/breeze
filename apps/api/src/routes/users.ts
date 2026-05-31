@@ -20,7 +20,7 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, userRequiresSetup } from './auth/helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
 import { revokeUserAccess } from '../services/userSuspension';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 
@@ -526,23 +526,27 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     return c.json({ error: 'Failed to update profile' }, 500);
   }
 
-  if (auth.orgId) {
-    createAuditLogAsync({
-      orgId: auth.orgId,
-      actorId: auth.user.id,
-      actorEmail: auth.user.email,
-      action: 'user.profile.update',
-      resourceType: 'user',
-      resourceId: updated.id,
-      resourceName: updated.name,
-      details: {
-        changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
-      },
-      ipAddress: getTrustedClientIpOrUndefined(c),
-      userAgent: c.req.header('user-agent'),
-      result: 'success'
-    });
-  }
+  // Every successful self-profile change MUST be audited regardless of caller
+  // scope (SOC2 coverage). Partner-scope callers have auth.orgId === null, so
+  // resolve an attribution org from the user's membership — mirrors the
+  // POST /auth/change-password handler. createAuditLogAsync + persistAuditLog
+  // accept a null orgId, so a null resolution still produces an audit row.
+  const auditOrgId = auth.orgId ?? await resolveUserAuditOrgId(auth.user.id);
+  createAuditLogAsync({
+    orgId: auditOrgId,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'user.profile.update',
+    resourceType: 'user',
+    resourceId: updated.id,
+    resourceName: updated.name,
+    details: {
+      changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
+    },
+    ipAddress: getTrustedClientIpOrUndefined(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
 
   return c.json(updated);
 });
