@@ -7,6 +7,11 @@ function envFlag(name: string, fallback = false): boolean {
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
+// Google Workspace identity tools. Defaults OFF everywhere; an org must also
+// have an explicit google_workspace_connections row before any tool is usable.
+// Gates tool registration (aiAgentSdkTools.ts) and the connect routes.
+export const GOOGLE_WORKSPACE_ENABLED = envFlag('GOOGLE_WORKSPACE_ENABLED', false);
+
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
