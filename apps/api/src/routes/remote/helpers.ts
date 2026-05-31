@@ -191,7 +191,10 @@ export async function expireStaleSessions(orgId: string) {
   // Connecting sessions older than 2 minutes failed to negotiate
   const connectingCutoff = new Date(now.getTime() - 2 * 60 * 1000);
 
-  const staleUpdate = db
+  // Kill viewer tokens for sessions we just force-ended so a still-valid token
+  // can't resurrect them via /viewer/offer (#5). Revocation must ALWAYS run, so
+  // capture the expired ids via `.returning()` directly — no duck-type guard.
+  const expired = await db
     .update(remoteSessions)
     .set({ status: 'disconnected', endedAt: now })
     .where(
@@ -204,18 +207,9 @@ export async function expireStaleSessions(orgId: string) {
           and(eq(remoteSessions.status, 'connecting'), lte(remoteSessions.createdAt, connectingCutoff))
         )
       )
-    ) as unknown as Promise<unknown> & {
-      returning?: (fields: { id: typeof remoteSessions.id }) => Promise<Array<{ id: string }>>;
-    };
-  // Kill viewer tokens for sessions we just force-ended so a still-valid token
-  // can't resurrect them via /viewer/offer (#5). The `.returning()` guard mirrors
-  // the create-session stale sweep so callers/test mocks without it still work.
-  if (typeof staleUpdate.returning === 'function') {
-    const expired = await staleUpdate.returning({ id: remoteSessions.id });
-    await Promise.all(expired.map((row) => revokeViewerSession(row.id)));
-  } else {
-    await staleUpdate;
-  }
+    )
+    .returning({ id: remoteSessions.id });
+  await Promise.all(expired.map((row) => revokeViewerSession(row.id)));
 }
 
 export async function expireStaleSessionsForUser(userId: string) {
@@ -223,7 +217,10 @@ export async function expireStaleSessionsForUser(userId: string) {
   const pendingCutoff = new Date(now.getTime() - 5 * 60 * 1000);
   const connectingCutoff = new Date(now.getTime() - 2 * 60 * 1000);
 
-  const staleUpdate = db
+  // Kill viewer tokens for sessions we just force-ended so a still-valid token
+  // can't resurrect them via /viewer/offer (#5). Revocation must ALWAYS run, so
+  // capture the expired ids via `.returning()` directly — no duck-type guard.
+  const expired = await db
     .update(remoteSessions)
     .set({ status: 'disconnected', endedAt: now })
     .where(
@@ -234,18 +231,9 @@ export async function expireStaleSessionsForUser(userId: string) {
           and(eq(remoteSessions.status, 'connecting'), lte(remoteSessions.createdAt, connectingCutoff))
         )
       )
-    ) as unknown as Promise<unknown> & {
-      returning?: (fields: { id: typeof remoteSessions.id }) => Promise<Array<{ id: string }>>;
-    };
-  // Kill viewer tokens for sessions we just force-ended so a still-valid token
-  // can't resurrect them via /viewer/offer (#5). The `.returning()` guard mirrors
-  // the create-session stale sweep so callers/test mocks without it still work.
-  if (typeof staleUpdate.returning === 'function') {
-    const expired = await staleUpdate.returning({ id: remoteSessions.id });
-    await Promise.all(expired.map((row) => revokeViewerSession(row.id)));
-  } else {
-    await staleUpdate;
-  }
+    )
+    .returning({ id: remoteSessions.id });
+  await Promise.all(expired.map((row) => revokeViewerSession(row.id)));
 }
 
 // Rate limiting helper - check concurrent sessions per org

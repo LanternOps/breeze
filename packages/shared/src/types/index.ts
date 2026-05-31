@@ -257,6 +257,13 @@ export interface RemoteAccessPolicy {
   webrtcDesktop: boolean;
   vncRelay: boolean;
   remoteTools: boolean;
+  // Clipboard sync over the WebRTC desktop channel, gated per direction.
+  // `clipboardHostToViewer` (remote machine → operator's viewer) is the
+  // data-egress direction and defaults off on hosted SaaS; `clipboardViewerToHost`
+  // (operator paste → remote machine) is operator-initiated and defaults on.
+  // Enforced agent-side. Mirrors the API's RemoteAccessSettings.
+  clipboardHostToViewer: boolean;
+  clipboardViewerToHost: boolean;
   enableProxy: boolean;
   policyName: string | null;
   policyId: string | null;

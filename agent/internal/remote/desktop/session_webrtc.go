@@ -16,6 +16,11 @@ import (
 // SessionPolicy is the server-resolved, agent-enforced policy for a desktop
 // session. The API server is not in the peer-to-peer data path, so the agent is
 // the enforcement point (the viewer is untrusted). Findings #2 and #7.
+//
+// A zero-value SessionPolicy{} is fail-CLOSED for clipboard (both directions
+// disabled) and fail-OPEN for lifetime (both timers disabled). Construct via
+// DefaultSessionPolicy() (see session_policy.go) so clipboard defaults are
+// permissive and the IPC/map decoders can't drift on what "default" means.
 type SessionPolicy struct {
 	ClipboardHostToViewer bool
 	ClipboardViewerToHost bool
@@ -131,7 +136,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// even when the server can't reach the agent to send stop_desktop. The
 	// goroutine exits on session.done (closed by Stop) and is intentionally not
 	// in session.wg, so the StopSession call below cannot deadlock on wg.Wait.
-	session.lastInputUnixNano.Store(time.Now().UnixNano())
+	session.lastActivityUnixNano.Store(time.Now().UnixNano())
 	if policy.MaxDuration > 0 || policy.IdleTimeout > 0 {
 		startWall := time.Now()
 		go func() {
@@ -143,27 +148,23 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					return
 				case <-ticker.C:
 					now := time.Now()
-					if policy.MaxDuration > 0 && now.Sub(startWall) >= policy.MaxDuration {
+					lastActivity := time.Unix(0, session.lastActivityUnixNano.Load())
+					stop, reason := shouldStopForLifetime(now, startWall, lastActivity, policy)
+					if !stop {
+						continue
+					}
+					if reason == "idle_timeout_exceeded" {
+						slog.Warn("Desktop session idle timeout, stopping",
+							"session", sessionID, "idleFor", now.Sub(lastActivity).Round(time.Second))
+					} else {
 						slog.Warn("Desktop session reached max duration, stopping",
 							"session", sessionID, "maxDuration", policy.MaxDuration)
-						m.StopSession(sessionID)
-						if m.OnSessionStopped != nil {
-							go m.OnSessionStopped(sessionID)
-						}
-						return
 					}
-					if policy.IdleTimeout > 0 {
-						idleFor := now.Sub(time.Unix(0, session.lastInputUnixNano.Load()))
-						if idleFor >= policy.IdleTimeout {
-							slog.Warn("Desktop session idle timeout, stopping",
-								"session", sessionID, "idleFor", idleFor.Round(time.Second))
-							m.StopSession(sessionID)
-							if m.OnSessionStopped != nil {
-								go m.OnSessionStopped(sessionID)
-							}
-							return
-						}
+					m.StopSession(sessionID)
+					if m.OnSessionStopped != nil {
+						go m.OnSessionStopped(sessionID)
 					}
+					return
 				}
 			}
 		}()
@@ -394,7 +395,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// never run the watcher (no passive exfiltration of whatever the end user
 	// copies); with viewer→host off inbound writes are dropped. Skip the channel
 	// entirely when both directions are disabled.
-	if policy.ClipboardHostToViewer || policy.ClipboardViewerToHost {
+	if policy.clipboardEnabled() {
 		clipboardDC, cbErr := peerConn.CreateDataChannel("clipboard", nil)
 		if cbErr != nil {
 			slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", cbErr.Error())
@@ -465,7 +466,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.dataChannel = dc
 			session.mu.Unlock()
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				session.lastInputUnixNano.Store(time.Now().UnixNano())
+				session.lastActivityUnixNano.Store(time.Now().UnixNano())
 				session.handleInputMessage(msg.Data)
 			})
 		case "control":
@@ -473,6 +474,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.controlDC = dc
 			session.mu.Unlock()
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				// Any control-channel traffic (e.g. viewer_stats sent ~1s by an
+				// alive-but-watching viewer) counts as activity and resets the
+				// idle watchdog. A dead/closed viewer client sends nothing here,
+				// so it still goes idle and is reaped.
+				session.lastActivityUnixNano.Store(time.Now().UnixNano())
 				session.handleControlMessage(msg.Data)
 			})
 			dc.OnOpen(func() {
@@ -567,6 +573,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.startStreaming()
 
 		case webrtc.PeerConnectionStateDisconnected:
+			// Transient: a brief network blip enters this state. We deliberately
+			// do NOT fire OnSessionStopped (peer_disconnected) here — doing so
+			// would mark the server session disconnected+revoked on a hiccup.
+			// Instead we schedule the 20s grace timer below; only the
+			// grace-expired branch (terminal) and the Failed/Closed branch
+			// escalate to OnSessionStopped. So peer_disconnected is terminal-only.
+			//
 			// Ship at warn regardless of desktop_debug — operators
 			// debugging "stream freezes for ~20s sometimes" need this
 			// event in the shipped logs. logSelectedPair is still info

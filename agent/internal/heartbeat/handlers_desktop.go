@@ -212,10 +212,10 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 // older API that doesn't send them preserves existing behavior; timeouts of 0
 // mean disabled. Findings #2 and #7.
 func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
-	policy := desktop.SessionPolicy{
-		ClipboardHostToViewer: true,
-		ClipboardViewerToHost: true,
-	}
+	// Start from the shared default so this map-payload decoder and the IPC
+	// decoder (ipc.DesktopStartRequest.ResolveSessionPolicy) can't drift on
+	// what "default" means (permissive clipboard, no lifetime limits).
+	policy := desktop.DefaultSessionPolicy()
 	if cb, ok := payload["clipboard"].(map[string]any); ok {
 		if v, ok := cb["hostToViewer"].(bool); ok {
 			policy.ClipboardHostToViewer = v

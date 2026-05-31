@@ -161,6 +161,11 @@ vi.mock('../../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  terminateUserRemoteSessions: vi.fn(async () => 0),
+  TEARDOWN_FAILED: -1,
+}));
+
 vi.mock('../../oauth/grantRevocation', () => ({
   revokeAllPartnerOauthArtifacts: vi.fn(async () => ({
     grantsRevoked: 0,
@@ -197,18 +202,12 @@ vi.mock('../../middleware/auth', () => ({
   requirePermission: vi.fn(() => async (_c: any, next: () => Promise<void>) => next()),
 }));
 
-// Stub the new remote-session teardown dependency (added by this PR) so the
-// suite doesn't load the whole remote-desktop / agentWs / policy chain — which
-// would otherwise drag many transitive modules into this route's mocks.
-vi.mock('../../services/remoteSessionTeardown', () => ({
-  terminateUserRemoteSessions: vi.fn(async () => undefined),
-}));
-
 import { Hono } from 'hono';
 import { adminRoutes } from './index';
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -649,5 +648,82 @@ describe('admin/abuse — suspend mutation behavior', () => {
     // No user JWTs to revoke — but OAuth revocation MUST still run.
     expect(revokeAllUserTokens).not.toHaveBeenCalled();
     expect(revokeAllPartnerOauthArtifacts).toHaveBeenCalledWith('partner-1');
+  });
+});
+
+describe('admin/abuse — remote session teardown on suspend', () => {
+  const teardownMock = vi.mocked(terminateUserRemoteSessions);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetState();
+    process.env.NODE_ENV = 'test';
+    teardownMock.mockResolvedValue(0);
+    // clearAllMocks wipes the factory implementations; re-assert the revoke
+    // mocks so the suspend path resolves cleanly (matches the defaults the
+    // factory declared). Otherwise they return undefined and the route 500s.
+    vi.mocked(revokeAllUserTokens).mockResolvedValue(undefined as never);
+    vi.mocked(revokeAllPartnerOauthArtifacts).mockResolvedValue({
+      grantsRevoked: 0,
+      refreshTokensRevoked: 0,
+      jtisRevoked: 0,
+    } as never);
+  });
+
+  it('tears down remote sessions for every affected suspended user', async () => {
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'remote session teardown coverage' }),
+    });
+    expect(res.status).toBe(200);
+
+    // resetState seeds two non-admin partner users (u-1, u-2) as affected.
+    expect(teardownMock).toHaveBeenCalledTimes(2);
+    expect(teardownMock).toHaveBeenCalledWith('u-1');
+    expect(teardownMock).toHaveBeenCalledWith('u-2');
+  });
+
+  it('counts TEARDOWN_FAILED in the audit details + response without failing the suspend', async () => {
+    // u-1 ok, u-2 fails — keyed on userId so call order is irrelevant.
+    teardownMock.mockImplementation(async (id: string) => (id === 'u-2' ? -1 : 1));
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'teardown failure count coverage' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { remoteSessionTeardownFailures?: number };
+    expect(body.remoteSessionTeardownFailures).toBe(1);
+
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect((auditCall.details as Record<string, unknown>).remoteSessionTeardownFailures).toBe(1);
+  });
+
+  it('does NOT tear down sessions when the partner is not found (404)', async () => {
+    txMockState.partner = null;
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/missing/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'not found teardown skip coverage' }),
+    });
+    expect(res.status).toBe(404);
+    expect(teardownMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT tear down sessions on unsuspend (reactivation)', async () => {
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reactivation must not tear down sessions' }),
+    });
+    expect(res.status).toBe(200);
+    expect(teardownMock).not.toHaveBeenCalled();
   });
 });

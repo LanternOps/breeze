@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image"
 	"regexp"
-	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -15,6 +14,11 @@ const (
 	maxDesktopDisplayIndex = 16
 	maxDesktopOfferBytes   = 256 * 1024
 	maxDesktopICEBytes     = 64 * 1024
+
+	// Sane upper bounds for caller-supplied lifetime limits. Values above the
+	// cap are almost certainly a bug or hostile input.
+	maxIdleTimeoutMinutes   = 1440 // 24h
+	maxSessionDurationHours = 168  // 7d
 )
 
 var helperDesktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
@@ -50,18 +54,11 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 		h.mgr.SetGPUVendor(req.GPUVendor)
 	}
 
-	// Build the agent-enforced policy from the IPC request. Absent clipboard
-	// fields (older service) default to permissive to preserve behavior.
-	policy := desktop.SessionPolicy{
-		ClipboardHostToViewer: req.ClipboardHostToViewer == nil || *req.ClipboardHostToViewer,
-		ClipboardViewerToHost: req.ClipboardViewerToHost == nil || *req.ClipboardViewerToHost,
-	}
-	if req.IdleTimeoutMinutes > 0 {
-		policy.IdleTimeout = time.Duration(req.IdleTimeoutMinutes) * time.Minute
-	}
-	if req.MaxSessionDurationHours > 0 {
-		policy.MaxDuration = time.Duration(req.MaxSessionDurationHours) * time.Hour
-	}
+	// Build the agent-enforced policy via the single centralized decoder so the
+	// nil→permissive clipboard logic and the <=0→unset timeout logic live in
+	// exactly one place (shared base with the map-payload decoder). Bounds were
+	// already enforced by validateDesktopStartRequest.
+	policy := desktop.ResolveSessionPolicyFromIPC(*req)
 
 	answer, err := h.mgr.StartSession(req.SessionID, req.Offer, iceServers, req.DisplayIndex, policy)
 	if err != nil {
@@ -92,6 +89,22 @@ func validateDesktopStartRequest(req *ipc.DesktopStartRequest) error {
 	}
 	if req.DisplayIndex < 0 || req.DisplayIndex > maxDesktopDisplayIndex {
 		return fmt.Errorf("displayIndex out of range")
+	}
+	// Clamp/reject lifetime bounds. Negative values must NOT silently decode to
+	// "disabled" (fail-open) — reject them outright rather than letting the >0
+	// guard in the policy decoder drop them. Cap at sane maxima to reject
+	// hostile/buggy values.
+	if req.IdleTimeoutMinutes < 0 {
+		return fmt.Errorf("idleTimeoutMinutes must not be negative: %d", req.IdleTimeoutMinutes)
+	}
+	if req.IdleTimeoutMinutes > maxIdleTimeoutMinutes {
+		return fmt.Errorf("idleTimeoutMinutes %d exceeds max %d", req.IdleTimeoutMinutes, maxIdleTimeoutMinutes)
+	}
+	if req.MaxSessionDurationHours < 0 {
+		return fmt.Errorf("maxSessionDurationHours must not be negative: %d", req.MaxSessionDurationHours)
+	}
+	if req.MaxSessionDurationHours > maxSessionDurationHours {
+		return fmt.Errorf("maxSessionDurationHours %d exceeds max %d", req.MaxSessionDurationHours, maxSessionDurationHours)
 	}
 	return nil
 }

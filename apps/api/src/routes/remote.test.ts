@@ -44,6 +44,10 @@ vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true)
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  revokeViewerSession: vi.fn(async () => undefined)
+}));
+
 const mockDb = vi.hoisted(() => ({
   select: vi.fn(),
   insert: vi.fn(),
@@ -121,6 +125,8 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { sendCommandToAgent } from './agentWs';
+import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 
 /** Helper to build a fluent mock chain for db.select() */
 function mockSelectChain(result: unknown) {
@@ -206,10 +212,14 @@ function mockUpdateNoReturn() {
 }
 
 function resetDbMocks() {
-  // Reset each mock function and provide a default fallback
+  // Reset each mock function and provide a default fallback.
+  // db.update defaults to a .returning()-capable chain: expireStaleSessions /
+  // expireStaleSessionsForUser now ALWAYS call .returning() (the duck-type guard
+  // was removed), so the default must support it or a late/extra stale-sweep
+  // call throws "reading 'returning' of undefined".
   mockDb.select.mockReset().mockReturnValue(mockSelectChain([]));
   mockDb.insert.mockReset().mockReturnValue(mockInsertNoReturn());
-  mockDb.update.mockReset().mockReturnValue(mockUpdateNoReturn());
+  mockDb.update.mockReset().mockReturnValue(mockUpdateReturning([]));
 }
 
 describe('remote routes', () => {
@@ -264,12 +274,12 @@ describe('remote routes', () => {
         .mockReturnValueOnce(mockInsertReturning([session]))
         .mockReturnValueOnce(mockInsertNoReturn());
 
-      // expireStaleSessions -> db.update (stale cleanup)
-      // expireStaleSessionsForUser -> db.update (user stale cleanup)
-      // terminate stale device+type sessions -> db.update
+      // expireStaleSessions -> db.update (stale cleanup, now always .returning())
+      // expireStaleSessionsForUser -> db.update (user stale cleanup, .returning())
+      // terminate stale device+type sessions -> db.update (still guarded in sessions.ts)
       vi.mocked(db.update)
-        .mockReturnValueOnce(mockUpdateNoReturn())
-        .mockReturnValueOnce(mockUpdateNoReturn())
+        .mockReturnValueOnce(mockUpdateReturning([]))
+        .mockReturnValueOnce(mockUpdateReturning([]))
         .mockReturnValueOnce(mockUpdateNoReturn());
 
       const res = await app.request('/remote/sessions', {
@@ -305,9 +315,9 @@ describe('remote routes', () => {
         // 3. checkSessionRateLimit count (returns 10 = at limit)
         .mockReturnValueOnce(mockSelectCountChain(10));
 
-      // expireStaleSessions -> db.update (stale cleanup)
+      // expireStaleSessions -> db.update (stale cleanup, now always .returning())
       vi.mocked(db.update)
-        .mockReturnValueOnce(mockUpdateNoReturn());
+        .mockReturnValueOnce(mockUpdateReturning([]));
 
       const res = await app.request('/remote/sessions', {
         method: 'POST',
@@ -371,7 +381,8 @@ describe('remote routes', () => {
     // Finding #1 (H5): the remote-access policy must be re-enforced at offer
     // time, not just at session creation. A viewer holding an existing,
     // still-in-flight session must NOT be able to (re)start a live stream after
-    // the webrtcDesktop policy is revoked mid-session.
+    // the webrtcDesktop policy is revoked mid-session — and the denied offer must
+    // not flip session status or leak a start_desktop command to the agent (GAP2).
     it('rejects the offer with 403 when remote-access policy is denied (mid-session revocation)', async () => {
       const sessionResult = {
         session: {
@@ -395,6 +406,11 @@ describe('remote routes', () => {
         policyName: 'Test Policy',
       } as any);
 
+      // Clear before the request so a late async write or command leaked by a
+      // prior test can't be miscounted against this denied offer.
+      vi.mocked(db.update).mockClear();
+      vi.mocked(sendCommandToAgent).mockClear();
+
       const res = await app.request(`/remote/sessions/${SESSION_UUID}/offer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -405,8 +421,10 @@ describe('remote routes', () => {
       const body = await res.json();
       expect(body.code).toBe('REMOTE_ACCESS_POLICY_DENIED');
       expect(body.capability).toBe('webrtcDesktop');
-      // The denied offer must NOT mutate the session (no resume of capture).
+      // The denied offer must NOT mutate the session (no resume of capture)
+      // and must NOT leak a start_desktop command to the agent.
       expect(db.update).not.toHaveBeenCalled();
+      expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
     });
 
     // Finding #5 (H5): an ended ('disconnected'/'failed') session must not be
@@ -751,6 +769,60 @@ describe('remote routes', () => {
       const body = await res.json();
       expect(body.cleaned).toBe(2);
       expect(body.ids).toEqual(['session-a', 'session-b']);
+    });
+  });
+
+  // The resolver casts inlineSettings (untyped JSONB) through this schema before
+  // anything reaches the agent. Valid input passes; malformed / out-of-range
+  // input is rejected so the resolver falls back to safe DEFAULTS. (The real
+  // remoteAccessPolicy module is mocked in this suite, so we exercise the schema
+  // gate directly — it's the load-bearing piece of the resolver's safety.)
+  describe('remoteAccessInlineSettingsSchema', () => {
+    it('accepts a well-formed partial settings object', () => {
+      const result = remoteAccessInlineSettingsSchema.safeParse({
+        clipboardHostToViewer: false,
+        clipboardViewerToHost: true,
+        idleTimeoutMinutes: 10,
+        maxSessionDurationHours: 4,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.clipboardHostToViewer).toBe(false);
+        expect(result.data.idleTimeoutMinutes).toBe(10);
+      }
+    });
+
+    it('accepts an empty object (all fields optional → merged over DEFAULTS)', () => {
+      expect(remoteAccessInlineSettingsSchema.safeParse({}).success).toBe(true);
+    });
+
+    it('rejects a non-boolean clipboard flag', () => {
+      const result = remoteAccessInlineSettingsSchema.safeParse({
+        clipboardHostToViewer: 'yes',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an out-of-range (negative) idle timeout', () => {
+      expect(
+        remoteAccessInlineSettingsSchema.safeParse({ idleTimeoutMinutes: -5 }).success
+      ).toBe(false);
+    });
+
+    it('rejects an out-of-range (too large) max session duration', () => {
+      // 169h exceeds the 168h (7 day) ceiling.
+      expect(
+        remoteAccessInlineSettingsSchema.safeParse({ maxSessionDurationHours: 169 }).success
+      ).toBe(false);
+    });
+
+    it('allows the 0 sentinel but rejects negative maxSessionDurationHours', () => {
+      expect(
+        remoteAccessInlineSettingsSchema.safeParse({ maxSessionDurationHours: 0 }).success
+      ).toBe(true);
+      expect(
+        remoteAccessInlineSettingsSchema.safeParse({ maxSessionDurationHours: -1 }).success
+      ).toBe(false);
     });
   });
 });
