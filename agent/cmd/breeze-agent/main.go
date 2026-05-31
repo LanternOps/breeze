@@ -435,6 +435,26 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 
 	initLogging(cfg)
 
+	// Record this process's live PID immediately, before any startup step that
+	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
+	// leaves agent.state holding a prior run's dead PID, and the watchdog reads
+	// that stale PID forever — reporting check.process_gone on a process that
+	// is actually alive-but-wedged, and force-killing the wrong (dead) PID
+	// instead of the live one. Status flips to StatusRunning at the end of
+	// startup (below). Fields mirror that running-state write; LastHeartbeat
+	// stays zero (watchdog treats zero as a startup grace period) exactly as
+	// the running-state write does until the first heartbeat records it.
+	// See #1029.
+	startupStatePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(startupStatePath, &state.AgentState{
+		Status:    state.StatusStarting,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write startup state file", "error", err.Error())
+	}
+
 	// Auto-clear Safe Mode BCD flag on startup to prevent reboot loops.
 	// If the agent triggered a safe mode reboot, the safeboot BCD entry
 	// persists until explicitly removed. Clear it so the next reboot is normal.

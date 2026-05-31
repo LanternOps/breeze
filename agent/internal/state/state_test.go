@@ -88,6 +88,42 @@ func TestWriteStopping(t *testing.T) {
 	}
 }
 
+func TestWriteStarting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+
+	// The early startup write records the live PID with StatusStarting and a
+	// zero LastHeartbeat (startup grace), so the watchdog sees the live process
+	// rather than a prior run's stale PID. See #1029.
+	s := &AgentState{
+		Status:    StatusStarting,
+		PID:       4321,
+		Version:   "2.0.0",
+		Timestamp: time.Now(),
+	}
+
+	if err := Write(path, s); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	got, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Read returned nil")
+	}
+	if got.Status != StatusStarting {
+		t.Errorf("Status = %q, want %q", got.Status, StatusStarting)
+	}
+	if got.PID != 4321 {
+		t.Errorf("PID = %d, want 4321", got.PID)
+	}
+	if !got.LastHeartbeat.IsZero() {
+		t.Errorf("LastHeartbeat = %v, want zero (startup grace)", got.LastHeartbeat)
+	}
+}
+
 func TestReadMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nonexistent.state")
