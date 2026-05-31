@@ -124,9 +124,15 @@ vi.mock('../../db', () => ({
     }),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../../db/schema', () => ({
+vi.mock('../../db/schema', async (importOriginal) => ({
+  // Spread the real schema so transitive imports (e.g. patchPolicies pulled in
+  // via remoteSessionTeardown) resolve; override the tables this suite asserts
+  // on with opaque tokens below.
+  ...(await importOriginal<typeof import('../../db/schema')>()),
   partners: { id: 'partners.id', status: 'partners.status', paymentMethodAttachedAt: 'partners.pma' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
@@ -188,6 +194,14 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   }),
   hasSatisfiedMfa: vi.fn(() => true),
+  requirePermission: vi.fn(() => async (_c: any, next: () => Promise<void>) => next()),
+}));
+
+// Stub the new remote-session teardown dependency (added by this PR) so the
+// suite doesn't load the whole remote-desktop / agentWs / policy chain — which
+// would otherwise drag many transitive modules into this route's mocks.
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  terminateUserRemoteSessions: vi.fn(async () => undefined),
 }));
 
 import { Hono } from 'hono';
