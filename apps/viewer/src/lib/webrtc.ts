@@ -18,6 +18,33 @@ export class AgentSessionError extends Error {
   }
 }
 
+/**
+ * Error thrown when the server rejects access to the session because it has
+ * already ended (HTTP 401 'Session ended' from the mid-session revocation
+ * guard). The single-session viewer token can never connect to this session
+ * again, so callers MUST stop retrying the same sessionId and surface a
+ * terminal "session ended" state rather than hammering the endpoint.
+ */
+export class SessionEndedError extends Error {
+  constructor(message = 'This remote session has ended.') {
+    super(message);
+    this.name = 'SessionEndedError';
+  }
+}
+
+/**
+ * Best-effort detection of the server's "session ended" rejection. The server
+ * returns HTTP 401 with a body/error mentioning the session has ended; we also
+ * treat a bare 401 on the viewer offer/poll path as terminal because a
+ * single-session viewer token only ever authorizes one (still-live) session —
+ * once it's 401ing there is nothing a retry can recover.
+ */
+export function isSessionEndedResponse(status: number, body?: string | null): boolean {
+  if (status !== 401) return false;
+  if (!body) return true;
+  return /session\s*ended|ended|revoked|no longer active/i.test(body);
+}
+
 export interface AuthenticatedConnectionParams {
   sessionId: string;
   apiUrl: string;
@@ -131,6 +158,11 @@ export async function createWebRTCSession(
 
     if (!offerResp.ok) {
       const msg = await offerResp.text().catch(() => 'unknown error');
+      // A 401 here means the session was ended/revoked server-side — retrying
+      // the same sessionId is futile. Surface a terminal error.
+      if (isSessionEndedResponse(offerResp.status, msg)) {
+        throw new SessionEndedError();
+      }
       throw new Error(`Failed to submit WebRTC offer: ${msg}`);
     }
 
@@ -200,6 +232,14 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
       // If the agent reported a failure, surface it immediately
       if (data.status === 'failed') {
         throw new AgentSessionError(data.errorMessage || 'Remote desktop failed to start on agent');
+      }
+    } else if (resp.status === 401) {
+      // Session ended/revoked server-side mid-poll — stop immediately so the
+      // caller can surface a terminal state instead of polling to timeout
+      // and then retrying the same dead session.
+      const body = await resp.text().catch(() => null);
+      if (isSessionEndedResponse(resp.status, body)) {
+        throw new SessionEndedError();
       }
     }
 
