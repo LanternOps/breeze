@@ -714,6 +714,8 @@ coreRoutes.get(
         webrtcDesktop: remoteAccess.settings.webrtcDesktop,
         vncRelay: remoteAccess.settings.vncRelay,
         remoteTools: remoteAccess.settings.remoteTools,
+        clipboardHostToViewer: remoteAccess.settings.clipboardHostToViewer,
+        clipboardViewerToHost: remoteAccess.settings.clipboardViewerToHost,
         enableProxy: remoteAccess.settings.enableProxy,
         policyName: remoteAccess.policyName,
         policyId: remoteAccess.policyId,

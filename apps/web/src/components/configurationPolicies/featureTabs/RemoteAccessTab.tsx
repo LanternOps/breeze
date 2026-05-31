@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Monitor, Network, Gauge, Plus, X } from 'lucide-react';
+import { Monitor, Network, Gauge, Plus, X, ClipboardCopy } from 'lucide-react';
 import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
@@ -9,6 +9,8 @@ type RemoteAccessSettings = {
   webrtcDesktop: boolean;
   vncRelay: boolean;
   remoteTools: boolean;
+  clipboardHostToViewer: boolean;
+  clipboardViewerToHost: boolean;
   enableProxy: boolean;
   defaultAllowedPorts: number[];
   autoEnableProxy: boolean;
@@ -21,6 +23,11 @@ const defaults: RemoteAccessSettings = {
   webrtcDesktop: true,
   vncRelay: false,
   remoteTools: true,
+  // Host→viewer is the data-egress direction (whatever the end user copies —
+  // passwords, MFA codes — would stream to the operator); default OFF. Operator
+  // paste into the remote machine is operator-initiated; default ON.
+  clipboardHostToViewer: false,
+  clipboardViewerToHost: true,
   enableProxy: false,
   defaultAllowedPorts: [80, 443, 8080, 8443],
   autoEnableProxy: false,
@@ -43,6 +50,9 @@ function ToggleRow({ label, description, checked, onChange }: {
       </div>
       <button
         type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
       >
@@ -183,6 +193,31 @@ export default function RemoteAccessTab({ policyId, existingLink, onLinkChanged,
               ))}
             </select>
           </div>
+        </div>
+      </div>
+
+      {/* Clipboard */}
+      <div className="mt-6">
+        <div className="flex items-center gap-2">
+          <ClipboardCopy className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Clipboard Sync</h3>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Clipboard sharing over the remote desktop session, gated per direction and enforced on the agent.
+        </p>
+        <div className="mt-3 space-y-3">
+          <ToggleRow
+            label="Remote machine → operator (copy out)"
+            description="Stream the remote machine's clipboard to the operator's viewer. This is the data-egress direction — whatever the end user copies (passwords, MFA codes) would reach the operator. Off by default."
+            checked={settings.clipboardHostToViewer}
+            onChange={(v) => update('clipboardHostToViewer', v)}
+          />
+          <ToggleRow
+            label="Operator → remote machine (paste in)"
+            description="Allow the operator to paste into the remote machine. Operator-initiated; on by default."
+            checked={settings.clipboardViewerToHost}
+            onChange={(v) => update('clipboardViewerToHost', v)}
+          />
         </div>
       </div>
 
