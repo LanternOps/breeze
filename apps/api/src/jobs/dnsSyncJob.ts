@@ -16,7 +16,7 @@ import {
   type DnsPolicyDomain,
   type DnsThreatCategory
 } from '../db/schema';
-import { createDnsProvider, type DnsEvent } from '../services/dnsProviders';
+import { createDnsProvider, DnsProviderHttpError, type DnsEvent } from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
@@ -85,6 +85,64 @@ export function getDnsSyncQueue(): Queue<DnsSyncJobData> {
     });
   }
   return dnsSyncQueue;
+}
+
+/** Max length persisted to a tenant-visible sync-error column. */
+const SYNC_ERROR_MAX_LENGTH = 2000;
+
+/**
+ * Build the message to persist in a tenant-visible sync-error column
+ * (`dns_filter_integrations.lastSyncError` / `dns_policies.syncError`).
+ *
+ * SECURITY: For a {@link DnsProviderHttpError} we store ONLY the body-free
+ * `.message` (the `HTTP <status> <statusText>` status line). The upstream
+ * response body lives on `.responseBody` and is logged server-side by the
+ * caller — never returned to the tenant, because for self-hosted Pi-hole/AdGuard
+ * the tenant controls the endpoint host and an echoed body would be a
+ * partial-read oracle for arbitrary public hosts. Other error types
+ * (transport/SSRF/config) carry no upstream body, so their message is safe to
+ * store. `redactLogMessage` is still applied as defense-in-depth (e.g. a
+ * Pi-hole error could echo back the `?auth=<apiKey>` secret).
+ */
+export function tenantVisibleSyncError(error: unknown): string {
+  const message =
+    error instanceof DnsProviderHttpError
+      ? error.message // "HTTP <status> <statusText>", body-free by construction
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return redactLogMessage(message).slice(0, SYNC_ERROR_MAX_LENGTH);
+}
+
+/**
+ * Log full failure detail to the SERVER-SIDE log only. For an upstream HTTP
+ * error this includes the (redacted) response body that we deliberately keep
+ * out of the tenant-visible column.
+ */
+function logSyncFailureServerSide(
+  context: Record<string, unknown>,
+  error: unknown
+): void {
+  if (error instanceof DnsProviderHttpError) {
+    console.error(
+      '[DnsSyncJob] sync failed (upstream HTTP error)',
+      JSON.stringify({
+        ...context,
+        status: error.status,
+        statusText: error.statusText,
+        // Redacted: a Pi-hole upstream body can echo back `?auth=<apiKey>`.
+        responseBody: redactLogMessage(error.responseBody),
+      })
+    );
+    return;
+  }
+  console.error(
+    '[DnsSyncJob] sync failed',
+    JSON.stringify({
+      ...context,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    })
+  );
 }
 
 function parseIntegrationConfig(value: unknown): DnsIntegrationConfig {
@@ -576,15 +634,18 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
       inserted: insertedCount
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Redact before persisting. Pi-hole puts the API key in the URL query
-    // string (?auth=<key>); a Node fetch error whose .cause echoes the URL
-    // would otherwise land in dnsFilterIntegrations.lastSyncError verbatim.
+    // Full detail (including the upstream response body, redacted) goes to the
+    // SERVER-SIDE log only.
+    logSyncFailureServerSide({ integrationId: integration.id, orgId: integration.orgId }, error);
+    // Store ONLY a body-free, redacted message in the tenant-visible column.
+    // Pi-hole puts the API key in the URL query string (?auth=<key>) and an
+    // upstream body could echo arbitrary public-host content (SSRF read
+    // oracle) — neither may land in dnsFilterIntegrations.lastSyncError.
     await db
       .update(dnsFilterIntegrations)
       .set({
         lastSyncStatus: 'error',
-        lastSyncError: redactLogMessage(message).slice(0, 2000),
+        lastSyncError: tenantVisibleSyncError(error),
         updatedAt: new Date()
       })
       .where(eq(dnsFilterIntegrations.id, integration.id));
@@ -654,12 +715,14 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
       removed: removeDomains.length
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Full detail (including the upstream response body, redacted) goes to the
+    // SERVER-SIDE log only; the tenant-visible column gets a body-free message.
+    logSyncFailureServerSide({ policyId: row.policy.id, orgId: row.integration.orgId }, error);
     await db
       .update(dnsPolicies)
       .set({
         syncStatus: 'error',
-        syncError: redactLogMessage(message).slice(0, 2000),
+        syncError: tenantVisibleSyncError(error),
         updatedAt: new Date()
       })
       .where(eq(dnsPolicies.id, row.policy.id));

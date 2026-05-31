@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { safeFetch } from './urlSafety';
 
 const DEFAULT_HUNTRESS_BASE_URL = 'https://api.huntress.io/v1';
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -296,16 +297,36 @@ function normalizeWebhookPayload(payload: unknown): {
 
 const MAX_RETRIES = 3;
 
+// Recognize the timeout/abort rejections produced by either the legacy fetch
+// path (DOMException 'AbortError') or safeFetch (plain Error whose message is
+// 'request timed out after Nms' or 'aborted'). safeFetch routes through
+// http(s).request, which never throws a DOMException, so we must match on the
+// message too.
+function isTimeoutError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  if (err instanceof Error) {
+    return /request timed out after \d+ms/.test(err.message) || err.message === 'aborted';
+  }
+  return false;
+}
+
 async function fetchJson(
   url: URL,
   init: RequestInit,
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<unknown> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
+      // Route through safeFetch (SSRF-safe): it pins DNS to a validated public
+      // IP, never follows redirects (a 3xx is returned raw, so the non-2xx
+      // branch below rejects it instead of chasing a Location into internal
+      // address space), and enforces the timeout itself via `timeoutMs`.
+      const response = await safeFetch(url.toString(), {
+        method: init.method,
+        headers: init.headers,
+        body: init.body as BodyInit | undefined,
+        timeoutMs,
+      });
       const text = await response.text();
 
       // Retry on transient errors (429, 5xx)
@@ -321,6 +342,8 @@ async function fetchJson(
         }
       }
 
+      // Any non-2xx (including a raw 3xx from safeFetch, which never follows
+      // redirects) is an error — we never parse it as JSON or chase Location.
       if (!response.ok) {
         const preview = text.trim().slice(0, 400);
         throw new Error(`Huntress API request failed (${response.status} ${response.statusText}): ${preview || '<empty>'}`);
@@ -335,21 +358,18 @@ async function fetchJson(
         );
       }
     } catch (err) {
-      clearTimeout(timer);
       // Retry on timeouts
-      if (err instanceof DOMException && err.name === 'AbortError' && attempt < MAX_RETRIES) {
+      if (isTimeoutError(err) && attempt < MAX_RETRIES) {
         console.warn(
           `[HuntressClient] Request to ${url.pathname} timed out after ${timeoutMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
         );
         continue;
       }
-      // Wrap raw AbortError with context
-      if (err instanceof DOMException && err.name === 'AbortError') {
+      // Wrap raw timeout/abort with context
+      if (isTimeoutError(err)) {
         throw new Error(`Huntress API request to ${url.pathname} timed out after ${timeoutMs}ms`);
       }
       throw err;
-    } finally {
-      clearTimeout(timer);
     }
   }
   // Should not be reached, but satisfies TypeScript
@@ -378,6 +398,12 @@ export class HuntressClient {
     const url = new URL(pathname.replace(/^\//, ''), this.baseUrl.toString().endsWith('/') ? this.baseUrl : new URL(`${this.baseUrl.toString()}/`));
     for (const [key, value] of Object.entries(query ?? {})) {
       url.searchParams.set(key, value);
+    }
+    // Re-assert the host on the FINAL per-request URL (defense against off-host
+    // drift: a path/query that somehow resolved to a different origin). The
+    // constructor validates the base URL, but this guards every outbound call.
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.huntress.io')) {
+      throw new Error(`Refusing to call non-Huntress host: ${url.origin}. Must be HTTPS *.huntress.io`);
     }
     // Huntress API only accepts HTTP Basic auth (verified live 2026-05-29: Bearer and
     // X-API-Key both return 401 "Missing or incorrect authorization scheme"). The

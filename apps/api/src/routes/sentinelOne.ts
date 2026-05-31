@@ -20,11 +20,11 @@ import {
 } from '../services/sentinelOne/actions';
 import { escapeLike } from '../utils/sql';
 import { checkSsrfSafe } from '../services/ssrfGuard';
-
 // SentinelOne deploys as managed SaaS only. Per-tenant management consoles
 // use the .sentinelone.net suffix (e.g. usea1-partners.sentinelone.net).
-// Any tenant-supplied URL pointing elsewhere is treated as SSRF.
-const S1_HOSTNAME_ALLOWLIST = ['.sentinelone.net'] as const;
+// Any tenant-supplied URL pointing elsewhere is treated as SSRF. Shared with
+// the client's egress-time re-check so the allowlist has a single source of truth.
+import { S1_HOSTNAME_ALLOWLIST } from '../services/sentinelOne/constants';
 
 export const sentinelOneRoutes = new Hono();
 sentinelOneRoutes.use('*', authMiddleware);

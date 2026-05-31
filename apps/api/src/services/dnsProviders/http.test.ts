@@ -1,8 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import https from 'https';
 import { EventEmitter } from 'events';
-import { requestJson } from './http';
+import { requestJson, DnsProviderHttpError } from './http';
 import { SsrfBlockedError, __setLookupForTests } from '../urlSafety';
+
+/**
+ * Build an https.request mock that lands one response with the given status and
+ * body. Used (with a literal IP + allowPrivateNetwork) to exercise the response
+ * path past the SSRF gate without real network I/O.
+ */
+function mockHttpsOnce(opts: { statusCode: number; statusMessage: string; body: string }) {
+  return vi
+    .spyOn(https, 'request')
+    .mockImplementation((_options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = opts.statusCode;
+        res.statusMessage = opts.statusMessage;
+        res.headers = { 'content-type': 'application/json' };
+        callback?.(res);
+        res.emit('data', Buffer.from(opts.body));
+        res.emit('end');
+      });
+      return req;
+    });
+}
 
 describe('requestJson — SSRF safety via safeFetch', () => {
   afterEach(() => {
@@ -216,6 +242,64 @@ describe('requestJson — SSRF safety via safeFetch', () => {
 
       expect(result).toEqual({});
       expect(requestSpy.mock.calls.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe('DnsProviderHttpError — no upstream body in .message', () => {
+    it('throws a body-free DnsProviderHttpError on a non-2xx response, keeping the body on responseBody', async () => {
+      // 4xx is non-retriable, so a single transport attempt surfaces the error.
+      mockHttpsOnce({
+        statusCode: 403,
+        statusMessage: 'Forbidden',
+        body: 'UPSTREAM_BODY_MARKER: secret internal detail'
+      });
+
+      const error = await requestJson('https://10.0.0.5/x', {
+        allowPrivateNetwork: true,
+        maxRetries: 0
+      }).then(
+        () => {
+          throw new Error('expected requestJson to reject');
+        },
+        (e: unknown) => e
+      );
+
+      expect(error).toBeInstanceOf(DnsProviderHttpError);
+      const httpError = error as DnsProviderHttpError;
+      expect(httpError.status).toBe(403);
+      expect(httpError.statusText).toBe('Forbidden');
+      // SECURITY: status line only — the upstream body must NOT leak into the
+      // (tenant-visible) message.
+      expect(httpError.message).toBe('HTTP 403 Forbidden');
+      expect(httpError.message).not.toContain('UPSTREAM_BODY_MARKER');
+      // Raw body preserved for server-side logging only.
+      expect(httpError.responseBody).toBe('UPSTREAM_BODY_MARKER: secret internal detail');
+    });
+
+    it('throws a body-free DnsProviderHttpError on an unparseable 2xx body, keeping the body on responseBody', async () => {
+      mockHttpsOnce({
+        statusCode: 200,
+        statusMessage: 'OK',
+        body: 'not json UPSTREAM_BODY_MARKER'
+      });
+
+      const error = await requestJson('https://10.0.0.5/x', {
+        allowPrivateNetwork: true,
+        maxRetries: 0
+      }).then(
+        () => {
+          throw new Error('expected requestJson to reject');
+        },
+        (e: unknown) => e
+      );
+
+      expect(error).toBeInstanceOf(DnsProviderHttpError);
+      const httpError = error as DnsProviderHttpError;
+      expect(httpError.message).toBe('Provider returned invalid JSON payload');
+      // SECURITY: the raw payload must NOT leak into the tenant-visible message.
+      expect(httpError.message).not.toContain('UPSTREAM_BODY_MARKER');
+      // Raw text preserved for server-side logging only.
+      expect(httpError.responseBody).toBe('not json UPSTREAM_BODY_MARKER');
     });
   });
 });

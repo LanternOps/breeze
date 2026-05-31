@@ -87,6 +87,32 @@ describe('SentinelOneClient error handling', () => {
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
 
+  it('rejects HTTPS management URLs outside the .sentinelone.net allowlist before sending tokens', () => {
+    expect(() => new SentinelOneClient({
+      managementUrl: 'https://internal-vault.cluster.local',
+      apiToken: 'token',
+    })).toThrow(/sentinelone|allowed/i);
+    // Fail closed: the token must never reach egress for a non-allowed host.
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects look-alike hosts that only embed sentinelone.net as a substring', () => {
+    // .endsWith('.sentinelone.net') correctly rejects this — the host ends with
+    // .attacker.test, guarding against suffix-vs-substring confusion.
+    expect(() => new SentinelOneClient({
+      managementUrl: 'https://evil-sentinelone.net.attacker.test',
+      apiToken: 'token',
+    })).toThrow();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts regional/partner .sentinelone.net subdomains', () => {
+    expect(() => new SentinelOneClient({
+      managementUrl: 'https://usea1-partners.sentinelone.net',
+      apiToken: 'token',
+    })).not.toThrow();
+  });
+
   it('throws on non-OK HTTP response with status and body', async () => {
     safeFetchMock.mockResolvedValue({
       ok: false,

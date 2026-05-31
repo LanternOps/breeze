@@ -84,3 +84,8 @@ export {
   PiHoleProvider,
   AdGuardHomeProvider
 };
+
+// Re-export so the sync job can identify upstream HTTP errors (and read the
+// body off `.responseBody` for server-side logging) without reaching into the
+// per-provider http module.
+export { DnsProviderHttpError } from './http';

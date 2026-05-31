@@ -7,6 +7,18 @@
 
 import { captureException } from './sentry';
 
+// ── Tenant id validation ─────────────────────────────────────────────────────
+
+/**
+ * Entra (Azure AD) tenant ids are GUIDs. Microsoft's admin-consent callback
+ * returns the concrete tenant GUID in `?tenant=`, and the client-credentials
+ * flow used here requires a concrete tenant — the well-known aliases
+ * `common` / `organizations` / `consumers` are NOT valid for this grant, so we
+ * deliberately accept GUIDs only.
+ */
+export const M365_TENANT_ID_REGEX =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 // ── Platform config ────────────────────────────────────────────────────────
 
 export interface C2cM365PlatformConfig {
@@ -75,6 +87,15 @@ export async function acquireClientCredentialsToken(params: {
   clientSecret: string;
   scope?: string;
 }): Promise<TokenResult> {
+  // Last line of defense at the trust boundary: tenantId is tenant-controlled
+  // (admin-consent callback / stored connection). The host is a hard-coded
+  // literal and encodeURIComponent keeps tenantId inside its path segment (no
+  // authority/path break-out), but reject anything that isn't an Entra GUID
+  // before we ever build a URL from it.
+  if (!M365_TENANT_ID_REGEX.test(params.tenantId)) {
+    throw new Error('Invalid M365 tenant id');
+  }
+
   const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(params.tenantId)}/oauth2/v2.0/token`;
 
   const body = new URLSearchParams({
@@ -88,6 +109,9 @@ export async function acquireClientCredentialsToken(params: {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
+    // undici's fetch follows redirects by default; the token endpoint never
+    // legitimately redirects, so refuse to chase one off-host.
+    redirect: 'error',
   });
 
   if (!res.ok) {
@@ -126,6 +150,9 @@ export async function testGraphAccess(
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/organization', {
       headers: { Authorization: `Bearer ${accessToken}` },
+      // Don't follow a redirect off graph.microsoft.com while carrying the
+      // bearer token in the Authorization header.
+      redirect: 'error',
     });
 
     if (!res.ok) {

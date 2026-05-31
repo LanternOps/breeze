@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { runSequentialDomainMutations } from './dnsSyncJob';
+import { runSequentialDomainMutations, tenantVisibleSyncError } from './dnsSyncJob';
+import { DnsProviderHttpError } from '../services/dnsProviders';
 
 describe('runSequentialDomainMutations (issue #827 — policy-sync rule clobbering)', () => {
   it('runs domain mutations one at a time, never concurrently', async () => {
@@ -71,5 +72,61 @@ describe('runSequentialDomainMutations (issue #827 — policy-sync rule clobberi
 
     // Sequential execution means the failure halts before later domains run.
     expect(processed).toEqual(['ok1.com']);
+  });
+});
+
+describe('tenantVisibleSyncError — no upstream body in stored sync error (SSRF read oracle)', () => {
+  it('stores only the HTTP status line for a DnsProviderHttpError, never the upstream body', () => {
+    const error = new DnsProviderHttpError(
+      502,
+      'Bad Gateway',
+      'SECRET_INTERNAL_BODY_MARKER leaked from an upstream public host'
+    );
+
+    const stored = tenantVisibleSyncError(error);
+
+    // The value persisted to lastSyncError / syncError is the body-free status line.
+    expect(stored).toMatch(/HTTP \d{3}/);
+    expect(stored).toBe('HTTP 502 Bad Gateway');
+    // SECURITY: the upstream response body (the partial-read oracle) must NOT
+    // appear in the tenant-visible column.
+    expect(stored).not.toContain('SECRET_INTERNAL_BODY_MARKER');
+    // ...and certainly not the raw responseBody field verbatim.
+    expect(stored).not.toContain(error.responseBody);
+  });
+
+  it('stores the body-free message for an invalid-JSON DnsProviderHttpError', () => {
+    const error = new DnsProviderHttpError(
+      200,
+      'OK',
+      'not json SECRET_INTERNAL_BODY_MARKER',
+      'Provider returned invalid JSON payload'
+    );
+
+    const stored = tenantVisibleSyncError(error);
+
+    expect(stored).toBe('Provider returned invalid JSON payload');
+    expect(stored).not.toContain('SECRET_INTERNAL_BODY_MARKER');
+  });
+
+  it('redacts secrets from a non-HTTP (transport) error message', () => {
+    // Transport/SSRF errors carry no upstream body, but a Pi-hole URL can carry
+    // ?auth=<apiKey> in a fetch error message — must still be redacted.
+    const stored = tenantVisibleSyncError(
+      new Error('connect failed for https://pihole.local/admin/api.php?auth=SUPERSECRETKEY')
+    );
+
+    expect(stored).not.toContain('SUPERSECRETKEY');
+    expect(stored).toContain('[REDACTED]');
+  });
+
+  it('caps the stored value at 2000 chars', () => {
+    const stored = tenantVisibleSyncError(new Error('x'.repeat(5000)));
+    expect(stored.length).toBe(2000);
+  });
+
+  it('handles non-Error throwables without leaking', () => {
+    expect(tenantVisibleSyncError('plain string failure')).toBe('plain string failure');
+    expect(tenantVisibleSyncError(undefined)).toBe('undefined');
   });
 });

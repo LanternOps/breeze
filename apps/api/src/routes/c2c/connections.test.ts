@@ -4,6 +4,8 @@ import { connectionsRoutes } from './connections';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+// Microsoft 365 tenant ids must be Entra GUIDs (validated by createConnectionSchema).
+const TENANT_GUID = '11111111-1111-1111-1111-111111111111';
 
 vi.mock('../../services', () => ({}));
 
@@ -75,6 +77,10 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/c2cM365', () => ({
   ensureFreshToken: (...args: unknown[]) => ensureFreshTokenMock(...(args as [])),
+  // createConnectionSchema (in ./schemas) imports this regex to validate M365
+  // tenant ids, so the mock must expose the real pattern.
+  M365_TENANT_ID_REGEX:
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
 }));
 
 vi.mock('../../services/secretCrypto', () => ({
@@ -113,7 +119,7 @@ function makeConnection(overrides: Record<string, unknown> = {}) {
     provider: 'microsoft_365',
     authMethod: 'manual',
     displayName: 'M365 Tenant',
-    tenantId: 'tenant-1',
+    tenantId: TENANT_GUID,
     clientId: 'client-id-1234567890',
     clientSecret: 'super-secret',
     refreshToken: null,
@@ -172,7 +178,7 @@ describe('c2c connection routes', () => {
       body: JSON.stringify({
         provider: 'microsoft_365',
         displayName: 'M365 Tenant',
-        tenantId: 'tenant-1',
+        tenantId: TENANT_GUID,
         clientId: 'client-id-1234567890',
         clientSecret: 'super-secret',
         scopes: 'mail calendar',
@@ -200,7 +206,7 @@ describe('c2c connection routes', () => {
       body: JSON.stringify({
         provider: 'microsoft_365',
         displayName: 'M365 Tenant',
-        tenantId: 'tenant-1',
+        tenantId: TENANT_GUID,
         clientId: 'client-id-1234567890',
         clientSecret: 'super-secret',
       }),
@@ -215,7 +221,7 @@ describe('c2c connection routes', () => {
       body: JSON.stringify({
         provider: 'microsoft_365',
         displayName: 'M365 Tenant',
-        tenantId: 'tenant-1',
+        tenantId: TENANT_GUID,
         clientId: 'client-id-1234567890',
         clientSecret: 'super-secret',
       }),

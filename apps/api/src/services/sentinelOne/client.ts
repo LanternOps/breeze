@@ -1,5 +1,6 @@
 import { captureException } from '../sentry';
 import { safeFetch } from '../urlSafety';
+import { S1_HOSTNAME_ALLOWLIST } from './constants';
 
 type HttpMethod = 'GET' | 'POST';
 
@@ -82,6 +83,14 @@ function normalizeManagementUrl(rawUrl: string): string {
 
   if (parsed.protocol !== 'https:') {
     throw new Error('SentinelOneClient: managementUrl must use HTTPS');
+  }
+
+  // Re-assert the vendor-domain allowlist at the point of egress (the route guard
+  // also enforces it at write time). Fail closed so a token is never sent to a host
+  // outside `.sentinelone.net`, even if a future non-route caller skips the guard.
+  const host = parsed.hostname.toLowerCase();
+  if (!S1_HOSTNAME_ALLOWLIST.some((suffix) => host.endsWith(suffix))) {
+    throw new Error('SentinelOneClient: managementUrl host is not an allowed SentinelOne console');
   }
 
   parsed.username = '';

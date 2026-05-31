@@ -5,6 +5,8 @@ import { m365AuthRoutes, m365CallbackRoute } from './m365Auth';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+// Entra tenant ids are GUIDs; the callback now rejects anything else.
+const TENANT_GUID = '11111111-1111-1111-1111-111111111111';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -100,6 +102,10 @@ vi.mock('../../services/c2cM365', () => ({
   getFrontendBaseUrl: (...args: unknown[]) => getFrontendBaseUrlMock(...(args as [])),
   acquireClientCredentialsToken: (...args: unknown[]) => acquireClientCredentialsTokenMock(...(args as [])),
   testGraphAccess: (...args: unknown[]) => testGraphAccessMock(...(args as [])),
+  // The callback validates the tenant query param against this regex, so the
+  // mock must expose the real pattern rather than a stub.
+  M365_TENANT_ID_REGEX:
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -144,7 +150,7 @@ function makeConnection(overrides: Record<string, unknown> = {}) {
     provider: 'microsoft_365',
     authMethod: 'platform_app',
     displayName: 'Microsoft 365 - Contoso',
-    tenantId: 'tenant-1',
+    tenantId: TENANT_GUID,
     clientId: null,
     clientSecret: null,
     accessToken: 'enc:old-token',
@@ -230,7 +236,7 @@ describe('m365 auth routes', () => {
   });
 
   it('rejects callback requests without the binding cookie', async () => {
-    const res = await callbackApp.request('/api/v1/c2c/m365/callback?state=test-state&tenant=tenant-1&admin_consent=True');
+    const res = await callbackApp.request(`/api/v1/c2c/m365/callback?state=test-state&tenant=${TENANT_GUID}&admin_consent=True`);
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('c2c_error=Invalid%20or%20expired%20consent%20session');
@@ -261,7 +267,7 @@ describe('m365 auth routes', () => {
       expiresIn: 3600,
     });
 
-    const callbackRes = await callbackApp.request(`/api/v1/c2c/m365/callback?state=${consentState}&tenant=tenant-1&admin_consent=True`, {
+    const callbackRes = await callbackApp.request(`/api/v1/c2c/m365/callback?state=${consentState}&tenant=${TENANT_GUID}&admin_consent=True`, {
       method: 'GET',
       headers: { Cookie: cookie ?? '' },
     });
@@ -273,5 +279,72 @@ describe('m365 auth routes', () => {
     expect(updateValues.scopes).toContain('token_scope=https://graph.microsoft.com/.default');
     expect(updateValues.scopes).toContain('requested_display_scopes=Mail.Read');
     expect(updateValues.scopes).toContain('actual_grants=Entra admin-consented application permissions');
+  });
+
+  it('rejects a callback whose tenant is not an Entra GUID before fetching a token', async () => {
+    const consentState = 'state-bad-tenant';
+    const cookieValue = createHmac('sha256', 'platform-secret')
+      .update(`c2c-m365-consent:${consentState}`)
+      .digest('hex');
+    const cookie = `breeze_c2c_m365_consent=${encodeURIComponent(cookieValue)}`;
+
+    deleteMock.mockReturnValueOnce(chainMock([{
+      orgId: ORG_ID,
+      userId: 'user-123',
+      state: consentState,
+      provider: 'microsoft_365',
+      displayName: 'Contoso',
+      scopes: 'Mail.Read',
+      expiresAt: new Date(Date.now() + 60_000),
+    }]));
+
+    const callbackRes = await callbackApp.request(`/api/v1/c2c/m365/callback?state=${consentState}&tenant=not-a-guid&admin_consent=True`, {
+      method: 'GET',
+      headers: { Cookie: cookie },
+    });
+
+    expect(callbackRes.status).toBe(302);
+    expect(callbackRes.headers.get('location')).toContain('c2c_error=Invalid%20tenant%20identifier');
+    // The malformed tenant must never reach token acquisition or persistence.
+    expect(acquireClientCredentialsTokenMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid Entra GUID tenant and creates a new connection', async () => {
+    const consentState = 'state-good-tenant';
+    const cookieValue = createHmac('sha256', 'platform-secret')
+      .update(`c2c-m365-consent:${consentState}`)
+      .digest('hex');
+    const cookie = `breeze_c2c_m365_consent=${encodeURIComponent(cookieValue)}`;
+
+    deleteMock.mockReturnValueOnce(chainMock([{
+      orgId: ORG_ID,
+      userId: 'user-123',
+      state: consentState,
+      provider: 'microsoft_365',
+      displayName: 'Contoso',
+      scopes: 'Mail.Read',
+      expiresAt: new Date(Date.now() + 60_000),
+    }]));
+    // No existing connection — exercise the insert path.
+    selectMock.mockReturnValueOnce(chainMock([]));
+    insertMock.mockReturnValueOnce(chainMock([makeConnection()]));
+    acquireClientCredentialsTokenMock.mockResolvedValueOnce({
+      accessToken: 'fresh-access-token',
+      expiresIn: 3600,
+    });
+
+    const callbackRes = await callbackApp.request(`/api/v1/c2c/m365/callback?state=${consentState}&tenant=${TENANT_GUID}&admin_consent=True`, {
+      method: 'GET',
+      headers: { Cookie: cookie },
+    });
+
+    expect(callbackRes.status).toBe(302);
+    expect(callbackRes.headers.get('location')).toContain(`c2c_connected=true&connectionId=${CONNECTION_ID}`);
+    expect(acquireClientCredentialsTokenMock).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: TENANT_GUID })
+    );
+    expect(insertMock).toHaveBeenCalled();
   });
 });
