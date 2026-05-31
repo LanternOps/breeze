@@ -174,6 +174,13 @@ vi.mock('../../oauth/grantRevocation', () => ({
   })),
 }));
 
+// /unsuspend now restores the agent fleet that an orgs.ts-initiated suspend
+// token-suspended. Mock it so the route test doesn't run the real DB-touching
+// implementation (covered in tenantLifecycle.test.ts).
+vi.mock('../../services/tenantLifecycle', () => ({
+  restorePartnerTenantAccess: vi.fn(async () => ({ agentTokensRestored: 0 })),
+}));
+
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
@@ -208,6 +215,7 @@ import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
+import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -725,5 +733,67 @@ describe('admin/abuse — remote session teardown on suspend', () => {
     });
     expect(res.status).toBe(200);
     expect(teardownMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin/abuse — unsuspend agent-fleet restore', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetState();
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('restores the agent fleet when the partner returns to active', async () => {
+    // resetState seeds paymentMethodAttachedAt, so unsuspend → 'active'.
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating a legitimate customer' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; agentTokensRestored: number };
+    expect(body.status).toBe('active');
+    expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+    expect(body.agentTokensRestored).toBe(0);
+
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.action).toBe('partner.unsuspended');
+    expect(auditCall.result).toBe('success');
+    expect(auditCall.details).toMatchObject({ newStatus: 'active', agentTokensRestored: 0 });
+  });
+
+  it('does NOT restore the fleet when the partner only returns to pending (no payment method)', async () => {
+    // Without a payment method the unsuspend routes back to 'pending'; agents
+    // stay gated off (and token-suspended) until full activation.
+    txMockState.partner = { id: 'partner-1', status: 'suspended', paymentMethodAttachedAt: null };
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating but payment still pending' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe('pending');
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 (does NOT silently 200) when the agent-fleet restore throws', async () => {
+    vi.mocked(restorePartnerTenantAccess).mockRejectedValueOnce(new Error('db unavailable'));
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating a legitimate customer' }),
+    });
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { agentRestoreFailed?: boolean };
+    expect(body.agentRestoreFailed).toBe(true);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.result).toBe('failure');
   });
 });

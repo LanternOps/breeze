@@ -90,10 +90,15 @@ vi.mock('../../services/partnerHooks', () => ({
   dispatchHook: vi.fn(),
 }));
 
+vi.mock('../../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
+}));
+
 // ---------- imports after mocks ----------
 
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { enrollmentRoutes } from './enrollment';
 
@@ -134,6 +139,49 @@ function mockSelectRows(rows: Record<string, unknown>[]) {
 }
 
 // ---------- tests ----------
+
+describe('POST /agents/enroll — tenant-status gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+    vi.mocked(getActiveOrgTenant).mockResolvedValue({ orgId: 'org-active', partnerId: 'partner-active' });
+  });
+
+  it('rejects with 403 tenant_inactive when the enrollment key tenant is suspended/deleted', async () => {
+    mockKeyLookup({
+      id: 'key-9',
+      orgId: 'org-9',
+      siteId: 'site-9',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    vi.mocked(getActiveOrgTenant).mockResolvedValueOnce(null);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = await resp.json();
+    expect(body.reason).toBe('tenant_inactive');
+    expect(getActiveOrgTenant).toHaveBeenCalledWith('org-9');
+    // The denial audit is the forensic trail for a suspended-for-abuse tenant
+    // attempting re-enrollment — assert its shape, not just that it fired.
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'agent.enroll',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'tenant_inactive', enrollmentKeyId: 'key-9' }),
+      }),
+    );
+  });
+});
 
 describe('POST /agents/enroll — 401 reason disambiguation', () => {
   beforeEach(() => {

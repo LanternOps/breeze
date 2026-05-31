@@ -1,6 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, partners } from '../db/schema';
+import { getRedis } from './redis';
 
 export class TenantInactiveError extends Error {
   constructor(message = 'Tenant is not active') {
@@ -129,5 +130,66 @@ export async function assertActiveTenantContext(
   const org = await getActiveOrgTenant(context.orgId);
   if (!org || (context.partnerId && org.partnerId !== context.partnerId)) {
     throw new TenantInactiveError('Organization is not active');
+  }
+}
+
+// Hot-path agent tenant-status gate for the agent REST (heartbeat, inventory,
+// log-ship, command fetch/result, patches) and WS upgrade paths. Agent
+// credentials are org-scoped; a suspended/churned/soft-deleted org or partner
+// must not keep authenticating its fleet. The first-party JWT and API-key
+// paths already enforce this via getActiveOrgTenant — the agent paths did not.
+//
+// Positive results are cached in Redis for a short TTL, so the per-heartbeat
+// cost on the happy path is a single GET. Negatives are deliberately NOT
+// cached: a reactivated tenant should resume promptly, and inactive-tenant
+// traffic is already throttled upstream (the REST gate runs after the
+// per-agent/per-org rate limiters; the WS path is bounded by reconnect
+// backoff). Redis errors fall through to the authoritative DB check — fail to
+// the source of truth, never fail open.
+const AGENT_TENANT_OK_CACHE_PREFIX = 'agent_tenant_ok:';
+const AGENT_TENANT_OK_CACHE_SECONDS = 60;
+
+export async function isAgentTenantActive(orgId: string): Promise<boolean> {
+  const cacheKey = `${AGENT_TENANT_OK_CACHE_PREFIX}${orgId}`;
+  const redis = getRedis();
+
+  if (redis) {
+    try {
+      if ((await redis.get(cacheKey)) === '1') return true;
+    } catch {
+      // Cache read failed — fall through to the authoritative DB check.
+    }
+  }
+
+  const tenant = await getActiveOrgTenant(orgId);
+  if (!tenant) return false;
+
+  if (redis) {
+    try {
+      await redis.set(cacheKey, '1', 'EX', AGENT_TENANT_OK_CACHE_SECONDS);
+    } catch {
+      // Best-effort cache write; correctness does not depend on it.
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Drop the cached positive `isAgentTenantActive` result for each org. Called
+ * when a tenant is suspended/deleted so a still-cached `OK` can't admit the
+ * fleet during the brief window before (or if) the device-level
+ * `agentTokenSuspendedAt` flag is written — the next agent request re-checks
+ * the (now-inactive) DB status. Best-effort: the device flag remains the
+ * real-time cutoff, so a Redis error here is non-fatal.
+ */
+export async function invalidateAgentTenantCache(orgIds: string[]): Promise<void> {
+  if (orgIds.length === 0) return;
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await Promise.all(orgIds.map((id) => redis.del(`${AGENT_TENANT_OK_CACHE_PREFIX}${id}`)));
+  } catch {
+    // Best-effort; the device-level agentTokenSuspendedAt flag is the cutoff.
   }
 }

@@ -15,6 +15,7 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
@@ -377,6 +378,26 @@ abuseRoutes.post(
       return c.json({ error: 'partner not found' }, 404);
     }
 
+    // Restore the agent fleet that an orgs.ts-initiated suspend
+    // (revokePartnerTenantAccess) token-suspended. Only meaningful when we
+    // returned the partner to 'active' — a 'pending' partner is still gated
+    // off for agents, so its tokens stay suspended until full activation.
+    // Restore is idempotent (clears only reason-tagged 'tenant_suspended'
+    // rows, leaving cross-tenant-probe suspensions intact), so on failure we
+    // surface 500 + audit failure and the operator can safely re-run
+    // /unsuspend. NOTE: devices that already received a self_uninstall command
+    // from suspend-for-abuse cannot be auto-restored — re-enrollment required.
+    let agentTokensRestored = 0;
+    let agentRestoreError: string | null = null;
+    if (result.status === 'active') {
+      try {
+        ({ agentTokensRestored } = await restorePartnerTenantAccess(partnerId));
+      } catch (err) {
+        agentRestoreError = err instanceof Error ? err.message : String(err);
+        captureException(err, c);
+      }
+    }
+
     await createAuditLog({
       orgId: null,
       actorType: 'user',
@@ -389,16 +410,32 @@ abuseRoutes.post(
         reason,
         newStatus: result.status,
         userCount: result.userCount,
+        agentTokensRestored,
+        ...(agentRestoreError !== null ? { agentRestoreError } : {}),
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
-      result: 'success',
+      result: agentRestoreError === null ? 'success' : 'failure',
     });
+
+    if (agentRestoreError !== null) {
+      return c.json(
+        {
+          partnerId,
+          status: result.status,
+          userCount: result.userCount,
+          agentRestoreFailed: true,
+          note: 'Partner reactivated but agent-token restore failed — re-run /unsuspend to retry.',
+        },
+        500,
+      );
+    }
 
     return c.json({
       partnerId,
       status: result.status,
       userCount: result.userCount,
+      agentTokensRestored,
       note:
         'Devices that received uninstall commands cannot be auto-restored. Re-enrollment required.',
     });

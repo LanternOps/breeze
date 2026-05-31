@@ -14,14 +14,20 @@ vi.mock('../services/tenantLifecycle', () => ({
     apiKeysRevoked: 0,
     userSessionsRevoked: 0,
     oauthGrantsRevoked: 0,
-    oauthRefreshTokensRevoked: 0
+    oauthRefreshTokensRevoked: 0,
+    agentTokensSuspended: 0,
+    enrollmentKeysInvalidated: 0
   }),
   revokeOrganizationTenantAccess: vi.fn().mockResolvedValue({
     apiKeysRevoked: 0,
     userSessionsRevoked: 0,
     oauthGrantsRevoked: 0,
-    oauthRefreshTokensRevoked: 0
-  })
+    oauthRefreshTokensRevoked: 0,
+    agentTokensSuspended: 0,
+    enrollmentKeysInvalidated: 0
+  }),
+  restorePartnerTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
+  restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
 }));
 
 vi.mock('../db', () => ({
@@ -109,7 +115,12 @@ import { inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { sites } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
-import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
+import {
+  restoreOrganizationTenantAccess,
+  restorePartnerTenantAccess,
+  revokeOrganizationTenantAccess,
+  revokePartnerTenantAccess,
+} from '../services/tenantLifecycle';
 import { captureException } from '../services/sentry';
 
 describe('org routes', () => {
@@ -277,6 +288,66 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    it('revokes tenant access (including the agent fleet) when a partner is suspended', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'suspended', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+      expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('restores the agent fleet when a partner is reactivated to active', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'active', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('does not sever the fleet on a transient active->pending transition (preserves enrollment keys)', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'pending', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'pending' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+      expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
     });
 
     it('rejects partner-scoped self-service users on broad partner update path', async () => {
@@ -523,6 +594,69 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    it('revokes tenant access (including the agent fleet) when an org is suspended', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'suspended' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+      expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('restores the agent fleet when an org is reactivated to active', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'active' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('restores the agent fleet when an org is moved to trial', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'trial' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'trial' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
     });
 
     it('should return 404 when organization not found', async () => {
