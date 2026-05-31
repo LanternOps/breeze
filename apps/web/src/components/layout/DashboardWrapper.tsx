@@ -53,10 +53,6 @@ export default function DashboardWrapper({ children, currentPath }: DashboardWra
       const hasValidAuth = isAuthenticated && tokens?.accessToken;
 
       if (!hasValidAuth) {
-        // Store the current URL to redirect back after login
-        if (currentPath !== '/login' && currentPath !== '/register') {
-          sessionStorage.setItem('redirectAfterLogin', currentPath);
-        }
         void navigateTo('/login', { replace: true });
       }
     }

@@ -63,8 +63,13 @@ vi.mock('../services/eventBus', () => ({
   publishEvent: vi.fn().mockResolvedValue('event-1')
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn()
+}));
+
 import { db } from '../db';
 import { queueCommand } from '../services/commandQueue';
+import { writeRouteAudit } from '../services/auditEvents';
 import { sensitiveDataRoutes } from './sensitiveData';
 
 function mockDeviceLookup(rows: any[]) {
@@ -80,6 +85,53 @@ function mockInsertReturning(rows: any[]) {
     values: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(rows)
     })
+  } as any);
+}
+
+// db.select().from().where() — used by the remediate findings lookup
+function mockSelectFromWhere(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(rows)
+    })
+  } as any);
+}
+
+// db.select().from().where().limit() — used by policy update/delete existing lookup
+function mockSelectFromWhereLimit(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  } as any);
+}
+
+// db.update().set().where() — status-flip / destructive metadata writes
+function mockUpdateSetWhere() {
+  vi.mocked(db.update).mockReturnValueOnce({
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined)
+    })
+  } as any);
+}
+
+// db.update().set().where().returning() — policy update
+function mockUpdateSetWhereReturning(rows: any[]) {
+  vi.mocked(db.update).mockReturnValueOnce({
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(rows)
+      })
+    })
+  } as any);
+}
+
+// db.delete().where() — policy delete
+function mockDeleteWhere() {
+  vi.mocked(db.delete).mockReturnValueOnce({
+    where: vi.fn().mockResolvedValue(undefined)
   } as any);
 }
 
@@ -247,5 +299,148 @@ describe('sensitive data routes', () => {
     expect(body.data.dryRun).toBe(true);
     expect(body.data.eligible).toBe(1);
     expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  // --- SOC2 audit coverage ---
+
+  const findingId = '33333333-3333-3333-3333-333333333333';
+  const policyId = '44444444-4444-4444-4444-444444444444';
+  const orgId = '11111111-1111-1111-1111-111111111111';
+
+  it('audits status-flip remediation (accept_risk) as a risk-acceptance decision', async () => {
+    mockSelectFromWhere([
+      { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' }
+    ]);
+    mockUpdateSetWhere();
+
+    const res = await app.request('/sensitive-data/remediate', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        findingIds: [findingId],
+        action: 'accept_risk'
+      })
+    });
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sensitive_data.finding.accept_risk',
+        resourceType: 'sensitive_data_finding',
+        details: expect.objectContaining({
+          action: 'accept_risk',
+          findingIds: [findingId],
+          count: 1
+        })
+      })
+    );
+  });
+
+  it('audits destructive remediation (quarantine) with queued/failed counts', async () => {
+    mockSelectFromWhere([
+      { id: findingId, orgId, deviceId, filePath: '/tmp/secret.txt', status: 'open' }
+    ]);
+    mockUpdateSetWhere();
+
+    const res = await app.request('/sensitive-data/remediate', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        findingIds: [findingId],
+        action: 'quarantine',
+        confirm: true
+      })
+    });
+
+    expect(res.status).toBe(202);
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sensitive_data.finding.remediate',
+        resourceType: 'sensitive_data_finding',
+        details: expect.objectContaining({
+          action: 'quarantine',
+          queued: 1,
+          failed: 0
+        })
+      })
+    );
+  });
+
+  it('audits policy creation', async () => {
+    mockInsertReturning([
+      { id: policyId, orgId, name: 'My Policy', createdAt: new Date(), updatedAt: new Date() }
+    ]);
+
+    const res = await app.request('/sensitive-data/policies', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'My Policy',
+        detectionClasses: ['credential']
+      })
+    });
+
+    expect(res.status).toBe(201);
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sensitive_data_policy.create',
+        resourceType: 'sensitive_data_policy',
+        resourceId: policyId,
+        resourceName: 'My Policy'
+      })
+    );
+  });
+
+  it('audits policy update with changedFields', async () => {
+    mockSelectFromWhereLimit([
+      { id: policyId, orgId, name: 'Old Name', scope: {}, detectionClasses: ['credential'], schedule: null, isActive: true }
+    ]);
+    mockUpdateSetWhereReturning([
+      { id: policyId, orgId, name: 'New Name', createdAt: new Date(), updatedAt: new Date() }
+    ]);
+
+    const res = await app.request(`/sensitive-data/policies/${policyId}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'New Name' })
+    });
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sensitive_data_policy.update',
+        resourceType: 'sensitive_data_policy',
+        resourceId: policyId,
+        resourceName: 'New Name',
+        details: expect.objectContaining({
+          changedFields: expect.arrayContaining(['name'])
+        })
+      })
+    );
+  });
+
+  it('audits policy deletion', async () => {
+    mockSelectFromWhereLimit([{ id: policyId, name: 'My Policy', orgId }]);
+    mockDeleteWhere();
+
+    const res = await app.request(`/sensitive-data/policies/${policyId}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sensitive_data_policy.delete',
+        resourceType: 'sensitive_data_policy',
+        resourceId: policyId
+      })
+    );
   });
 });

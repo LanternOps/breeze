@@ -67,11 +67,18 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   automations: {},
   automationRuns: {},
+  configurationPolicies: {},
   policies: {},
   policyCompliance: {},
   organizations: {},
   devices: {},
   scripts: {}
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
+  writeRouteAudit: vi.fn(),
+  writeAuditEvent: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -94,6 +101,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { getRedis } from '../services/redis';
+import { writeAuditEvent } from '../services/auditEvents';
 
 describe('automations routes', () => {
   let app: Hono;
@@ -753,5 +761,138 @@ describe('automations routes', () => {
     });
 
     expect(res.status).toBe(401);
+  });
+
+  // ============================================
+  // F3 (IDOR): config-policy run cross-tenant access
+  // ============================================
+
+  it('returns 404 for a config-policy run whose org the caller cannot access', async () => {
+    // First select: the run (automationId null, configPolicyId set).
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-cp-1',
+              automationId: null,
+              configPolicyId: 'policy-1',
+              configItemName: 'Patch Policy',
+              status: 'running',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      // Second select: the config policy resolving to org-OTHER (not accessible).
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: 'org-OTHER' }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-cp-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Automation run not found');
+    // Must not leak any of the config-policy run details.
+    expect(JSON.stringify(body)).not.toContain('policy-1');
+    expect(JSON.stringify(body)).not.toContain('Patch Policy');
+  });
+
+  it('returns 200 for a config-policy run whose org the caller can access', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-cp-1',
+              automationId: null,
+              configPolicyId: 'policy-1',
+              configItemName: 'Patch Policy',
+              status: 'running',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: 'org-123' }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-cp-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('run-cp-1');
+    expect(body.configPolicyId).toBe('policy-1');
+    expect(body.configItemName).toBe('Patch Policy');
+    expect(body.automation).toBeNull();
+  });
+
+  // ============================================
+  // F8 (audit): webhook-triggered run must be audited
+  // ============================================
+
+  it('writes an audit event when a signed webhook creates a run', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Webhook Automation',
+            orgId: 'org-123',
+            enabled: true,
+            trigger: { type: 'webhook', secret: 'secret-123' },
+            actions: [{ type: 'execute_command', command: 'echo ok' }]
+          }])
+        })
+      })
+    } as any);
+    const rawBody = JSON.stringify({ ping: true });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+
+    const res = await app.request('/automations/webhooks/auto-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-timestamp': timestamp,
+        'x-breeze-signature': signature,
+        'x-breeze-event-id': 'event-audit-1',
+      },
+      body: rawBody
+    });
+
+    expect(res.status).toBe(202);
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-123',
+        action: 'automation.trigger.webhook',
+        resourceType: 'automation',
+        resourceId: 'auto-1',
+        resourceName: 'Webhook Automation',
+        actorType: 'system',
+        details: expect.objectContaining({
+          runId: 'run-1',
+          devicesTargeted: 2,
+        }),
+      }),
+    );
   });
 });

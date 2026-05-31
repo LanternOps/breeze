@@ -21,6 +21,13 @@ export interface McpToolExecutionLedgerHandle {
 
 export interface BeginMcpToolExecutionLedgerInput {
   orgId: string;
+  /**
+   * The caller's accessible org set (auth.accessibleOrgIds). `null` = system
+   * scope (access to all orgs). Used to assert `orgId` is within the caller's
+   * tenancy before opening the RLS context — defense-in-depth so an upstream
+   * org-resolution bug can never attribute ledger rows to an arbitrary tenant.
+   */
+  accessibleOrgIds: string[] | null;
   toolName: string;
   tier: number;
   toolInput: Record<string, unknown>;
@@ -53,6 +60,15 @@ function sanitizePrincipal(principal: McpToolExecutionLedgerPrincipal): Record<s
 export async function beginMcpToolExecutionLedger(
   input: BeginMcpToolExecutionLedgerInput,
 ): Promise<McpToolExecutionLedgerHandle> {
+  // Defense-in-depth: the RLS context opened below is scoped to input.orgId, so
+  // the caller MUST have proven access to it. accessibleOrgIds === null means
+  // system scope (all orgs). Reject anything outside the caller's tenancy BEFORE
+  // touching the DB, so an upstream org-resolution bug can never write ledger
+  // rows into an arbitrary tenant.
+  if (input.accessibleOrgIds !== null && !input.accessibleOrgIds.includes(input.orgId)) {
+    throw new Error('MCP tool execution ledger org is outside caller tenancy');
+  }
+
   const sessionId = crypto.randomUUID();
   const principal = sanitizePrincipal(input.principal);
   const target = summarizePayload(input.toolInput, { maxStringLength: 512 });

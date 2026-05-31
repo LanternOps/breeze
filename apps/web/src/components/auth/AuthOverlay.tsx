@@ -107,9 +107,5 @@ export default function AuthOverlay() {
 }
 
 function redirectToLogin() {
-  const currentPath = window.location.pathname + window.location.search;
-  if (currentPath !== '/login' && currentPath !== '/register') {
-    sessionStorage.setItem('redirectAfterLogin', currentPath);
-  }
   void navigateTo('/login', { replace: true });
 }

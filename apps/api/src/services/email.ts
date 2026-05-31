@@ -54,6 +54,13 @@ export interface AccountLockedEmailParams {
   supportEmail?: string;
 }
 
+export interface EmailChangedEmailParams {
+  to: string | string[];
+  name?: string | null;
+  newEmail: string;
+  supportEmail?: string;
+}
+
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export interface AlertNotificationEmailParams {
@@ -232,6 +239,16 @@ export class EmailService {
 
   async sendAccountLocked(params: AccountLockedEmailParams): Promise<void> {
     const template = buildAccountLockedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text
+    });
+  }
+
+  async sendEmailChanged(params: EmailChangedEmailParams): Promise<void> {
+    const template = buildEmailChangedTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -673,6 +690,36 @@ function buildAccountLockedTemplate(params: AccountLockedEmailParams): EmailTemp
     `Reset your password: ${params.resetUrl}`,
     "If this wasn't you, someone may be trying to guess your password. Reset your password immediately and review recent activity.",
     support ? `Need help? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
+function buildEmailChangedTemplate(params: EmailChangedEmailParams): EmailTemplate {
+  const name = params.name?.trim() || 'there';
+  const subject = 'Your Breeze account email was changed';
+  const preheader = `The email on your Breeze account was changed to ${params.newEmail}.`;
+  const body = `
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">Your Breeze account email was changed to <strong>${escapeHtml(params.newEmail)}</strong>.</p>
+      <p style="${MUTED_PARA}"><strong>If you did not make this change</strong>, your account may be compromised. Contact support immediately to secure it.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: 'Account email changed',
+    body,
+    footer: supportFooter(params.supportEmail, 'If you did not make this change, contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    `Hi ${name},`,
+    `Your Breeze account email was changed to ${params.newEmail}.`,
+    'If you did not make this change, your account may be compromised. Contact support immediately to secure it.',
+    support ? `Contact ${support}.` : null,
   ]
     .filter(Boolean)
     .join('\n');

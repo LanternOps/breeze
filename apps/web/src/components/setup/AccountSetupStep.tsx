@@ -34,6 +34,13 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
       return;
     }
 
+    // Changing the email now requires a step-up: the API re-verifies the
+    // current password on the email change (account-takeover protection).
+    if (email && email !== user?.email && !currentPassword) {
+      setError('Enter your current password to change your email address');
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -41,7 +48,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
       if (email && email !== user?.email) {
         const emailRes = await fetchWithAuth('/users/me', {
           method: 'PATCH',
-          body: JSON.stringify({ email })
+          body: JSON.stringify({ email, currentPassword })
         });
         if (!emailRes.ok) {
           const data = await emailRes.json().catch(() => null);
@@ -88,7 +95,10 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
   };
 
   const hasChanges = !!(email || (currentPassword && newPassword));
-  const partialPassword = !!(currentPassword ? !newPassword : newPassword);
+  // Only warn about an incomplete password change when a NEW password was
+  // entered without the current one. A current password alone is now valid on
+  // its own (it's the step-up for an email change), so it must not warn here.
+  const partialPassword = !!(newPassword && !currentPassword);
 
   return (
     <div className="space-y-6">
@@ -112,6 +122,11 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
             placeholder={user?.email || 'admin@breeze.local'}
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
           />
+          {email && email !== user?.email && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Changing your email requires your current password below.
+            </p>
+          )}
         </div>
 
         <div className="border-t pt-4">

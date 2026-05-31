@@ -10,8 +10,11 @@ import {
 import { updateRegistryStateSchema, updateConfigStateSchema } from './schemas';
 import { normalizeStateValue, parseDate } from './helpers';
 import { sanitizePolicyConfigStateEntries } from './policyProbeSafety';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const stateRoutes = new Hono();
+// Registry/config state ingest is the main agent's job; reject watchdog tokens.
+stateRoutes.use('*', requireAgentRole);
 
 stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSchema), async (c) => {
   const agentId = c.req.param('id');

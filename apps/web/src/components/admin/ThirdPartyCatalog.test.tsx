@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ThirdPartyCatalog from './ThirdPartyCatalog';
@@ -52,6 +52,24 @@ const sampleItems = [
     notes: null,
     homepageUrl: null,
   },
+  {
+    // Hostile homepageUrl — getSafeExternalHref must reject the javascript:
+    // scheme so this can never become an <a href="javascript:...">. Regression
+    // guard against reverting the wiring to href={entry.homepageUrl}.
+    id: '3',
+    source: 'third_party',
+    packageId: 'Evil.Corp',
+    vendor: 'Evil Corp',
+    friendlyName: 'Evil Corp Suite',
+    category: 'application',
+    defaultSeverity: 'critical',
+    breezeTested: false,
+    lastTestedAt: null,
+    lastTestedVersion: null,
+    lastTestedResult: null,
+    notes: null,
+    homepageUrl: 'javascript:alert(1)',
+  },
 ];
 
 describe('ThirdPartyCatalog', () => {
@@ -68,6 +86,44 @@ describe('ThirdPartyCatalog', () => {
     expect(screen.getByText('Google.Chrome')).toBeTruthy();
   });
 
+  it('renders the friendlyName as a safe external link when homepageUrl passes the guard', async () => {
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Mozilla Firefox');
+
+    const row = screen.getByTestId('catalog-row-1');
+    const link = within(row).getByText('Mozilla Firefox').closest('a');
+    expect(link).not.toBeNull();
+    // href must be exactly the safe URL — not href={entry.homepageUrl} raw.
+    expect(link).toHaveAttribute('href', 'https://www.mozilla.org/firefox/');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noreferrer');
+  });
+
+  it('renders a hostile javascript: homepageUrl as plain text with no anchor (#xss guard)', async () => {
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Evil Corp Suite');
+
+    const row = screen.getByTestId('catalog-row-3');
+    // The friendlyName is present...
+    expect(within(row).getByText('Evil Corp Suite')).toBeTruthy();
+    // ...but it must NOT be wrapped in an anchor (guard rejected the scheme),
+    // and there must be no href smuggling the javascript: payload through.
+    expect(within(row).getByText('Evil Corp Suite').closest('a')).toBeNull();
+    expect(within(row).queryByRole('link')).toBeNull();
+    expect(row.querySelector('a')).toBeNull();
+    expect(row.querySelector('[href]')).toBeNull();
+  });
+
+  it('renders the friendlyName as plain text when homepageUrl is null', async () => {
+    render(<ThirdPartyCatalog />);
+    await screen.findByText('Google Chrome');
+
+    const row = screen.getByTestId('catalog-row-2');
+    expect(within(row).getByText('Google Chrome')).toBeTruthy();
+    expect(within(row).getByText('Google Chrome').closest('a')).toBeNull();
+    expect(within(row).queryByRole('link')).toBeNull();
+  });
+
   it('shows breeze-tested badge only on tested entries', async () => {
     render(<ThirdPartyCatalog />);
     await screen.findByText('Mozilla Firefox');
@@ -78,7 +134,7 @@ describe('ThirdPartyCatalog', () => {
   it('shows total count', async () => {
     render(<ThirdPartyCatalog />);
     await waitFor(() => {
-      expect(screen.getByTestId('catalog-total').textContent).toBe('2');
+      expect(screen.getByTestId('catalog-total').textContent).toBe(String(sampleItems.length));
     });
   });
 

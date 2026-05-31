@@ -38,10 +38,18 @@ async function forward(path: string, body: unknown) {
     body && typeof body === 'object' && 'partner_id' in body
       ? (body as { partner_id?: unknown }).partner_id
       : undefined;
+  // Service-to-service auth to breeze-billing. The boot validator
+  // (config/validate.ts) requires BREEZE_BILLING_API_KEY whenever
+  // BREEZE_BILLING_URL is set, so in production the key is guaranteed present.
+  // Only attach the header when the key exists to avoid sending
+  // `Bearer undefined` from dev/test deployments without billing configured.
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const billingKey = process.env.BREEZE_BILLING_API_KEY;
+  if (billingKey) headers['Authorization'] = `Bearer ${billingKey}`;
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
     const text = await res.text();
