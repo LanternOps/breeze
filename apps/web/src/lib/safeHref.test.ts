@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { getSafeExternalHref, getSafeHttpHref } from './safeHref';
+import { DOCS_BASE_URL } from '@breeze/shared';
+import { getSafeExternalHref, getSafeHttpHref, isDocsUrl } from './safeHref';
 
 describe('getSafeHttpHref', () => {
   it.each([
@@ -61,5 +62,38 @@ describe('getSafeExternalHref', () => {
     expect(getSafeExternalHref('https://www.mozilla.org/firefox/')).toBe(
       'https://www.mozilla.org/firefox/',
     );
+  });
+});
+
+describe('isDocsUrl', () => {
+  it('accepts the docs origin and any path under it', () => {
+    expect(isDocsUrl(DOCS_BASE_URL)).toBe(true);
+    expect(isDocsUrl(`${DOCS_BASE_URL}/agents/install`)).toBe(true);
+    expect(isDocsUrl(`${DOCS_BASE_URL}/features/device-groups/?x=1#frag`)).toBe(true);
+  });
+
+  it.each([
+    // Prefix-bypass lookalikes the old startsWith() check let through:
+    'https://docs.breezermm.com.evil.com/phish',
+    'https://docs.breezermm.com@evil.com/x',
+    'https://docs.breezermm.comevil.com',
+    // Other unsafe / non-matching values:
+    'javascript:alert(1)',
+    '//docs.breezermm.com',
+    'https://evil.example/x',
+    '',
+    '   ',
+  ])('rejects non-docs-origin value %j', (value) => {
+    expect(isDocsUrl(value)).toBe(false);
+  });
+
+  it('rejects null and undefined', () => {
+    expect(isDocsUrl(null)).toBe(false);
+    expect(isDocsUrl(undefined)).toBe(false);
+  });
+
+  it('rejects an http:// docs URL because origin includes the scheme', () => {
+    // DOCS_BASE_URL is https; the http variant is a different origin.
+    expect(isDocsUrl('http://docs.breezermm.com/agents/install')).toBe(false);
   });
 });

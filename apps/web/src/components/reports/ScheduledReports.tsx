@@ -203,7 +203,7 @@ type RunHistoryModalProps = {
   timezone?: string;
 };
 
-function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezone }: RunHistoryModalProps) {
+export function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezone }: RunHistoryModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
@@ -290,10 +290,16 @@ function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezon
                             );
                           }
                           if (run.status === 'completed' && run.outputUrl) {
-                            // Completed with a URL the scheme guard rejected — show a
-                            // disabled label instead of a live/broken link.
+                            // Completed with a URL the origin allowlist rejected — show a
+                            // disabled label instead of a live/broken link. This should
+                            // never happen for trusted server-issued URLs, so leave a
+                            // breadcrumb to aid investigation.
+                            console.warn('[ScheduledReports] rejected outputUrl for run', run.id);
                             return (
-                              <span className="inline-flex h-8 cursor-not-allowed items-center gap-1 rounded-md border px-3 text-sm text-muted-foreground opacity-60">
+                              <span
+                                className="inline-flex h-8 cursor-not-allowed items-center gap-1 rounded-md border px-3 text-sm text-muted-foreground opacity-60"
+                                title="This report's download link was blocked for security reasons"
+                              >
                                 Download
                               </span>
                             );

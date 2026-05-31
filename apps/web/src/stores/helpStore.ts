@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getDocsForPath, DOCS_BASE_URL } from '@breeze/shared';
+import { isDocsUrl } from '@/lib/safeHref';
 
 interface HelpState {
   isOpen: boolean;
@@ -31,10 +32,12 @@ export const useHelpStore = create<HelpState>((set) => ({
       .then(({ useAiStore }) => useAiStore.getState().close())
       .catch((err) => console.warn('[HelpStore] Failed to close AI panel:', err));
 
-    // Only a docs-prefixed url may be written into docsUrl, which is consumed
-    // as an <iframe src>. Any untrusted value falls back to the safe
-    // contextual docs page for the current path.
-    if (url && DOCS_BASE_URL && url.startsWith(DOCS_BASE_URL)) {
+    // Only a url whose ORIGIN exactly matches the docs site may be written into
+    // docsUrl, which is consumed as an <iframe src>. This is an origin check
+    // (via isDocsUrl), not a string-prefix match, so docs-lookalike hosts such
+    // as docs.breezermm.com.evil.com are rejected. Any untrusted value falls
+    // back to the safe contextual docs page for the current path.
+    if (isDocsUrl(url)) {
       set({ isOpen: true, docsUrl: url, label: 'Documentation' });
     } else {
       const { url: resolved, label } = getDocsForPath(window.location.pathname);

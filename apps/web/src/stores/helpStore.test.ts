@@ -43,7 +43,13 @@ describe('help store open() href hardening', () => {
   it.each([
     'javascript:alert(1)',
     'https://evil.example/x',
-    '//evil.com'
+    '//evil.com',
+    // Prefix-bypass lookalike: shares the DOCS_BASE_URL string prefix but is a
+    // different origin. The old startsWith() check let this through; an origin
+    // check must reject it. This case would have caught the original bug.
+    'https://docs.breezermm.com.evil.com',
+    'https://docs.breezermm.com@evil.com/x',
+    'https://docs.breezermm.comevil.com'
   ])('does not write untrusted url %s into docsUrl', (malicious) => {
     const expected = getDocsForPath('/devices');
 
