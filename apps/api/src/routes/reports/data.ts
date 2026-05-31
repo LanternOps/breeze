@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
@@ -11,13 +11,24 @@ import {
   alertRules
 } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { ensureOrgAccess, getOrgIdsForAuth } from './helpers';
 import { dataQuerySchema } from './schemas';
 
 export const dataRoutes = new Hono();
 
 dataRoutes.use('*', authMiddleware);
+
+function emptyMetricsData() {
+  return {
+    data: {
+      averages: { cpu: 0, ram: 0, disk: 0 },
+      topCpu: [],
+      topRam: [],
+      topDisk: []
+    }
+  };
+}
 
 // GET /reports/data/device-inventory - Device inventory data
 dataRoutes.get(
@@ -27,6 +38,7 @@ dataRoutes.get(
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
@@ -35,7 +47,7 @@ dataRoutes.get(
     }
 
     // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: SQL[] = [];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -48,7 +60,15 @@ dataRoutes.get(
     }
 
     if (query.siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
       conditions.push(eq(devices.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], total: 0 });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -107,6 +127,7 @@ dataRoutes.get(
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
@@ -115,7 +136,7 @@ dataRoutes.get(
     }
 
     // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: SQL[] = [];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -128,7 +149,15 @@ dataRoutes.get(
     }
 
     if (query.siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
       conditions.push(eq(devices.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], summary: [], total: 0 });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -443,6 +472,7 @@ dataRoutes.get(
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
@@ -451,7 +481,7 @@ dataRoutes.get(
     }
 
     // Build conditions for devices
-    const deviceConditions: ReturnType<typeof eq>[] = [];
+    const deviceConditions: SQL[] = [];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -464,7 +494,15 @@ dataRoutes.get(
     }
 
     if (query.siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
       deviceConditions.push(eq(devices.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json(emptyMetricsData());
+      }
+      deviceConditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const deviceWhereCondition = deviceConditions.length > 0 ? and(...deviceConditions) : undefined;
@@ -479,12 +517,7 @@ dataRoutes.get(
 
     if (deviceIds.length === 0) {
       return c.json({
-        data: {
-          averages: { cpu: 0, ram: 0, disk: 0 },
-          topCpu: [],
-          topRam: [],
-          topDisk: []
-        }
+        ...emptyMetricsData()
       });
     }
 

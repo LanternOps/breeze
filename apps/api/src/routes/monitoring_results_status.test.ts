@@ -17,6 +17,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
   },
   deviceSoftware: {},
   deviceChangeLog: {
@@ -87,6 +88,10 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const allowedSiteIds = c.req.header('x-restrict-site')
+      ?.split(',')
+      .map((id: string) => id.trim())
+      .filter(Boolean);
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -96,6 +101,7 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
+    if (allowedSiteIds) c.set('permissions', { allowedSiteIds });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -111,6 +117,15 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => true),
 }));
 
+vi.mock('../services/permissions', () => ({
+  PERMISSIONS: {
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    DEVICES_WRITE: { resource: 'devices', action: 'write' },
+  },
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
+}));
+
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
 
@@ -118,6 +133,9 @@ const ORG_ID = 'org-111';
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const SNMP_DEVICE_ID = '33333333-3333-3333-3333-333333333333';
+const DEVICE_DENIED_ID = '44444444-4444-4444-4444-444444444444';
+const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
 
 
 describe('monitoring routes', () => {
@@ -125,6 +143,10 @@ describe('monitoring routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.delete).mockReset();
     app = new Hono();
     app.route('/monitoring', monitoringRoutes);
   });
@@ -133,6 +155,112 @@ describe('monitoring routes', () => {
   // GET /results
   // ============================================
   describe('GET /monitoring/results', () => {
+    it('returns 403 for a site-restricted caller requesting an out-of-scope deviceId', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: DEVICE_DENIED_ID, siteId: SITE_DENIED }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/results?deviceId=${DEVICE_DENIED_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Device not found or access denied');
+    });
+
+    it('narrows site-restricted result lists to devices in allowed sites', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: 'result-allowed',
+                  deviceId: DEVICE_ID,
+                  watchType: 'service',
+                  name: 'nginx',
+                  status: 'running',
+                  cpuPercent: 2.5,
+                  memoryMb: 128,
+                  pid: 1234,
+                  details: null,
+                  autoRestartAttempted: false,
+                  autoRestartSucceeded: false,
+                  timestamp: new Date(),
+                }]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/monitoring/results', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceId).toBe(DEVICE_ID);
+    });
+
+    it('does not join devices for unrestricted result callers', async () => {
+      const from = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: 'result-allowed',
+                deviceId: DEVICE_ID,
+                watchType: 'service',
+                name: 'nginx',
+                status: 'running',
+                cpuPercent: 2.5,
+                memoryMb: 128,
+                pid: 1234,
+                details: null,
+                autoRestartAttempted: false,
+                autoRestartSucceeded: false,
+                timestamp: new Date(),
+              },
+              {
+                id: 'result-denied',
+                deviceId: DEVICE_DENIED_ID,
+                watchType: 'service',
+                name: 'redis',
+                status: 'running',
+                cpuPercent: 1,
+                memoryMb: 64,
+                pid: 5678,
+                details: null,
+                autoRestartAttempted: false,
+                autoRestartSucceeded: false,
+                timestamp: new Date(),
+              },
+            ]),
+          }),
+        }),
+      });
+      vi.mocked(db.select).mockReturnValueOnce({ from } as any);
+
+      const res = await app.request('/monitoring/results', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((result: any) => result.deviceId)).toEqual([DEVICE_ID, DEVICE_DENIED_ID]);
+      expect(from).toHaveBeenCalledWith(expect.anything());
+    });
+
     it('returns check results with filters', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

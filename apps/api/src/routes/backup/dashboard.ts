@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, and, sql, gte, desc } from 'drizzle-orm';
+import { eq, and, sql, gte, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { requirePermission } from '../../middleware/auth';
 import {
@@ -15,6 +15,12 @@ import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 
 export const dashboardRoutes = new Hono();
+
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
 
 dashboardRoutes.get(
   '/usage-history',
@@ -122,26 +128,35 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
   }
 
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+  const noSiteAllowedDevices = allowedDeviceIds !== null && allowedDeviceIds.length === 0;
+  const jobDeviceScope = allowedDeviceIds && allowedDeviceIds.length > 0
+    ? inArray(backupJobs.deviceId, allowedDeviceIds)
+    : undefined;
+  const snapshotDeviceScope = allowedDeviceIds && allowedDeviceIds.length > 0
+    ? inArray(backupSnapshots.deviceId, allowedDeviceIds)
+    : undefined;
 
   // Run aggregation queries in parallel
-  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevices, recentJobs] =
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(backupConfigs)
         .where(eq(backupConfigs.orgId, orgId))
         .then((r) => r[0]?.count ?? 0),
-      db
+      noSiteAllowedDevices ? Promise.resolve(0) : db
         .select({ count: sql<number>`count(*)::int` })
         .from(backupJobs)
-        .where(eq(backupJobs.orgId, orgId))
+        .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
         .then((r) => r[0]?.count ?? 0),
-      db
+      noSiteAllowedDevices ? Promise.resolve(0) : db
         .select({ count: sql<number>`count(*)::int` })
         .from(backupSnapshots)
-        .where(eq(backupSnapshots.orgId, orgId))
+        .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
         .then((r) => r[0]?.count ?? 0),
-      db
+      noSiteAllowedDevices ? Promise.resolve({ completed: 0, failed: 0, running: 0, pending: 0 }) : db
         .select({
           completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')::int`,
           failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')::int`,
@@ -152,23 +167,24 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .where(
           and(
             eq(backupJobs.orgId, orgId),
-            gte(backupJobs.createdAt, dayAgo)
+            gte(backupJobs.createdAt, dayAgo),
+            jobDeviceScope
           )
         )
         .then((r) => r[0] ?? { completed: 0, failed: 0, running: 0, pending: 0 }),
-      db
+      noSiteAllowedDevices ? Promise.resolve({ totalBytes: 0, count: 0 }) : db
         .select({
           totalBytes: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
           count: sql<number>`count(*)::int`,
         })
         .from(backupSnapshots)
-        .where(eq(backupSnapshots.orgId, orgId))
+        .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
         .then((r) => r[0] ?? { totalBytes: 0, count: 0 }),
       resolveAllBackupAssignedDevices(orgId).catch((err) => {
         console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
         return [];
       }),
-      db
+      noSiteAllowedDevices ? Promise.resolve([]) : db
         .select({
           job: backupJobs,
           deviceName: devices.displayName,
@@ -178,11 +194,17 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .from(backupJobs)
         .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
         .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
-        .where(eq(backupJobs.orgId, orgId))
+        .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
         .orderBy(desc(backupJobs.createdAt))
         .limit(5),
     ]);
 
+  const assignedDevices = allowedDeviceIds
+    ? assignedDevicesRaw.filter((a) => allowedDeviceIds.includes(a.deviceId))
+    : assignedDevicesRaw;
+  const recentJobs = allowedDeviceIds
+    ? recentJobsRaw.filter((r) => allowedDeviceIds.includes(r.job.deviceId))
+    : recentJobsRaw;
   const protectedDevices = new Set(assignedDevices.map((a) => a.deviceId));
 
   const latestJobs = recentJobs.map((r) => ({

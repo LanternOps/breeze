@@ -104,6 +104,19 @@ async function validateSnmpTemplateAccess(templateId: string, orgId: string): Pr
   return Boolean(template);
 }
 
+async function resolveSiteAllowedAssetIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  if (perms.allowedSiteIds.length === 0) return [];
+  const rows = await db
+    .select({ id: discoveredAssets.id })
+    .from(discoveredAssets)
+    .where(and(
+      eq(discoveredAssets.orgId, orgId),
+      inArray(discoveredAssets.siteId, perms.allowedSiteIds)
+    ));
+  return rows.map((row) => row.id);
+}
+
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
   includeUnconfigured: z.coerce.boolean().optional()
@@ -124,8 +137,15 @@ monitoringRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const orgId = orgResult.orgId;
     if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const allowedAssetIds = await resolveSiteAllowedAssetIds(orgId, perms);
+    if (allowedAssetIds && allowedAssetIds.length === 0) {
+      return c.json({ data: [] });
+    }
 
     // Pull monitoring config for discovered assets in this org.
+    const snmpConditions = [eq(snmpDevices.orgId, orgId), isNotNull(snmpDevices.assetId)];
+    if (allowedAssetIds) snmpConditions.push(inArray(snmpDevices.assetId, allowedAssetIds));
     const snmpRows = await db
       .select({
         id: snmpDevices.id,
@@ -140,7 +160,7 @@ monitoringRoutes.get(
         createdAt: snmpDevices.createdAt
       })
       .from(snmpDevices)
-      .where(and(eq(snmpDevices.orgId, orgId), isNotNull(snmpDevices.assetId)))
+      .where(and(...snmpConditions))
       .orderBy(desc(snmpDevices.createdAt));
 
     const snmpByAssetId = new Map<string, typeof snmpRows[number]>();
@@ -163,6 +183,8 @@ monitoringRoutes.get(
       }
     }
 
+    const networkConditions = [eq(networkMonitors.orgId, orgId), isNotNull(networkMonitors.assetId)];
+    if (allowedAssetIds) networkConditions.push(inArray(networkMonitors.assetId, allowedAssetIds));
     const networkCounts = await db
       .select({
         assetId: networkMonitors.assetId,
@@ -170,7 +192,7 @@ monitoringRoutes.get(
         activeCount: sql<number>`sum(case when ${networkMonitors.isActive} then 1 else 0 end)`
       })
       .from(networkMonitors)
-      .where(and(eq(networkMonitors.orgId, orgId), isNotNull(networkMonitors.assetId)))
+      .where(and(...networkConditions))
       .groupBy(networkMonitors.assetId);
 
     const networkByAssetId = new Map<string, { totalCount: number; activeCount: number }>();
@@ -191,6 +213,14 @@ monitoringRoutes.get(
       return c.json({ data: [] });
     }
 
+    const assetConditions = [
+      eq(discoveredAssets.orgId, orgId),
+      query.includeUnconfigured ? sql`true` : inArray(discoveredAssets.id, Array.from(configuredAssetIds))
+    ];
+    if (perms?.allowedSiteIds) {
+      assetConditions.push(inArray(discoveredAssets.siteId, perms.allowedSiteIds));
+    }
+
     const assets = await db
       .select({
         id: discoveredAssets.id,
@@ -206,10 +236,7 @@ monitoringRoutes.get(
         updatedAt: discoveredAssets.updatedAt
       })
       .from(discoveredAssets)
-      .where(and(
-        eq(discoveredAssets.orgId, orgId),
-        query.includeUnconfigured ? sql`true` : inArray(discoveredAssets.id, Array.from(configuredAssetIds))
-      ))
+      .where(and(...assetConditions))
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
     return c.json({
@@ -283,11 +310,15 @@ monitoringRoutes.get(
     if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
 
     const [asset] = await db
-      .select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
+      .select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId })
       .from(discoveredAssets)
       .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const snmpRows = await db.select()
       .from(snmpDevices)
@@ -751,6 +782,7 @@ monitoringRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const orgId = orgResult.orgId;
     if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
     const conditions = [eq(serviceProcessCheckResults.orgId, orgId)];
     if (query.deviceId) conditions.push(eq(serviceProcessCheckResults.deviceId, query.deviceId));
@@ -759,12 +791,56 @@ monitoringRoutes.get(
     if (query.since) conditions.push(gte(serviceProcessCheckResults.timestamp, query.since));
     if (query.until) conditions.push(lte(serviceProcessCheckResults.timestamp, query.until));
 
-    const results = await db
-      .select()
-      .from(serviceProcessCheckResults)
-      .where(and(...conditions))
-      .orderBy(desc(serviceProcessCheckResults.timestamp))
-      .limit(query.limit);
+    const resultSelect = {
+      id: serviceProcessCheckResults.id,
+      deviceId: serviceProcessCheckResults.deviceId,
+      watchType: serviceProcessCheckResults.watchType,
+      name: serviceProcessCheckResults.name,
+      status: serviceProcessCheckResults.status,
+      cpuPercent: serviceProcessCheckResults.cpuPercent,
+      memoryMb: serviceProcessCheckResults.memoryMb,
+      pid: serviceProcessCheckResults.pid,
+      details: serviceProcessCheckResults.details,
+      autoRestartAttempted: serviceProcessCheckResults.autoRestartAttempted,
+      autoRestartSucceeded: serviceProcessCheckResults.autoRestartSucceeded,
+      timestamp: serviceProcessCheckResults.timestamp,
+    };
+
+    const results = await (async () => {
+      if (!perms?.allowedSiteIds) {
+        return db
+          .select()
+          .from(serviceProcessCheckResults)
+          .where(and(...conditions))
+          .orderBy(desc(serviceProcessCheckResults.timestamp))
+          .limit(query.limit);
+      }
+
+      if (query.deviceId) {
+        const [device] = await db
+          .select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.id, query.deviceId), eq(devices.orgId, orgId)))
+          .limit(1);
+        if (!device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId)) {
+          return null;
+        }
+      }
+
+      if (perms.allowedSiteIds.length === 0) return [];
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+      return db
+        .select(resultSelect)
+        .from(serviceProcessCheckResults)
+        .innerJoin(devices, eq(serviceProcessCheckResults.deviceId, devices.id))
+        .where(and(...conditions))
+        .orderBy(desc(serviceProcessCheckResults.timestamp))
+        .limit(query.limit);
+    })();
+
+    if (results === null) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
 
     return c.json({
       data: results.map(r => ({

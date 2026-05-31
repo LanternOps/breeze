@@ -4,6 +4,9 @@ import { snapshotsRoutes } from './snapshots';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SNAPSHOT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SITE_A = '11111111-1111-4111-8111-111111111111';
+const SITE_B = '22222222-2222-4222-8222-222222222222';
+let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -67,6 +70,11 @@ vi.mock('../../db/schema', () => ({
     size: 'backup_snapshot_files.size',
     modifiedAt: 'backup_snapshot_files.modified_at',
   },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.org_id',
+    siteId: 'devices.site_id',
+  },
 }));
 
 const applyBackupSnapshotImmutabilityMock = vi.fn();
@@ -84,6 +92,9 @@ vi.mock('../../services/auditEvents', () => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', authState);
+    if (permissionsState) {
+      c.set('permissions', permissionsState);
+    }
     return next();
   }),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
@@ -124,9 +135,73 @@ describe('snapshot routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockImplementation(() => chainMock([]));
+    updateMock.mockReset();
+    updateMock.mockImplementation(() => chainMock([]));
+    permissionsState = undefined;
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', authState);
+      if (permissionsState) {
+        c.set('permissions', permissionsState);
+      }
+      return next();
+    });
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', snapshotsRoutes);
+  });
+
+  it('denies an explicit out-of-scope snapshot device filter for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock.mockReturnValueOnce(chainMock([
+      { id: 'device-in', siteId: SITE_A },
+    ]));
+
+    const res = await app.request('/backup/snapshots?deviceId=device-out', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('narrows snapshot lists to allowed source device sites for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([
+        { id: 'device-in', siteId: SITE_A },
+        { id: 'device-out', siteId: SITE_B },
+      ]))
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((row: any) => row.deviceId)).toEqual(['device-in']);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps unrestricted snapshot list behavior unchanged', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ deviceId: 'device-in' }),
+      makeSnapshot({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', deviceId: 'device-out' }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(2);
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns protection fields in snapshot responses', async () => {

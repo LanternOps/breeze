@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, gte, lte, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
@@ -13,13 +13,67 @@ import {
 } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { ensureOrgAccess } from './helpers';
 import { generateReportSchema } from './schemas';
 
 export const generateRoutes = new Hono();
 
 generateRoutes.use('*', authMiddleware);
+
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+    .map((d) => d.id);
+}
+
+function asStringArray(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+}
+
+function filtersFor(config: Record<string, unknown>): Record<string, unknown> {
+  return (config.filters as Record<string, unknown> | undefined) ?? {};
+}
+
+function emptyRowsReport() {
+  return { rows: [], rowCount: 0 };
+}
+
+function addAllowedSiteCondition(conditions: SQL[], perms: UserPermissions | undefined): boolean {
+  if (!perms?.allowedSiteIds) return false;
+  if (perms.allowedSiteIds.length === 0) return true;
+  conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+  return false;
+}
+
+async function siteScopeRequestAllowed(
+  orgId: string,
+  config: Record<string, unknown>,
+  perms: UserPermissions | undefined
+): Promise<boolean> {
+  if (!perms?.allowedSiteIds) return true;
+
+  const filters = filtersFor(config);
+  const siteIds = asStringArray(filters.siteIds);
+  if (siteIds?.some((siteId) => !canAccessSite(perms, siteId))) {
+    return false;
+  }
+
+  const deviceIds = asStringArray(filters.deviceIds);
+  if (deviceIds && deviceIds.length > 0) {
+    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+    if (deviceIds.some((deviceId) => !allowedDeviceIds?.includes(deviceId))) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 // POST /reports/generate - Generate ad-hoc report
 generateRoutes.post(
@@ -59,25 +113,30 @@ generateRoutes.post(
     // Generate report data based on type
     let reportData: unknown;
     const config = data.config || {};
+    const perms = c.get('permissions') as UserPermissions | undefined;
+
+    if (!(await siteScopeRequestAllowed(orgId!, config, perms))) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
 
     switch (data.type) {
       case 'device_inventory':
-        reportData = await generateDeviceInventoryReport(orgId!, config);
+        reportData = await generateDeviceInventoryReport(orgId!, config, perms);
         break;
       case 'software_inventory':
-        reportData = await generateSoftwareInventoryReport(orgId!, config);
+        reportData = await generateSoftwareInventoryReport(orgId!, config, perms);
         break;
       case 'alert_summary':
-        reportData = await generateAlertSummaryReport(orgId!, config);
+        reportData = await generateAlertSummaryReport(orgId!, config, perms);
         break;
       case 'compliance':
-        reportData = await generateComplianceReport(orgId!, config);
+        reportData = await generateComplianceReport(orgId!, config, perms);
         break;
       case 'performance':
-        reportData = await generatePerformanceReport(orgId!, config);
+        reportData = await generatePerformanceReport(orgId!, config, perms);
         break;
       case 'executive_summary':
-        reportData = await generateExecutiveSummaryReport(orgId!, config);
+        reportData = await generateExecutiveSummaryReport(orgId!, config, perms);
         break;
       default:
         return c.json({ error: 'Invalid report type' }, 400);
@@ -103,12 +162,16 @@ generateRoutes.post(
 // REPORT GENERATION HELPERS
 // ============================================
 
-async function generateDeviceInventoryReport(orgId: string, config: Record<string, unknown>) {
-  const conditions: ReturnType<typeof eq>[] = [eq(devices.orgId, orgId)];
+async function generateDeviceInventoryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
     conditions.push(inArray(devices.siteId, filters.siteIds));
+  }
+
+  if (addAllowedSiteCondition(conditions, perms)) {
+    return emptyRowsReport();
   }
 
   if (filters?.osTypes && Array.isArray(filters.osTypes) && filters.osTypes.length > 0) {
@@ -140,12 +203,16 @@ async function generateDeviceInventoryReport(orgId: string, config: Record<strin
   return { rows: data, rowCount: data.length };
 }
 
-async function generateSoftwareInventoryReport(orgId: string, config: Record<string, unknown>) {
-  const conditions: ReturnType<typeof eq>[] = [eq(devices.orgId, orgId)];
+async function generateSoftwareInventoryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
     conditions.push(inArray(devices.id, filters.deviceIds));
+  }
+
+  if (addAllowedSiteCondition(conditions, perms)) {
+    return emptyRowsReport();
   }
 
   const whereCondition = and(...conditions);
@@ -166,8 +233,8 @@ async function generateSoftwareInventoryReport(orgId: string, config: Record<str
   return { rows: data, rowCount: data.length };
 }
 
-async function generateAlertSummaryReport(orgId: string, config: Record<string, unknown>) {
-  const conditions: ReturnType<typeof eq>[] = [eq(alerts.orgId, orgId)];
+async function generateAlertSummaryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const conditions: SQL[] = [eq(alerts.orgId, orgId)];
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
   if (dateRange?.start) {
@@ -180,6 +247,14 @@ async function generateAlertSummaryReport(orgId: string, config: Record<string, 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.severity && Array.isArray(filters.severity) && filters.severity.length > 0) {
     conditions.push(inArray(alerts.severity, filters.severity));
+  }
+
+  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+  if (allowedDeviceIds) {
+    if (allowedDeviceIds.length === 0) {
+      return { rows: [], rowCount: 0, summary: {} };
+    }
+    conditions.push(inArray(alerts.deviceId, allowedDeviceIds));
   }
 
   const whereCondition = and(...conditions);
@@ -218,12 +293,25 @@ async function generateAlertSummaryReport(orgId: string, config: Record<string, 
   };
 }
 
-async function generateComplianceReport(orgId: string, config: Record<string, unknown>) {
-  const conditions: ReturnType<typeof eq>[] = [eq(devices.orgId, orgId)];
+async function generateComplianceReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
     conditions.push(inArray(devices.siteId, filters.siteIds));
+  }
+
+  if (addAllowedSiteCondition(conditions, perms)) {
+    return {
+      rows: [],
+      rowCount: 0,
+      summary: {
+        totalDevices: 0,
+        compliantDevices: 0,
+        nonCompliantDevices: 0,
+        complianceRate: 100
+      }
+    };
   }
 
   const whereCondition = and(...conditions);
@@ -271,11 +359,16 @@ async function generateComplianceReport(orgId: string, config: Record<string, un
   };
 }
 
-async function generatePerformanceReport(orgId: string, config: Record<string, unknown>) {
+async function generatePerformanceReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
+  if (addAllowedSiteCondition(deviceConditions, perms)) {
+    return emptyRowsReport();
+  }
+
   const orgDevices = await db
     .select({ id: devices.id, hostname: devices.hostname })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
+    .where(and(...deviceConditions));
 
   const deviceIds = orgDevices.map(d => d.id);
 
@@ -283,7 +376,7 @@ async function generatePerformanceReport(orgId: string, config: Record<string, u
     return { rows: [], rowCount: 0 };
   }
 
-  const conditions: ReturnType<typeof eq>[] = [inArray(deviceMetrics.deviceId, deviceIds)];
+  const conditions: SQL[] = [inArray(deviceMetrics.deviceId, deviceIds)];
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
   if (dateRange?.start) {
@@ -326,21 +419,26 @@ async function generatePerformanceReport(orgId: string, config: Record<string, u
   return { rows, rowCount: rows.length };
 }
 
-async function generateExecutiveSummaryReport(orgId: string, config: Record<string, unknown>) {
+async function generateExecutiveSummaryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
   const dateRange = config.dateRange as Record<string, string> | undefined;
+  const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
+  const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, perms);
+  const deviceWhereCondition = and(...deviceConditions);
 
   // Device stats
-  const deviceStats = await db
-    .select({
-      total: sql<number>`count(*)`,
-      online: sql<number>`sum(case when ${devices.status} = 'online' then 1 else 0 end)`,
-      offline: sql<number>`sum(case when ${devices.status} = 'offline' then 1 else 0 end)`
-    })
-    .from(devices)
-    .where(eq(devices.orgId, orgId));
+  const deviceStats = emptyDeviceScope
+    ? [{ total: 0, online: 0, offline: 0 }]
+    : await db
+      .select({
+        total: sql<number>`count(*)`,
+        online: sql<number>`sum(case when ${devices.status} = 'online' then 1 else 0 end)`,
+        offline: sql<number>`sum(case when ${devices.status} = 'offline' then 1 else 0 end)`
+      })
+      .from(devices)
+      .where(deviceWhereCondition);
 
   // Alert stats
-  const alertConditions: ReturnType<typeof eq>[] = [eq(alerts.orgId, orgId)];
+  const alertConditions: SQL[] = [eq(alerts.orgId, orgId)];
   if (dateRange?.start) {
     alertConditions.push(gte(alerts.triggeredAt, new Date(dateRange.start)));
   }
@@ -348,37 +446,48 @@ async function generateExecutiveSummaryReport(orgId: string, config: Record<stri
     alertConditions.push(lte(alerts.triggeredAt, new Date(dateRange.end)));
   }
 
-  const alertStats = await db
-    .select({
-      total: sql<number>`count(*)`,
-      critical: sql<number>`sum(case when ${alerts.severity} = 'critical' then 1 else 0 end)`,
-      high: sql<number>`sum(case when ${alerts.severity} = 'high' then 1 else 0 end)`,
-      resolved: sql<number>`sum(case when ${alerts.status} = 'resolved' then 1 else 0 end)`
-    })
-    .from(alerts)
-    .where(and(...alertConditions));
+  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+  if (allowedDeviceIds) {
+    alertConditions.push(inArray(alerts.deviceId, allowedDeviceIds));
+  }
+
+  const alertStats = allowedDeviceIds?.length === 0
+    ? [{ total: 0, critical: 0, high: 0, resolved: 0 }]
+    : await db
+      .select({
+        total: sql<number>`count(*)`,
+        critical: sql<number>`sum(case when ${alerts.severity} = 'critical' then 1 else 0 end)`,
+        high: sql<number>`sum(case when ${alerts.severity} = 'high' then 1 else 0 end)`,
+        resolved: sql<number>`sum(case when ${alerts.status} = 'resolved' then 1 else 0 end)`
+      })
+      .from(alerts)
+      .where(and(...alertConditions));
 
   // OS distribution
-  const osDistribution = await db
-    .select({
-      osType: devices.osType,
-      count: sql<number>`count(*)`
-    })
-    .from(devices)
-    .where(eq(devices.orgId, orgId))
-    .groupBy(devices.osType);
+  const osDistribution = emptyDeviceScope
+    ? []
+    : await db
+      .select({
+        osType: devices.osType,
+        count: sql<number>`count(*)`
+      })
+      .from(devices)
+      .where(deviceWhereCondition)
+      .groupBy(devices.osType);
 
   // Site breakdown
-  const siteBreakdown = await db
-    .select({
-      siteName: sites.name,
-      deviceCount: sql<number>`count(*)`
-    })
-    .from(devices)
-    .innerJoin(sites, eq(devices.siteId, sites.id))
-    .where(eq(devices.orgId, orgId))
-    .groupBy(sites.name)
-    .orderBy(desc(sql`count(*)`));
+  const siteBreakdown = emptyDeviceScope
+    ? []
+    : await db
+      .select({
+        siteName: sites.name,
+        deviceCount: sql<number>`count(*)`
+      })
+      .from(devices)
+      .innerJoin(sites, eq(devices.siteId, sites.id))
+      .where(deviceWhereCondition)
+      .groupBy(sites.name)
+      .orderBy(desc(sql`count(*)`));
 
   return {
     summary: {

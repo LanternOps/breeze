@@ -7,6 +7,10 @@ const { selectMock, updateMock, enqueueBackupDispatchMock } = vi.hoisted(() => (
   enqueueBackupDispatchMock: vi.fn(),
 }));
 
+const SITE_A = '11111111-1111-4111-8111-111111111111';
+const SITE_B = '22222222-2222-4222-8222-222222222222';
+let permissionsState: any;
+
 function makeSelectChain(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
   for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'orderBy', 'groupBy']) {
@@ -52,6 +56,7 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     status: 'devices.status',
     displayName: 'devices.displayName',
     hostname: 'devices.hostname',
@@ -116,6 +121,9 @@ describe('backup jobs routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockImplementation(() => makeSelectChain([]));
+    permissionsState = undefined;
     updateMock.mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
@@ -134,9 +142,101 @@ describe('backup jobs routes', () => {
         orgCondition: () => undefined,
         token: { sub: 'user-1', scope: 'organization' } as any,
       });
+      if (permissionsState) {
+        c.set('permissions', permissionsState);
+      }
       await next();
     });
     app.route('/', jobsRoutes);
+  });
+
+  it('denies an explicit out-of-scope device filter for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      { id: 'device-in', siteId: SITE_A },
+    ]));
+
+    const res = await app.request('/jobs?deviceId=device-out');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('narrows job lists to allowed device sites for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const allowedDevicesChain = makeSelectChain([
+      { id: 'device-in', siteId: SITE_A },
+      { id: 'device-out', siteId: SITE_B },
+    ]);
+    const jobsChain = makeSelectChain([
+      {
+        job: makeJob({ id: 'job-in', deviceId: 'device-in' }),
+        deviceName: 'Allowed Device',
+        deviceHostname: 'allowed-host',
+        configName: 'Primary Backup',
+      },
+    ]);
+    selectMock
+      .mockReturnValueOnce(allowedDevicesChain)
+      .mockReturnValueOnce(jobsChain);
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+    expect(jobsChain.where).toHaveBeenCalledWith(expect.objectContaining({
+      conditions: expect.arrayContaining([
+        expect.objectContaining({ op: 'inArray', column: 'backupJobs.deviceId', values: ['device-in'] }),
+      ]),
+    }));
+  });
+
+  it('keeps unrestricted job list behavior unchanged', async () => {
+    permissionsState = undefined;
+    const jobsChain = makeSelectChain([
+      {
+        job: makeJob({ id: 'job-in', deviceId: 'device-in' }),
+        deviceName: 'Allowed Device',
+        deviceHostname: 'allowed-host',
+        configName: 'Primary Backup',
+      },
+      {
+        job: makeJob({ id: 'job-out', deviceId: 'device-out' }),
+        deviceName: 'Other Device',
+        deviceHostname: 'other-host',
+        configName: 'Primary Backup',
+      },
+    ]);
+    selectMock.mockReturnValueOnce(jobsChain);
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(2);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(jobsChain.where).not.toHaveBeenCalledWith(expect.objectContaining({
+      conditions: expect.arrayContaining([
+        expect.objectContaining({ op: 'inArray', column: 'backupJobs.deviceId' }),
+      ]),
+    }));
+  });
+
+  it('denies reading a job whose device site is out of scope', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ id: 'job-out', deviceId: 'device-out' }),
+        deviceName: 'Other Device',
+        deviceHostname: 'other-host',
+        configName: 'Primary Backup',
+        siteId: SITE_B,
+      },
+    ]));
+
+    const res = await app.request('/jobs/job-out');
+
+    expect(res.status).toBe(403);
   });
 
   it('run-all preview only counts online devices without active jobs', async () => {
@@ -259,3 +359,27 @@ describe('backup jobs routes', () => {
     });
   });
 });
+
+function makeJob(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'job-1',
+    orgId: 'org-a',
+    configId: 'config-1',
+    deviceId: 'device-1',
+    featureLinkId: null,
+    policyId: null,
+    snapshotId: null,
+    status: 'completed',
+    type: 'manual',
+    startedAt: null,
+    completedAt: null,
+    totalSize: null,
+    transferredSize: null,
+    fileCount: null,
+    errorCount: null,
+    errorLog: null,
+    createdAt: new Date('2026-04-01T00:00:00Z'),
+    updatedAt: new Date('2026-04-01T00:00:00Z'),
+    ...overrides,
+  };
+}

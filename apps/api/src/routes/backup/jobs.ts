@@ -31,6 +31,12 @@ async function canAccessDeviceIdSite(orgId: string, deviceId: string, permission
   return Boolean(device && canAccessDeviceSite(device, permissions));
 }
 
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
 async function markBackupJobDispatchFailed(jobId: string, error: string) {
   const now = new Date();
   await db
@@ -53,6 +59,7 @@ jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMIS
 
   const query = c.req.valid('query');
   const deviceFilter = query.deviceId ?? query.device;
+  const perms = c.get('permissions') as UserPermissions | undefined;
 
   const conditions = [eq(backupJobs.orgId, orgId)];
 
@@ -62,6 +69,17 @@ jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMIS
 
   if (deviceFilter) {
     conditions.push(eq(backupJobs.deviceId, deviceFilter));
+  }
+
+  if (perms?.allowedSiteIds) {
+    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+    if (deviceFilter && !allowedDeviceIds!.includes(deviceFilter)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+    if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+      return c.json({ data: [] });
+    }
+    conditions.push(inArray(backupJobs.deviceId, allowedDeviceIds));
   }
 
   if (query.from) {
@@ -90,6 +108,7 @@ jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMIS
       job: backupJobs,
       deviceName: devices.displayName,
       deviceHostname: devices.hostname,
+      siteId: devices.siteId,
       configName: backupConfigs.name,
     })
     .from(backupJobs)
@@ -120,6 +139,7 @@ jobsRoutes.get('/jobs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
       job: backupJobs,
       deviceName: devices.displayName,
       deviceHostname: devices.hostname,
+      siteId: devices.siteId,
       configName: backupConfigs.name,
     })
     .from(backupJobs)
@@ -130,6 +150,9 @@ jobsRoutes.get('/jobs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
 
   if (!row) {
     return c.json({ error: 'Job not found' }, 404);
+  }
+  if (!canAccessDeviceSite({ siteId: row.siteId }, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Device not found or access denied' }, 403);
   }
   return c.json({
     ...toJobResponse(row.job),

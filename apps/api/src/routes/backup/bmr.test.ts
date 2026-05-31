@@ -5,8 +5,11 @@ import { bmrRoutes, bmrPublicRoutes } from './bmr';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const OTHER_DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const SNAPSHOT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const TOKEN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SITE_A = '11111111-1111-4111-8111-111111111111';
+const SITE_B = '22222222-2222-4222-8222-222222222222';
 const VALID_RECOVERY_TOKEN = `brz_rec_${'a'.repeat(64)}`;
 const EXPIRED_RECOVERY_TOKEN = `brz_rec_${'b'.repeat(64)}`;
 const REVOKED_RECOVERY_TOKEN = `brz_rec_${'c'.repeat(64)}`;
@@ -38,6 +41,7 @@ let authState = {
   orgId: ORG_ID,
   token: { sub: 'user-123' },
 };
+let permissionsState: any;
 
 vi.mock('../../db', () => ({
   db: {
@@ -79,6 +83,8 @@ vi.mock('../../db/schema', () => ({
   },
   devices: {
     id: 'devices.id',
+    orgId: 'devices.org_id',
+    siteId: 'devices.site_id',
     hostname: 'devices.hostname',
     osType: 'devices.os_type',
     architecture: 'devices.architecture',
@@ -258,6 +264,9 @@ vi.mock('../../services/recoverySigning', () => ({
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', authState);
+    if (permissionsState) {
+      c.set('permissions', permissionsState);
+    }
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
@@ -291,6 +300,7 @@ describe('bmr routes', () => {
       orgId: ORG_ID,
       token: { sub: 'user-123' },
     };
+    permissionsState = undefined;
     rateLimiterMock.mockResolvedValue({
       allowed: true,
       remaining: 9,
@@ -305,12 +315,74 @@ describe('bmr routes', () => {
     delete process.env.BMR_RECOVERY_ALLOW_QUERY_TOKEN;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
+      if (permissionsState) {
+        c.set('permissions', permissionsState);
+      }
       return next();
     });
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', bmrPublicRoutes);
     app.route('/backup', bmrRoutes);
+  });
+
+  it('denies an explicit out-of-scope recovery token device filter for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([
+        { id: DEVICE_ID, siteId: SITE_A },
+      ]));
+
+    const res = await app.request(`/backup/bmr/tokens?deviceId=${OTHER_DEVICE_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+  });
+
+  it('narrows recovery token lists to allowed device sites for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([
+        { id: DEVICE_ID, siteId: SITE_A },
+        { id: OTHER_DEVICE_ID, siteId: SITE_B },
+      ]))
+      .mockReturnValueOnce(chainMock([
+        { id: SNAPSHOT_ID },
+      ]))
+      .mockReturnValueOnce(chainMock([
+        makeTokenSummary({ deviceId: DEVICE_ID }),
+      ]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((row: any) => row.deviceId)).toEqual([DEVICE_ID]);
+  });
+
+  it('keeps unrestricted recovery token list behavior unchanged', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([
+        makeTokenSummary({ deviceId: DEVICE_ID }),
+        makeTokenSummary({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', deviceId: OTHER_DEVICE_ID }),
+      ]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(2);
   });
 
   it('creates a recovery token', async () => {
@@ -1043,3 +1115,19 @@ describe('bmr routes', () => {
     expect(enqueueRecoveryBootMediaBuildMock).toHaveBeenCalledWith('boot-media-1');
   });
 });
+
+function makeTokenSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    id: TOKEN_ID,
+    deviceId: DEVICE_ID,
+    snapshotId: SNAPSHOT_ID,
+    restoreType: 'bare_metal',
+    status: 'active',
+    createdAt: new Date('2026-03-29T00:00:00.000Z'),
+    expiresAt: new Date('2026-03-30T00:00:00.000Z'),
+    authenticatedAt: null,
+    completedAt: null,
+    usedAt: null,
+    ...overrides,
+  };
+}

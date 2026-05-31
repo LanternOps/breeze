@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, localVaults } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -30,6 +30,12 @@ async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: 
   return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
 }
 
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
 // GET /vault — list vaults for org (optional ?deviceId filter)
 vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', vaultListSchema), async (c) => {
   const auth = c.get('auth');
@@ -39,10 +45,20 @@ vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIO
   }
 
   const { deviceId } = c.req.valid('query');
+  const permissions = c.get('permissions') as UserPermissions | undefined;
 
   const conditions = [eq(localVaults.orgId, orgId)];
   if (deviceId) {
+    if (await isDeviceSiteDenied(orgId, deviceId, permissions)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
     conditions.push(eq(localVaults.deviceId, deviceId));
+  } else if (permissions?.allowedSiteIds) {
+    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, permissions);
+    if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+      return c.json({ data: [] });
+    }
+    conditions.push(inArray(localVaults.deviceId, allowedDeviceIds));
   }
 
   const rows = await db

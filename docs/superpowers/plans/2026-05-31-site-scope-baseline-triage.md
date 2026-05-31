@@ -3,8 +3,9 @@
 **Status:** TRIAGED — batch 1 done (8 high-sev mutations fixed; 34 exempts vetted). 44 reads + 7 aggregates remain in the baseline.
 
 **Progress:**
-- ✅ **Batch 1 (PR #3, branch `fix/site-scope-mutations`):** all 8 high-severity MUTATIONS fixed (TDD) and removed from `SITE_SCOPE_INPUT_BASELINE`; the 24 EXEMPT-AGENT + 10 EXEMPT-FALSE-POSITIVE moved to `SITE_SCOPE_INPUT_EXEMPT` with justifications. Baseline: 93 → 51.
-- ⏳ **Remaining:** 44 REAL-GAP reads + 7 EXEMPT-AGGREGATE (re-confirm "counts only" then move to exempt).
+- ✅ **Batch 1 (PR #1041, `fix/site-scope-mutations`):** all 8 high-severity MUTATIONS fixed (TDD); 24 EXEMPT-AGENT + 10 EXEMPT-FALSE-POSITIVE moved to `SITE_SCOPE_INPUT_EXEMPT`. Baseline: 93 → 51.
+- ✅ **Batch 2 wave 1 (`fix/site-scope-reads`, delegated to Codex gpt-5.5, reviewed):** 18 READ gaps fixed across backup (8), mobile (3), monitoring (3), reports (4). Baseline: 51 → 33.
+- ⏳ **Remaining (33):** 26 REAL-GAP reads — software (3), remote (3), groups (3), misc (17: alerts, changes, cisHardening×2, deployments, networkChanges, patches/compliance, playbooks×2, policyManagement/compliance, psa×2, snmp, discovery GET /assets, networkBaselines GET /, tunnels, auditLogs) — plus 7 EXEMPT-AGGREGATE (re-confirm "counts only" → move to exempt).
 **Date:** 2026-05-31
 **Source:** Codex `gpt-5.5`, `model_reasoning_effort=high`, read-only, over the worktree at this branch.
 **Validation:** Claude spot-checked a sample (5/5 correct): the agent-auth mount

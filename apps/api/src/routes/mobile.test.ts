@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { mobileRoutes } from './mobile';
 
-const { publishEventMock, setCooldownMock, rateLimitState } = vi.hoisted(() => ({
+const { publishEventMock, setCooldownMock, rateLimitState, authState } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
-  rateLimitState: { allowed: true }
+  rateLimitState: { allowed: true },
+  authState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
 }));
 
 vi.mock('../db', () => ({
@@ -40,6 +41,7 @@ vi.mock('../middleware/auth', () => ({
       orgId: 'org-123',
       partnerId: 'partner-123'
     });
+    if (authState.permissions) c.set('permissions', authState.permissions);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -107,6 +109,14 @@ const mockSelectLeftJoinChain = (result: unknown) => ({
   })
 });
 
+const objectContains = (value: unknown, needle: string, seen = new WeakSet<object>()): boolean => {
+  if (typeof value === 'string') return value === needle;
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  return Object.values(value as Record<string, unknown>).some((child) => objectContains(child, needle, seen));
+};
+
 const mockInsertReturning = (result: unknown) => ({
   values: vi.fn().mockReturnValue({
     returning: vi.fn().mockResolvedValue(result)
@@ -140,6 +150,12 @@ describe('mobile routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.delete).mockReset();
+    authState.permissions = undefined;
+    rateLimitState.allowed = true;
     app = new Hono();
     app.route('/mobile', mobileRoutes);
   });
@@ -388,6 +404,11 @@ describe('mobile routes', () => {
   });
 
   describe('GET /mobile/alerts/inbox', () => {
+    const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+    const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+    const DEVICE_ALLOWED = '11111111-1111-1111-1111-111111111111';
+    const DEVICE_DENIED = '22222222-2222-2222-2222-222222222222';
+
     it('should return inbox alerts with pagination', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(mockSelectWhereChain([{ count: 2 }]) as any)
@@ -456,6 +477,120 @@ describe('mobile routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toContain('Organization context');
+    });
+
+    it('narrows alert inbox rows to devices in allowed sites for a site-restricted caller', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
+      const captured: { countWhere?: unknown; rowsWhere?: unknown } = {};
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+              { id: DEVICE_DENIED, siteId: SITE_DENIED }
+            ])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: unknown) => {
+              captured.countWhere = where;
+              return Promise.resolve([{ count: 1 }]);
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.rowsWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'alert-allowed',
+                          orgId: 'org-123',
+                          status: 'active',
+                          severity: 'critical',
+                          title: 'Allowed alert',
+                          message: 'Allowed device alert',
+                          triggeredAt: new Date(),
+                          acknowledgedAt: null,
+                          resolvedAt: null,
+                          deviceId: DEVICE_ALLOWED,
+                          deviceHostname: 'allowed-host',
+                          deviceOsType: 'linux',
+                          deviceStatus: 'online'
+                        }
+                      ])
+                    })
+                  })
+                };
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/mobile/alerts/inbox', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].device.id).toBe(DEVICE_ALLOWED);
+      expect(objectContains(captured.countWhere, DEVICE_ALLOWED)).toBe(true);
+      expect(objectContains(captured.rowsWhere, DEVICE_ALLOWED)).toBe(true);
+      expect(objectContains(captured.rowsWhere, DEVICE_DENIED)).toBe(false);
+    });
+
+    it('leaves alert inbox unrestricted when allowedSiteIds is absent', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectWhereChain([{ count: 2 }]) as any)
+        .mockReturnValueOnce(
+          mockSelectLeftJoinChain([
+            {
+              id: 'alert-allowed',
+              orgId: 'org-123',
+              status: 'active',
+              severity: 'critical',
+              title: 'Allowed alert',
+              message: 'Allowed device alert',
+              triggeredAt: new Date(),
+              acknowledgedAt: null,
+              resolvedAt: null,
+              deviceId: DEVICE_ALLOWED,
+              deviceHostname: 'allowed-host',
+              deviceOsType: 'linux',
+              deviceStatus: 'online'
+            },
+            {
+              id: 'alert-denied',
+              orgId: 'org-123',
+              status: 'active',
+              severity: 'high',
+              title: 'Other site alert',
+              message: 'Other device alert',
+              triggeredAt: new Date(),
+              acknowledgedAt: null,
+              resolvedAt: null,
+              deviceId: DEVICE_DENIED,
+              deviceHostname: 'denied-host',
+              deviceOsType: 'linux',
+              deviceStatus: 'online'
+            }
+          ]) as any
+        );
+
+      const res = await app.request('/mobile/alerts/inbox', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((row: { device: { id: string } }) => row.device.id)).toEqual([
+        DEVICE_ALLOWED,
+        DEVICE_DENIED
+      ]);
+      expect(db.select).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -560,6 +695,9 @@ describe('mobile routes', () => {
   });
 
   describe('GET /mobile/devices', () => {
+    const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+    const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+
     it('should list devices for mobile', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
@@ -610,6 +748,113 @@ describe('mobile routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(0);
       expect(body.pagination.total).toBe(0);
+    });
+
+    it('adds site narrowing to the list and count queries for a site-restricted caller', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
+      const captured: { countWhere?: unknown; rowsWhere?: unknown } = {};
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: unknown) => {
+              captured.countWhere = where;
+              return Promise.resolve([{ count: 1 }]);
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: unknown) => {
+              captured.rowsWhere = where;
+              return {
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([
+                      {
+                        id: 'device-allowed',
+                        orgId: 'org-123',
+                        siteId: SITE_ALLOWED,
+                        hostname: 'allowed-host',
+                        displayName: 'Allowed Host',
+                        osType: 'linux',
+                        status: 'online',
+                        lastSeenAt: new Date()
+                      }
+                    ])
+                  })
+                })
+              };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/mobile/devices', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].siteId).toBe(SITE_ALLOWED);
+      expect(objectContains(captured.countWhere, SITE_ALLOWED)).toBe(true);
+      expect(objectContains(captured.rowsWhere, SITE_ALLOWED)).toBe(true);
+      expect(objectContains(captured.rowsWhere, SITE_DENIED)).toBe(false);
+    });
+
+    it('does not add site narrowing for an unrestricted device list caller', async () => {
+      const captured: { countWhere?: unknown; rowsWhere?: unknown } = {};
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: unknown) => {
+              captured.countWhere = where;
+              return Promise.resolve([{ count: 2 }]);
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: unknown) => {
+              captured.rowsWhere = where;
+              return {
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([
+                      {
+                        id: 'device-allowed',
+                        orgId: 'org-123',
+                        siteId: SITE_ALLOWED,
+                        hostname: 'allowed-host',
+                        displayName: 'Allowed Host',
+                        osType: 'linux',
+                        status: 'online',
+                        lastSeenAt: new Date()
+                      },
+                      {
+                        id: 'device-denied',
+                        orgId: 'org-123',
+                        siteId: SITE_DENIED,
+                        hostname: 'denied-host',
+                        displayName: 'Denied Host',
+                        osType: 'linux',
+                        status: 'online',
+                        lastSeenAt: new Date()
+                      }
+                    ])
+                  })
+                })
+              };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/mobile/devices', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((row: { siteId: string }) => row.siteId)).toEqual([SITE_ALLOWED, SITE_DENIED]);
+      expect(objectContains(captured.countWhere, SITE_ALLOWED)).toBe(false);
+      expect(objectContains(captured.rowsWhere, SITE_ALLOWED)).toBe(false);
     });
   });
 
@@ -816,6 +1061,11 @@ describe('mobile routes', () => {
   });
 
   describe('GET /mobile/search', () => {
+    const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+    const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+    const DEVICE_ALLOWED = '11111111-1111-1111-1111-111111111111';
+    const DEVICE_DENIED = '22222222-2222-2222-2222-222222222222';
+
     // Returns the chain we need so the route's three Promise.all queries
     // each get their own canned result. The route invokes db.select() three
     // times in sequence; we line the chains up in call order.
@@ -899,6 +1149,121 @@ describe('mobile routes', () => {
       expect(body.results[0].kind).toBe('alert');
       expect(body.results[0].id).toBe('alert-1');
       expect(body.results[0].meta.severity).toBe('critical');
+    });
+
+    it('narrows device and alert search results for a site-restricted caller', async () => {
+      authState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
+      const captured: { deviceWhere?: unknown; alertWhere?: unknown } = {};
+      const deviceRow = {
+        id: DEVICE_ALLOWED,
+        orgId: 'org-123',
+        siteId: SITE_ALLOWED,
+        hostname: 'allowed-macbook',
+        displayName: 'Allowed Mac',
+        osType: 'macos',
+        status: 'online',
+        lastSeenAt: new Date('2026-05-01T12:00:00Z'),
+        siteName: 'Allowed Site'
+      };
+      const alertRow = {
+        id: 'alert-1',
+        orgId: 'org-123',
+        severity: 'critical',
+        status: 'active',
+        title: 'Disk full',
+        message: 'allowed-macbook is at 99%',
+        triggeredAt: new Date('2026-05-02T09:00:00Z'),
+        deviceId: DEVICE_ALLOWED,
+        deviceHostname: 'allowed-macbook',
+        deviceDisplayName: 'Allowed Mac'
+      };
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+              { id: DEVICE_DENIED, siteId: SITE_DENIED }
+            ])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.deviceWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockResolvedValue([deviceRow])
+                  })
+                };
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.alertWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockResolvedValue([alertRow])
+                  })
+                };
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockSearchChain([]) as any);
+
+      const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results.map((result: { id: string }) => result.id)).toEqual(['alert-1', DEVICE_ALLOWED]);
+      expect(objectContains(captured.deviceWhere, SITE_ALLOWED)).toBe(true);
+      expect(objectContains(captured.deviceWhere, SITE_DENIED)).toBe(false);
+      expect(objectContains(captured.alertWhere, DEVICE_ALLOWED)).toBe(true);
+      expect(objectContains(captured.alertWhere, DEVICE_DENIED)).toBe(false);
+    });
+
+    it('does not narrow search results for an unrestricted caller', async () => {
+      const deviceRow = {
+        id: DEVICE_DENIED,
+        orgId: 'org-123',
+        siteId: SITE_DENIED,
+        hostname: 'denied-macbook',
+        displayName: 'Denied Mac',
+        osType: 'macos',
+        status: 'online',
+        lastSeenAt: new Date('2026-05-01T12:00:00Z'),
+        siteName: 'Denied Site'
+      };
+      const alertRow = {
+        id: 'alert-1',
+        orgId: 'org-123',
+        severity: 'critical',
+        status: 'active',
+        title: 'Disk full',
+        message: 'denied-macbook is at 99%',
+        triggeredAt: new Date('2026-05-02T09:00:00Z'),
+        deviceId: DEVICE_DENIED,
+        deviceHostname: 'denied-macbook',
+        deviceDisplayName: 'Denied Mac'
+      };
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSearchChain([deviceRow]) as any)
+        .mockReturnValueOnce(mockSearchChain([alertRow]) as any)
+        .mockReturnValueOnce(mockSearchChain([]) as any);
+
+      const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results.map((result: { id: string }) => result.id)).toEqual(['alert-1', DEVICE_DENIED]);
+      expect(db.select).toHaveBeenCalledTimes(3);
     });
 
     it('returns 429 when rate limit is exceeded', async () => {

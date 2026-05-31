@@ -31,6 +31,12 @@ function isDeviceSiteDenied(c: Context, siteId: string | null | undefined): bool
   return Boolean(permissions?.allowedSiteIds && (typeof siteId !== 'string' || !canAccessSite(permissions, siteId)));
 }
 
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
 function dispatchFailureReason(error: string): string {
   return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
@@ -82,10 +88,22 @@ restoreRoutes.get(
     }
 
     const query = c.req.valid('query');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const conditions = [eq(restoreJobs.orgId, orgId)];
 
     if (query.deviceId) {
       conditions.push(eq(restoreJobs.deviceId, query.deviceId));
+    }
+
+    if (perms?.allowedSiteIds) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({ data: [] });
+      }
+      conditions.push(inArray(restoreJobs.deviceId, allowedDeviceIds));
     }
     if (query.snapshotId) {
       conditions.push(eq(restoreJobs.snapshotId, query.snapshotId));
