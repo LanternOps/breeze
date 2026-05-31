@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
+import { captureException } from '../services/sentry';
 
 /**
  * Per-tenant OAuth scope policy, stored under the
@@ -87,10 +88,16 @@ async function fetchPolicyFromDb(partnerId: string): Promise<PartnerOauthScopePo
 }
 
 /**
- * Hot-path lookup with a short TTL cache. Returns `{}` (no policy) on
- * lookup failure so token issuance is never blocked by a transient DB
- * hiccup — the OAuth layer is defense-in-depth here; bearer middleware
- * still enforces per-call authz.
+ * Hot-path lookup with a short TTL cache.
+ *
+ * On a DB error this FAILS CLOSED — returns `{ mcp_allowed_scopes: [] }` so
+ * `resolveAllowedMcpScopes` strips every MCP scope (`requested ∩ [] = []`)
+ * rather than minting an over-broad token during a transient DB hiccup.
+ * Returning `{}` here would fail OPEN (treated as "no cap → all scopes"). A
+ * missing partner row / missing policy key is a SUCCESSFUL read of "no policy
+ * configured" and still returns `{}` (see `fetchPolicyFromDb`) — only the
+ * error path denies. The error result is intentionally NOT cached, so token
+ * issuance recovers the moment the DB does.
  */
 export async function getPartnerScopePolicy(
   partnerId: string,
@@ -106,10 +113,12 @@ export async function getPartnerScopePolicy(
       const value = await fetchPolicyFromDb(partnerId);
       cachePut(partnerId, value);
       return value;
-    } catch (_err) {
-      // Fail-open to {} so a DB wobble doesn't break token mint; do NOT
-      // cache the miss — next caller retries.
-      return {};
+    } catch (err) {
+      // Fail CLOSED on a DB error: deny all MCP scopes rather than mint an
+      // over-broad token during a DB wobble. Do NOT cache — the next caller
+      // retries once the DB recovers. Alert so a sustained outage is visible.
+      captureException(err);
+      return { mcp_allowed_scopes: [] };
     } finally {
       inflight.delete(partnerId);
     }
