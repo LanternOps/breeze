@@ -15,7 +15,11 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+<<<<<<< HEAD
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
+=======
+import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
+>>>>>>> origin/main
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
@@ -212,6 +216,14 @@ abuseRoutes.post(
       captureException(err, c);
     }
 
+    // Terminate any live remote-desktop sessions held by the suspended users so
+    // a rogue operator can't keep screen / input / clipboard control after the
+    // partner is suspended for abuse. Best-effort (never throws); the
+    // OAuth/JWT/API-key revocation above already cut new access. Finding #3.
+    await Promise.allSettled(
+      result.affectedUserIds.map((id) => terminateUserRemoteSessions(id))
+    );
+
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null
         ? 'success'
@@ -305,6 +317,7 @@ abuseRoutes.post(
 
 abuseRoutes.post(
   '/partners/:id/unsuspend',
+  requireMfa(),
   zValidator('json', reasonSchema),
   async (c) => {
     const partnerId = c.req.param('id');

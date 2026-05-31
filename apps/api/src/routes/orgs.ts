@@ -8,6 +8,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
+<<<<<<< HEAD
 import { PERMISSIONS } from '../services/permissions';
 import {
   restoreOrganizationTenantAccess,
@@ -15,6 +16,10 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
+=======
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { revokeOrganizationTenantAccess, revokePartnerTenantAccess } from '../services/tenantLifecycle';
+>>>>>>> origin/main
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
@@ -985,7 +990,21 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     }
   }
 
-  const whereCondition = conditions ?? sql`true`;
+  // Per-user site confinement. ensureOrgAccess (above) is org-axis only and
+  // RLS on `sites` is also org-axis only, so a site-confined user would
+  // otherwise enumerate every sibling site in the org. Intersect the org
+  // filter with allowedSiteIds. Mirrors the allowedSiteIds intersection in the
+  // GET /scripts/:id/executions list handler.
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  const allowedSiteIds = permissions?.allowedSiteIds;
+  if (allowedSiteIds?.length === 0) {
+    return c.json({ data: [], pagination: { page, limit, total: 0 } });
+  }
+
+  const baseCondition = conditions ?? sql`true`;
+  const whereCondition = allowedSiteIds
+    ? and(baseCondition, inArray(sites.id, allowedSiteIds))
+    : baseCondition;
 
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
@@ -1058,6 +1077,11 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
   return c.json(site);
 });
 
@@ -1082,6 +1106,11 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
 
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
@@ -1126,6 +1155,11 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
 
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 

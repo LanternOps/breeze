@@ -32,6 +32,8 @@ vi.mock('../../middleware/auth', async () => {
 
 vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(() => ({
       from: () => ({
@@ -44,7 +46,10 @@ vi.mock('../../db', () => ({
   },
 }));
 
-vi.mock('../../db/schema', () => ({
+vi.mock('../../db/schema', async (importOriginal) => ({
+  // Spread the real schema so transitive imports resolve; override the tables
+  // this suite asserts on with opaque tokens below.
+  ...(await importOriginal<typeof import('../../db/schema')>()),
   organizations: {
     id: 'organizations.id',
     name: 'organizations.name',

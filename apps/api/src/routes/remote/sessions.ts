@@ -11,7 +11,7 @@ import {
 } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
-import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
+import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
 import { getTrustedClientIp, getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
@@ -708,8 +708,29 @@ sessionRoutes.post(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Allow offer in pending, connecting, active, or disconnected state (reconnect)
-    if (!['pending', 'connecting', 'active', 'disconnected'].includes(session.status)) {
+    // Re-enforce the remote-access policy at offer time, not just at session
+    // creation. Disabling the webrtcDesktop / remoteTools policy must stop a
+    // holder of an existing session from (re)starting a live stream — the
+    // creation-time check (POST /sessions) is otherwise the only gate and is
+    // bypassed by re-offering on an existing session id. Finding #1.
+    {
+      const capability = session.type === 'desktop' ? 'webrtcDesktop' as const : 'remoteTools' as const;
+      const policyCheck = await checkRemoteAccess(device.id, capability);
+      if (!policyCheck.allowed) {
+        return c.json({
+          error: policyCheck.reason,
+          code: 'REMOTE_ACCESS_POLICY_DENIED',
+          capability,
+          policyName: policyCheck.policyName,
+        }, 403);
+      }
+    }
+
+    // Never resurrect an ended session: a 'disconnected'/'failed' row must not
+    // be flipped back to connecting by a lingering offer/token — the client
+    // creates a fresh session to reconnect. Only genuine in-flight states are
+    // accepted. Finding #5.
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
       return c.json({
         error: 'Cannot submit offer for session in current state',
         status: session.status
@@ -722,7 +743,7 @@ sessionRoutes.post(
         webrtcOffer: data.offer,
         webrtcAnswer: null,
         status: 'connecting',
-        ...(session.status === 'disconnected' || session.status === 'active' ? { endedAt: null } : {}),
+        ...(session.status === 'active' ? { endedAt: null } : {}),
       })
       .where(eq(remoteSessions.id, sessionId))
       .returning();
@@ -766,6 +787,10 @@ sessionRoutes.post(
       }
     } catch { /* non-fatal — encoder auto-detects */ }
 
+    // Resolve the agent-enforced desktop policy (clipboard direction gates +
+    // idle / max-duration limits) and ship it in the start payload so the agent
+    // can enforce it locally — the viewer is untrusted. Findings #2 and #7.
+    const desktopPolicy = await resolveDesktopSessionPolicy(device.id);
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: `desk-start-${sessionId}`,
       type: 'start_desktop',
@@ -773,6 +798,9 @@ sessionRoutes.post(
         sessionId,
         offer: data.offer,
         iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
+        clipboard: desktopPolicy.clipboard,
+        idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
+        maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
         ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
         ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
         ...(gpuVendor ? { gpuVendor } : {})
@@ -965,6 +993,21 @@ sessionRoutes.post(
     }
 
     await revokeViewerSession(sessionId);
+
+    // Tell the agent to tear down the live stream. Revoking the viewer token
+    // only blocks NEW/reconnecting viewers and the legacy WS path; the WebRTC
+    // (Flow B) media + input + clipboard flow peer-to-peer to the agent's
+    // capture helper with the server out of the loop, so without an explicit
+    // stop the operator keeps screen + input + clipboard control after "End".
+    // The agent's handleStopDesktop tears down both the direct and the
+    // SYSTEM-helper sessions. Finding #2.
+    if (session.type === 'desktop' && device.agentId) {
+      sendCommandToAgent(device.agentId, {
+        id: `desk-stop-${sessionId}`,
+        type: 'stop_desktop',
+        payload: { sessionId },
+      });
+    }
 
     // Log audit event
     await logSessionAudit(

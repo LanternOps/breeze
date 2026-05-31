@@ -1693,6 +1693,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     )
                     .returning({ id: remoteSessions.id });
                   if (result.length > 0) {
+                    // Kill the viewer token too: a peer drop (tab crash, network
+                    // blip, agent restart) must not leave a still-valid token that
+                    // can resurrect the session via /viewer/offer. Finding #5.
+                    await revokeViewerSession(sessionId);
                     console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
                   }
                 });

@@ -10,7 +10,7 @@ import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAc
 import { getIceServers, logSessionAudit } from './remote/helpers';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
-import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -192,6 +192,26 @@ async function validateViewerSessionAccess(
 
     if (user.status !== 'active') {
       return { valid: false as const, status: 403 as const, error: 'User not found or inactive' };
+    }
+
+    // Do not let a still-valid viewer token re-attach to a session that has
+    // already ended. A 'disconnected'/'failed' row requires a freshly created
+    // session to reconnect; otherwise a lingering (up to 2h) viewer token
+    // resurrects a session the operator believes is over. Finding #5.
+    if (session.status === 'disconnected' || session.status === 'failed') {
+      return { valid: false as const, status: 401 as const, error: 'Session ended' };
+    }
+
+    // Re-enforce the remote-access policy on every viewer entry point, not just
+    // at session creation: disabling webrtcDesktop mid-session must stop a
+    // holder of an existing viewer token from (re)starting a stream. Finding #1.
+    const policyCheck = await checkRemoteAccess(device.id, 'webrtcDesktop');
+    if (!policyCheck.allowed) {
+      return {
+        valid: false as const,
+        status: 403 as const,
+        error: policyCheck.reason ?? 'Remote desktop is disabled by policy',
+      };
     }
 
     return { valid: true as const, session, device, user };
@@ -476,6 +496,24 @@ function createDesktopWsHandlers(
             ws.close(4008, 'Pong timeout');
             return;
           }
+          // Enforce mid-session revocation on the live socket. Nothing else
+          // re-checks authorization once a Flow-A session is streaming, so a
+          // revoke (operator suspended #3, policy disabled #1, session ended
+          // elsewhere #2/#5) would otherwise keep frames + input flowing until
+          // pong timeout — or indefinitely while the client answers pings.
+          // Bounds post-revoke exposure to one ping interval. Finding #4.
+          // (isViewerSessionRevoked fails closed, matching the connect gate.)
+          void isViewerSessionRevoked(sessionId).then((revoked) => {
+            if (revoked && activeDesktopSessions.has(sessionId)) {
+              console.warn(`[DesktopWs] Session ${sessionId} revoked mid-session, closing socket`);
+              if (pingInterval) clearInterval(pingInterval);
+              try {
+                ws.close(4003, 'Session revoked');
+              } catch (closeErr) {
+                console.error(`[DesktopWs] Failed to close revoked session ${sessionId}:`, closeErr);
+              }
+            }
+          });
           try {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
           } catch (err) {
@@ -900,7 +938,10 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: access.error }, access.status);
       }
 
-      if (!['pending', 'connecting', 'active', 'disconnected'].includes(access.session.status)) {
+      // validateViewerSessionAccess already rejects ended sessions (#5); only
+      // genuine in-flight reconnect states remain here. Never resurrect a
+      // disconnected/failed row.
+      if (!['pending', 'connecting', 'active'].includes(access.session.status)) {
         return c.json({
           error: 'Cannot submit offer for session in current state',
           status: access.session.status
@@ -913,7 +954,7 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
             webrtcOffer: data.offer,
             webrtcAnswer: null,
             status: 'connecting',
-            ...(access.session.status === 'disconnected' || access.session.status === 'active' ? { endedAt: null } : {}),
+            ...(access.session.status === 'active' ? { endedAt: null } : {}),
           })
           .where(eq(remoteSessions.id, sessionId))
           .returning()
@@ -936,6 +977,10 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Device has no agent connection identifier' }, 502);
       }
 
+      // Ship the agent-enforced desktop policy (clipboard direction gates +
+      // idle / max-duration limits) so the agent enforces it locally — the
+      // viewer is untrusted. Findings #2 and #7.
+      const desktopPolicy = await resolveDesktopSessionPolicy(access.device.id);
       const agentReachable = sendCommandToAgent(access.device.agentId, {
         id: `desk-start-${sessionId}`,
         type: 'start_desktop',
@@ -947,6 +992,9 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
             userId: access.session.userId,
             deviceId: access.session.deviceId,
           }),
+          clipboard: desktopPolicy.clipboard,
+          idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
+          maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
           ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
           ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {})
         }

@@ -19,8 +19,11 @@ import {
 } from './schemas';
 import { sanitizeDate } from './helpers';
 import { upsertAgentWarranty } from '../../services/warrantySync';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const inventoryRoutes = new Hono();
+// Inventory ingest is the main agent's job; reject watchdog-role tokens.
+inventoryRoutes.use('*', requireAgentRole);
 
 inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', updateHardwareSchema), async (c) => {
   const agentId = c.req.param('id');

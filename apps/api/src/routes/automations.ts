@@ -7,9 +7,10 @@ import { db } from '../db';
 import {
   automations,
   automationRuns,
+  configurationPolicies,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { writeRouteAudit } from '../services/auditEvents';
+import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
 import { getRedis } from '../services/redis';
@@ -459,8 +460,24 @@ automationRoutes.get(
       return c.json({ error: 'Automation run not found' }, 404);
     }
 
-    // For config policy runs (automationId is null), return a lightweight response
+    // For config policy runs (automationId is null), return a lightweight response.
+    // These runs have no automation row to org-check against, so resolve the
+    // owning org via the config policy and enforce tenant access the same way
+    // getAutomationWithOrgCheck does. 404 (not 403) on cross-tenant to avoid an
+    // existence oracle, matching the automation-backed branch below.
     if (!run.automationId) {
+      if (!run.configPolicyId) {
+        return c.json({ error: 'Automation run not found' }, 404);
+      }
+      const [policy] = await db
+        .select({ orgId: configurationPolicies.orgId })
+        .from(configurationPolicies)
+        .where(eq(configurationPolicies.id, run.configPolicyId))
+        .limit(1);
+      if (!policy || !ensureOrgAccess(policy.orgId, auth)) {
+        return c.json({ error: 'Automation run not found' }, 404);
+      }
+
       return c.json({
         ...run,
         status: toRunStatus(run.status),
@@ -1049,6 +1066,23 @@ automationWebhookRoutes.post('/:id', async (c) => {
   });
 
   await enqueueAutomationRun(run.id, targetDeviceIds);
+
+  // Webhook callers are anonymous (no auth user / no JWT), so writeRouteAudit's
+  // auth-derived actor doesn't apply. Use writeAuditEvent directly with a
+  // system actor: it records a non-user actor without touching auth context.
+  writeAuditEvent(c, {
+    orgId: automation.orgId,
+    action: 'automation.trigger.webhook',
+    resourceType: 'automation',
+    resourceId: automation.id,
+    resourceName: automation.name,
+    actorType: 'system',
+    details: {
+      runId: run.id,
+      devicesTargeted: targetDeviceIds.length,
+      triggeredBy: 'webhook',
+    },
+  });
 
   return c.json({
     accepted: true,

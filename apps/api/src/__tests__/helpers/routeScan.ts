@@ -64,6 +64,16 @@ const ROUTE_DEF_PATTERN = /\.(get|post|put|patch|delete)\(\s*['"`](\/[^'"`]*)['"
 // repo (`:deviceId`, `:deviceIds`, `:device_id`). Matched case-insensitively.
 const DEVICE_PARAM_IN_URL = /:device(?:Id|Ids|_id)\b/i;
 
+// Per-site handlers under a `/sites/:<param>` segment. These operate on a
+// single site row and MUST honor `permissions.allowedSiteIds` (the `sites`
+// RLS policy is org-axis only, so a site-confined user could otherwise
+// read/rename/hard-delete sibling sites — F1, broken access control). The
+// `:id` (or any) param after `/sites/` is intentionally generic so the
+// scanner doesn't depend on the exact param name. Kept deliberately narrow
+// (anchored to the `/sites/` segment) so we don't flag every unrelated
+// `:id` route across the codebase.
+const SITE_PARAM_IN_URL = /\/sites\/:\w+\b/i;
+
 /** Maximum bytes of source we inspect for each handler body. Per-route
  *  slices are additionally truncated at the next top-level route definition
  *  so a handler that drops its gate cannot be "rescued" by a sibling
@@ -168,11 +178,12 @@ export async function findRoutesTouchingDevices(): Promise<RouteInfo[]> {
       const cur = routeMatches[i];
       if (!cur) continue;
       // Only flag routes whose URL pattern names a device explicitly
-      // (`:deviceId` etc). Body-level references would catch list/filter
-      // routes too (which deserve site-scope checks but are too numerous
-      // to lock in via a single contract test); scope this test to
-      // per-device handlers — the audit's known offender class.
-      if (!DEVICE_PARAM_IN_URL.test(cur.urlPattern)) continue;
+      // (`:deviceId` etc) OR is a per-site handler under `/sites/:<param>`.
+      // Body-level references would catch list/filter routes too (which
+      // deserve site-scope checks but are too numerous to lock in via a
+      // single contract test); scope this test to per-device and per-site
+      // handlers — the audit's known offender classes.
+      if (!DEVICE_PARAM_IN_URL.test(cur.urlPattern) && !SITE_PARAM_IN_URL.test(cur.urlPattern)) continue;
 
       const nextStart = routeMatches[i + 1]?.index ?? text.length;
       const sliceEnd = Math.min(cur.index + HANDLER_SLICE_BYTES, nextStart);

@@ -37,6 +37,7 @@ import {
   completeMcpToolExecutionLedger,
   type McpToolExecutionLedgerHandle,
 } from '../services/mcpToolExecutionLedger';
+import { resolveMcpExecutionOrgId } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -285,15 +286,6 @@ type McpApiKeyContext = {
   partnerId?: string | null;
   oauthGrantId?: string | null;
 };
-
-function resolveMcpExecutionOrgId(
-  apiKey: McpApiKeyContext | undefined,
-  auth: AuthContext,
-  toolInput: Record<string, unknown>,
-): string | null {
-  const inputOrgId = typeof toolInput.orgId === 'string' ? toolInput.orgId : null;
-  return apiKey?.orgId ?? auth.orgId ?? inputOrgId ?? auth.accessibleOrgIds?.[0] ?? null;
-}
 
 function buildMcpAuditAction(method: string): string {
   const normalized = method
@@ -945,6 +937,7 @@ async function handleToolsCall(
     try {
       ledgerHandle = await beginMcpToolExecutionLedger({
         orgId: executionOrgId,
+        accessibleOrgIds: auth.accessibleOrgIds,
         toolName,
         tier,
         toolInput,
@@ -1064,8 +1057,11 @@ function writeMcpToolAuditEvent(
   if (!c || !event.apiKey) return;
 
   const error = event.error instanceof Error ? event.error : undefined;
-  const inputOrgId = typeof event.toolInput.orgId === 'string' ? event.toolInput.orgId : null;
-  const orgId = event.orgId ?? event.apiKey.orgId ?? event.auth.orgId ?? inputOrgId;
+  // event.orgId is the access-checked execution org (resolveMcpExecutionOrgId).
+  // NEVER fall back to a raw client-supplied toolInput.orgId here — doing so
+  // would let a partner-scoped caller forge cross-tenant audit_logs attribution
+  // (audit rows are written under the RLS-bypassed system context).
+  const orgId = event.orgId ?? event.apiKey.orgId ?? event.auth.orgId ?? null;
   writeAuditEvent(c, {
     orgId,
     actorType: 'api_key',

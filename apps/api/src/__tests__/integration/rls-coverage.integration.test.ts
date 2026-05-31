@@ -1,9 +1,12 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users } from '../../db/schema';
+import { partners, users, organizations } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
+import { automations, automationRuns } from '../../db/schema/automations';
+import { configurationPolicies } from '../../db/schema/configurationPolicies';
+import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -109,6 +112,33 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
   'patch_job_results',
   'patch_rollbacks',
   'file_transfers',
+]);
+
+// Tables that reach their tenant through a PARENT FK (no device_id, no
+// denormalized org_id). Their RLS policies join through the named parent
+// table(s) to the org boundary. Each entry maps the child table to the
+// parent table name(s) its policy predicate must reference; the policy must
+// contain both `FROM <parent>` and `breeze_has_org_access` in the qual or
+// with_check (migration 2026-05-30-fk-child-tables-rls.sql).
+//
+// This is the generalization of the Phase 5 device-join shape: same EXISTS
+// structure, but the join target is the row's actual parent rather than
+// `devices`. A child table keyed by a parent FK is the single most common way
+// a tenant table escapes the org_id-column auto-discovery above and ships with
+// NO rls — keep this list authoritative so the contract test catches the next
+// one. automation_runs lists BOTH parents because config-policy-driven runs
+// leave automation_id NULL and reach their org via config_policy_id instead.
+const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
+  ['automation_runs', ['automations', 'configuration_policies']],
+  ['ai_messages', ['ai_sessions']],
+  ['ai_tool_executions', ['ai_sessions']],
+  // NOTE: script_execution_batches is NOT here — it carries a denormalized
+  // org_id column (2026-05-31 migration) and is auto-discovered as an ordinary
+  // org-tenant table, because a nested-RLS join through its nullable-org parent
+  // `scripts` could not satisfy the system-script INSERT under bound parameters.
+  ['software_versions', ['software_catalog']],
+  ['alert_correlations', ['alerts']],
+  ['alert_notifications', ['alerts']],
 ]);
 
 // Tables scoped to the calling user via breeze_current_user_id().
@@ -257,6 +287,7 @@ describe('RLS coverage contract', () => {
       ...PARTNER_TENANT_TABLES.keys(),
       ...DUAL_AXIS_TENANT_TABLES,
       ...DEVICE_ID_JOIN_POLICY_TABLES,
+      ...PARENT_FK_JOIN_POLICY_TABLES.keys(),
       ...USER_ID_SCOPED_TABLES,
     ]));
 
@@ -644,6 +675,70 @@ describe('RLS coverage contract', () => {
     ).toEqual([]);
   });
 
+  it('every parent-FK join-policy table has RLS on and all four DML commands covered by a parent-join org-access policy', async () => {
+    const offenders: Array<{ table: string; rls_on: boolean; missing_cmds: string[] }> = [];
+
+    for (const [table, parents] of PARENT_FK_JOIN_POLICY_TABLES) {
+      // A covering policy must (a) reach the org via breeze_has_org_access and
+      // (b) actually join through one of the declared parent tables — so a
+      // policy that referenced breeze_has_org_access without the correct join
+      // (or vice versa) does NOT count. parents is a small fixed allowlist, so
+      // sql.raw interpolation here is safe (no user input).
+      const parentRef = parents
+        .map(
+          (p) =>
+            `(COALESCE(pp.qual, '') LIKE '%FROM ${p}%' OR COALESCE(pp.with_check, '') LIKE '%FROM ${p}%')`,
+        )
+        .join(' OR ');
+
+      const rows = (await db.execute(sql`
+        WITH t AS (
+          SELECT c.relname, c.relrowsecurity
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ${table}
+        ),
+        covering_policies AS (
+          SELECT DISTINCT
+            CASE WHEN pp.cmd = 'ALL' THEN cmd_name ELSE pp.cmd END AS cmd
+          FROM pg_policies pp
+          CROSS JOIN UNNEST(ARRAY['SELECT','INSERT','UPDATE','DELETE']) AS cmd_name
+          WHERE pp.schemaname = 'public'
+            AND pp.tablename = ${table}
+            AND pp.permissive = 'PERMISSIVE'
+            AND (
+              COALESCE(pp.qual, '') LIKE '%breeze_has_org_access%'
+              OR COALESCE(pp.with_check, '') LIKE '%breeze_has_org_access%'
+            )
+            AND (${sql.raw(parentRef)})
+            AND (pp.cmd = 'ALL' OR pp.cmd = cmd_name)
+        )
+        SELECT
+          t.relname AS table_name,
+          t.relrowsecurity AS rls_on,
+          ARRAY(SELECT cmd FROM covering_policies ORDER BY cmd) AS covered_cmds
+        FROM t;
+      `)) as unknown as TableRow[];
+
+      const row = rows[0];
+      const covered = new Set<string>(row?.covered_cmds ?? []);
+      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      if (!row || !row.rls_on || missing.length > 0) {
+        offenders.push({ table, rls_on: Boolean(row?.rls_on), missing_cmds: missing });
+      }
+    }
+
+    expect(
+      offenders,
+      `Parent-FK join-policy tables missing RLS coverage:\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: add an idempotent migration that runs ENABLE + FORCE ROW LEVEL SECURITY and installs ` +
+        `SELECT/INSERT/UPDATE/DELETE policies whose predicate joins through the table's parent and calls ` +
+        `breeze_has_org_access(parent.org_id), e.g.: ` +
+        `EXISTS (SELECT 1 FROM automations a WHERE a.id = automation_runs.automation_id AND breeze_has_org_access(a.org_id)). ` +
+        `See 2026-05-30-fk-child-tables-rls.sql for the canonical shape and the PARENT_FK_JOIN_POLICY_TABLES allowlist.`
+    ).toEqual([]);
+  });
+
   it('every Phase 6 user-id-scoped table has RLS on and all four DML commands covered by a breeze_current_user_id policy', async () => {
     const userTables = Array.from(USER_ID_SCOPED_TABLES);
 
@@ -1028,6 +1123,388 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
       expect(result).toHaveLength(1);
       expect(result[0]!.keyId).toBe(keyId);
       insertedKeyIds.push(keyId);
+    },
+  );
+});
+
+// ===========================================================================
+// automation_runs — parent-FK join-policy forge test (Shape 7, findings F2/F3)
+//
+// The pg_catalog assertion above only proves a parent-join policy exists per
+// DML command. It does NOT prove Postgres actually hides another tenant's run.
+// automation_runs WAS the F2/F3 finding: no org_id, no RLS, and the
+// config-policy branch of GET /automations/runs/:runId returned the row with
+// no org check. This block forges cross-org reads/writes as `breeze_app` (the
+// unprivileged role) under real tenant contexts and asserts the new
+// EXISTS-join policy is enforced in practice — the durable backstop behind the
+// app-layer canAccessOrg fix in routes/automations.ts. Self-contained so it
+// runs under vitest.config.rls-coverage.ts (no setup.ts / no TRUNCATE):
+// fixtures are seeded via withSystemDbAccessContext and torn down by id.
+// ===========================================================================
+describe('automation_runs RLS — cross-org forge enforcement (Shape 7)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  let partnerId: string;
+  let orgAId: string;
+  let orgBId: string;
+  let automationAId: string;
+  let runAId: string | null = null;
+  // Config-policy-driven run: automation_id is NULL, org reached via
+  // config_policy_id -> configuration_policies.org_id (the F2/F3 leak path).
+  let configPolicyAId: string;
+  let configRunAId: string | null = null;
+
+  // Org-scoped context granting access to exactly one org and nothing else,
+  // so no other policy can accidentally green-light a cross-org row.
+  function orgContext(orgId: string) {
+    return {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [],
+      userId: null,
+    };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS AutoRuns Partner ${runSuffix}`,
+          slug: `rls-autoruns-${runSuffix}`,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for automation_runs forge');
+      partnerId = partner.id;
+
+      const [orgA, orgB] = await db
+        .insert(organizations)
+        .values([
+          { partnerId: partner.id, name: 'RLS AutoRuns Org A', slug: `rls-autoruns-a-${runSuffix}` },
+          { partnerId: partner.id, name: 'RLS AutoRuns Org B', slug: `rls-autoruns-b-${runSuffix}` },
+        ])
+        .returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for automation_runs forge');
+      orgAId = orgA.id;
+      orgBId = orgB.id;
+
+      const [automationA] = await db
+        .insert(automations)
+        .values({
+          orgId: orgA.id,
+          name: 'Org A automation',
+          trigger: { type: 'manual' },
+          actions: [],
+        })
+        .returning({ id: automations.id });
+      if (!automationA) throw new Error('failed to seed automation for automation_runs forge');
+      automationAId = automationA.id;
+
+      const [runA] = await db
+        .insert(automationRuns)
+        .values({
+          automationId: automationA.id,
+          triggeredBy: 'rls-forge-test',
+          status: 'completed',
+        })
+        .returning({ id: automationRuns.id });
+      if (!runA) throw new Error('failed to seed automation_run for forge');
+      runAId = runA.id;
+
+      // Config-policy-driven run flavor (automation_id NULL): reaches its org
+      // only via config_policy_id -> configuration_policies.org_id.
+      const [policyA] = await db
+        .insert(configurationPolicies)
+        .values({ orgId: orgA.id, name: 'Org A config policy' })
+        .returning({ id: configurationPolicies.id });
+      if (!policyA) throw new Error('failed to seed configuration_policy for forge');
+      configPolicyAId = policyA.id;
+
+      const [configRunA] = await db
+        .insert(automationRuns)
+        .values({
+          configPolicyId: policyA.id, // automationId intentionally left NULL
+          configItemName: 'Org A config item',
+          triggeredBy: 'rls-forge-test',
+          status: 'completed',
+        })
+        .returning({ id: automationRuns.id });
+      if (!configRunA) throw new Error('failed to seed config-policy automation_run for forge');
+      configRunAId = configRunA.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      // Delete runs by automation_id (not just the seeded runAId) so a stray
+      // run from a forged INSERT — which exists only when RLS is NOT yet
+      // enforcing, i.e. a failing pre-migration run — can't block the parent
+      // automation delete via FK.
+      if (automationAId) {
+        await db.delete(automationRuns).where(eq(automationRuns.automationId, automationAId));
+      }
+      if (automationAId) await db.delete(automations).where(eq(automations.id, automationAId));
+      // Config-policy runs (automation_id NULL) aren't caught by the automationId
+      // delete above; clear them + the policy before deleting the org (FK order).
+      if (configPolicyAId) {
+        await db.delete(automationRuns).where(eq(automationRuns.configPolicyId, configPolicyAId));
+        await db.delete(configurationPolicies).where(eq(configurationPolicies.id, configPolicyAId));
+      }
+      if (orgAId) await db.delete(organizations).where(eq(organizations.id, orgAId));
+      if (orgBId) await db.delete(organizations).where(eq(organizations.id, orgBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org A (owner) can SELECT its own automation_run via the parent-join policy',
+    async () => {
+      await ensureFixtures();
+      const rows = await withDbAccessContext(orgContext(orgAId), async () =>
+        db
+          .select({ id: automationRuns.id })
+          .from(automationRuns)
+          .where(eq(automationRuns.id, runAId!)),
+      );
+      expect(rows.map((r) => r.id)).toEqual([runAId]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "org B cannot SELECT org A's automation_run (RLS hides it — the F2/F3 leak)",
+    async () => {
+      await ensureFixtures();
+      if (!runAId) throw new Error('seed test must run first');
+      const rows = await withDbAccessContext(orgContext(orgBId), async () =>
+        db
+          .select({ id: automationRuns.id })
+          .from(automationRuns)
+          .where(eq(automationRuns.id, runAId!)),
+      );
+      expect(rows).toEqual([]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "org B INSERT referencing org A's automation is rejected by WITH CHECK",
+    async () => {
+      await ensureFixtures();
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(automationRuns).values({
+            automationId: automationAId, // forging a run under another tenant's automation
+            triggeredBy: 'rls-forge-test-crossorg',
+            status: 'running',
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(
+        /new row violates row-level security policy for table "automation_runs"/,
+      );
+    },
+  );
+
+  // --- config-policy-driven runs (automation_id NULL) — the F2/F3 branch ---
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org A can SELECT its config-policy automation_run (config_policy_id reach)',
+    async () => {
+      await ensureFixtures();
+      const rows = await withDbAccessContext(orgContext(orgAId), async () =>
+        db
+          .select({ id: automationRuns.id })
+          .from(automationRuns)
+          .where(eq(automationRuns.id, configRunAId!)),
+      );
+      expect(rows.map((r) => r.id)).toEqual([configRunAId]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "org B cannot SELECT org A's config-policy automation_run (RLS hides it)",
+    async () => {
+      await ensureFixtures();
+      if (!configRunAId) throw new Error('seed test must run first');
+      const rows = await withDbAccessContext(orgContext(orgBId), async () =>
+        db
+          .select({ id: automationRuns.id })
+          .from(automationRuns)
+          .where(eq(automationRuns.id, configRunAId!)),
+      );
+      expect(rows).toEqual([]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "org B INSERT referencing org A's config policy is rejected by WITH CHECK",
+    async () => {
+      await ensureFixtures();
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(automationRuns).values({
+            configPolicyId: configPolicyAId, // forging a run under another tenant's config policy
+            configItemName: 'forged',
+            triggeredBy: 'rls-forge-test-crossorg-cp',
+            status: 'running',
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(
+        /new row violates row-level security policy for table "automation_runs"/,
+      );
+    },
+  );
+});
+
+// ===========================================================================
+// script_execution_batches RLS — denormalized org_id (2026-05-31 review fix)
+//
+// Batches carry a denormalized org_id (the executing org), so the policy is a
+// direct breeze_has_org_access(org_id) — no nested-RLS join through the
+// nullable-org `scripts` parent. This forge proves the two things the nested
+// `is_system` join FAILED at under the production driver's bound-parameter
+// INSERTs: (a) a tenant CAN insert a batch for a SYSTEM script under tenant
+// context (org_id = its own org), and (b) cross-org isolation holds — org B
+// cannot read org A's batch, and a forged cross-org INSERT is rejected.
+// ===========================================================================
+describe('script_execution_batches RLS — denormalized org_id', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  let partnerId: string;
+  let orgAId: string;
+  let orgBId: string;
+  let systemScriptId: string;
+  let batchAId: string | null = null;
+
+  function orgContext(orgId: string) {
+    return {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [],
+      userId: null,
+    };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS Batches Partner ${runSuffix}`,
+          slug: `rls-batches-${runSuffix}`,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for batches forge');
+      partnerId = partner.id;
+
+      const [orgA, orgB] = await db
+        .insert(organizations)
+        .values([
+          { partnerId: partner.id, name: 'RLS Batches Org A', slug: `rls-batches-a-${runSuffix}` },
+          { partnerId: partner.id, name: 'RLS Batches Org B', slug: `rls-batches-b-${runSuffix}` },
+        ])
+        .returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for batches forge');
+      orgAId = orgA.id;
+      orgBId = orgB.id;
+
+      // A SYSTEM script (org_id NULL, is_system) — the case the nested-RLS join
+      // could not handle. With denormalization the batch (not the script) holds
+      // the executing org.
+      const [systemScript] = await db
+        .insert(scripts)
+        .values({
+          orgId: null,
+          isSystem: true,
+          name: 'System script',
+          osTypes: ['windows'],
+          language: 'powershell',
+          content: 'echo sys',
+        })
+        .returning({ id: scripts.id });
+      if (!systemScript) throw new Error('failed to seed system script for batches forge');
+      systemScriptId = systemScript.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (systemScriptId) await db.delete(scriptExecutionBatches).where(eq(scriptExecutionBatches.scriptId, systemScriptId));
+      if (systemScriptId) await db.delete(scripts).where(eq(scripts.id, systemScriptId));
+      if (orgAId) await db.delete(organizations).where(eq(organizations.id, orgAId));
+      if (orgBId) await db.delete(organizations).where(eq(organizations.id, orgBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org A CAN INSERT a batch for a system script under tenant context (denormalized org_id; bound-parameter INSERT now works)',
+    async () => {
+      await ensureFixtures();
+      const inserted = await withDbAccessContext(orgContext(orgAId), async () =>
+        db
+          .insert(scriptExecutionBatches)
+          .values({ scriptId: systemScriptId, orgId: orgAId, devicesTargeted: 2, status: 'pending' })
+          .returning({ id: scriptExecutionBatches.id }),
+      );
+      expect(inserted).toHaveLength(1);
+      batchAId = inserted[0]!.id;
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "org A SELECTs its own batch; org B cannot (cross-org isolation)",
+    async () => {
+      await ensureFixtures();
+      if (!batchAId) throw new Error('insert test must run first');
+      const a = await withDbAccessContext(orgContext(orgAId), async () =>
+        db.select({ id: scriptExecutionBatches.id }).from(scriptExecutionBatches).where(eq(scriptExecutionBatches.id, batchAId!)),
+      );
+      expect(a.map((r) => r.id)).toEqual([batchAId]);
+      const b = await withDbAccessContext(orgContext(orgBId), async () =>
+        db.select({ id: scriptExecutionBatches.id }).from(scriptExecutionBatches).where(eq(scriptExecutionBatches.id, batchAId!)),
+      );
+      expect(b).toEqual([]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "org B INSERT with org_id = org A is rejected by WITH CHECK",
+    async () => {
+      await ensureFixtures();
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(scriptExecutionBatches).values({ scriptId: systemScriptId, orgId: orgAId, devicesTargeted: 2, status: 'pending' }),
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/new row violates row-level security policy for table "script_execution_batches"/);
     },
   );
 });

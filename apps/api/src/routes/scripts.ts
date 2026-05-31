@@ -700,10 +700,15 @@ scriptRoutes.post(
     // Create batch if multiple devices
     let batchId: string | null = null;
     if (executableDevices.length > 1) {
+      // Denormalize the executing org onto the batch (RLS tenant axis). All
+      // executableDevices passed ensureOrgAccess above; for a built-in/system
+      // script (scripts.org_id is NULL) this is the only tenant linkage.
+      const batchOrgId = executableDevices[0]!.orgId;
       const [batch] = await db
         .insert(scriptExecutionBatches)
         .values({
           scriptId,
+          orgId: batchOrgId,
           triggeredBy: auth.user.id,
           triggerType,
           parameters,

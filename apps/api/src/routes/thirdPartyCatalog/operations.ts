@@ -6,6 +6,7 @@ import { db } from '../../db';
 import { thirdPartyPackageCatalog, thirdPartyReleaseTests } from '../../db/schema';
 import { upsertCatalogSchema } from './schemas';
 import { platformAdminMiddleware } from '../../middleware/platformAdmin';
+import { requireMfa } from '../../middleware/auth';
 import {
   enqueueWingetReleaseTest,
   executeWingetReleaseTest,
@@ -19,6 +20,11 @@ const triggerTestSchema = z.object({
 export const operationsRoutes = new Hono();
 
 operationsRoutes.use('*', platformAdminMiddleware);
+// MFA step-up for every mutating catalog op. This router is all-mutating
+// (reads live in list.ts), so gate it once at the router level rather than
+// per-route — that also preserves Hono's handler typing on the validator-less
+// DELETE, which breaks if a bare middleware precedes the handler inline.
+operationsRoutes.use('*', requireMfa());
 
 operationsRoutes.post('/', zValidator('json', upsertCatalogSchema), async (c) => {
   const data = c.req.valid('json');

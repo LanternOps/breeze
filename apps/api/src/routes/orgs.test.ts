@@ -65,8 +65,25 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   partners: {},
   organizations: {},
-  sites: {}
+  // Give sites.id a recognizable sentinel so the site-allowlist test can assert
+  // inArray was called against the sites.id column specifically.
+  sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } }
 }));
+
+// Spy on inArray so the site-allowlist test can assert the GET /orgs/sites
+// handler actually intersects the query with inArray(sites.id, allowedSiteIds).
+// Keep every other drizzle-orm export real.
+vi.mock('drizzle-orm', async (importActual) => {
+  const actual = await importActual<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    // Return an opaque sentinel instead of building a real SQL fragment: the db
+    // is fully mocked, so the return value is never executed, but the sentinel
+    // columns ({ __column: ... }) aren't real Drizzle columns and would make the
+    // real inArray throw on introspection.
+    inArray: vi.fn((column: unknown, values: unknown) => ({ __inArray: { column, values } }))
+  };
+});
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -94,7 +111,9 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
+import { inArray } from 'drizzle-orm';
 import { db } from '../db';
+import { sites } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import {
   restoreOrganizationTenantAccess,
@@ -115,6 +134,10 @@ describe('org routes', () => {
     scope: 'system' | 'partner' | 'organization';
     accessibleOrgIds: string[] | null;
     canAccessOrg: (orgId: string) => boolean;
+    // Per-user site confinement. When provided (even as []), it is exposed via
+    // c.get('permissions').allowedSiteIds, mirroring the production permissions
+    // middleware. Omit for an unconfined user (allowedSiteIds undefined).
+    allowedSiteIds: string[];
   }> = {}) => {
     const scope = overrides.scope ?? 'system';
     const accessibleOrgIds = 'accessibleOrgIds' in overrides
@@ -136,6 +159,10 @@ describe('org routes', () => {
           if (!Array.isArray(accessibleOrgIds)) return true;
           return accessibleOrgIds.includes(orgId);
         })
+      } as any);
+      c.set('permissions', {
+        scope,
+        allowedSiteIds: 'allowedSiteIds' in overrides ? overrides.allowedSiteIds : undefined
       } as any);
       return next();
     });
@@ -1155,6 +1182,232 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+  });
+
+  // Per-user site confinement (allowedSiteIds). A site-confined org user must
+  // not be able to read, rename, or delete sibling sites in the same org, nor
+  // enumerate them. The org-axis ensureOrgAccess check passes for all sites in
+  // the user's org, so the site-axis check is the only defense (RLS is
+  // org-axis only for `sites`). F1 — broken access control, intra-org.
+  describe('site-scope confinement (allowedSiteIds)', () => {
+    const ORG = '11111111-1111-1111-1111-111111111111';
+    // site-y belongs to the same org as the user but is NOT in allowedSiteIds.
+    const siblingSiteRow = (id: string) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id, name: 'Sibling', orgId: ORG }])
+        })
+      })
+    });
+
+    describe('GET /orgs/sites/:id', () => {
+      it('denies a site-confined user reading a sibling site (site-y) with 403', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+
+        const res = await app.request('/orgs/sites/site-y');
+
+        expect(res.status).toBe(403);
+      });
+
+      it('allows a site-confined user reading their own site (site-x)', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-x') as any);
+
+        const res = await app.request('/orgs/sites/site-x');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.id).toBe('site-x');
+      });
+
+      it('allows an unconfined user (allowedSiteIds undefined) to read any sibling site', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+
+        const res = await app.request('/orgs/sites/site-y');
+
+        expect(res.status).toBe(200);
+      });
+    });
+
+    describe('PATCH /orgs/sites/:id', () => {
+      it('denies a site-confined user renaming a sibling site (site-y) with 403', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+        const updateSpy = vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'site-y', name: 'Pwned' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/sites/site-y', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Pwned' })
+        });
+
+        expect(res.status).toBe(403);
+        expect(updateSpy).not.toHaveBeenCalled();
+      });
+
+      it('allows a site-confined user renaming their own site (site-x)', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-x') as any);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'site-x', name: 'Renamed' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/sites/site-x', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' })
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('allows an unconfined user to rename any sibling site', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'site-y', name: 'Renamed' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/sites/site-y', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' })
+        });
+
+        expect(res.status).toBe(200);
+      });
+    });
+
+    describe('DELETE /orgs/sites/:id', () => {
+      it('denies a site-confined user hard-deleting a sibling site (site-y) with 403', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+        const deleteSpy = vi.mocked(db.delete).mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        } as any);
+
+        const res = await app.request('/orgs/sites/site-y', { method: 'DELETE' });
+
+        expect(res.status).toBe(403);
+        expect(deleteSpy).not.toHaveBeenCalled();
+      });
+
+      it('allows a site-confined user deleting their own site (site-x)', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-x') as any);
+        vi.mocked(db.delete).mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        } as any);
+
+        const res = await app.request('/orgs/sites/site-x', { method: 'DELETE' });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('allows an unconfined user to delete any sibling site', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG });
+        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+        vi.mocked(db.delete).mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        } as any);
+
+        const res = await app.request('/orgs/sites/site-y', { method: 'DELETE' });
+
+        expect(res.status).toBe(200);
+      });
+    });
+
+    describe('GET /orgs/sites (list)', () => {
+      it('returns an empty page without querying when allowedSiteIds is empty', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: [] });
+
+        const res = await app.request(`/orgs/sites?orgId=${ORG}`);
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([]);
+        expect(body.pagination.total).toBe(0);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
+      it('restricts the list to allowed sites for a confined user (only site-x)', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
+        // The handler must intersect the org filter with inArray(sites.id,
+        // allowedSiteIds); the mocked DB echoes back only what an
+        // allowlist-filtered query would: site-x, never site-y.
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockResolvedValue([{ id: 'site-x' }])
+                  })
+                })
+              })
+            })
+          } as any);
+
+        const res = await app.request(`/orgs/sites?orgId=${ORG}`);
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([{ id: 'site-x' }]);
+        expect(body.data).not.toContainEqual({ id: 'site-y' });
+        // Meaningful assertion: the handler must have intersected the query with
+        // inArray(sites.id, allowedSiteIds). This fails if the intersection in
+        // orgs.ts is removed (mocked DB would echo site-x regardless otherwise).
+        expect(inArray).toHaveBeenCalledWith(sites.id, ['site-x']);
+      });
+
+      it('does not restrict the list for an unconfined user (allowedSiteIds undefined)', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 2 }])
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockResolvedValue([{ id: 'site-x' }, { id: 'site-y' }])
+                  })
+                })
+              })
+            })
+          } as any);
+
+        const res = await app.request(`/orgs/sites?orgId=${ORG}`);
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+      });
     });
   });
 

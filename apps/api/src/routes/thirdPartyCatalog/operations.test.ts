@@ -32,6 +32,10 @@ const mockInvalidate = vi.hoisted(() => vi.fn());
 
 const mockPlatformAdminState = vi.hoisted(() => ({
   isPlatformAdmin: true,
+  // MFA step-up state — drives the requireMfa() mock below. Defaults to
+  // satisfied so existing happy-path tests are unaffected; the MFA-gate
+  // tests flip this to false to assert the 403 step-up.
+  mfaSatisfied: true,
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -82,7 +86,27 @@ vi.mock('../../middleware/platformAdmin', () => ({
         email: 'platform@example.com',
         isPlatformAdmin: true,
       },
+      // Surface the MFA claim so the requireMfa() mock can gate on it,
+      // mirroring how real JWTs carry the `mfa` claim.
+      token: { mfa: mockPlatformAdminState.mfaSatisfied },
     });
+    return next();
+  }),
+}));
+
+// Mirror the REAL requireMfa() behavior: 401 when no auth, 403 when the
+// token's `mfa` claim is unsatisfied, pass-through otherwise. The mutating
+// operations routes (POST /, PATCH /:id, DELETE /:id, POST /:id/test) are
+// gated by requireMfa() on top of the platform-admin gate.
+vi.mock('../../middleware/auth', () => ({
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    const auth = c.get('auth');
+    if (!auth) {
+      return c.json({ error: 'Not authenticated' }, 401);
+    }
+    if (auth.token?.mfa === false) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
     return next();
   }),
 }));
@@ -158,8 +182,71 @@ describe('third-party catalog operations routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPlatformAdminState.isPlatformAdmin = true;
+    mockPlatformAdminState.mfaSatisfied = true;
     app = new Hono();
     app.route('/third-party-catalog', thirdPartyCatalogRoutes);
+  });
+
+  // MFA step-up: the mutating/destructive operations (create, update, hard
+  // delete, and the SSH-spawning release-test) MUST require MFA on top of the
+  // platform-admin gate. requireMfa() is a no-op when ENABLE_2FA is off, so the
+  // gate is free until 2FA is enabled. Read routes (GET) are intentionally NOT
+  // gated.
+  describe('MFA step-up on mutating operations', () => {
+    beforeEach(() => {
+      mockPlatformAdminState.mfaSatisfied = false;
+    });
+
+    it('rejects POST / (create) when MFA is not satisfied (403)', async () => {
+      const res = await app.request('/third-party-catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packageId: 'Mozilla.Firefox',
+          vendor: 'Mozilla',
+          friendlyName: 'Mozilla Firefox',
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain('MFA required');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects PATCH /:id (update) when MFA is not satisfied (403)', async () => {
+      const res = await app.request('/third-party-catalog/22222222-2222-4222-8222-222222222222', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ friendlyName: 'Renamed' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain('MFA required');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects DELETE /:id (hard delete) when MFA is not satisfied (403)', async () => {
+      const res = await app.request('/third-party-catalog/22222222-2222-4222-8222-222222222222', {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain('MFA required');
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects POST /:id/test (spawns SSH runner) when MFA is not satisfied (403)', async () => {
+      const res = await app.request('/third-party-catalog/44444444-4444-4444-8444-444444444444/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '121.0' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain('MFA required');
+      expect(db.select).not.toHaveBeenCalled();
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects POST without platform admin access', async () => {

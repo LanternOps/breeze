@@ -1,12 +1,16 @@
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from './redis';
+import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
 
 type SessionType = 'terminal' | 'desktop' | 'tunnel';
 
 const WS_TICKET_TTL_MS = 60 * 1000; // 60 seconds
 const DESKTOP_CONNECT_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const VNC_CONNECT_CODE_TTL_MS = 60 * 1000; // 60 seconds
-const ACCESS_TOKEN_EXPIRY_SECONDS = 15 * 60; // Must match createAccessToken expiry
+// Viewer-token advertised expiry derives from the real signed TTL
+// (VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS in jwt.ts) so /connect/exchange and the
+// VNC exchanges never advertise a window shorter than the token actually lives.
+// Security finding #6 — the previous hard-coded 15m understated the 2h TTL 8x.
 
 // Short prefix of sha256(userAgent) stored with the ticket — gives us
 // approximate identity binding while tolerating browser-update churn far
@@ -319,7 +323,7 @@ export async function consumeDesktopConnectCode(code: string): Promise<DesktopCo
 }
 
 export function getViewerAccessTokenExpirySeconds(): number {
-  return ACCESS_TOKEN_EXPIRY_SECONDS;
+  return VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS;
 }
 
 export async function createVncConnectCode(input: {

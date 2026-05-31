@@ -121,6 +121,12 @@ export const scriptExecutions = pgTable('script_executions', {
 export const scriptExecutionBatches = pgTable('script_execution_batches', {
   id: uuid('id').primaryKey().defaultRandom(),
   scriptId: uuid('script_id').notNull().references(() => scripts.id),
+  // Denormalized tenant axis (set to the executing org at insert). Nullable
+  // only to allow backfill of legacy rows whose system-script parent has no
+  // org_id; new rows always carry it. Enables a direct org RLS policy instead
+  // of a nested-RLS join through `scripts` (which the system-script `is_system`
+  // carve-out could not satisfy under bound-parameter INSERTs).
+  orgId: uuid('org_id').references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
   parameters: jsonb('parameters'),
@@ -130,4 +136,6 @@ export const scriptExecutionBatches = pgTable('script_execution_batches', {
   status: executionStatusEnum('status').notNull().default('pending'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at')
-});
+}, (table) => ({
+  orgIdIdx: index('script_execution_batches_org_id_idx').on(table.orgId)
+}));

@@ -61,10 +61,6 @@ export default function AuthGuard({ children }: AuthGuardProps) {
 
     // Not authenticated — redirect to login
     if (!isAuthenticated || !tokens?.accessToken) {
-      const currentPath = window.location.pathname + window.location.search;
-      if (currentPath !== '/login' && currentPath !== '/register') {
-        sessionStorage.setItem('redirectAfterLogin', currentPath);
-      }
       void navigateTo('/login', { replace: true });
     }
 

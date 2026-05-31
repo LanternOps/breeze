@@ -665,6 +665,17 @@ groupRoutes.post(
       }, 400);
     }
 
+    // Site-scope gate: a partner-scope user confined via allowedSiteIds must
+    // not bulk-add a device from a site they cannot access, even though the
+    // device shares the group's org (RLS is org-axis only here). Fail closed —
+    // reject the entire batch if any device's site is out of scope. Mirrors the
+    // single-device delete/pin handlers in this file.
+    for (const deviceId of payload.deviceIds) {
+      if (!(await canAccessDeviceSite(c, deviceId))) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
+
     // Get existing memberships to avoid duplicates
     const existingMemberships = await db
       .select({ deviceId: deviceGroupMemberships.deviceId })

@@ -19,6 +19,16 @@ export interface RemoteAccessSettings {
   webrtcDesktop: boolean;
   vncRelay: boolean;
   remoteTools: boolean;
+  // Clipboard sync over the WebRTC desktop channel, gated per direction and
+  // enforced agent-side (the viewer is untrusted, so the agent must not open
+  // the channel / run the watcher when disabled). Finding #7.
+  //   clipboardHostToViewer = remote machine's clipboard streamed to the
+  //     operator's viewer — the silent-exfiltration vector (passwords / MFA
+  //     codes / secrets the end user copies leak within ~500ms).
+  //   clipboardViewerToHost = operator pasting into the remote machine
+  //     (operator-initiated, lower risk).
+  clipboardHostToViewer: boolean;
+  clipboardViewerToHost: boolean;
   enableProxy: boolean;
   defaultAllowedPorts: number[];
   autoEnableProxy: boolean;
@@ -36,10 +46,21 @@ export interface PolicyCheckResult {
 
 export type RemoteCapability = 'webrtcDesktop' | 'vncRelay' | 'remoteTools' | 'proxy';
 
+// Hosted multi-tenant SaaS defaults the silent-exfil direction (remote host
+// clipboard → operator viewer) OFF, so an MSP operator can't passively harvest
+// whatever a customer copies during a session. Operator→host paste stays on for
+// usability. Self-hosted (single-tenant, IS_HOSTED!='true') preserves the
+// historical bidirectional default so an upgrade doesn't silently change
+// behavior for an admin running their own instance. Either way an explicit
+// policy overrides these. Finding #7.
+const isHosted = process.env.IS_HOSTED === 'true';
+
 const DEFAULTS: RemoteAccessSettings = {
   webrtcDesktop: true,
   vncRelay: true,
   remoteTools: true,
+  clipboardHostToViewer: !isHosted,
+  clipboardViewerToHost: true,
   enableProxy: true,
   defaultAllowedPorts: [],
   autoEnableProxy: false,
@@ -184,5 +205,30 @@ export async function checkRemoteAccess(
     reason: `${label} is disabled${policyRef}`,
     policyName: policyName ?? undefined,
     policyId: policyId ?? undefined,
+  };
+}
+
+/**
+ * Resolve the agent-enforced desktop session policy fields that ride along in
+ * the `start_desktop` payload. Centralizes the mapping so both offer handlers
+ * (JWT path in remote/sessions.ts and viewer-token path in desktopWs.ts) push
+ * the agent the same clipboard + session-lifetime policy. The agent enforces
+ * these because the viewer is untrusted. Findings #2 and #7.
+ */
+export interface DesktopSessionPolicy {
+  clipboard: { hostToViewer: boolean; viewerToHost: boolean };
+  idleTimeoutMinutes: number;
+  maxSessionDurationHours: number;
+}
+
+export async function resolveDesktopSessionPolicy(deviceId: string): Promise<DesktopSessionPolicy> {
+  const { settings } = await resolveRemoteAccessForDevice(deviceId);
+  return {
+    clipboard: {
+      hostToViewer: settings.clipboardHostToViewer,
+      viewerToHost: settings.clipboardViewerToHost,
+    },
+    idleTimeoutMinutes: settings.idleTimeoutMinutes,
+    maxSessionDurationHours: settings.maxSessionDurationHours,
   };
 }

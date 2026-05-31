@@ -185,17 +185,19 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		displayIndex = int(di)
 	}
 
+	policy := parseDesktopSessionPolicy(cmd.Payload)
+
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
 	// cannot capture the screen directly even with TCC permission.
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
-		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, cmd.Payload)
+		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
 	}
 
 	// Direct mode (console or non-Windows)
-	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex)
+	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -203,6 +205,32 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		"sessionId": sessionID,
 		"answer":    answer,
 	}, time.Since(start).Milliseconds())
+}
+
+// parseDesktopSessionPolicy extracts the agent-enforced session policy from a
+// start_desktop payload. Absent clipboard fields default to permissive so an
+// older API that doesn't send them preserves existing behavior; timeouts of 0
+// mean disabled. Findings #2 and #7.
+func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
+	policy := desktop.SessionPolicy{
+		ClipboardHostToViewer: true,
+		ClipboardViewerToHost: true,
+	}
+	if cb, ok := payload["clipboard"].(map[string]any); ok {
+		if v, ok := cb["hostToViewer"].(bool); ok {
+			policy.ClipboardHostToViewer = v
+		}
+		if v, ok := cb["viewerToHost"].(bool); ok {
+			policy.ClipboardViewerToHost = v
+		}
+	}
+	if v, ok := payload["idleTimeoutMinutes"].(float64); ok && v > 0 {
+		policy.IdleTimeout = time.Duration(v) * time.Minute
+	}
+	if v, ok := payload["maxSessionDurationHours"].(float64); ok && v > 0 {
+		policy.MaxDuration = time.Duration(v) * time.Hour
+	}
+	return policy
 }
 
 func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {

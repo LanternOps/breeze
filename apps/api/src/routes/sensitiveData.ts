@@ -18,6 +18,7 @@ import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
 import { publishEvent } from '../services/eventBus';
 import { resolveSensitiveDataKeySelection } from '../services/sensitiveDataKeys';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { writeRouteAudit } from '../services/auditEvents';
 import {
   recordSensitiveDataRemediationDecision,
   recordSensitiveDataScanQueued
@@ -776,6 +777,24 @@ sensitiveDataRoutes.post(
       }
 
       recordSensitiveDataRemediationDecision(payload.action, findings.length);
+
+      const auditAction = payload.action === 'accept_risk'
+        ? 'sensitive_data.finding.accept_risk'
+        : payload.action === 'false_positive'
+          ? 'sensitive_data.finding.false_positive'
+          : 'sensitive_data.finding.mark_remediated';
+      const flippedFindingIds = findings.map((finding) => finding.id);
+      writeRouteAudit(c, {
+        orgId: findings[0]?.orgId,
+        action: auditAction,
+        resourceType: 'sensitive_data_finding',
+        details: {
+          action: payload.action,
+          findingIds: flippedFindingIds,
+          count: flippedFindingIds.length,
+        },
+      });
+
       return c.json({
         data: {
           updated: findings.length,
@@ -844,6 +863,17 @@ sensitiveDataRoutes.post(
       recordSensitiveDataRemediationDecision('queue_failed', failed.length);
     }
 
+    writeRouteAudit(c, {
+      orgId: findings[0]?.orgId,
+      action: 'sensitive_data.finding.remediate',
+      resourceType: 'sensitive_data_finding',
+      details: {
+        action: payload.action,
+        queued: queued.length,
+        failed: failed.length,
+      },
+    });
+
     return c.json({
       data: {
         queued,
@@ -909,6 +939,14 @@ sensitiveDataRoutes.post(
 
     if (!policy) return c.json({ error: 'Failed to create policy' }, 500);
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'sensitive_data_policy.create',
+      resourceType: 'sensitive_data_policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+    });
+
     return c.json({
       data: {
         ...policy,
@@ -958,6 +996,15 @@ sensitiveDataRoutes.put(
 
     if (!updated) return c.json({ error: 'Failed to update policy' }, 500);
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'sensitive_data_policy.update',
+      resourceType: 'sensitive_data_policy',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: { changedFields: Object.keys(payload) },
+    });
+
     return c.json({
       data: {
         ...updated,
@@ -983,7 +1030,11 @@ sensitiveDataRoutes.delete(
     if (orgCondition) conditions.push(orgCondition);
 
     const [existing] = await db
-      .select({ id: sensitiveDataPolicies.id })
+      .select({
+        id: sensitiveDataPolicies.id,
+        name: sensitiveDataPolicies.name,
+        orgId: sensitiveDataPolicies.orgId
+      })
       .from(sensitiveDataPolicies)
       .where(and(...conditions))
       .limit(1);
@@ -991,6 +1042,15 @@ sensitiveDataRoutes.delete(
     if (!existing) return c.json({ error: 'Policy not found' }, 404);
 
     await db.delete(sensitiveDataPolicies).where(eq(sensitiveDataPolicies.id, id));
+
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'sensitive_data_policy.delete',
+      resourceType: 'sensitive_data_policy',
+      resourceId: existing.id,
+      resourceName: existing.name,
+    });
+
     return c.json({ success: true });
   }
 );

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, Trash2, Play, Lock } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { getSafeExternalHref } from '@/lib/safeHref';
 import ThirdPartyCatalogEditor, { type CatalogEditorInitial } from './ThirdPartyCatalogEditor';
 
 const testResultStyles: Record<string, string> = {
@@ -335,18 +336,21 @@ export default function ThirdPartyCatalog() {
                 >
                   <td className="px-4 py-2">{entry.vendor}</td>
                   <td className="px-4 py-2">
-                    {entry.homepageUrl ? (
-                      <a
-                        href={entry.homepageUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        {entry.friendlyName}
-                      </a>
-                    ) : (
-                      entry.friendlyName
-                    )}
+                    {(() => {
+                      const homepageHref = getSafeExternalHref(entry.homepageUrl);
+                      return homepageHref ? (
+                        <a
+                          href={homepageHref}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          {entry.friendlyName}
+                        </a>
+                      ) : (
+                        entry.friendlyName
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-gray-600">
                     {entry.packageId}

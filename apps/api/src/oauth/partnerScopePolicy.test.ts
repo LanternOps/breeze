@@ -114,12 +114,32 @@ describe('getPartnerScopePolicy', () => {
     expect(after).toEqual({ mcp_allowed_scopes: ['mcp:execute'] });
   });
 
-  it('fails open to {} when the DB lookup throws', async () => {
+  it('fails CLOSED to an empty whitelist when the DB lookup throws (deny all MCP scopes)', async () => {
+    // A DB error must NOT mint over-broad tokens. {} would be treated as
+    // "no cap -> all scopes" (the old fail-open bug); { mcp_allowed_scopes: [] }
+    // makes resolveAllowedMcpScopes strip every scope (requested ∩ [] = []).
     const { db } = await import('../db');
     const spy = vi.spyOn(db, 'select').mockImplementationOnce(() => {
       throw new Error('db down');
     });
-    await expect(getPartnerScopePolicy('p1')).resolves.toEqual({});
+    await expect(getPartnerScopePolicy('p1')).resolves.toEqual({ mcp_allowed_scopes: [] });
     spy.mockRestore();
+  });
+
+  it('does NOT cache the fail-closed result — recovers to the real policy on the next call', async () => {
+    const { db } = await import('../db');
+    const spy = vi.spyOn(db, 'select').mockImplementationOnce(() => {
+      throw new Error('db down');
+    });
+    // First call hits the DB error -> fails closed (and must not be cached).
+    await expect(getPartnerScopePolicy('p1')).resolves.toEqual({ mcp_allowed_scopes: [] });
+    spy.mockRestore();
+    // DB recovers; because the error path is not cached, the next call re-fetches.
+    selectRows.push({
+      settings: {
+        [OAUTH_SCOPE_POLICY_SETTINGS_KEY]: { mcp_allowed_scopes: ['mcp:read'] },
+      },
+    });
+    await expect(getPartnerScopePolicy('p1')).resolves.toEqual({ mcp_allowed_scopes: ['mcp:read'] });
   });
 });

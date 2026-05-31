@@ -82,6 +82,7 @@ const defaultAllowed = () => ({
 describe('externalServicesRoutes', () => {
   const originalEnv = {
     BREEZE_BILLING_URL: process.env.BREEZE_BILLING_URL,
+    BREEZE_BILLING_API_KEY: process.env.BREEZE_BILLING_API_KEY,
     DASHBOARD_URL: process.env.DASHBOARD_URL,
     PUBLIC_APP_URL: process.env.PUBLIC_APP_URL,
     CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
@@ -95,6 +96,7 @@ describe('externalServicesRoutes', () => {
     process.env.DASHBOARD_URL = 'https://app.example.com';
     delete process.env.PUBLIC_APP_URL;
     delete process.env.CORS_ALLOWED_ORIGINS;
+    delete process.env.BREEZE_BILLING_API_KEY;
     authGates.permissionDenied = false;
     authGates.mfaDenied = false;
     authState.value = {
@@ -120,6 +122,11 @@ describe('externalServicesRoutes', () => {
     expect(init).toBeDefined();
     expect(typeof init?.body).toBe('string');
     return JSON.parse(init!.body as string);
+  };
+  const fetchHeaders = (callIndex = 0): Record<string, string> => {
+    const init = fetchMock.mock.calls[callIndex]?.[1] as RequestInit | undefined;
+    expect(init).toBeDefined();
+    return (init?.headers ?? {}) as Record<string, string>;
   };
 
   describe('POST /billing/portal', () => {
@@ -375,6 +382,58 @@ describe('externalServicesRoutes', () => {
       });
       expect(res.status).toBe(429);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('breeze-billing S2S auth header (F4)', () => {
+    it('attaches Authorization: Bearer <BREEZE_BILLING_API_KEY> on /portal-sessions', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      process.env.BREEZE_BILLING_API_KEY = 's2s-secret-token';
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://stripe/x' }), { status: 200 })
+      );
+      const res = await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
+      });
+      expect(res.status).toBe(200);
+      const headers = fetchHeaders();
+      expect(headers['Authorization']).toBe('Bearer s2s-secret-token');
+    });
+
+    it('attaches Authorization: Bearer <BREEZE_BILLING_API_KEY> on /support', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      process.env.BREEZE_BILLING_API_KEY = 's2s-secret-token';
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200 })
+      );
+      const res = await app().request('/support', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ subject: 'hi', message: 'help' }),
+      });
+      expect(res.status).toBe(200);
+      const headers = fetchHeaders();
+      expect(headers['Authorization']).toBe('Bearer s2s-secret-token');
+    });
+
+    it('does NOT attach an Authorization header when BREEZE_BILLING_API_KEY is unset', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      delete process.env.BREEZE_BILLING_API_KEY;
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ url: 'https://stripe/x' }), { status: 200 })
+      );
+      const res = await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/back' }),
+      });
+      expect(res.status).toBe(200);
+      const headers = fetchHeaders();
+      expect(headers['Authorization']).toBeUndefined();
+      // Guard against the `Bearer undefined` footgun.
+      expect(JSON.stringify(headers)).not.toContain('Bearer undefined');
     });
   });
 });

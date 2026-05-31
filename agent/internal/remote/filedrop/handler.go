@@ -274,6 +274,11 @@ func (h *FileDropHandler) handleStart(message Message) error {
 		file: file,
 	}
 
+	// Audit the start of an inbound file drop (finding #8): the viewer is
+	// pushing a file onto the host. name + declared size + transfer id.
+	log.Printf("[audit] filedrop start name=%q bytes=%d transferId=%s",
+		safeName, message.Size, message.TransferID)
+
 	return nil
 }
 
@@ -345,6 +350,11 @@ func (h *FileDropHandler) handleComplete(message Message) error {
 		Path:       transfer.path,
 		Size:       transfer.size,
 	}
+
+	// Audit completion of an inbound file drop (finding #8): file fully written
+	// to the host. name + size + transfer id.
+	log.Printf("[audit] filedrop complete name=%q bytes=%d transferId=%s",
+		transfer.name, transfer.size, message.TransferID)
 
 	select {
 	case h.completed <- result:
