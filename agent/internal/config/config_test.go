@@ -174,6 +174,61 @@ log_level: info
 	}
 }
 
+// TestSetSecretAndPersistWritesSecretsAt0600 guards that SetSecretAndPersist
+// writes secrets.yaml at 0600 with no world-readable temp file left in the
+// config dir. The previous implementation wrote the plaintext secret to a 0644
+// `secrets.tmp.yaml` before copying to the 0600 target — a local-user read
+// window. The fix routes the write through atomicWriteFile(0600).
+func TestSetSecretAndPersistWritesSecretsAt0600(t *testing.T) {
+	defer viper.Reset()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`agent_id: 00000000-0000-0000-0000-000000000001
+server_url: https://api.example.test
+log_level: info
+`), 0o640); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	if _, err := Load(cfgPath); err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if err := SetSecretAndPersist("auth_token", "brz_super_secret"); err != nil {
+		t.Fatalf("SetSecretAndPersist returned error: %v", err)
+	}
+
+	secretsPath := filepath.Join(dir, "secrets.yaml")
+	info, err := os.Stat(secretsPath)
+	if err != nil {
+		t.Fatalf("stat secrets.yaml: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("secrets.yaml perm = %o, want 0600", perm)
+		}
+	}
+	data, err := os.ReadFile(secretsPath)
+	if err != nil {
+		t.Fatalf("read secrets.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "auth_token: brz_super_secret") {
+		t.Fatalf("secrets.yaml missing token:\n%s", data)
+	}
+
+	// No world-readable scratch file (e.g. the old secrets.tmp.yaml) left behind.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read config dir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.Contains(name, ".tmp") || strings.HasSuffix(name, ".partial") {
+			t.Fatalf("leftover scratch file in config dir: %s", name)
+		}
+	}
+}
+
 // TestSaveToWritesAtomicallyWithoutLeftoverTempFiles guards #642: SaveTo must
 // not leave .partial scratch files behind on success, and the on-disk files
 // must contain the full serialized config (not zero-length or truncated).

@@ -324,6 +324,26 @@ func Load(cfgFile string) (*Config, error) {
 // to the existing config file. Any legacy inline secrets are migrated to
 // secrets.yaml and scrubbed from agent.yaml after the write.
 func SetAndPersist(key string, value any) error {
+	path := viper.ConfigFileUsed()
+
+	// SECURITY: move any legacy inline secrets out of the on-disk agent.yaml into
+	// root-only secrets.yaml BEFORE re-serializing viper, and clear them from
+	// viper memory, so the WriteConfig below can never write a plaintext secret
+	// to the world-readable (0644) agent.yaml. Previously WriteConfig serialized
+	// the full viper state — including still-loaded legacy inline secrets — to
+	// agent.yaml first and only stripped them afterwards, a transient plaintext
+	// bearer-token exposure on the first run after an upgrade.
+	if path != "" {
+		if err := migrateInlineSecretsToSecretFile(path); err != nil {
+			return err
+		}
+	}
+	for _, k := range viper.AllKeys() {
+		if isSecretYAMLKey(k) {
+			viper.Set(k, nil)
+		}
+	}
+
 	if isSecretConfigKey(key) {
 		if err := SetSecretAndPersist(key, value); err != nil {
 			return err
@@ -335,7 +355,9 @@ func SetAndPersist(key string, value any) error {
 	if err := viper.WriteConfig(); err != nil {
 		return err
 	}
-	if path := viper.ConfigFileUsed(); path != "" {
+	if path != "" {
+		// Defense-in-depth: clear any nil'd secret keys / late inline secrets
+		// from agent.yaml after the write.
 		if err := migrateInlineSecretsToSecretFile(path); err != nil {
 			return err
 		}
@@ -363,32 +385,18 @@ func SetSecretAndPersist(key string, value any) error {
 	}
 	sv.Set(key, value)
 
-	ext := filepath.Ext(path)
-	tmpPath := path[:len(path)-len(ext)] + ".tmp" + ext
-	if err := sv.WriteConfigAs(tmpPath); err != nil {
-		return err
-	}
-	sf, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// SECURITY: write atomically at 0600 — never via a 0644 temp file. The
+	// previous WriteConfigAs(tmp) path created a world-readable (0644) temp file
+	// holding the plaintext secret in the config dir before copying to the 0600
+	// target, a local-user read window. atomicWriteFile creates its .partial tmp
+	// at the requested 0600, so the secret is never world-readable on disk.
+	secretsYAML, err := yaml.Marshal(sv.AllSettings())
 	if err != nil {
-		os.Remove(tmpPath)
+		return fmt.Errorf("marshaling secrets file: %w", err)
+	}
+	if err := atomicWriteFile(path, secretsYAML, 0600); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		sf.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if _, err := sf.Write(data); err != nil {
-		sf.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := sf.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	os.Remove(tmpPath)
 	return enforceSecretFilePermissions(path)
 }
 
