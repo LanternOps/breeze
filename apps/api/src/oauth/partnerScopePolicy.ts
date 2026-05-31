@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
-import { captureException } from '../services/sentry';
+import { ERROR_IDS, logOauthError } from './log';
 
 /**
  * Per-tenant OAuth scope policy, stored under the
@@ -116,8 +116,16 @@ export async function getPartnerScopePolicy(
     } catch (err) {
       // Fail CLOSED on a DB error: deny all MCP scopes rather than mint an
       // over-broad token during a DB wobble. Do NOT cache — the next caller
-      // retries once the DB recovers. Alert so a sustained outage is visible.
-      captureException(err);
+      // retries once the DB recovers. logOauthError writes to stderr AND Sentry
+      // (when enabled), so a sustained outage is visible even on deployments
+      // without SENTRY_DSN, and is greppable by errorId alongside the rest of
+      // the OAuth surface.
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_SCOPE_POLICY_LOOKUP_FAILED,
+        message: 'Partner scope-policy lookup failed; failing closed (deny all MCP scopes)',
+        err,
+        context: { partnerId },
+      });
       return { mcp_allowed_scopes: [] };
     } finally {
       inflight.delete(partnerId);
