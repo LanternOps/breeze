@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -19,12 +19,51 @@ export const browserSecurityRoutes = new Hono();
 browserSecurityRoutes.use('*', authMiddleware);
 browserSecurityRoutes.use('*', requireScope('organization', 'partner', 'system'));
 
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted org user must not read
+// extension/violation rows for devices in other sites within the same org.
+// `allowedSiteIds` is only ever set for org-scope users (see permissions.ts), so
+// `orgId` is guaranteed present whenever narrowing applies. Mirrors the
+// software-inventory list route (PR #864/#868).
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  perms: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+    .map((d) => d.id);
+}
+
+// A site-restricted caller may only mutate policies that target sites entirely
+// within their allowlist. Org/group/device/tag targets are not site-bounded, so
+// a site-restricted caller cannot confirm scope over them and is denied.
+// Unrestricted callers (no `allowedSiteIds`) always pass.
+function policyWithinSiteWriteScope(
+  perms: UserPermissions | undefined,
+  targetType: string,
+  targetIds: string[] | null | undefined,
+): boolean {
+  if (!perms?.allowedSiteIds) return true;
+  if (targetType !== 'site') return false;
+  const ids = targetIds ?? [];
+  if (ids.length === 0) return false;
+  return ids.every((id) => canAccessSite(perms, id));
+}
+
 // GET /browser-security/extensions — list extensions with risk summary
 browserSecurityRoutes.get(
   '/extensions',
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { deviceId, browser, riskLevel, limit: rawLimit } = c.req.query();
 
     const conditions: SQL[] = [];
@@ -32,6 +71,21 @@ browserSecurityRoutes.get(
     if (deviceId) conditions.push(eq(browserExtensions.deviceId, deviceId));
     if (browser) conditions.push(eq(browserExtensions.browser, browser));
     if (riskLevel) conditions.push(eq(browserExtensions.riskLevel, riskLevel));
+
+    // Narrow to the caller's accessible devices when site-restricted.
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (deviceId && !allowedDeviceIds!.includes(deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          summary: { total: 0, low: 0, medium: 0, high: 0, critical: 0 },
+          extensions: [],
+        });
+      }
+      conditions.push(inArray(browserExtensions.deviceId, allowedDeviceIds));
+    }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = Math.min(Math.max(1, Number(rawLimit) || 100), 500);
@@ -79,12 +133,25 @@ browserSecurityRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { deviceId, policyId } = c.req.query();
 
     const conditions: SQL[] = [isNull(browserPolicyViolations.resolvedAt)];
     if (auth.orgId) conditions.push(eq(browserPolicyViolations.orgId, auth.orgId));
     if (deviceId) conditions.push(eq(browserPolicyViolations.deviceId, deviceId));
     if (policyId) conditions.push(eq(browserPolicyViolations.policyId, policyId));
+
+    // Narrow to the caller's accessible devices when site-restricted.
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (deviceId && !allowedDeviceIds!.includes(deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({ violations: [] });
+      }
+      conditions.push(inArray(browserPolicyViolations.deviceId, allowedDeviceIds));
+    }
 
     const violations = await db
       .select({
@@ -148,6 +215,12 @@ browserSecurityRoutes.post(
 
     const body = c.req.valid('json');
 
+    // Site-restricted callers may only create policies scoped to their sites.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!policyWithinSiteWriteScope(perms, body.targetType, body.targetIds)) {
+      return c.json({ error: 'Access to the targeted site(s) denied' }, 403);
+    }
+
     const [policy] = await db
       .insert(browserPolicies)
       .values({
@@ -205,6 +278,23 @@ browserSecurityRoutes.put(
     if (!existing) return c.json({ error: 'Policy not found' }, 404);
 
     const body = c.req.valid('json');
+
+    // Site-restricted callers must be able to act on the policy both as it
+    // stands and as it will be after the update (so they cannot retarget a
+    // policy onto a site outside their allowlist).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      const nextTargetType = body.targetType ?? existing.targetType;
+      const nextTargetIds =
+        body.targetIds !== undefined ? body.targetIds : existing.targetIds;
+      if (
+        !policyWithinSiteWriteScope(perms, existing.targetType, existing.targetIds) ||
+        !policyWithinSiteWriteScope(perms, nextTargetType, nextTargetIds)
+      ) {
+        return c.json({ error: 'Access to the targeted site(s) denied' }, 403);
+      }
+    }
+
     const [updated] = await db
       .update(browserPolicies)
       .set({
@@ -248,6 +338,24 @@ browserSecurityRoutes.delete(
 
     const conditions: SQL[] = [eq(browserPolicies.id, policyId)];
     if (auth.orgId) conditions.push(eq(browserPolicies.orgId, auth.orgId));
+
+    // Site-restricted callers can only delete policies scoped to their sites.
+    // Verify scope before deleting (the bare DELETE can't gate on site).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      const [existing] = await db
+        .select({
+          targetType: browserPolicies.targetType,
+          targetIds: browserPolicies.targetIds,
+        })
+        .from(browserPolicies)
+        .where(and(...conditions))
+        .limit(1);
+      if (!existing) return c.json({ error: 'Policy not found' }, 404);
+      if (!policyWithinSiteWriteScope(perms, existing.targetType, existing.targetIds)) {
+        return c.json({ error: 'Access to the targeted site(s) denied' }, 403);
+      }
+    }
 
     const [deleted] = await db
       .delete(browserPolicies)

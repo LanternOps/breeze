@@ -77,6 +77,10 @@ vi.mock('../services/permissions', () => ({
     DEVICES_READ: { resource: 'devices', action: 'read' },
     DEVICES_WRITE: { resource: 'devices', action: 'write' },
   },
+  // Faithful to the real implementation: unrestricted callers (no
+  // allowedSiteIds) always pass; otherwise the site must be in the allowlist.
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
 
 vi.mock('../jobs/browserSecurityJobs', () => ({
@@ -98,9 +102,15 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID_2 = '22222222-2222-2222-2222-222222222222';
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
 const POLICY_ID = '44444444-4444-4444-4444-444444444444';
+const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
 const NOW = new Date('2026-03-13T12:00:00Z');
 
-function setAuth(overrides: Record<string, unknown> = {}) {
+function setAuth(
+  overrides: Record<string, unknown> = {},
+  permissions?: Record<string, unknown>
+) {
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@test.com', name: 'Test' },
@@ -112,8 +122,19 @@ function setAuth(overrides: Record<string, unknown> = {}) {
       orgCondition: () => undefined,
       ...overrides,
     });
+    if (permissions !== undefined) c.set('permissions', permissions);
     return next();
   });
+}
+
+// Mocks the device-resolution query a restricted reader runs first:
+// db.select({id, siteId}).from(devices).where(eq(orgId, ...)) → rows
+function mockDeviceResolution(rows: Array<{ id: string; siteId: string | null }>) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(rows),
+    }),
+  } as any);
 }
 
 function makeApp() {
@@ -389,6 +410,115 @@ describe('browserSecurity routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ────────────────────── Site-scope enforcement (reads) ──────────────────────
+  // A site-restricted org user (permissions.allowedSiteIds set) must not read
+  // extension inventory or violations for devices in sites outside their
+  // allowlist. Site is an app-layer concept only — RLS does not defend it.
+  describe('GET /extensions — site scope', () => {
+    it('denies an explicit deviceId outside the caller site allowlist (403)', async () => {
+      setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+      // Device resolution: DEVICE_DENIED lives in a site the caller cannot access
+      mockDeviceResolution([
+        { id: DEVICE_ID, siteId: SITE_ALLOWED },
+        { id: DEVICE_DENIED, siteId: SITE_DENIED },
+      ]);
+
+      const res = await app.request(
+        `/browser-security/extensions?deviceId=${DEVICE_DENIED}`
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it('returns empty when the caller has no accessible devices', async () => {
+      setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+      mockDeviceResolution([{ id: DEVICE_DENIED, siteId: SITE_DENIED }]);
+
+      const res = await app.request('/browser-security/extensions');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.extensions).toEqual([]);
+      expect(body.summary.total).toBe(0);
+    });
+
+    it('narrows to accessible devices and returns data', async () => {
+      setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+      mockDeviceResolution([{ id: DEVICE_ID, siteId: SITE_ALLOWED }]);
+      // summary + list selects after narrowing
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ total: 1, low: 1, medium: 0, high: 0, critical: 0 }]),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    { id: 'ext-1', orgId: ORG_ID, deviceId: DEVICE_ID, name: 'Ad Blocker' },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request(`/browser-security/extensions?deviceId=${DEVICE_ID}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.extensions).toHaveLength(1);
+    });
+  });
+
+  describe('GET /violations — site scope', () => {
+    it('denies an explicit deviceId outside the caller site allowlist (403)', async () => {
+      setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+      mockDeviceResolution([
+        { id: DEVICE_ID, siteId: SITE_ALLOWED },
+        { id: DEVICE_DENIED, siteId: SITE_DENIED },
+      ]);
+
+      const res = await app.request(
+        `/browser-security/violations?deviceId=${DEVICE_DENIED}`
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it('returns empty when the caller has no accessible devices', async () => {
+      setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+      mockDeviceResolution([{ id: DEVICE_DENIED, siteId: SITE_DENIED }]);
+
+      const res = await app.request('/browser-security/violations');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.violations).toEqual([]);
+    });
+
+    it('narrows to accessible devices and returns data', async () => {
+      setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+      mockDeviceResolution([{ id: DEVICE_ID, siteId: SITE_ALLOWED }]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  { id: 'viol-1', orgId: ORG_ID, deviceId: DEVICE_ID, violationType: 'blocked_extension' },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/browser-security/violations?deviceId=${DEVICE_ID}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.violations).toHaveLength(1);
     });
   });
 

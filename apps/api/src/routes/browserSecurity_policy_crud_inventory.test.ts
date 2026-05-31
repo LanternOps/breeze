@@ -77,6 +77,10 @@ vi.mock('../services/permissions', () => ({
     DEVICES_READ: { resource: 'devices', action: 'read' },
     DEVICES_WRITE: { resource: 'devices', action: 'write' },
   },
+  // Faithful to the real implementation: unrestricted callers (no
+  // allowedSiteIds) always pass; otherwise the site must be in the allowlist.
+  canAccessSite: (perms: any, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
 
 vi.mock('../jobs/browserSecurityJobs', () => ({
@@ -98,9 +102,14 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID_2 = '22222222-2222-2222-2222-222222222222';
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
 const POLICY_ID = '44444444-4444-4444-4444-444444444444';
+const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
 const NOW = new Date('2026-03-13T12:00:00Z');
 
-function setAuth(overrides: Record<string, unknown> = {}) {
+function setAuth(
+  overrides: Record<string, unknown> = {},
+  permissions?: Record<string, unknown>
+) {
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@test.com', name: 'Test' },
@@ -112,8 +121,20 @@ function setAuth(overrides: Record<string, unknown> = {}) {
       orgCondition: () => undefined,
       ...overrides,
     });
+    if (permissions !== undefined) c.set('permissions', permissions);
     return next();
   });
+}
+
+// Mocks a single policy-lookup select returning the given row (or none).
+function mockPolicyLookup(policy: Record<string, unknown> | null) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(policy ? [policy] : []),
+      }),
+    }),
+  } as any);
 }
 
 function makeApp() {
@@ -369,6 +390,157 @@ describe('browserSecurity routes', () => {
 
       const res = await app.request('/browser-security/policies');
       expect(res.status).toBe(200);
+    });
+  });
+
+  // ────────────────────── Site-scope enforcement (policy mutations) ──────────────────────
+  // A site-restricted org user (permissions.allowedSiteIds set) may only
+  // create/update/delete policies that target sites entirely within their
+  // allowlist. Org-wide (and group/device/tag) policies are out of their
+  // scope. Unrestricted users (no allowedSiteIds) are unaffected.
+  describe('policy mutations — site scope', () => {
+    describe('POST /policies', () => {
+      it('rejects an org-wide policy from a site-restricted user (403)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        const res = await app.request('/browser-security/policies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Org Policy', targetType: 'org' }),
+        });
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+      });
+
+      it('rejects a site policy targeting a denied site (403)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        const res = await app.request('/browser-security/policies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Site Policy',
+            targetType: 'site',
+            targetIds: [SITE_DENIED],
+          }),
+        });
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+      });
+
+      it('allows a site policy fully within the allowlist (201)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              { id: POLICY_ID, orgId: ORG_ID, name: 'Site Policy', targetType: 'site', targetIds: [SITE_ALLOWED] },
+            ]),
+          }),
+        } as any);
+
+        const res = await app.request('/browser-security/policies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Site Policy',
+            targetType: 'site',
+            targetIds: [SITE_ALLOWED],
+          }),
+        });
+        expect(res.status).toBe(201);
+      });
+    });
+
+    describe('PUT /policies/:policyId', () => {
+      it('rejects updating an org-wide policy as a site-restricted user (403)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        mockPolicyLookup({
+          id: POLICY_ID, orgId: ORG_ID, name: 'Org Policy',
+          targetType: 'org', targetIds: null, isActive: true,
+        });
+
+        const res = await app.request(`/browser-security/policies/${POLICY_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' }),
+        });
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      });
+
+      it('allows updating a site policy within the allowlist (200)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        mockPolicyLookup({
+          id: POLICY_ID, orgId: ORG_ID, name: 'Site Policy',
+          targetType: 'site', targetIds: [SITE_ALLOWED], isActive: true,
+        });
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([
+                { id: POLICY_ID, orgId: ORG_ID, name: 'Renamed', targetType: 'site', targetIds: [SITE_ALLOWED] },
+              ]),
+            }),
+          }),
+        } as any);
+
+        const res = await app.request(`/browser-security/policies/${POLICY_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' }),
+        });
+        expect(res.status).toBe(200);
+      });
+
+      it('rejects moving a site policy onto a denied site (403)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        mockPolicyLookup({
+          id: POLICY_ID, orgId: ORG_ID, name: 'Site Policy',
+          targetType: 'site', targetIds: [SITE_ALLOWED], isActive: true,
+        });
+
+        const res = await app.request(`/browser-security/policies/${POLICY_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetIds: [SITE_ALLOWED, SITE_DENIED] }),
+        });
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('DELETE /policies/:policyId', () => {
+      it('rejects deleting an org-wide policy as a site-restricted user (403)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        mockPolicyLookup({
+          id: POLICY_ID, orgId: ORG_ID, name: 'Org Policy',
+          targetType: 'org', targetIds: null,
+        });
+
+        const res = await app.request(`/browser-security/policies/${POLICY_ID}`, {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+      });
+
+      it('allows deleting a site policy within the allowlist (200)', async () => {
+        setAuth({}, { allowedSiteIds: [SITE_ALLOWED] });
+        mockPolicyLookup({
+          id: POLICY_ID, orgId: ORG_ID, name: 'Site Policy',
+          targetType: 'site', targetIds: [SITE_ALLOWED],
+        });
+        vi.mocked(db.delete).mockReturnValueOnce({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              { id: POLICY_ID, orgId: ORG_ID, name: 'Site Policy' },
+            ]),
+          }),
+        } as any);
+
+        const res = await app.request(`/browser-security/policies/${POLICY_ID}`, {
+          method: 'DELETE',
+        });
+        expect(res.status).toBe(200);
+      });
     });
   });
 
