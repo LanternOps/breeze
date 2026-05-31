@@ -31,7 +31,10 @@ export const useHelpStore = create<HelpState>((set) => ({
       .then(({ useAiStore }) => useAiStore.getState().close())
       .catch((err) => console.warn('[HelpStore] Failed to close AI panel:', err));
 
-    if (url) {
+    // Only a docs-prefixed url may be written into docsUrl, which is consumed
+    // as an <iframe src>. Any untrusted value falls back to the safe
+    // contextual docs page for the current path.
+    if (url && DOCS_BASE_URL && url.startsWith(DOCS_BASE_URL)) {
       set({ isOpen: true, docsUrl: url, label: 'Documentation' });
     } else {
       const { url: resolved, label } = getDocsForPath(window.location.pathname);
