@@ -353,6 +353,15 @@ export async function getProvider(): Promise<Provider> {
     // algorithm preference.
     clientDefaults: {
       id_token_signed_response_alg: 'EdDSA',
+      // Force every DCR client to be PUBLIC. The pre-handler in routes/oauth.ts
+      // rejects an explicit non-`none` token_endpoint_auth_method, but a client
+      // that OMITS the field would otherwise inherit oidc-provider's built-in
+      // default of `client_secret_basic` and become CONFIDENTIAL — which is
+      // exempt from the introspection deny-policy's `none` branch (a confidential
+      // client may introspect other clients' tokens). Defaulting an omitted
+      // value to `none` here keeps the "all DCR clients are public" invariant
+      // whole alongside the explicit-rejection gate.
+      token_endpoint_auth_method: 'none',
     },
     // oidc-provider's default `issueRefreshToken` returns false unless the
     // auth code's scopes include `offline_access`. The OIDC core spec then

@@ -12,9 +12,12 @@
  *   2. oidc-provider's DEFAULT `introspectionAllowedPolicy` returns
  *      `{ active: false }` when a public (token_endpoint_auth_method=none)
  *      client introspects a token whose clientId differs from the caller's.
- *   3. Breeze forces EVERY DCR client to be public (`none`) at /oauth/reg, so
- *      the policy's confidential-client exception is unreachable.  -> covered
- *      by the DCR auth-method-gate test.
+ *   3. Breeze forces EVERY DCR client to be public: the /oauth/reg gate rejects
+ *      an EXPLICIT non-`none` token_endpoint_auth_method, and clientDefaults
+ *      (provider.ts) defaults an OMITTED one to `none` — otherwise oidc-provider
+ *      would default it to client_secret_basic (confidential). So the policy's
+ *      confidential-client exception is unreachable.  -> covered by the two DCR
+ *      tests (explicit-reject + omitted-still-public).
  *
  * This file guards the externally-observable security OUTCOME (a different
  * client gets nothing) plus the two Breeze/library invariants that produce it.
@@ -255,5 +258,38 @@ describe.skipIf(!SHOULD_RUN)('OAuth introspection client-binding', () => {
     // Positive control: a public ("none") registration is accepted.
     const publicClientId = await dcr(live.url, 'https://example.com/cb-public');
     expect(publicClientId).toBeTruthy();
+  });
+
+  it('a client registered by OMITTING token_endpoint_auth_method is still public (cannot introspect cross-client)', async () => {
+    // The gate at routes/oauth.ts only rejects an EXPLICIT non-`none` method.
+    // A client that omits the field must still end up public — otherwise
+    // oidc-provider's built-in default (client_secret_basic) would mint a
+    // CONFIDENTIAL client, which is exempt from the introspection deny-policy's
+    // `none` branch and breaks the "every DCR client is public" invariant.
+    // clientDefaults forces an omitted method to `none` (clientAuthMethod ===
+    // 'none'); oidc-provider may still mint a vestigial client_secret, but a
+    // `none` client can never present it (auth is keyed on the registered
+    // method), so the client is public for all auth decisions.
+    const res = await fetch(`${live.url}/oauth/reg`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: `omitted-${uniq()}`,
+        redirect_uris: ['https://example.com/cb-omitted'],
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        scope: 'openid offline_access mcp:read',
+        // token_endpoint_auth_method intentionally omitted
+      }),
+    });
+    expect([200, 201]).toContain(res.status);
+    const body = (await res.json()) as { client_id: string; token_endpoint_auth_method?: string };
+    // Registered PUBLIC despite omitting the field.
+    expect(body.token_endpoint_auth_method).toBe('none');
+    // End-to-end proof: because it is public, the introspection deny-policy
+    // applies — it learns nothing about the victim's (another client's) token.
+    const crossRes = await introspect(live.url, victim.refreshToken, body.client_id, 'refresh_token');
+    expect(crossRes.status).toBe(200);
+    expect(((await crossRes.json()) as { active: boolean }).active).toBe(false);
   });
 });
