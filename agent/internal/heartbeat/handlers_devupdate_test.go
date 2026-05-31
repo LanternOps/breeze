@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -34,6 +35,48 @@ auto_update: true
 		t.Fatalf("config.Load: %v", err)
 	}
 	return cfg
+}
+
+func TestHandleDevUpdate_RejectedWhenDisabled(t *testing.T) {
+	// Default (allow_dev_update unset → false): a dev_update command with a
+	// valid URL + checksum must be refused outright, BEFORE any download, so a
+	// compromised/MITM'd control plane cannot push an unsigned binary.
+	h := &Heartbeat{config: &config.Config{AllowDevUpdate: false}}
+	cmd := Command{Payload: map[string]any{
+		"downloadUrl": "https://api.example.test/agent-binary",
+		"checksum":    "abc123",
+		"component":   "agent",
+	}}
+
+	result := handleDevUpdate(h, cmd)
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed result when dev_update disabled, got %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "disabled") {
+		t.Fatalf("expected 'disabled' rejection, got %q", result.Error)
+	}
+}
+
+func TestHandleDevUpdate_GatePassesWhenEnabled(t *testing.T) {
+	// With allow_dev_update: true the gate is passed — the command proceeds
+	// (and then fails downloading from the unreachable test URL). The point is
+	// that it is NOT rejected by the disabled-gate.
+	cfg := loadEphemeralConfigForPersist(t)
+	cfg.AllowDevUpdate = true
+	h := &Heartbeat{config: cfg}
+	cmd := Command{Payload: map[string]any{
+		"downloadUrl":        "https://api.example.test/agent-binary",
+		"checksum":           "abc123",
+		"component":          "agent",
+		"preserveAutoUpdate": true,
+	}}
+
+	result := handleDevUpdate(h, cmd)
+
+	if strings.Contains(result.Error, "disabled") {
+		t.Fatalf("gate should pass when allow_dev_update=true, but got disabled rejection: %q", result.Error)
+	}
 }
 
 func TestApplyDevUpdateAutoUpdatePolicy_DefaultDisablesAutoUpdate(t *testing.T) {

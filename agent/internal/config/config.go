@@ -120,6 +120,14 @@ type Config struct {
 	// Auto-update toggle (default: true)
 	AutoUpdate bool `mapstructure:"auto_update"`
 
+	// AllowDevUpdate gates the `dev_update` command, which installs a binary
+	// from a server-supplied URL verified ONLY against a server-supplied
+	// checksum — it bypasses the Ed25519 signed-manifest trust root. Default
+	// false so a compromised/MITM'd control plane cannot use dev_update to push
+	// an arbitrary unsigned binary (SYSTEM/root code exec). Set true only on
+	// developer/test machines that need manual dev pushes.
+	AllowDevUpdate bool `mapstructure:"allow_dev_update" yaml:"allow_dev_update"`
+
 	// PinnedManifestPubKeys are deployment-specific Ed25519 pubkeys delivered
 	// via enrollment/heartbeat and pinned TOFU-style. Format: "<keyId>:<base64-raw-pubkey>".
 	// Merged with the embedded LanternOps trust root in updater.trustedManifestKeys()
@@ -407,6 +415,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("auto_update", cfg.AutoUpdate)
+	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
 	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
 	// bearer tokens are persisted below in root-only secrets.yaml.

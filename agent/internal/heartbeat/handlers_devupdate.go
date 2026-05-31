@@ -38,6 +38,19 @@ func init() {
 func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
+	// SECURITY: dev_update installs a binary from a server-supplied URL verified
+	// only against a server-supplied checksum — it does NOT verify against the
+	// Ed25519 signed-manifest trust root. A compromised or MITM'd control plane
+	// could therefore push an arbitrary unsigned binary that runs as SYSTEM/root.
+	// Gate it behind an explicit, default-off opt-in so production agents reject
+	// it outright; developer/test machines set allow_dev_update: true.
+	if h.config == nil || !h.config.AllowDevUpdate {
+		return tools.NewErrorResult(
+			fmt.Errorf("dev_update is disabled on this agent (set allow_dev_update: true to enable manual dev pushes)"),
+			time.Since(start).Milliseconds(),
+		)
+	}
+
 	downloadURL := tools.GetPayloadString(cmd.Payload, "downloadUrl", "")
 	if downloadURL == "" {
 		return tools.NewErrorResult(fmt.Errorf("missing required field: downloadUrl"), 0)
