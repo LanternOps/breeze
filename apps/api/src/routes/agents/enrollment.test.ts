@@ -170,7 +170,16 @@ describe('POST /agents/enroll — tenant-status gate', () => {
     const body = await resp.json();
     expect(body.reason).toBe('tenant_inactive');
     expect(getActiveOrgTenant).toHaveBeenCalledWith('org-9');
-    expect(writeAuditEvent).toHaveBeenCalled();
+    // The denial audit is the forensic trail for a suspended-for-abuse tenant
+    // attempting re-enrollment — assert its shape, not just that it fired.
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'agent.enroll',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'tenant_inactive', enrollmentKeyId: 'key-9' }),
+      }),
+    );
   });
 });
 

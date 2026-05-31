@@ -5,6 +5,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
+import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
 import { isAgentTenantActive } from '../services/tenantStatus';
@@ -165,7 +166,7 @@ export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, 
  * or via a future admin endpoint); the agent will retry forever and produce
  * a loud reconnect-loop signal that surfaces the suspension to ops.
  */
-export async function suspendAgentToken(deviceId: string, reason: string): Promise<void> {
+export async function suspendAgentToken(deviceId: string, reason: AgentTokenSuspendReason): Promise<void> {
   try {
     await withSystemDbAccessContext(async () => {
       await db

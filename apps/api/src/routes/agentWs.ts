@@ -21,6 +21,7 @@ import { applyVaultSyncCommandResult } from '../services/vaultSyncPersistence';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
+import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import { isAgentTenantActive } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
@@ -2173,7 +2174,7 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     // suspension is reconciled at the next auth gate, so a delayed write
     // simply means one or two extra probes get through before the token
     // becomes invalid.
-    void suspendAgentToken(deviceId, 'cross-tenant-probe');
+    void suspendAgentToken(deviceId, AGENT_TOKEN_SUSPEND_REASON.crossTenantProbe);
     void createAuditLogAsync({
       orgId: null,
       actorType: 'system',

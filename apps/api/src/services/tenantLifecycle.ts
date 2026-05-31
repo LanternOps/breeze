@@ -2,6 +2,7 @@ import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, devices, enrollmentKeys, organizationUsers, organizations, partnerUsers } from '../db/schema';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts } from '../oauth/grantRevocation';
+import { AGENT_TOKEN_SUSPEND_REASON } from './agentTokenSuspension';
 import { clearPermissionCache } from './permissions';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import { revokeAllUserTokens } from './tokenRevocation';
@@ -15,11 +16,16 @@ export interface TenantRevocationResult {
   enrollmentKeysInvalidated: number;
 }
 
+export interface TenantRestorationResult {
+  agentTokensRestored: number;
+}
+
 // Reason tag written to devices.agentTokenSuspendedReason when a tenant is
 // suspended/deleted. The reactivation path clears ONLY suspensions carrying
-// this tag, so a Task-18 cross-tenant-probe suspension ('cross-tenant-probe')
-// is never silently lifted by restoring a tenant.
-const TENANT_SUSPENDED_TOKEN_REASON = 'tenant_suspended';
+// this tag, so a cross-tenant-probe suspension (AGENT_TOKEN_SUSPEND_REASON
+// .crossTenantProbe, set by recordCrossTenantDrop in agentWs.ts) is never
+// silently lifted by restoring a tenant.
+const TENANT_SUSPENDED_TOKEN_REASON = AGENT_TOKEN_SUSPEND_REASON.tenantSuspended;
 
 /**
  * Sever the live agent fleet for a set of orgs: suspend agent tokens (so the
@@ -53,6 +59,10 @@ async function severAgentCredentialsForOrgIds(
     .where(and(inArray(devices.orgId, orgIds), isNull(devices.agentTokenSuspendedAt)))
     .returning({ id: devices.id });
 
+  // Expire enrollment keys after the cache drop + token suspension. Safe
+  // ordering because the enroll path checks getActiveOrgTenant directly
+  // (uncached, see enrollment.ts), so it never admits via a stale positive
+  // cache during this window; only keys not already expired are touched.
   const invalidatedKeys = await db
     .update(enrollmentKeys)
     .set({ expiresAt: now })
@@ -77,7 +87,7 @@ async function severAgentCredentialsForOrgIds(
  * operators regenerate keys; silently reviving an arbitrarily old key would be
  * wrong.
  */
-async function restoreAgentCredentialsForOrgIds(orgIds: string[]): Promise<{ agentTokensRestored: number }> {
+async function restoreAgentCredentialsForOrgIds(orgIds: string[]): Promise<TenantRestorationResult> {
   if (orgIds.length === 0) return { agentTokensRestored: 0 };
 
   const restored = await db
@@ -186,11 +196,12 @@ export async function revokePartnerTenantAccess(partnerId: string): Promise<Tena
 /**
  * Reactivation counterpart to revokeOrganizationTenantAccess. Restores agent
  * tokens this module suspended (reason-tagged) when an org returns to an
- * active/trial status. User JWTs and API keys are intentionally NOT restored —
- * those are short-lived / re-issued on next login, matching the one-way
- * revoke semantics for first-party credentials.
+ * active/trial status. User JWTs and API keys are intentionally NOT restored:
+ * JWTs are re-issued on next login, and revoked API keys must be re-created by
+ * an operator — neither is auto-restored, matching the one-way revoke
+ * semantics for first-party credentials.
  */
-export async function restoreOrganizationTenantAccess(orgId: string): Promise<{ agentTokensRestored: number }> {
+export async function restoreOrganizationTenantAccess(orgId: string): Promise<TenantRestorationResult> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(() => restoreAgentCredentialsForOrgIds([orgId]))
   );
@@ -200,7 +211,7 @@ export async function restoreOrganizationTenantAccess(orgId: string): Promise<{ 
  * Reactivation counterpart to revokePartnerTenantAccess: restore reason-tagged
  * agent-token suspensions across every org under the partner.
  */
-export async function restorePartnerTenantAccess(partnerId: string): Promise<{ agentTokensRestored: number }> {
+export async function restorePartnerTenantAccess(partnerId: string): Promise<TenantRestorationResult> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgRows = await db

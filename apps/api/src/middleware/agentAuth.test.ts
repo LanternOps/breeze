@@ -308,6 +308,11 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
 
     // Verify the org rate limiter was called with the expected key + default 600/60
     expect(rateLimiter).toHaveBeenNthCalledWith(2, expect.anything(), 'agent_org_rate:org-1', 600, 60);
+
+    // Ordering invariant: the tenant-status gate runs AFTER the rate limiters,
+    // so an org-limit-exceeded request short-circuits to 429 WITHOUT driving an
+    // (uncached) tenant lookup. Pins the DoS-hardening order.
+    expect(isAgentTenantActive).not.toHaveBeenCalled();
   });
 
   it('honors AGENT_ORG_RATE_LIMIT_PER_MIN env override', async () => {
@@ -497,7 +502,10 @@ describe('Task 18 — suspendAgentToken helper', () => {
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
     const longReason = 'x'.repeat(250);
-    await suspendAgentToken('device-1', longReason);
+    // Cast past the AgentTokenSuspendReason union: the canonical reasons are all
+    // < 100 chars, but this exercises the defensive runtime .slice(0, 100) that
+    // guards the varchar(100) column against any future non-canonical caller.
+    await suspendAgentToken('device-1', longReason as never);
 
     const arg = setMock.mock.calls[0]?.[0];
     expect(arg.agentTokenSuspendedReason.length).toBe(100);

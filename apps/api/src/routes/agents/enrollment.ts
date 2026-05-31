@@ -307,7 +307,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // still-valid enrollment key for a suspended/churned/soft-deleted org or
     // partner must NOT mint fresh full-capability agent tokens — that path let
     // a suspended-for-abuse tenant re-establish a fleet the uninstall sweep
-    // tore down. getActiveOrgTenant cascades org -> partner status.
+    // tore down. getActiveOrgTenant cascades org -> partner status. We call it
+    // directly (uncached) rather than isAgentTenantActive: enrollment is rare,
+    // so the authoritative check is worth it and avoids any stale-positive
+    // window from the agent hot-path cache.
     if (!(await getActiveOrgTenant(key.orgId))) {
       writeAuditEvent(c, {
         orgId: key.orgId,

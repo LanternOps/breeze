@@ -49,7 +49,7 @@ import {
   restorePartnerTenantAccess,
 } from './tenantLifecycle';
 
-const updateLog: { table: unknown; values: Record<string, unknown> }[] = [];
+const updateLog: { table: unknown; values: Record<string, unknown>; where: unknown }[] = [];
 let returningByTable: Map<unknown, unknown[]>;
 
 function setupUpdate() {
@@ -59,17 +59,21 @@ function setupUpdate() {
     [devices, [{ id: 'd1' }, { id: 'd2' }]],
     [enrollmentKeys, [{ id: 'k1' }]],
   ]);
+  // Capture BOTH .set(values) and .where(predicate): the WHERE clause carries
+  // the load-bearing security filters (restore reason-tag isolation, sever
+  // idempotency) — tests must be able to assert on them, or a regression that
+  // drops a predicate would pass silently.
   vi.mocked(db.update).mockImplementation(
     (table: any) =>
       ({
-        set: vi.fn((values: any) => {
-          updateLog.push({ table, values });
-          return {
-            where: vi.fn(() => ({
+        set: vi.fn((values: any) => ({
+          where: vi.fn((where: any) => {
+            updateLog.push({ table, values, where });
+            return {
               returning: vi.fn().mockResolvedValue(returningByTable.get(table) ?? []),
-            })),
-          };
-        }),
+            };
+          }),
+        })),
       }) as any
   );
 }
@@ -78,6 +82,14 @@ function queueSelect(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn(() => ({ where: vi.fn().mockResolvedValue(rows) })),
   } as any);
+}
+
+// The drizzle-orm mock renders predicates as plain objects:
+//   and(...a) -> {and:a}, eq(l,r) -> {eq:[l,r]}, isNull(c) -> {isNull:c},
+//   inArray(c,v) -> {inArray:[c,v]}, gt(l,r) -> {gt:[l,r]}, or(...a) -> {or:a}.
+// Flatten an `and(...)` predicate's clauses so a specific one can be asserted.
+function andClauses(where: any): any[] {
+  return Array.isArray(where?.and) ? where.and : [where];
 }
 
 describe('tenantLifecycle — agent fleet severance', () => {
@@ -98,6 +110,9 @@ describe('tenantLifecycle — agent fleet severance', () => {
     const deviceUpdate = updateLog.find((u) => u.table === devices)!;
     expect(deviceUpdate.values.agentTokenSuspendedAt).toBeInstanceOf(Date);
     expect(deviceUpdate.values.agentTokenSuspendedReason).toBe('tenant_suspended');
+    // C2: idempotency predicate — sever must only touch not-already-suspended
+    // devices so it never clobbers a cross-tenant-probe suspension's reason.
+    expect(andClauses(deviceUpdate.where)).toContainEqual({ isNull: 'devices.agentTokenSuspendedAt' });
 
     const keyUpdate = updateLog.find((u) => u.table === enrollmentKeys)!;
     expect(keyUpdate.values.expiresAt).toBeInstanceOf(Date);
@@ -142,6 +157,12 @@ describe('tenantLifecycle — agent fleet severance', () => {
     const deviceUpdate = updateLog.find((u) => u.table === devices)!;
     expect(deviceUpdate.values.agentTokenSuspendedAt).toBeNull();
     expect(deviceUpdate.values.agentTokenSuspendedReason).toBeNull();
+    // C1: reason-tag isolation — restore must filter on reason='tenant_suspended'
+    // so a 'cross-tenant-probe' suspension is never lifted by reactivation.
+    // Without this assertion the test would pass even if the filter were dropped.
+    expect(andClauses(deviceUpdate.where)).toContainEqual({
+      eq: ['devices.agentTokenSuspendedReason', 'tenant_suspended'],
+    });
     // Must NOT un-expire enrollment keys.
     expect(updateLog.some((u) => u.table === enrollmentKeys)).toBe(false);
     expect(result.agentTokensRestored).toBe(1);

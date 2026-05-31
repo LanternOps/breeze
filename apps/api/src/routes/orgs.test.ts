@@ -611,6 +611,27 @@ describe('org routes', () => {
       expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
     });
 
+    it('restores the agent fleet when an org is moved to trial', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'trial' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'trial' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
     it('should return 404 when organization not found', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.update).mockReturnValue({
