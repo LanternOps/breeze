@@ -130,35 +130,11 @@ func (s *Session) startPipes() error {
 	s.cmd = cmd
 	s.stdin = stdin
 
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stdout.Read(buf)
-			if n > 0 && s.onOutput != nil {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				s.onOutput(data)
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 && s.onOutput != nil {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				s.onOutput(data)
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	// Forward on UTF-8 rune boundaries so a multibyte char split across a
+	// 4096-byte read isn't decoded into U+FFFD downstream (streamUTF8 flushes
+	// any held tail on EOF).
+	go func() { _ = streamUTF8(stdout, s.onOutput, nil) }()
+	go func() { _ = streamUTF8(stderr, s.onOutput, nil) }()
 
 	go func() {
 		err := s.waitCmd()
