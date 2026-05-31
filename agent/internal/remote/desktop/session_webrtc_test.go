@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -138,32 +137,49 @@ func TestShouldStopForLifetime(t *testing.T) {
 	}
 }
 
-// TestControlMessageResetsIdleViaActivity proves the mechanism that keeps a
-// watching (no input) viewer alive: control-channel traffic updates
-// lastActivityUnixNano, which feeds shouldStopForLifetime. We exercise the
-// store-on-control-message behavior directly (the OnMessage closure does
-// lastActivityUnixNano.Store(now)) and assert the idle decision then returns
-// false.
-func TestControlMessageResetsIdleViaActivity(t *testing.T) {
-	var lastActivity atomic.Int64
-	// Simulate a stale session whose only sign of life would be control msgs.
-	stale := time.Now().Add(-time.Hour)
-	lastActivity.Store(stale.UnixNano())
+// idlePolicyStops reports whether a 5-minute idle policy would reap a session
+// whose idle clock is at s.lastInputUnixNano. startWall is recent so only the
+// idle axis is in play.
+func idlePolicyStops(s *Session) bool {
+	now := time.Now()
+	stop, _ := shouldStopForLifetime(
+		now,
+		now.Add(-time.Minute),
+		time.Unix(0, s.lastInputUnixNano.Load()),
+		SessionPolicy{IdleTimeout: 5 * time.Minute},
+	)
+	return stop
+}
 
-	idlePolicy := SessionPolicy{IdleTimeout: 5 * time.Minute}
-
-	// Before any control message: stale → should stop.
-	beforeStop, _ := shouldStopForLifetime(time.Now(), time.Now().Add(-time.Hour), time.Unix(0, lastActivity.Load()), idlePolicy)
-	if !beforeStop {
-		t.Fatal("expected stale session to be idle before any activity")
+// TestInputTrafficResetsIdleWatchdog: an inbound input-channel message records
+// operator activity, so an otherwise-stale session is NOT reaped.
+func TestInputTrafficResetsIdleWatchdog(t *testing.T) {
+	s := &Session{id: "s1", inputHandler: &stubInputHandler{}}
+	s.lastInputUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	if !idlePolicyStops(s) {
+		t.Fatal("precondition: a stale session must be idle before any activity")
 	}
 
-	// Control message arrives — same store the OnMessage handler performs.
-	lastActivity.Store(time.Now().UnixNano())
+	s.onViewerDataChannelMessage("input", []byte(`{"type":"mouse_move","x":1,"y":2}`))
 
-	// After: fresh activity → must NOT stop.
-	afterStop, _ := shouldStopForLifetime(time.Now(), time.Now().Add(-time.Hour), time.Unix(0, lastActivity.Load()), idlePolicy)
-	if afterStop {
-		t.Fatal("session went idle despite a fresh control message resetting activity")
+	if idlePolicyStops(s) {
+		t.Fatal("input-channel traffic must reset the idle watchdog")
+	}
+}
+
+// TestControlTrafficDoesNotResetIdleWatchdog: control-channel traffic — e.g. the
+// viewer's automated ~1s viewer_stats heartbeat — is NOT a signal of operator
+// presence and MUST NOT keep an unattended session alive. Regression guard for
+// the "idle timeout defeated by viewer_stats heartbeat" finding (#1): an
+// operator who walks away (no input, tab still open streaming stats) must still
+// be reaped at the idle timeout.
+func TestControlTrafficDoesNotResetIdleWatchdog(t *testing.T) {
+	s := &Session{id: "s1"}
+	s.lastInputUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	s.onViewerDataChannelMessage("control", []byte(`{"type":"viewer_stats"}`))
+
+	if !idlePolicyStops(s) {
+		t.Fatal("control-channel traffic must not reset the idle watchdog")
 	}
 }

@@ -126,14 +126,14 @@ type Session struct {
 	// Nanoseconds since epoch of the last successful video sample write.
 	lastVideoWriteUnixNano atomic.Int64
 
-	// lastActivityUnixNano is the wall-clock nanos of the most recent sign of
-	// life from the viewer. It drives the idle-session watchdog (finding #2)
-	// and is updated both on "input" DataChannel traffic (mouse/keyboard) AND
-	// on "control" DataChannel traffic (e.g. viewer_stats, sent ~1s by an
-	// alive-but-watching viewer). This keeps a viewer that is merely watching
-	// from being killed by the idle watchdog, while a dead/closed viewer client
-	// — which sends nothing on either channel — still goes idle and is reaped.
-	lastActivityUnixNano atomic.Int64
+	// lastInputUnixNano is the wall-clock nanos of the most recent INPUT event
+	// (mouse/keyboard) from the viewer. It drives the idle-session watchdog
+	// (finding #2). Only genuine operator input resets it — control-channel
+	// traffic (e.g. the viewer's automated ~1s viewer_stats heartbeat) is NOT a
+	// presence signal and must not reset it, otherwise an unattended-but-open
+	// viewer would never idle out and the idle timeout would be defeated.
+	// Updated via recordInputActivity().
+	lastInputUnixNano atomic.Int64
 }
 
 // SessionManager manages remote desktop sessions

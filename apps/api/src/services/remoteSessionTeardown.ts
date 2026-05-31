@@ -1,9 +1,15 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+
+// Live statuses a teardown may disconnect. Terminal rows (`disconnected`,
+// `failed`) are intentionally excluded: matching them (e.g. via
+// `ne(status,'disconnected')`) would also sweep historical `failed` rows and
+// overwrite their `endedAt`, corrupting session history for no benefit.
+const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
 
 /**
  * Sentinel returned by {@link terminateUserRemoteSessions} when teardown
@@ -59,7 +65,7 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
           .where(
             and(
               eq(remoteSessions.userId, userId),
-              ne(remoteSessions.status, 'disconnected')
+              inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
             )
           )
           .returning({

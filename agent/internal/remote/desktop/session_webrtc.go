@@ -136,7 +136,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// even when the server can't reach the agent to send stop_desktop. The
 	// goroutine exits on session.done (closed by Stop) and is intentionally not
 	// in session.wg, so the StopSession call below cannot deadlock on wg.Wait.
-	session.lastActivityUnixNano.Store(time.Now().UnixNano())
+	session.recordInputActivity()
 	if policy.MaxDuration > 0 || policy.IdleTimeout > 0 {
 		startWall := time.Now()
 		go func() {
@@ -148,7 +148,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					return
 				case <-ticker.C:
 					now := time.Now()
-					lastActivity := time.Unix(0, session.lastActivityUnixNano.Load())
+					lastActivity := time.Unix(0, session.lastInputUnixNano.Load())
 					stop, reason := shouldStopForLifetime(now, startWall, lastActivity, policy)
 					if !stop {
 						continue
@@ -466,20 +466,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			session.dataChannel = dc
 			session.mu.Unlock()
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				session.lastActivityUnixNano.Store(time.Now().UnixNano())
-				session.handleInputMessage(msg.Data)
+				session.onViewerDataChannelMessage("input", msg.Data)
 			})
 		case "control":
 			session.mu.Lock()
 			session.controlDC = dc
 			session.mu.Unlock()
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				// Any control-channel traffic (e.g. viewer_stats sent ~1s by an
-				// alive-but-watching viewer) counts as activity and resets the
-				// idle watchdog. A dead/closed viewer client sends nothing here,
-				// so it still goes idle and is reaped.
-				session.lastActivityUnixNano.Store(time.Now().UnixNano())
-				session.handleControlMessage(msg.Data)
+				session.onViewerDataChannelMessage("control", msg.Data)
 			})
 			dc.OnOpen(func() {
 				// Send the current cached desktop state to this viewer so it

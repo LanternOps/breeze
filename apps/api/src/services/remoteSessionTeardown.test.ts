@@ -14,13 +14,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const h = vi.hoisted(() => {
   const state = {
     whereCalls: 0,
+    whereArgs: [] as any[],
     deviceRowsResult: [] as Array<{ id: string; agentId: string | null }>,
   };
   const chain: Record<string, any> = {};
   for (const m of ['update', 'set', 'select', 'from']) {
     chain[m] = vi.fn(() => chain);
   }
-  chain.where = vi.fn(() => {
+  chain.where = vi.fn((arg: unknown) => {
+    state.whereArgs.push(arg);
     state.whereCalls += 1;
     // 1st where() = UPDATE (fluent); 2nd+ = device SELECT terminal.
     return state.whereCalls >= 2 ? Promise.resolve(state.deviceRowsResult) : chain;
@@ -35,6 +37,15 @@ const h = vi.hoisted(() => {
     captureException: vi.fn(),
   };
 });
+
+// Capture drizzle operator calls as inspectable tagged objects so a test can
+// assert WHICH status predicate the UPDATE targets (active-only vs ne-disconnected).
+vi.mock('drizzle-orm', () => ({
+  and: (...args: unknown[]) => ({ op: 'and', args }),
+  eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
+  ne: (col: unknown, val: unknown) => ({ op: 'ne', col, val }),
+  inArray: (col: unknown, vals: unknown) => ({ op: 'inArray', col, vals }),
+}));
 
 vi.mock('../db', () => ({
   db: h.chain,
@@ -84,19 +95,41 @@ describe('terminateUserRemoteSessions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.state.whereCalls = 0;
+    h.state.whereArgs = [];
     h.state.deviceRowsResult = [];
     // Re-establish fluent defaults wiped by clearAllMocks.
     h.chain.update.mockImplementation(() => h.chain);
     h.chain.set.mockImplementation(() => h.chain);
     h.chain.select.mockImplementation(() => h.chain);
     h.chain.from.mockImplementation(() => h.chain);
-    h.chain.where.mockImplementation(() => {
+    h.chain.where.mockImplementation((arg: unknown) => {
+      h.state.whereArgs.push(arg);
       h.state.whereCalls += 1;
       return h.state.whereCalls >= 2
         ? Promise.resolve(h.state.deviceRowsResult)
         : h.chain;
     });
     h.revokeViewerSession.mockResolvedValue(undefined);
+  });
+
+  it('targets only active statuses (pending/connecting/active) so terminal failed/disconnected rows are never clobbered', async () => {
+    seed([{ id: 's1', type: 'desktop', deviceId: 'd1' }], [{ id: 'd1', agentId: 'agent-1' }]);
+
+    await terminateUserRemoteSessions('u1');
+
+    // The UPDATE is the first where() call. Its predicate is and(eq(userId), <statusPredicate>).
+    const updateWhere = h.state.whereArgs[0] as { op: string; args: any[] };
+    expect(updateWhere.op).toBe('and');
+    const statusPredicate = updateWhere.args.find(
+      (a) => a?.col === 'remote_sessions.status',
+    );
+    expect(statusPredicate).toBeDefined();
+    // Must be an allowlist of live statuses — NOT `ne(status,'disconnected')`,
+    // which also matches terminal `failed` rows and would overwrite their endedAt.
+    expect(statusPredicate.op).toBe('inArray');
+    expect(statusPredicate.vals).toEqual(['pending', 'connecting', 'active']);
+    expect(statusPredicate.vals).not.toContain('failed');
+    expect(statusPredicate.vals).not.toContain('disconnected');
   });
 
   it('disconnects two desktop sessions: revokes each viewer token and signals stop_desktop per session, returns 2', async () => {

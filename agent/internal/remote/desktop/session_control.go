@@ -87,6 +87,29 @@ func (s *Session) sendInputStatus() {
 	}
 }
 
+// recordInputActivity stamps the idle-watchdog clock with the current time.
+// Called ONLY for genuine operator input (mouse/keyboard), never for
+// control-channel traffic — see lastInputUnixNano in session.go for why.
+func (s *Session) recordInputActivity() {
+	s.lastInputUnixNano.Store(time.Now().UnixNano())
+}
+
+// onViewerDataChannelMessage routes an inbound viewer data-channel message by
+// label and applies the idle-watchdog policy in one place. Idle is reset on
+// "input" traffic only: control-channel traffic (e.g. the viewer's automated
+// ~1s viewer_stats heartbeat) is not a signal of operator presence, so letting
+// it reset the idle clock would defeat the idle timeout for any open-but-
+// unattended viewer (finding #1).
+func (s *Session) onViewerDataChannelMessage(label string, data []byte) {
+	switch label {
+	case "input":
+		s.recordInputActivity()
+		s.handleInputMessage(data)
+	case "control":
+		s.handleControlMessage(data)
+	}
+}
+
 // handleInputMessage processes input events from the data channel
 func (s *Session) handleInputMessage(data []byte) {
 	// Drop input events early when the handler cannot inject them (e.g. macOS
