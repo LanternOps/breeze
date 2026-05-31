@@ -104,3 +104,43 @@ describe('filterEngine field registration (#968)', () => {
     expect(validateFilter({ field: 'software.notInstalled', operator: 'in', value: ['A'] } as FilterCondition).valid).toBe(true);
   });
 });
+
+describe('filterEngine related-table fields via correlated subqueries (no joins)', () => {
+  it('hardware.* → EXISTS against device_hardware (1:1)', () => {
+    const sql = render({ field: 'hardware.cpuCores', operator: 'greaterThan', value: 4 });
+    expect(sql).toMatch(/exists \(select 1 from "device_hardware"/i);
+    expect(sql).toMatch(/"device_id" = "devices"\."id"/i);
+    expect(sql).toMatch(/> \$\d/);
+  });
+
+  it('network.* → EXISTS against device_network (1:many, any interface)', () => {
+    const sql = render({ field: 'network.ipAddress', operator: 'contains', value: '10.0' });
+    expect(sql).toMatch(/exists \(select 1 from "device_network"/i);
+    expect(sql).toMatch(/ilike/i);
+  });
+
+  it('metrics.* → latest-sample scalar subquery ordered by timestamp', () => {
+    const sql = render({ field: 'metrics.diskPercent', operator: 'greaterThan', value: 90 });
+    expect(sql).toMatch(/from "device_metrics"/i);
+    expect(sql).toMatch(/"device_metrics"\."disk_percent"/i);
+    expect(sql).toMatch(/order by "device_metrics"\."timestamp" desc limit 1/i);
+    expect(sql).toMatch(/> \$\d/);
+  });
+
+  it('groupId equals → EXISTS membership', () => {
+    const sql = render({ field: 'groupId', operator: 'equals', value: 'g1' });
+    expect(sql).toMatch(/exists \(select 1 from "device_group_memberships"/i);
+    expect(sql).toMatch(/"group_id" = \$\d/i);
+  });
+
+  it('groupId in → EXISTS membership ANY', () => {
+    const sql = render({ field: 'groupId', operator: 'in', value: ['g1', 'g2'] });
+    expect(sql).toMatch(/"group_id" = any\(/i);
+  });
+
+  it('device-column fields still compare directly (no subquery)', () => {
+    const sql = render({ field: 'hostname', operator: 'contains', value: 'web' });
+    expect(sql).not.toMatch(/exists/i);
+    expect(sql).toMatch(/ilike/i);
+  });
+});

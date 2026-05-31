@@ -252,36 +252,65 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     return positive ? inner : sql`NOT (${inner})`;
   }
 
-  // Get the actual column reference
-  let columnRef: SQL<unknown>;
-
+  // Resolve the field to a predicate. Device columns (and computed
+  // expressions) compare directly; related tables are reached via correlated
+  // subqueries so the list query stays `FROM devices` with no joins (no row
+  // multiplication, no pagination/RLS interaction). This closes the long-
+  // standing "we'd add the joins here" gap — hardware/network/metrics/group
+  // filters previously errored (unjoined table / unsupported).
   if (fieldInfo.computed) {
-    columnRef = fieldInfo.computed;
-  } else if (fieldInfo.table === 'devices') {
+    return applyOperator(fieldInfo.computed, operator, value);
+  }
+  if (fieldInfo.table === 'devices') {
     const col = devices[fieldInfo.column as keyof typeof devices];
     if (!col) {
       throw new Error(`Unknown device field: ${fieldInfo.column}`);
     }
-    columnRef = sql`${col}`;
-  } else if (fieldInfo.table === 'hardware') {
+    return applyOperator(sql`${col}`, operator, value);
+  }
+  if (fieldInfo.table === 'hardware') {
     const col = deviceHardware[fieldInfo.column as keyof typeof deviceHardware];
     if (!col) {
       throw new Error(`Unknown hardware field: ${fieldInfo.column}`);
     }
-    columnRef = sql`${col}`;
-  } else if (fieldInfo.table === 'network') {
+    // device_hardware is 1:1 with devices (device_id is PK).
+    return sql`EXISTS (SELECT 1 FROM ${deviceHardware} WHERE ${deviceHardware.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, operator, value)})`;
+  }
+  if (fieldInfo.table === 'network') {
     const col = deviceNetwork[fieldInfo.column as keyof typeof deviceNetwork];
     if (!col) {
       throw new Error(`Unknown network field: ${fieldInfo.column}`);
     }
-    columnRef = sql`${col}`;
-  } else if (fieldInfo.table === 'groups') {
-    columnRef = sql`${deviceGroupMemberships.groupId}`;
-  } else {
-    throw new Error(`Unsupported table: ${fieldInfo.table}`);
+    // device_network is 1:many (interfaces); EXISTS = "any interface matches".
+    return sql`EXISTS (SELECT 1 FROM ${deviceNetwork} WHERE ${deviceNetwork.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, operator, value)})`;
   }
+  if (fieldInfo.table === 'metrics') {
+    const col = deviceMetrics[fieldInfo.column as keyof typeof deviceMetrics];
+    if (!col) {
+      throw new Error(`Unknown metrics field: ${fieldInfo.column}`);
+    }
+    // device_metrics is time-series; filter on the latest sample per device.
+    // The (device_id, timestamp) PK makes the per-device lookup an index scan.
+    const latest = sql`(SELECT ${col} FROM ${deviceMetrics} WHERE ${deviceMetrics.deviceId} = ${devices.id} ORDER BY ${deviceMetrics.timestamp} DESC LIMIT 1)`;
+    return applyOperator(latest, operator, value);
+  }
+  if (fieldInfo.table === 'groups') {
+    // Membership test against device_group_memberships.
+    if (operator === 'equals') {
+      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${value})`;
+    }
+    if (operator === 'in' && Array.isArray(value)) {
+      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ANY(${value}))`;
+    }
+    throw new Error(`Unsupported operator for groupId: ${operator}`);
+  }
+  throw new Error(`Unsupported table: ${fieldInfo.table}`);
+}
 
-  // Build the SQL condition based on operator
+// Build a SQL predicate applying an operator to a column expression. The
+// expression may be a plain device column or a correlated subquery (related
+// tables / latest-metric), so this stays purely about operator semantics.
+function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value: FilterValue): SQL<unknown> {
   switch (operator) {
     case 'equals':
       return sql`${columnRef} = ${value}`;
