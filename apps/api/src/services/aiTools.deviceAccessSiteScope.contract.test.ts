@@ -64,6 +64,7 @@ describe('contract: AI-tools verifyDeviceAccess enforces the site axis', () => {
  */
 const SITE_GATED_NON_VERIFY_FILES = [
   'aiToolsVault.ts',
+  'aiToolsSecurity.ts',
   'aiToolsBackup.ts',
   'aiToolsBackupVm.ts',
   'aiToolsMssql.ts',

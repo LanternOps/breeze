@@ -815,13 +815,28 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
 
+        const requestedIds = (input.deviceIds as string[]).slice(0, 100);
+        // Only remove devices in the caller's site scope. Site is an app-layer
+        // axis (RLS does NOT enforce it) — mirror add_devices so a site-restricted
+        // caller can't mutate group membership for out-of-site devices.
+        const candidateRows = await db.select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.orgId, group.orgId), inArray(devices.id, requestedIds)));
+        const removableIds = candidateRows
+          .filter((d) => !deviceSiteDenied(auth, d.siteId))
+          .map((d) => d.id);
+        const skipped = requestedIds.length - removableIds.length;
+        if (removableIds.length === 0) {
+          return JSON.stringify({ success: true, removed: 0, ...(skipped > 0 ? { skipped } : {}), message: 'No in-scope devices to remove' });
+        }
+
         await db.delete(deviceGroupMemberships)
           .where(and(
             eq(deviceGroupMemberships.groupId, group.id),
-            inArray(deviceGroupMemberships.deviceId, input.deviceIds as string[]),
+            inArray(deviceGroupMemberships.deviceId, removableIds),
           ));
 
-        return JSON.stringify({ success: true, message: `Device(s) removed from group "${group.name}"` });
+        return JSON.stringify({ success: true, removed: removableIds.length, ...(skipped > 0 ? { skipped } : {}), message: `Device(s) removed from group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

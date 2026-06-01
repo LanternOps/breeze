@@ -64,4 +64,25 @@ describe('backupVm tools — site scoping', () => {
     const r = await handlerFor('restore_as_vm')({ snapshotId: 's1', targetDeviceId: 'd1', hypervisor: 'hyperv', vmName: 'VM' }, makeAuth(undefined));
     expect(r).not.toContain('access denied');
   });
+
+  it('get_vm_restore_estimate denies when the snapshot device is in a forbidden site', async () => {
+    // snapshot row carries a deviceId; deviceIdSiteDenied then looks up its siteId.
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      call++;
+      if (call === 1) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 's1', size: 1024, metadata: {}, hardwareProfile: {}, deviceId: 'd1' }]) }) }) };
+      // deviceIdSiteDenied: device d1 lives in a forbidden site
+      return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ siteId: 'site-FORBIDDEN' }]) }) }) };
+    });
+    const r = await handlerFor('get_vm_restore_estimate')({ snapshotId: 's1' }, makeAuth(['site-A']));
+    expect(r).toContain('access denied');
+  });
+
+  it('get_vm_restore_estimate unrestricted caller is unaffected (no regression)', async () => {
+    mockDb.select.mockImplementation(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 's1', size: 1024, metadata: { platform: 'win' }, hardwareProfile: { cpuCores: 4 }, deviceId: 'd1' }]) }) }) }));
+    const r = await handlerFor('get_vm_restore_estimate')({ snapshotId: 's1' }, makeAuth(undefined));
+    expect(r).not.toContain('access denied');
+    const parsed = JSON.parse(r);
+    expect(parsed.recommendedCpu).toBe(4);
+  });
 });

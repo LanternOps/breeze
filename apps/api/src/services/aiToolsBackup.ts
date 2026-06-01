@@ -24,7 +24,8 @@ import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
-import { deviceSiteDenied } from './aiToolsSiteScope';
+import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { inArray } from 'drizzle-orm';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -188,6 +189,21 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.status === 'string') conditions.push(eq(backupJobs.status, input.status as any));
         if (typeof input.deviceId === 'string') conditions.push(eq(backupJobs.deviceId, input.deviceId as string));
         if (typeof input.configId === 'string') conditions.push(eq(backupJobs.configId, input.configId as string));
+
+        // Site axis (app-layer only; RLS does NOT enforce it). backupJobs are
+        // device-keyed; a site-restricted caller may only see jobs for devices
+        // in their allowed sites. Narrow to that set (query_vaults pattern).
+        const orgId = getOrgId(auth);
+        if (auth.allowedSiteIds && orgId) {
+          const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({ jobs: [], showing: 0 });
+          }
+          if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) {
+            return JSON.stringify({ jobs: [], showing: 0 });
+          }
+          conditions.push(inArray(backupJobs.deviceId, allowed));
+        }
 
         const rows = await db.select({
           id: backupJobs.id,

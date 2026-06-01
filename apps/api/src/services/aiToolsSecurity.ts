@@ -25,6 +25,11 @@ import {
 } from './securityPosture';
 import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+
+function getOrgId(auth: AuthContext): string | null {
+  return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -273,10 +278,23 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       const view = (typeof input.view === 'string' ? input.view : 'dashboard') as 'dashboard' | 'findings' | 'scans';
       const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
 
+      // Site axis (app-layer only; RLS does NOT enforce it). All reads here are
+      // device-keyed (scans/findings join devices and expose filePath of detected
+      // PII/credentials). Narrow every device-scoped read to the caller's site
+      // allowlist; an empty allowed set → empty results.
+      const orgId = getOrgId(auth);
+      const allowedDeviceIds = orgId ? await resolveSiteAllowedDeviceIds(orgId, auth) : null;
+      if (allowedDeviceIds !== null && allowedDeviceIds.length === 0) {
+        if (view === 'scans') return JSON.stringify({ view: 'scans', totalReturned: 0, byStatus: {}, scans: [] });
+        if (view === 'findings') return JSON.stringify({ view: 'findings', totalReturned: 0, findings: [] });
+        return JSON.stringify({ view: 'dashboard', totals: { findings: 0, open: 0, criticalOpen: 0, remediated24h: 0, averageOpenAgeHours: 0 }, byDataType: {}, byRisk: {} });
+      }
+
       if (view === 'scans') {
         const conditions: SQL[] = [];
         const orgCondition = auth.orgCondition(sensitiveDataScans.orgId);
         if (orgCondition) conditions.push(orgCondition);
+        if (allowedDeviceIds !== null) conditions.push(inArray(sensitiveDataScans.deviceId, allowedDeviceIds));
         if (typeof input.deviceId === 'string' && input.deviceId) {
           conditions.push(eq(sensitiveDataScans.deviceId, input.deviceId));
         }
@@ -319,6 +337,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       const findingConditions: SQL[] = [];
       const orgCondition = auth.orgCondition(sensitiveDataFindings.orgId);
       if (orgCondition) findingConditions.push(orgCondition);
+      if (allowedDeviceIds !== null) findingConditions.push(inArray(sensitiveDataFindings.deviceId, allowedDeviceIds));
       if (typeof input.status === 'string' && input.status) {
         findingConditions.push(eq(sensitiveDataFindings.status, input.status as 'open' | 'remediated' | 'accepted' | 'false_positive'));
       }
@@ -490,6 +509,24 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
       if (findings.length === 0) {
         return JSON.stringify({ error: 'No findings found or access denied' });
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it). This tool queues
+      // DESTRUCTIVE device commands (encrypt/quarantine/secure_delete) or status
+      // writes keyed on each finding's deviceId. A site-restricted caller must
+      // not touch findings on out-of-site devices. All-or-nothing (mirrors fleet
+      // patch install): if ANY requested finding is out-of-site, deny the whole
+      // request rather than acting on a partial set. Fail closed.
+      const remediateOrgId = getOrgId(auth);
+      const remediateAllowedDeviceIds = remediateOrgId
+        ? await resolveSiteAllowedDeviceIds(remediateOrgId, auth)
+        : null;
+      if (remediateAllowedDeviceIds !== null) {
+        const allowedSet = new Set(remediateAllowedDeviceIds);
+        const anyOutOfSite = findings.some((finding) => !finding.deviceId || !allowedSet.has(finding.deviceId));
+        if (anyOutOfSite) {
+          return JSON.stringify({ error: 'One or more findings are on devices outside your site scope — access denied' });
+        }
       }
 
       if (input.dryRun === true) {

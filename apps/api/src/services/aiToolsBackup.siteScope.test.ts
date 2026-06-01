@@ -92,3 +92,32 @@ describe('backup tools — per-device site scoping', () => {
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
 });
+
+describe('query_backups list_jobs — site narrowing (device-keyed jobs)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('site-restricted caller with no in-scope devices gets empty jobs, without scanning all jobs', async () => {
+    let jobsRan = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      // resolveSiteAllowedDeviceIds selects { id, siteId }
+      if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object) && Object.keys(cols as object).length === 2) {
+        return { from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-FORBIDDEN' }]) }) };
+      }
+      jobsRan = true;
+      return { from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'job-leak' }]) }) }) }) }) }) };
+    });
+    const result = await handlerFor('query_backups')({ action: 'list_jobs' }, makeAuth(['site-A']));
+    const parsed = JSON.parse(result);
+    expect(parsed.showing).toBe(0);
+    expect(jobsRan).toBe(false);
+  });
+
+  it('unrestricted caller lists jobs normally (no regression)', async () => {
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({ leftJoin: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'job1' }]) }) }) }) }) }),
+    }));
+    const result = await handlerFor('query_backups')({ action: 'list_jobs' }, makeAuth(undefined));
+    const parsed = JSON.parse(result);
+    expect(parsed.showing).toBe(1);
+  });
+});

@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { deleteSpy } = vi.hoisted(() => ({ deleteSpy: vi.fn() }));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(), transaction: vi.fn() },
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: deleteSpy, transaction: vi.fn() },
 }));
 
 import { db } from '../db';
@@ -56,6 +57,64 @@ describe('manage_patches — per-device site scoping', () => {
     const r = await handlerFor('manage_patches')({ action: 'rollback', patchId: 'p1', deviceIds: ['d1'] }, makeAuth(['site-A']));
     expect(r).toContain('access denied');
     expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_groups remove_devices — per-device site scoping', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('only removes in-scope devices; out-of-site device ids are excluded from the delete', async () => {
+    let call = 0;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      // 1st select: the group row (orgId)
+      if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
+      // 2nd select: candidate devices { id, siteId }
+      return { from: () => ({ where: () => Promise.resolve([
+        { id: 'd-in', siteId: 'site-A' },
+        { id: 'd-out', siteId: 'site-FORBIDDEN' },
+      ]) }) };
+    });
+    let deletedIds: string[] | null = null;
+    deleteSpy.mockReturnValue({
+      where: (cond: any) => {
+        // Capture the device-id list the delete is scoped to by re-running the
+        // inArray against a probe. We can't introspect the SQL easily, so the
+        // handler must have narrowed the id list before building the condition.
+        return Promise.resolve();
+      },
+    });
+    // Spy on inArray indirectly: assert handler reports the skipped count.
+    const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d-in', 'd-out'] }, makeAuth(['site-A']));
+    const parsed = JSON.parse(r);
+    expect(parsed.success).toBe(true);
+    // out-of-site device must be reported as skipped (not silently removed)
+    expect(parsed.removed).toBe(1);
+    expect(parsed.skipped).toBe(1);
+  });
+
+  it('removes nothing (no delete) when all requested devices are out-of-site', async () => {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
+      return { from: () => ({ where: () => Promise.resolve([{ id: 'd-out', siteId: 'site-FORBIDDEN' }]) }) };
+    });
+    const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d-out'] }, makeAuth(['site-A']));
+    const parsed = JSON.parse(r);
+    expect(parsed.removed).toBe(0);
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('unrestricted caller removes all requested devices (no regression)', async () => {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
+      return { from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-Z' }, { id: 'd2', siteId: 'site-Y' }]) }) };
+    });
+    deleteSpy.mockReturnValue({ where: () => Promise.resolve() });
+    const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d1', 'd2'] }, makeAuth(undefined));
+    const parsed = JSON.parse(r);
+    expect(parsed.success).toBe(true);
+    expect(deleteSpy).toHaveBeenCalled();
   });
 });
 

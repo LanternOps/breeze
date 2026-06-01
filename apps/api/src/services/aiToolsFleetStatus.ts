@@ -98,11 +98,15 @@ export async function computeInviteFunnel(
     : allDeviceRows;
 
   const byDeviceId = new Map(deviceRows.map((d) => [d.id, d] as const));
-  // Enrolled count is the in-scope enrolled devices. For unrestricted callers
-  // deviceRows == allDeviceRows, so this matches prior behavior; for restricted
-  // callers it excludes out-of-site devices (fail closed).
+  // Enrolled count. Only a site-restricted caller narrows to in-scope devices
+  // (fail closed). Unrestricted callers keep prior behavior: an enrolled invite
+  // counts even if its device row is missing (e.g. the device was deleted after
+  // enrollment) — `byDeviceId.has` would wrongly drop that case.
   const devices_enrolled = invites.filter(
-    (i) => i.status === 'enrolled' && i.deviceId !== null && byDeviceId.has(i.deviceId),
+    (i) =>
+      i.status === 'enrolled' &&
+      i.deviceId !== null &&
+      (auth?.canAccessSite ? byDeviceId.has(i.deviceId) : true),
   ).length;
   const devices_online = deviceRows.filter((d) => d.status === 'online').length;
   const devices_pending = deviceRows.filter((d) => d.status === 'pending').length;

@@ -13,10 +13,12 @@ vi.mock('./brainDeviceContext', () => ({
 
 import { db } from '../db';
 import { registerDeviceTools } from './aiToolsDevice';
+import { createDeviceContext } from './brainDeviceContext';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
 const mockDb = db as unknown as { select: ReturnType<typeof vi.fn>; execute: ReturnType<typeof vi.fn> };
+const createDeviceContextMock = createDeviceContext as unknown as ReturnType<typeof vi.fn>;
 function handlerFor(name: string): AiTool['handler'] {
   const reg = new Map<string, AiTool>();
   registerDeviceTools(reg);
@@ -61,6 +63,33 @@ describe('query_devices — site narrowing (cross-site enumeration)', () => {
     const r = await handlerFor('query_devices')({}, makeAuth(undefined));
     const parsed = JSON.parse(r);
     expect(parsed.showing).toBe(1);
+  });
+});
+
+describe('set_device_context — per-device site gating (write path)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('denies writing context for a device in a forbidden site, without calling createDeviceContext', async () => {
+    // verifyDeviceAccess does db.select().from(devices)...; the device exists in
+    // the org but lives in a forbidden site.
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'd1', siteId: 'site-FORBIDDEN', status: 'online' }]) }) }) });
+    const r = await handlerFor('set_device_context')(
+      { deviceId: 'd1', contextType: 'issue', summary: 'note' },
+      makeAuth(['site-A']),
+    );
+    expect(r).toContain('access denied');
+    expect(createDeviceContextMock).not.toHaveBeenCalled();
+  });
+
+  it('unrestricted caller writes context normally (no regression)', async () => {
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'd1', siteId: 'site-Z', status: 'online' }]) }) }) });
+    createDeviceContextMock.mockResolvedValue({ id: 'ctx-1' });
+    const r = await handlerFor('set_device_context')(
+      { deviceId: 'd1', contextType: 'issue', summary: 'note' },
+      makeAuth(undefined),
+    );
+    expect(r).not.toContain('access denied');
+    expect(createDeviceContextMock).toHaveBeenCalled();
   });
 });
 

@@ -295,6 +295,13 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
         : undefined;
 
+      // Site axis (app-layer only; RLS does NOT enforce it). Gate the write the
+      // same way get_device_context gates the read — verifyDeviceAccess enforces
+      // both org and site. Without this a site-restricted caller could record
+      // context against an out-of-site device.
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
       const result = await createDeviceContext(
         deviceId,
         contextType,
