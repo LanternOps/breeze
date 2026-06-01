@@ -22,6 +22,21 @@ type Connection = {
 
 type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: string };
 
+// The exact domain-wide-delegation OAuth scopes the Google identity tools use.
+// Keep in sync with ALL_DWD_SCOPES_CSV in apps/api/src/services/googleClient.ts.
+const GOOGLE_DWD_SCOPES_CSV = [
+  'https://www.googleapis.com/auth/admin.directory.user',
+  'https://www.googleapis.com/auth/admin.directory.user.security',
+  'https://www.googleapis.com/auth/admin.directory.user.alias',
+  'https://www.googleapis.com/auth/admin.directory.group',
+  'https://www.googleapis.com/auth/admin.directory.group.member',
+  'https://www.googleapis.com/auth/admin.directory.device.mobile.action',
+  'https://www.googleapis.com/auth/gmail.settings.basic',
+  'https://www.googleapis.com/auth/gmail.settings.sharing',
+  'https://www.googleapis.com/auth/calendar.acls',
+  'https://www.googleapis.com/auth/apps.licensing'
+].join(',');
+
 export default function GoogleWorkspaceIntegration() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -166,6 +181,35 @@ export default function GoogleWorkspaceIntegration() {
           Directory API call to verify domain-wide delegation before saving.
           {!isConnected && ' Saving requires MFA verification.'}
         </p>
+
+        <details className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">
+          <summary className="cursor-pointer font-medium">How to get the service-account JSON and authorize delegation</summary>
+          <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-muted-foreground">
+            <li>
+              In the <span className="font-medium text-foreground">Google Cloud Console</span>, open{' '}
+              <span className="font-medium text-foreground">IAM &amp; Admin → Service Accounts</span> and create one (or pick an
+              existing service account) in the project you want to use.
+            </li>
+            <li>
+              Open the service account, go to the <span className="font-medium text-foreground">Keys</span> tab →{' '}
+              <span className="font-medium text-foreground">Add key → Create new key → JSON → Create</span>. The JSON downloads
+              once. That file is what you paste below. Also note the service account's{' '}
+              <span className="font-medium text-foreground">Client ID</span> (its numeric Unique ID).
+            </li>
+            <li>
+              Enable the APIs the tools use in that project (APIs &amp; Services → Enable APIs):{' '}
+              <span className="font-medium text-foreground">Admin SDK, Gmail, Calendar, Enterprise License Manager</span>.
+            </li>
+            <li>
+              In the <span className="font-medium text-foreground">Google Admin console</span>, go to{' '}
+              <span className="font-medium text-foreground">Security → Access and data control → API controls → Manage Domain Wide
+              Delegation → Add new</span>. Paste the service account's Client ID, and in OAuth Scopes paste the comma-separated list
+              below, then Authorize.
+            </li>
+          </ol>
+          <p className="mt-3 font-medium text-foreground">OAuth scopes to authorize:</p>
+          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-[11px] leading-relaxed text-muted-foreground">{GOOGLE_DWD_SCOPES_CSV}</pre>
+        </details>
 
         <div className="grid gap-4 md:grid-cols-2">
           <div>

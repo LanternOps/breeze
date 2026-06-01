@@ -165,6 +165,34 @@ export default function M365Integration() {
           {!isConnected && ' Saving requires MFA verification.'}
         </p>
 
+        <details className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">
+          <summary className="cursor-pointer font-medium">How to get the tenant id, app id, and client secret</summary>
+          <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-muted-foreground">
+            <li>
+              In the <span className="font-medium text-foreground">Microsoft Entra admin center</span> (entra.microsoft.com)
+              or Azure portal, open <span className="font-medium text-foreground">Microsoft Entra ID → App registrations</span>.
+              Pick an existing app or click <span className="font-medium text-foreground">+ New registration</span> (give it a
+              name, choose "Accounts in this organizational directory only", leave the redirect URI blank), then Register.
+            </li>
+            <li>
+              On the app <span className="font-medium text-foreground">Overview</span>, copy the{' '}
+              <span className="font-medium text-foreground">Directory (tenant) ID</span> and the{' '}
+              <span className="font-medium text-foreground">Application (client) ID</span> into the fields below.
+            </li>
+            <li>
+              Go to <span className="font-medium text-foreground">Certificates &amp; secrets → Client secrets → New client
+              secret</span>, set a description and expiry (24 months max), and click Add.{' '}
+              <span className="font-medium text-foreground">Copy the secret Value immediately</span> (not the Secret ID) — it is
+              shown only once. Paste it into Client secret below.
+            </li>
+            <li>
+              Under <span className="font-medium text-foreground">API permissions</span>, add the Microsoft Graph{' '}
+              <span className="font-medium text-foreground">application</span> permissions listed below, then{' '}
+              <span className="font-medium text-foreground">Grant admin consent</span>.
+            </li>
+          </ol>
+        </details>
+
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <label className="mb-1 block text-sm font-medium">Tenant ID</label>
