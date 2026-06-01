@@ -135,6 +135,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_backups',
       description: 'List backup configurations, jobs, and storage status for the organization.',
@@ -274,6 +275,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_backup_status',
       description: 'Get backup health summary for a device or the entire organization.',
@@ -403,6 +405,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'browse_snapshots',
       description: 'Browse available backup snapshots for a device.',
@@ -470,6 +473,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_backup',
       description: 'Initiate an on-demand backup job for a device.',
@@ -561,6 +565,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_snapshot',
       description: 'Restore a backup snapshot to a device.',

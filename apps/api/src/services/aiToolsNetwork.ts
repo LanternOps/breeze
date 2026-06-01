@@ -355,6 +355,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['device_id'],
     definition: {
       name: 'get_ip_history',
       description: 'Query historical IP assignments. Supports timeline mode (device_id) and reverse lookup mode (ip_address + at_time).',
@@ -521,6 +522,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'network_discovery',
       description: 'Initiate a network discovery scan from a device to find other devices on the network.',

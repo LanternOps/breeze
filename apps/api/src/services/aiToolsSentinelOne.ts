@@ -144,6 +144,7 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_s1_threats',
       description: 'Query SentinelOne threats with filters for severity, status, device, and free-text search.',
@@ -249,6 +250,7 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId', 'deviceIds'],
     definition: {
       name: 's1_isolate_device',
       description: 'Isolate or unisolate one or more devices via SentinelOne. This is a high-risk containment action.',

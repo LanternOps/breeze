@@ -55,6 +55,7 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_analytics',
       description: 'Query analytics data including SLA compliance, capacity predictions, and SLA definitions.',

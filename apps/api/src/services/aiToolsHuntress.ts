@@ -210,6 +210,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_huntress_incidents',
       description: 'Query Huntress incidents with filtering by status, severity, device, or integration.',

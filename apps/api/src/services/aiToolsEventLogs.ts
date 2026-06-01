@@ -23,6 +23,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'search_logs',
       description:
@@ -128,6 +129,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'get_log_trends',
       description:

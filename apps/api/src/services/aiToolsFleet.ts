@@ -296,6 +296,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_patches',
       description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
@@ -606,6 +607,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_groups',
       description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices.',
@@ -849,6 +851,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
       description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".',

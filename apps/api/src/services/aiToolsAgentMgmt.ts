@@ -146,6 +146,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_upgrade',
       description: 'Queue an agent upgrade for a device or group of devices.',

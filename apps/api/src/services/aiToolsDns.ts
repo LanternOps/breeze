@@ -61,6 +61,7 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_dns_security',
       description: 'Get DNS security statistics including blocked domains, threat categories, and top offending devices.',

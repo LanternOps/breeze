@@ -138,6 +138,7 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_sla_breaches',
       description: 'List backup SLA breach events with optional filters for config, device, event type, and timeframe.',

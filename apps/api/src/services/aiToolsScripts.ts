@@ -75,6 +75,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
       description: 'Execute a system command on a device. Requires user approval. Use for process management, service control, file operations, etc.',
@@ -122,6 +123,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
       description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval.',
@@ -195,6 +197,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_services',
       description: 'List, start, stop, or restart system services on a device.',
@@ -240,6 +243,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_processes',
       description: 'List running processes on a device with CPU and memory usage, or terminate a process.',
@@ -690,6 +694,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_scheduled_tasks',
       description: 'List, run, enable, disable, or delete Windows scheduled tasks on a device.',
@@ -750,6 +755,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'registry_operations',
       description: 'Read or modify Windows registry keys and values on a device.',

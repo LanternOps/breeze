@@ -57,6 +57,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'take_screenshot',
       description: 'Capture a screenshot of the device screen. Returns the image for visual analysis. Use this when you need to see what is displayed on the device screen.',
@@ -113,6 +114,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_screen',
       description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees.',
@@ -177,6 +179,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'computer_control',
       description: 'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action by default (configurable via captureAfter). Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
@@ -253,6 +256,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'list_remote_sessions',
       description: 'List active and recent remote sessions (terminal, desktop, file transfer).',
@@ -324,6 +328,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'create_remote_session',
       description: 'Create a new remote terminal or file transfer session to a device.',

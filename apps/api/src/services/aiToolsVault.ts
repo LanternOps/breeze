@@ -60,6 +60,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_vaults',
       description: 'List local vault configurations and sync status for the accessible organization scope.',
@@ -130,6 +131,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_vault_status',
       description: 'Get detailed vault status for a specific device, including all configured vaults and sync summaries.',
@@ -301,6 +303,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'configure_vault',
       description: 'Create or update a local vault configuration.',

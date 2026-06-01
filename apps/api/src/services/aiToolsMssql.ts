@@ -74,6 +74,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_mssql_instances',
       description: 'List discovered SQL Server instances and their databases for the accessible organization scope.',
@@ -142,6 +143,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_mssql_backup_status',
       description: 'Get MSSQL backup chain status by database, including active chain metadata and latest full snapshot context.',
@@ -240,6 +242,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_mssql_backup',
       description: 'Dispatch an MSSQL backup command to a device for a specific instance and database.',
@@ -349,6 +352,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_mssql_database',
       description: 'Dispatch an MSSQL restore command to a device.',

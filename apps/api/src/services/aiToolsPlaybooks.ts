@@ -105,6 +105,7 @@ registerTool({
 
 registerTool({
   tier: 3,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'execute_playbook',
     description: 'Create a self-healing playbook execution record for a device. This creates the audit trail; execute steps manually and update status as you progress.',
@@ -246,6 +247,7 @@ registerTool({
 
 registerTool({
   tier: 1,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'get_playbook_history',
     description: 'View past playbook executions for auditing and trend analysis.',

@@ -63,6 +63,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['targetDeviceId'],
     definition: {
       name: 'restore_as_vm',
       description: 'Restore a backup snapshot as a virtual machine on a target device.',
@@ -207,6 +208,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['targetDeviceId'],
     definition: {
       name: 'instant_boot_vm',
       description: 'Instant boot a backup snapshot as a VM on a target device.',

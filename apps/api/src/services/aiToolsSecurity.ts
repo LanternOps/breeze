@@ -57,6 +57,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'security_scan',
       description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data.',
@@ -164,6 +165,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_security_posture',
       description: 'Get fleet-wide or device-level security posture scores with factor breakdowns and prioritized recommendations.',
@@ -258,6 +260,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_sensitive_data_overview',
       description: 'Query sensitive-data discovery results. Supports dashboard totals, findings list, and recent scans.',

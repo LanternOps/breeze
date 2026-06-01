@@ -86,6 +86,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_hyperv_vms',
       description: 'List discovered Hyper-V virtual machines in the accessible organization scope.',
@@ -360,6 +361,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_hyperv_vm',
       description: 'Dispatch a Hyper-V restore/import command from a provider-backed snapshot to a host device.',

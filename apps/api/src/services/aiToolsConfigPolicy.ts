@@ -114,6 +114,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 2. get_effective_configuration — Tier 1 (read)
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_effective_configuration',
       description: 'Resolve the effective configuration for a device by evaluating all configuration policy assignments in the hierarchy (device > group > site > org > partner). Returns the winning policy per feature type with full inheritance chain for debugging.',
@@ -136,6 +137,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   // 3. preview_configuration_change — Tier 1 (read)
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'preview_configuration_change',
       description: 'Preview how adding or removing configuration policy assignments would change the effective configuration for a device. Returns current vs proposed effective config.',

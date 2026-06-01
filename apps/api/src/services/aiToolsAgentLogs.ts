@@ -32,6 +32,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'search_agent_logs',
       description:
@@ -151,6 +152,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'set_agent_log_level',
       description:

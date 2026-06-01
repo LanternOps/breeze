@@ -253,6 +253,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_service_monitoring_status',
       description: 'Query service and process monitoring status for managed devices. Actions: status (health overview), summary (latest result per watcher), results (check history), known_services (autocomplete).',

@@ -57,6 +57,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier, // Runtime tier check for write/delete in guardrails
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
       description: 'Perform file operations on a device. List and read are safe; write, delete, mkdir, and rename require approval.',
@@ -107,6 +108,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_disk_usage',
       description: 'Analyze filesystem usage for a device and explain what is consuming disk space. Can optionally run a fresh scan.',
@@ -206,6 +208,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'disk_cleanup',
       description: 'Preview or execute disk cleanup. Preview is read-only. Execute deletes approved safe candidates and reports reclaimed space.',

@@ -101,6 +101,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_change_log',
       description: 'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, and user account changes.',

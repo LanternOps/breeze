@@ -80,6 +80,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['device_id'],
     definition: {
       name: 'get_peripheral_activity',
       description: 'Query USB/peripheral connection and enforcement activity.',

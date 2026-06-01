@@ -44,6 +44,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier, // Base tier; acknowledge/resolve/suppress checked at runtime in guardrails
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_alerts',
       description: 'Query, view, acknowledge, resolve, or suppress alerts. Use action "list" to search alerts, "get" for details, "acknowledge" to mark as seen, "resolve" to close, or "suppress" to temporarily silence an alert.',

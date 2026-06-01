@@ -99,6 +99,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_metrics',
       description: 'Query and analyze time-series metrics (CPU, RAM, disk, network) for a device. Supports time range filtering and aggregation.',
@@ -177,6 +178,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_active_users',
       description: 'Query active user sessions for one device or across the fleet. Returns session state and a reboot safety signal.',
@@ -282,6 +284,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_user_experience_metrics',
       description: 'Summarize login performance and session behavior trends for a device or user over time.',
@@ -400,6 +403,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_boot_performance',
       description: 'Analyze boot performance and startup items for a device. Returns boot time history, slowest startup items by impact score, and optimization recommendations.',
@@ -543,6 +547,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_startup_items',
       description: 'Disable or enable startup items on a device. Device must be online. Item must exist in the most recent boot performance record. Requires user approval. Use analyze_boot_performance first to identify high-impact items.',

@@ -135,6 +135,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_device_details',
       description: 'Get comprehensive details about a specific device including hardware specs, network interfaces, disk usage, and recent metrics.',
@@ -190,6 +191,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_device_context',
       description: 'Retrieve past AI memory/context about a device. Returns known issues, quirks, follow-ups, and preferences from previous interactions. Use this AUTOMATICALLY when asked about a device to recall past conversations and context.',
@@ -253,6 +255,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'set_device_context',
       description: 'Record new context/memory about a device for future reference. Use this to remember issues, quirks, follow-ups, or preferences discovered during troubleshooting. This helps maintain continuity across conversations.',
@@ -355,6 +358,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_tags',
       description: 'List all tags used across devices, or add/remove tags on a specific device.',
@@ -456,6 +460,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_custom_fields',
       description: 'Get custom field definitions for the organization, or get custom field values for a specific device.',

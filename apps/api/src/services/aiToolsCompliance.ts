@@ -67,6 +67,7 @@ export function registerComplianceTools(aiTools: Map<string, AiTool>): void {
 
 registerTool({
   tier: 1,
+  deviceArgs: ['deviceIds'],
   definition: {
     name: 'get_software_compliance',
     description: 'Check software compliance status across the fleet. Shows policy violations, unauthorized installations, and missing required software.',
@@ -339,6 +340,7 @@ registerTool({
 
 registerTool({
   tier: 3,
+  deviceArgs: ['deviceIds'],
   definition: {
     name: 'remediate_software_violation',
     description: 'Queue remediation for software policy violations by scheduling uninstall commands for unauthorized software.',
@@ -477,6 +479,7 @@ registerTool({
 
 registerTool({
   tier: 1,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'get_compliance_status',
     description: 'Get device-level compliance status for a specific policy.',
