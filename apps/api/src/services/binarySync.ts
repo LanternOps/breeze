@@ -24,6 +24,7 @@ const GH_PLATFORM_MAP: Record<string, string> = {
 
 const AGENT_TARGETS = [
   { goos: "linux", goarch: "amd64" },
+  { goos: "linux", goarch: "arm64" },
   { goos: "darwin", goarch: "amd64" },
   { goos: "darwin", goarch: "arm64" },
   { goos: "windows", goarch: "amd64" },
