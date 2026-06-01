@@ -63,6 +63,16 @@ export interface RouteInfo {
    * rather than leak. See #1042 re-review.
    */
   sitePermsGateDead: boolean;
+  /**
+   * True iff the route's FILE references a non-user-session auth guard
+   * (agent role, helper token, portal session, viewer ticket, WS ticket, or
+   * platform-admin gate). File-level because routers mount auth via
+   * `.use('*', X)`. Used by the site-scope exempt-allowlist re-verification:
+   * an exempt justified as "no user `permissions` context" must keep one of
+   * these — if the file is migrated to the plain user `authMiddleware`, the
+   * flag flips false and the exempt must be re-triaged.
+   */
+  referencesNonUserAuthGuard: boolean;
 }
 
 const ROUTE_DIR = path.resolve(__dirname, '../../routes');
@@ -101,6 +111,26 @@ const CANONICAL_GATE_NAMES = [
 ] as const;
 
 const CANONICAL_GATE_PATTERNS: readonly RegExp[] = CANONICAL_GATE_NAMES.map(
+  (name) => new RegExp(`\\b${name}\\b`),
+);
+
+// Auth guards that authenticate something OTHER than a tenant user session —
+// an agent/helper/portal/viewer token, a one-time WS ticket, or a platform
+// admin. A route under one of these never carries a user `permissions` context,
+// so `allowedSiteIds` site-scoping does not apply. Used to re-verify the
+// site-scope exempt allowlist (see the coverage contract test).
+const NON_USER_AUTH_GUARD_NAMES = [
+  'requireAgentRole',
+  'agentAuthMiddleware',
+  'helperAuth',
+  'portalAuth',
+  'requireViewerToken',
+  'consumeWsTicket',
+  'consumeDesktopConnectCode',
+  'isPlatformAdmin',
+] as const;
+
+const NON_USER_AUTH_GUARD_PATTERNS: readonly RegExp[] = NON_USER_AUTH_GUARD_NAMES.map(
   (name) => new RegExp(`\\b${name}\\b`),
 );
 
@@ -301,6 +331,15 @@ export function analyzeRouteSource(
         )
       : LIVE_PERMS_SOURCE;
 
+  // File-level: a non-user-session auth guard anywhere in the file implies the
+  // router authenticates a non-user principal (agent/helper/portal/viewer/admin).
+  // The whole `routes/agents/` tree is mounted under agentAuthMiddleware at
+  // agents/index.ts (`.use('/:id/*', agentAuthMiddleware)`), so its sub-files
+  // never reference the guard token directly — treat the directory as agent auth.
+  const inAgentRouteDir = /^routes\/agents\//.test(relFile);
+  const referencesNonUserAuthGuard =
+    inAgentRouteDir || NON_USER_AUTH_GUARD_PATTERNS.some((re) => re.test(text));
+
   const tableColPattern =
     deviceTables.size > 0
       ? new RegExp(
@@ -357,6 +396,7 @@ export function analyzeRouteSource(
       deviceOrSiteUrlParam,
       touchesDeviceData,
       sitePermsGateDead,
+      referencesNonUserAuthGuard,
     });
   }
 

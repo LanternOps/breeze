@@ -173,6 +173,25 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/remote/transfers.ts:POST /transfers',
 ]);
 
+// SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
+// (so they DO carry a `permissions` context) but are exempt for a reason other
+// than "non-user auth": the `deviceId` is a mobile/OAuth device row (not an RMM
+// device with a site), or the route is genuinely site-gated through a cross-file
+// helper the file-local scanner can't see. Every other exempt MUST be backed by
+// a non-user-session auth guard in its file (see the re-verification test) — this
+// set enumerates the deliberate user-session exceptions so they can't hide a
+// future regression where a non-user-auth file is migrated to plain user auth.
+const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<string>([
+  // Mobile/OAuth device rows keyed on the user — not RMM devices with a site.
+  'routes/mobile.ts:POST /devices',
+  'routes/mobile.ts:POST /notifications/register',
+  'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
+  'routes/lifecycle.ts:GET /me/mobile-devices',
+  // Site-gated via the cross-file getDeviceWithOrgCheck resolver (remote/helpers.ts).
+  'routes/remote/sessions.ts:POST /sessions',
+  'routes/remote/transfers.ts:POST /transfers',
+]);
+
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector
 // landed (2026-05-31). These are NOT vetted as safe; they are untriaged debt.
 // The test below gates against NEW offenders only — any handler added/edited
@@ -266,6 +285,39 @@ describe('site-scope coverage — input-sourced / list-style', () => {
           `shrinks.`;
 
     expect(offenders, message).toEqual([]);
+  });
+
+  it('every input-exempt entry stays backed by a non-user-session auth guard', async () => {
+    // Re-verification: the SITE_SCOPE_INPUT_EXEMPT entries are justified by the
+    // route having no user `permissions` context (agent/helper/portal/viewer/
+    // admin token auth). If such a file is later migrated to the plain user
+    // `authMiddleware`, it WOULD carry a `permissions` context and become a real
+    // site-scope gap, but the exempt entry would silently keep it green. Catch
+    // that drift: each exempt must either reference a non-user auth guard in its
+    // file, or be an explicitly-listed user-session exception.
+    const routes = await findRoutesTouchingDeviceData();
+    const byId = new Map(routes.map((r) => [r.id, r] as const));
+    const unjustified: string[] = [];
+    for (const id of SITE_SCOPE_INPUT_EXEMPT) {
+      const route = byId.get(id);
+      // A missing id is a stale entry — owned by the shrink-only test below.
+      if (!route) continue;
+      if (route.referencesNonUserAuthGuard) continue;
+      if (SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK.has(id)) continue;
+      unjustified.push(id);
+    }
+    const message =
+      unjustified.length === 0
+        ? ''
+        : `\nSITE_SCOPE_INPUT_EXEMPT entries reached via the user authMiddleware ` +
+          `(they carry a \`permissions\` context) but no longer backed by a ` +
+          `non-user-session auth guard in their file:\n` +
+          unjustified.map((s) => `  - ${s}`).join('\n') +
+          `\n\nThis exemption assumed no user permissions context. Either restore ` +
+          `the non-user guard, fix the handler to site-scope, or — if it is a ` +
+          `genuine user-session exception (mobile/OAuth device row, cross-file ` +
+          `gate) — add it to SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK with a reason.`;
+    expect(unjustified, message).toEqual([]);
   });
 
   it('the baseline/allowlist shrink-only (no stale entries)', async () => {
