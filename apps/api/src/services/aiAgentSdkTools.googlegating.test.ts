@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { googleToolDefinitions } from './aiAgentSdkTools';
+import { getToolTier } from './aiTools';
+import { googleToolTiers } from './aiToolsGoogle';
 
 // The Google Workspace helpdesk tools are only advertised to the model when
 // GOOGLE_WORKSPACE_ENABLED is truthy. On instances without the flag they must
@@ -7,6 +9,21 @@ import { googleToolDefinitions } from './aiAgentSdkTools';
 // required at call time on top of this).
 const getAuth = () => ({ user: { id: 'u1' }, orgId: 'o1' }) as any;
 const getSession = () => undefined;
+
+// Regression: getToolTier MUST resolve every Google tool. The handlers are
+// session-aware (not in the aiTools execution registry), so if getToolTier does
+// not consult googleToolTiers, checkGuardrails sees tier=undefined → "Unknown
+// tool" → every Google tool is blocked at runtime even though registration +
+// handler unit tests pass. (Bug found + fixed 2026-06-01.)
+describe('getToolTier resolves Google tools (guardrail gate)', () => {
+  it('returns the declared tier for every google_* tool, never undefined', () => {
+    const names = Object.keys(googleToolTiers);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(getToolTier(name), name).toBe(googleToolTiers[name]);
+    }
+  });
+});
 
 describe('Google tool registration gating', () => {
   const ORIG = process.env.GOOGLE_WORKSPACE_ENABLED;
