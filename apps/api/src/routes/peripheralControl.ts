@@ -238,6 +238,9 @@ async function emitPolicyChanged(
 
 peripheralControlRoutes.get(
   '/activity',
+  // Populates `permissions` in context (site-scope narrowing below depends on
+  // it) and gates device-telemetry reads behind DEVICES_READ.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listActivityQuerySchema),
   async (c) => {
     const auth = c.get('auth');

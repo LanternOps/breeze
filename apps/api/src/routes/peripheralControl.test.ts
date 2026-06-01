@@ -64,12 +64,16 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       user: { id: 'user-123', email: 'test@example.com' }
     });
-    c.set('permissions', permsState.perms);
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keeping this faithful to prod ensures a route that
+    // relies on `permissions` for site-scoping but lacks a permission gate fails.
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     if (permissionGate.deny) return c.json({ error: 'Forbidden' }, 403);
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
+    c.set('permissions', permsState.perms);
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -92,7 +96,8 @@ vi.mock('../services/eventBus', () => ({
 
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
-    ORGS_WRITE: { resource: 'organizations', action: 'write' }
+    ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    DEVICES_READ: { resource: 'devices', action: 'read' }
   },
   canAccessSite: (perms: { allowedSiteIds?: string[] } | undefined, siteId: string) =>
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)

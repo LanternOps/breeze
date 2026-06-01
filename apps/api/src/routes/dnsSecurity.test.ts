@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { permissionGate, mfaGate } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
-  mfaGate: { deny: false }
+  mfaGate: { deny: false },
+  permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
 }));
 
 vi.mock('../db', () => ({
@@ -62,6 +63,8 @@ vi.mock('../middleware/auth', () => ({
     if (permissionGate.deny) {
       return c.json({ error: 'Forbidden' }, 403);
     }
+    // Mirror prod: requirePermission (not authMiddleware) populates `permissions`.
+    c.set('permissions', permsState.permissions);
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -87,7 +90,8 @@ vi.mock('../services/secretCrypto', () => ({
 
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
-    ORGS_WRITE: { resource: 'organizations', action: 'write' }
+    ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    DEVICES_READ: { resource: 'devices', action: 'read' }
   },
   // Faithful to the real implementation: unrestricted callers (no
   // allowedSiteIds) always pass; otherwise the site must be in the allowlist.
@@ -223,6 +227,10 @@ describe('dns security routes', () => {
   const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
 
   function setSiteScopedAuth(allowedSiteIds: string[] | undefined) {
+    // `permissions` is populated by requirePermission (see global mock), not
+    // authMiddleware — faithful to prod, so a route lacking the permission gate
+    // will not receive site scoping and its tests will fail.
+    permsState.permissions = allowedSiteIds !== undefined ? { allowedSiteIds } : undefined;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
@@ -232,7 +240,6 @@ describe('dns security routes', () => {
         orgCondition: () => undefined,
         user: { id: 'user-123', email: 'test@example.com' }
       });
-      if (allowedSiteIds !== undefined) c.set('permissions', { allowedSiteIds });
       return next();
     });
   }
