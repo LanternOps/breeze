@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   findRoutesTouchingDevices,
   findRoutesTouchingDeviceData,
+  findRoutesWithDeadPermsSiteGate,
   type RouteInfo,
 } from '../helpers/routeScan';
 
@@ -284,6 +285,100 @@ describe('site-scope coverage — input-sourced / list-style', () => {
         ? ''
         : `\nBaseline/exempt entries no longer flagged (handler fixed or moved — ` +
           `remove them so the ratchet tightens):\n` +
+          stale.map((s) => `  - ${s}`).join('\n');
+    expect(stale, message).toEqual([]);
+  });
+});
+
+/**
+ * Third detector: DEAD permissions-sourced site gates. This is the blind spot
+ * the #1042 re-review uncovered. The two detectors above check whether a
+ * site-scope gate is *present* in source. They do NOT check whether it ever
+ * *runs*: the fail-open idiom
+ *
+ *     const perms = c.get('permissions');
+ *     if (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId)) deny();
+ *
+ * reads `permissions` from the request context — which is populated ONLY by
+ * `requirePermission` middleware (`middleware/auth.ts` does
+ * `c.set('permissions', …)`), NEVER by `authMiddleware`/`requireScope`. A route
+ * carrying only `requireScope` leaves `perms` `undefined`, so `perms?.…` is
+ * falsy, the guard is skipped, and a site-restricted partner user reads/writes
+ * out-of-site devices. The gate text is present (so the detectors above pass),
+ * but it is dead. The original scanner treated `canAccessSite`/`allowedSiteIds`
+ * as proof of a gate; this detector additionally requires a LIVE source for the
+ * `permissions` context.
+ *
+ * {@link findRoutesWithDeadPermsSiteGate} flags a route when its handler — or a
+ * file-local helper it calls — gates on the `permissions` context with no live
+ * source (`requirePermission(` in the chain, a `getUserPermissions(` fallback,
+ * or self-resolving `requireSiteAccess`). Fail-closed helpers that THROW on a
+ * missing context (`getDeviceWithOrgAndSiteCheck`) are excluded — they break
+ * the request rather than leak.
+ *
+ * Routes that legitimately gate via `getUserPermissions` fallback are NOT
+ * flagged — e.g. `routes/security/{posture,status,threats}.ts`, which fetch
+ * permissions themselves (PR #900) and so stay live under plain `requireScope`.
+ */
+// Vetted-safe: confirmed NOT a dead gate despite matching the static shape.
+// Each entry MUST carry a one-line justification.
+const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
+]);
+
+// BASELINE RATCHET — routes whose perms-sourced site gate is dead RIGHT NOW,
+// carried as frozen debt so this detector lands green and blocks NEW offenders.
+// The "shrink-only" test makes the ratchet one-directional: as each entry gains
+// a live perms source (and drops out of the flagged set), its line MUST be
+// removed.
+//
+// EMPTY: when this detector was first written (against the pre-merge scanner
+// base) it flagged 5 dead gates — dnsSecurity GET /events+/stats, huntress GET
+// /incidents, peripheralControl GET /activity, sentinelOne GET /threats — the
+// 2026-05 sweep (commit b6da267a) had added their `allowedSiteIds` narrowing
+// but not the `requirePermission` that populates `c.get('permissions')`. All 5
+// were independently fixed in #1036's final revision (now in main: each route
+// carries `requirePermission(DEVICES_READ)`), so the detector finds zero
+// offenders here. It ships with no residual debt; any future offender fails the
+// test above and must be fixed.
+const DEAD_PERMS_GATE_BASELINE: ReadonlySet<string> = new Set<string>([
+]);
+
+describe('site-scope coverage — dead permissions-sourced gate', () => {
+  it('no route gates on the permissions context without a live source', async () => {
+    const routes = await findRoutesWithDeadPermsSiteGate();
+    const offenders = routes.filter(
+      (r) =>
+        !DEAD_PERMS_GATE_EXEMPT.has(r.id) && !DEAD_PERMS_GATE_BASELINE.has(r.id),
+    );
+
+    const message =
+      offenders.length === 0
+        ? ''
+        : `\n${offenders.length} route(s) gate site access on the \`permissions\` ` +
+          `context but have no live source for it (no requirePermission in the ` +
+          `chain, no getUserPermissions fallback, no requireSiteAccess) — the ` +
+          `site gate is present in source but NEVER runs:\n` +
+          offenders.map(formatOffender).join('\n') +
+          `\n\nFix by adding requirePermission(DEVICES_READ/…) to the middleware ` +
+          `chain (populates c.get('permissions')), OR a getUserPermissions ` +
+          `fallback in the handler. If genuinely safe, add the id to ` +
+          `DEAD_PERMS_GATE_EXEMPT with a one-line reason. Do NOT extend ` +
+          `DEAD_PERMS_GATE_BASELINE — that set is frozen and only shrinks.`;
+
+    expect(offenders, message).toEqual([]);
+  });
+
+  it('the baseline/allowlist shrink-only (no stale entries)', async () => {
+    const routes = await findRoutesWithDeadPermsSiteGate();
+    const stillFlagged = new Set(routes.map((r) => r.id));
+    const stale = [...DEAD_PERMS_GATE_BASELINE, ...DEAD_PERMS_GATE_EXEMPT].filter(
+      (e) => !stillFlagged.has(e),
+    );
+    const message =
+      stale.length === 0
+        ? ''
+        : `\nDead-perms-gate baseline/exempt entries no longer flagged (handler ` +
+          `gained a live source or moved — remove them so the ratchet tightens):\n` +
           stale.map((s) => `  - ${s}`).join('\n');
     expect(stale, message).toEqual([]);
   });

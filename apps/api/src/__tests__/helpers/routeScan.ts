@@ -44,6 +44,25 @@ export interface RouteInfo {
    * input-sourced / list-style class the `:deviceId`-URL scan can't see.
    */
   touchesDeviceData: boolean;
+  /**
+   * True iff the handler gates site access through the request-scoped
+   * `permissions` context (`c.get('permissions')` → `canAccessSite` /
+   * `allowedSiteIds`), directly or via a file-local helper, but has NO live
+   * source for that context: no `requirePermission(` in the middleware chain,
+   * no `getUserPermissions(` fallback, no self-resolving `requireSiteAccess`.
+   *
+   * This is the dead-gate blind spot: `permissions` is populated ONLY by
+   * `requirePermission` (`middleware/auth.ts` does `c.set('permissions', …)`),
+   * never by `authMiddleware`/`requireScope`. The fail-open idiom
+   * `if (perms?.allowedSiteIds && !canAccessSite(perms, …))` therefore SKIPS
+   * the check when `perms` is `undefined`, silently granting a site-restricted
+   * user access to out-of-site devices. The {@link usesSiteScopeGate} flag
+   * does NOT catch this — the gate *text* is present, it just never runs.
+   * Fail-closed helpers (which `throw` when `permissions` is absent, e.g.
+   * `getDeviceWithOrgAndSiteCheck`) are excluded: they break the request
+   * rather than leak. See #1042 re-review.
+   */
+  sitePermsGateDead: boolean;
 }
 
 const ROUTE_DIR = path.resolve(__dirname, '../../routes');
@@ -126,6 +145,43 @@ const HANDLER_SLICE_BYTES = 4000;
  *  function`, or `(` (arrow / function-expression) to exclude calls. */
 const LOCAL_HELPER_DECL = /^(?:async\s+)?function\s+(\w+)\s*[\(<]|^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?(?:function\b|\()/gm;
 
+// --- Dead permissions-sourced site-gate detection (see RouteInfo.sitePermsGateDead) ---
+
+/** Reads the request-scoped permissions object. Populated ONLY by
+ *  `requirePermission` middleware (`auth.ts` does `c.set('permissions', …)`),
+ *  never by `authMiddleware`/`requireScope`. */
+const PERMS_CONTEXT_READ = /c\.get\(\s*['"`]permissions['"`]\s*\)/;
+/** Site-gating tokens that operate on the permissions object. */
+const PERMS_SITE_TOKEN = /\bcanAccessSite\b|\ballowedSiteIds\b/;
+/** A live source of permissions in the route's middleware chain or handler:
+ *  `requirePermission(` populates the context; `getUserPermissions(` is the
+ *  inline fallback; `requireSiteAccess` self-resolves perms and gates itself. */
+const LIVE_PERMS_SOURCE = /\brequirePermission\s*\(|\bgetUserPermissions\s*\(|\brequireSiteAccess\b/;
+/** Fail-closed guard: `if (!perms) { … throw … }`. A handler/helper that
+ *  throws when the permissions context is absent breaks the request rather
+ *  than silently granting cross-site access, so a missing `requirePermission`
+ *  is a 500, not a leak (e.g. `getDeviceWithOrgAndSiteCheck`). */
+const FAIL_CLOSED_PERMS = /if\s*\(\s*!\s*\w*[Pp]erm\w*\s*\)\s*\{[^}]*\bthrow\b/;
+/** File-local middleware constants bound to a `requirePermission(...)` call,
+ *  e.g. `const requireMonitorRead = requirePermission(PERMISSIONS.DEVICES_READ…)`.
+ *  Putting one of these in a route's chain populates `c.get('permissions')`
+ *  exactly as inline `requirePermission(...)` does — so it is a LIVE source.
+ *  The bare `requirePermission(` literal in {@link LIVE_PERMS_SOURCE} only
+ *  catches inline use, not the (very common) named-const middleware. */
+const REQUIRE_PERMISSION_CONST = /\bconst\s+(\w+)\s*=\s*requirePermission\s*\(/g;
+
+/** Names of file-local consts bound to `requirePermission(...)` (live perms
+ *  middleware). See {@link REQUIRE_PERMISSION_CONST}. */
+function findRequirePermissionConsts(text: string): string[] {
+  const names: string[] = [];
+  REQUIRE_PERMISSION_CONST.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = REQUIRE_PERMISSION_CONST.exec(text)) !== null) {
+    if (m[1]) names.push(m[1]);
+  }
+  return names;
+}
+
 async function listTsFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: string[] = [];
@@ -143,16 +199,16 @@ async function listTsFiles(dir: string): Promise<string[]> {
   return files;
 }
 
+type LocalDecl = { index: number; name: string };
+
 /**
- * One-pass: collect names of file-local helpers that reference a canonical
- * gate anywhere in their body. The body window starts at the declaration
- * and ends at either HANDLER_SLICE_BYTES OR the start of the next top-level
- * declaration, whichever comes first. This prevents a helper's slice from
- * spilling into an unrelated function further down the file.
+ * Collect every top-level function/arrow declaration with its body window.
+ * The window starts at the declaration and ends at either HANDLER_SLICE_BYTES
+ * OR the start of the next top-level declaration, whichever comes first — so a
+ * helper's slice can't spill into an unrelated function further down the file.
  */
-function findLocalGateWrappers(text: string): string[] {
-  type Decl = { index: number; name: string };
-  const decls: Decl[] = [];
+function collectLocalDeclBodies(text: string): Array<LocalDecl & { body: string }> {
+  const decls: LocalDecl[] = [];
   LOCAL_HELPER_DECL.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = LOCAL_HELPER_DECL.exec(text)) !== null) {
@@ -160,16 +216,45 @@ function findLocalGateWrappers(text: string): string[] {
     if (!name) continue;
     decls.push({ index: match.index, name });
   }
-
-  const names: string[] = [];
-  for (let i = 0; i < decls.length; i++) {
-    const decl = decls[i];
-    if (!decl) continue;
-    if (CANONICAL_GATE_NAMES.includes(decl.name as (typeof CANONICAL_GATE_NAMES)[number])) continue;
+  return decls.map((decl, i) => {
     const nextStart = decls[i + 1]?.index ?? text.length;
     const bodyEnd = Math.min(decl.index + HANDLER_SLICE_BYTES, nextStart);
-    const body = text.slice(decl.index, bodyEnd);
-    if (CANONICAL_GATE_PATTERNS.some((re) => re.test(body))) {
+    return { ...decl, body: text.slice(decl.index, bodyEnd) };
+  });
+}
+
+/**
+ * Names of file-local helpers that reference a canonical gate anywhere in
+ * their body. Routes that call these are gated even when the handler slice
+ * doesn't show the gate name directly.
+ */
+function findLocalGateWrappers(text: string): string[] {
+  const names: string[] = [];
+  for (const decl of collectLocalDeclBodies(text)) {
+    if (CANONICAL_GATE_NAMES.includes(decl.name as (typeof CANONICAL_GATE_NAMES)[number])) continue;
+    if (CANONICAL_GATE_PATTERNS.some((re) => re.test(decl.body))) names.push(decl.name);
+  }
+  return names;
+}
+
+/**
+ * Names of file-local helpers that gate site access by reading the permissions
+ * CONTEXT (`c.get('permissions')` → `canAccessSite`/`allowedSiteIds`) WITHOUT a
+ * self-sufficient source — no `getUserPermissions(` fallback and no fail-closed
+ * `throw`. A route that calls one of these is only safe if it itself runs
+ * `requirePermission`; otherwise the gate is dead. See the `sitePermsGateDead`
+ * computation in {@link analyzeRouteSource} (the tunnels `getDeviceForTunnel`
+ * shape from the #1042 re-review).
+ */
+function findPermsContextGateHelpers(text: string): string[] {
+  const names: string[] = [];
+  for (const decl of collectLocalDeclBodies(text)) {
+    if (
+      PERMS_CONTEXT_READ.test(decl.body) &&
+      PERMS_SITE_TOKEN.test(decl.body) &&
+      !/\bgetUserPermissions\s*\(/.test(decl.body) &&
+      !FAIL_CLOSED_PERMS.test(decl.body)
+    ) {
       names.push(decl.name);
     }
   }
@@ -196,6 +281,25 @@ export function analyzeRouteSource(
     ...CANONICAL_GATE_PATTERNS,
     ...localGateNames.map((n) => new RegExp(`\\b${n}\\b`)),
   ];
+
+  // File-local helpers that gate via the permissions CONTEXT with no
+  // self-sufficient source — calling one without `requirePermission` is dead.
+  const permsGateHelpers = findPermsContextGateHelpers(text);
+  const permsHelperCallPattern =
+    permsGateHelpers.length > 0
+      ? new RegExp(`\\b(?:${permsGateHelpers.map(escapeRegExp).join('|')})\\s*\\(`)
+      : null;
+
+  // A live source of the permissions context in a route's chain: the inline
+  // forms (LIVE_PERMS_SOURCE) plus any file-local requirePermission-bound
+  // middleware const used by name.
+  const permConstNames = findRequirePermissionConsts(text);
+  const livePermsPattern =
+    permConstNames.length > 0
+      ? new RegExp(
+          `${LIVE_PERMS_SOURCE.source}|\\b(?:${permConstNames.map(escapeRegExp).join('|')})\\b`,
+        )
+      : LIVE_PERMS_SOURCE;
 
   const tableColPattern =
     deviceTables.size > 0
@@ -233,6 +337,16 @@ export function analyzeRouteSource(
       (tableColPattern !== null && tableColPattern.test(slice)) ||
       JOIN_DEVICES_PATTERN.test(slice);
 
+    // Dead permissions-sourced site gate: the handler gates on the
+    // `permissions` context (directly or via a perms-context helper) but the
+    // route has no live source for it, so the gate never runs. Fail-closed
+    // handlers (throw on missing perms) are excluded.
+    const permsSiteGate =
+      (PERMS_CONTEXT_READ.test(slice) && PERMS_SITE_TOKEN.test(slice)) ||
+      (permsHelperCallPattern !== null && permsHelperCallPattern.test(slice));
+    const sitePermsGateDead =
+      permsSiteGate && !livePermsPattern.test(slice) && !FAIL_CLOSED_PERMS.test(slice);
+
     const line = text.slice(0, cur.index).split('\n').length;
 
     results.push({
@@ -242,6 +356,7 @@ export function analyzeRouteSource(
       usesSiteScopeGate,
       deviceOrSiteUrlParam,
       touchesDeviceData,
+      sitePermsGateDead,
     });
   }
 
@@ -306,4 +421,15 @@ export async function findRoutesTouchingDevices(): Promise<RouteInfo[]> {
  */
 export async function findRoutesTouchingDeviceData(): Promise<RouteInfo[]> {
   return (await scanAllRoutes()).filter((r) => r.touchesDeviceData);
+}
+
+/**
+ * Routes whose site gate depends on the request-scoped `permissions` context
+ * but which lack a live source for it ({@link RouteInfo.sitePermsGateDead}) —
+ * the dead-gate class where the site check is present in source but never runs
+ * because no `requirePermission` populated `permissions`. Backs the
+ * live-permissions contract test.
+ */
+export async function findRoutesWithDeadPermsSiteGate(): Promise<RouteInfo[]> {
+  return (await scanAllRoutes()).filter((r) => r.sitePermsGateDead);
 }

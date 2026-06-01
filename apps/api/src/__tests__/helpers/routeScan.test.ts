@@ -95,6 +95,213 @@ describe('analyzeRouteSource — input-sourced device-data detector', () => {
   });
 });
 
+describe('analyzeRouteSource — dead permissions-sourced site gate detector', () => {
+  // The vulnerability class: a handler gates site access with the fail-open
+  // idiom `if (perms?.allowedSiteIds && !canAccessSite(perms, …))` where
+  // `perms = c.get('permissions')`. That context value is populated ONLY by
+  // `requirePermission` middleware (auth.ts) — never by `authMiddleware` /
+  // `requireScope`. With no live source, `perms` is `undefined`, the guard is
+  // skipped, and a site-restricted user reads/writes out-of-site devices. The
+  // existing scanner passes these because they DO reference `canAccessSite` /
+  // `allowedSiteIds`; this flag catches that the gate is never actually live.
+
+  it('flags a direct fail-open perms gate with no requirePermission in the chain', () => {
+    const src = [
+      `router.get(`,
+      `  '/:deviceId/posture',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  async (c) => {`,
+      `    const perms = c.get('permissions') as UserPermissions | undefined;`,
+      `    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {`,
+      `      return c.json({ error: 'Access to this site denied' }, 403);`,
+      `    }`,
+      `    return c.json(await getPosture(device.id));`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.sitePermsGateDead).toBe(true);
+  });
+
+  it('does NOT flag when requirePermission is in the middleware chain (perms is live)', () => {
+    const src = [
+      `router.get(`,
+      `  '/:deviceId/posture',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),`,
+      `  async (c) => {`,
+      `    const perms = c.get('permissions') as UserPermissions | undefined;`,
+      `    if (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId)) {`,
+      `      return c.json({ error: 'Access to this site denied' }, 403);`,
+      `    }`,
+      `    return c.json(await getPosture(device.id));`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('does NOT flag when a getUserPermissions fallback makes the read live', () => {
+    // The security/{posture,status,threats} pattern (#900): reads
+    // c.get('permissions') but fetches it itself if the middleware didn't.
+    const src = [
+      `router.get(`,
+      `  '/:deviceId/status',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  async (c) => {`,
+      `    let perms = c.get('permissions') as UserPermissions | undefined;`,
+      `    if (!perms) {`,
+      `      const fetched = await getUserPermissions(auth.user.id, { orgId: auth.orgId });`,
+      `      perms = fetched || undefined;`,
+      `    }`,
+      `    if (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId)) {`,
+      `      return c.json({ error: 'Access to this site denied' }, 403);`,
+      `    }`,
+      `    return c.json(status);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('flags a perms gate reached via a file-local helper with no requirePermission', () => {
+    // The tunnels.ts pattern: getDeviceForTunnel reads c.get('permissions')
+    // and gates on canAccessSite; the calling route has only requireScope.
+    const src = [
+      `async function getDeviceForX(c, deviceId, auth) {`,
+      `  const [device] = await db.select().from(devices).where(eq(devices.id, deviceId)).limit(1);`,
+      `  if (!device) return null;`,
+      `  if (!auth.canAccessOrg(device.orgId)) return null;`,
+      `  const permissions = c.get('permissions') as UserPermissions | undefined;`,
+      `  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {`,
+      `    return 'SITE_ACCESS_DENIED';`,
+      `  }`,
+      `  return device;`,
+      `}`,
+      `router.get(`,
+      `  '/:id',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  async (c) => {`,
+      `    const device = await getDeviceForX(c, c.req.param('id'), auth);`,
+      `    return c.json(device);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES).find(
+      (r) => r.id === "routes/x.ts:GET /:id",
+    )!;
+    expect(route.sitePermsGateDead).toBe(true);
+  });
+
+  it('does NOT flag the same helper-gated route when requirePermission is present', () => {
+    const src = [
+      `async function getDeviceForX(c, deviceId, auth) {`,
+      `  const permissions = c.get('permissions') as UserPermissions | undefined;`,
+      `  if (permissions?.allowedSiteIds && !canAccessSite(permissions, device.siteId)) {`,
+      `    return 'SITE_ACCESS_DENIED';`,
+      `  }`,
+      `  return device;`,
+      `}`,
+      `router.post(`,
+      `  '/',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),`,
+      `  async (c) => {`,
+      `    const device = await getDeviceForX(c, body.deviceId, auth);`,
+      `    return c.json(device);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES).find(
+      (r) => r.id === "routes/x.ts:POST /",
+    )!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('does NOT flag when a requirePermission-bound middleware const is in the chain', () => {
+    // Real-world idiom: routes use `const requireXRead = requirePermission(…)`
+    // and put `requireXRead` in the chain. That populates c.get('permissions')
+    // exactly like inline requirePermission — so the gate is live.
+    const src = [
+      `const requireMonitorRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);`,
+      `router.get(`,
+      `  '/',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  requireMonitorRead,`,
+      `  async (c) => {`,
+      `    const perms = c.get('permissions') as UserPermissions | undefined;`,
+      `    if (perms?.allowedSiteIds && !canAccessSite(perms, asset.siteId)) return c.json({}, 403);`,
+      `    return c.json(results);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES).find(
+      (r) => r.id === "routes/x.ts:GET /",
+    )!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('does NOT flag when requireSiteAccess middleware is in the chain', () => {
+    // requireSiteAccess self-resolves perms (getUserPermissions fallback) and
+    // does its own canAccessSite check — so the route is gated live.
+    const src = [
+      `router.get(`,
+      `  '/sites/:siteId/report',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  requireSiteAccess('siteId'),`,
+      `  async (c) => {`,
+      `    const perms = c.get('permissions');`,
+      `    if (perms?.allowedSiteIds && !canAccessSite(perms, siteId)) return c.json({}, 403);`,
+      `    return c.json(report);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('does NOT flag a fail-closed helper that throws when perms is missing', () => {
+    // The getDeviceWithOrgAndSiteCheck pattern: throws 500 if perms absent, so
+    // a missing requirePermission breaks the request rather than silently
+    // granting cross-site access — not a security hole.
+    const src = [
+      `async function getDeviceChecked(c, deviceId, auth) {`,
+      `  const userPerms = c.get('permissions') as UserPermissions | undefined;`,
+      `  if (!userPerms) {`,
+      `    throw new HTTPException(500, { message: 'called without requirePermission middleware' });`,
+      `  }`,
+      `  if (!userPerms.allowedSiteIds) return device;`,
+      `  if (!canAccessSite(userPerms, device.siteId)) return SITE_ACCESS_DENIED;`,
+      `  return device;`,
+      `}`,
+      `router.get(`,
+      `  '/:deviceId',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  async (c) => {`,
+      `    const device = await getDeviceChecked(c, c.req.param('deviceId'), auth);`,
+      `    return c.json(device);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES).find(
+      (r) => r.id === "routes/x.ts:GET /:deviceId",
+    )!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('does NOT flag a plain org-only handler with no perms-sourced site gate', () => {
+    const src = `
+      router.get('/settings', async (c) => {
+        return c.json(await db.select().from(orgSettings).where(eq(orgSettings.orgId, auth.orgId)));
+      });
+    `;
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+});
+
 describe('findDeviceScopedTables — schema-derived table set', () => {
   it('includes known device/site-scoped tables', async () => {
     const tables = await findDeviceScopedTables();
