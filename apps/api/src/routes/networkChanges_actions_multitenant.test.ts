@@ -81,6 +81,14 @@ vi.mock('../middleware/auth', () => ({
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
       orgCondition: () => null,
     });
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keep it out here so the site-scope gate is genuinely
+    // exercised (overridden per-test in beforeEach for the same reason).
+    return next();
+  }),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
     const restrict = c.req.header('x-restrict-site');
     c.set('permissions', restrict ? {
       permissions: [{ resource: 'devices', action: 'read' }],
@@ -92,8 +100,6 @@ vi.mock('../middleware/auth', () => ({
     } : undefined);
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';
@@ -153,15 +159,8 @@ describe('networkChange routes', () => {
         canAccessOrg: (orgId: string) => orgId === ORG_ID,
         orgCondition: () => null,
       });
-      const restrict = c.req.header('x-restrict-site');
-      c.set('permissions', restrict ? {
-        permissions: [{ resource: 'devices', action: 'read' }],
-        partnerId: null,
-        orgId: ORG_ID,
-        roleId: 'role-1',
-        scope: 'organization',
-        allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
-      } : undefined);
+      // permissions is populated by the requirePermission mock (mirrors prod),
+      // not authMiddleware — see the vi.mock above.
       return next();
     });
     app = new Hono();

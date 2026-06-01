@@ -97,7 +97,6 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -106,14 +105,9 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
-    c.set('permissions', restrict ? {
-      permissions: [{ resource: 'devices', action: 'read' }],
-      partnerId: null,
-      orgId: '11111111-1111-1111-1111-111111111111',
-      roleId: 'role-1',
-      scope: 'organization',
-      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
-    } : undefined);
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keep it out here so a route relying on permissions
+    // for site-scoping but lacking a permission gate fails its tests (not masks).
     return next();
   }),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
@@ -156,7 +150,6 @@ describe('alert routes', () => {
       failedCount: 0
     });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-      const restrict = c.req.header('x-restrict-site');
       c.set('auth', {
         scope: 'organization',
         orgId: '11111111-1111-1111-1111-111111111111',
@@ -165,14 +158,7 @@ describe('alert routes', () => {
         accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
         canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
       });
-      c.set('permissions', restrict ? {
-        permissions: [{ resource: 'devices', action: 'read' }],
-        partnerId: null,
-        orgId: '11111111-1111-1111-1111-111111111111',
-        roleId: 'role-1',
-        scope: 'organization',
-        allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
-      } : undefined);
+      // permissions is populated by requirePermission (mirrors prod), not here.
       return next();
     });
     app = new Hono();

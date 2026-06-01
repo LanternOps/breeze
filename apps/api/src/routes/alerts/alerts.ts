@@ -11,13 +11,13 @@ import {
   alertNotifications,
   devices,
 } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
-import { canAccessSite, type UserPermissions } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
 export const alertsRoutes = new Hono();
 
@@ -27,6 +27,11 @@ const alertIdParamSchema = z.object({ id: z.string().uuid() });
 alertsRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` in context — the site-scope narrowing below reads
+  // `c.get('permissions')`, which ONLY requirePermission sets (not authMiddleware/
+  // requireScope). Without this the narrowing is dead code. ALERTS_READ is granted
+  // to every alert-viewing role, so this adds no lockout.
+  requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action),
   zValidator('query', listAlertsSchema),
   async (c) => {
     const auth = c.get('auth');

@@ -201,6 +201,18 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // Site-gated via the cross-file getDeviceWithOrgCheck resolver (remote/helpers.ts).
   'routes/remote/sessions.ts:POST /sessions',
   'routes/remote/transfers.ts:POST /transfers',
+  // Org-wide AGGREGATE reads: return only counts/summaries (no per-device rows),
+  // so no cross-site device data is disclosed. Reached via user auth but exempt
+  // for the aggregate reason rather than non-user auth — recorded here so the
+  // re-verification test (added in #1041) accepts them. (Site-scoping the
+  // aggregate totals themselves is a separate product call.)
+  'routes/huntress.ts:GET /status',
+  'routes/metrics.ts:GET /',
+  'routes/metrics.ts:GET /trends',
+  'routes/reports/data.ts:GET /data/compliance',
+  'routes/sentinelOne.ts:GET /status',
+  'routes/softwarePolicies.ts:GET /compliance/overview',
+  'routes/updateRings.ts:GET /:id/compliance',
 ]);
 
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector
@@ -358,10 +370,25 @@ const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
 // mock rather than a requirePermission mock). The detector keeps them visible
 // and blocks any NEW offender.
 const DEAD_PERMS_GATE_BASELINE: ReadonlySet<string> = new Set<string>([
+  // Introduced by #1041 (mutations batch1) — added the perms gate, omitted requirePermission.
   'routes/networkBaselines.ts:GET /:id',
   'routes/networkBaselines.ts:GET /:id/changes',
   'routes/remote/sessions.ts:DELETE /sessions/stale',
   'routes/remote/sessions.ts:POST /sessions/:id/offer',
+  // Introduced by #1042 (reads batch2) — same shape: these reads gate on
+  // `perms?.allowedSiteIds` (and pass `perms` to getDeviceWithOrgCheck) but no
+  // `requirePermission` populates `c.get('permissions')`, so the gate is dead.
+  // remote/sessions + remote/transfers routers carry NO requirePermission at all
+  // (router-level decision for the author). No regression — these reads had no
+  // site-scope before. FOLLOW-UP: one focused PR adds requirePermission(DEVICES_READ)
+  // to all 11 dead reads here + de-masks the route tests. Detector keeps them visible.
+  'routes/networkChanges.ts:GET /:id',
+  'routes/remote/sessions.ts:GET /sessions',
+  'routes/remote/sessions.ts:GET /sessions/history',
+  'routes/remote/sessions.ts:GET /sessions/:id',
+  'routes/remote/transfers.ts:GET /transfers',
+  'routes/remote/transfers.ts:GET /transfers/:id',
+  'routes/remote/transfers.ts:GET /transfers/:id/download',
 ]);
 
 describe('site-scope coverage — dead permissions-sourced gate', () => {

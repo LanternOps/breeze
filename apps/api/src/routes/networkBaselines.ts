@@ -17,7 +17,7 @@ import {
 } from '../services/networkBaseline';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
-import { canAccessSite, type UserPermissions } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   networkEventTypes,
   optionalQueryBooleanSchema,
@@ -110,6 +110,9 @@ networkBaselineRoutes.use('*', authMiddleware);
 networkBaselineRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listBaselinesSchema),
   async (c) => {
     const auth = c.get('auth');

@@ -56,7 +56,14 @@ vi.mock('../../db/schema', () => ({
 
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // Mirror prod: requirePermission is the only middleware that populates
+  // `permissions`. authMiddleware/requireScope do not. The site-scope block in
+  // GET /compliance is dead unless this gate runs, so the test must drive
+  // `permissions` through here (not by setting it directly in the app).
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (permissionsState) (c as any).set('permissions', permissionsState);
+    return next();
+  }),
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
@@ -67,6 +74,7 @@ vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
     REPORTS_READ: { resource: 'reports', action: 'read' },
     REPORTS_EXPORT: { resource: 'reports', action: 'export' },
+    DEVICES_READ: { resource: 'devices', action: 'read' },
   },
 }));
 
@@ -97,7 +105,7 @@ function mountApp() {
       canAccessOrg: (orgId: string) => orgId === ORG_ID,
       orgCondition: (column: unknown) => ({ orgCondition: column, orgId: ORG_ID }),
     });
-    if (permissionsState) (c as any).set('permissions', permissionsState);
+    // permissions is populated by the requirePermission mock (mirrors prod), not here.
     await next();
   });
   app.route('/patches', complianceRoutes);

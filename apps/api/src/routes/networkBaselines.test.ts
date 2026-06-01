@@ -55,9 +55,6 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    const allowedSiteIds = c.req.header('x-restrict-site')
-      ? (c.req.header('x-restrict-site') === '__empty__' ? [] : [c.req.header('x-restrict-site') as string])
-      : undefined;
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -67,23 +64,19 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
-    c.set('permissions', allowedSiteIds ? {
-      permissions: [{ resource: 'devices', action: 'read' }],
-      partnerId: null,
-      orgId: 'org-111',
-      roleId: 'role-1',
-      scope: 'organization',
-      allowedSiteIds,
-    } : undefined);
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keeping it out here means a route relying on
+    // `permissions` for site-scoping but lacking the gate fails its tests.
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
     const allowedSiteIds = c.req.header('x-restrict-site')
-      ? [c.req.header('x-restrict-site') as string]
+      ? (c.req.header('x-restrict-site') === '__empty__' ? [] : [c.req.header('x-restrict-site') as string])
       : undefined;
     c.set('permissions', {
-      permissions: [{ resource: 'devices', action: 'write' }],
+      permissions: [{ resource: 'devices', action: 'read' }],
       partnerId: null,
       orgId: 'org-111',
       roleId: 'role-1',
@@ -100,6 +93,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../services/permissions', () => ({
   canAccessSite: (perms: any, siteId: string) =>
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
+  PERMISSIONS: { DEVICES_READ: { resource: 'devices', action: 'read' } },
 }));
 
 vi.mock('../jobs/networkBaselineWorker', () => ({ enqueueBaselineScan: vi.fn() }));

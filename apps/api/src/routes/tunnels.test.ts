@@ -31,7 +31,6 @@ vi.mock('../db/schema', () => ({
 // --- Auth middleware ---
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
@@ -39,6 +38,15 @@ vi.mock('../middleware/auth', () => ({
       user: { id: USER_ID, email: 'test@example.com' },
       canAccessOrg: (id: string) => id === ORG_ID,
     });
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keep it out here so a route relying on permissions
+    // for site-scoping but lacking a permission gate fails its tests (not masks).
+    return next();
+  }),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
+    const restrict = c.req.header('x-restrict-site');
     c.set('permissions', restrict ? {
       permissions: [{ resource: 'devices', action: 'read' }],
       partnerId: null,
@@ -49,8 +57,6 @@ vi.mock('../middleware/auth', () => ({
     } : undefined);
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 

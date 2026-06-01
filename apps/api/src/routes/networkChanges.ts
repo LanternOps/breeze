@@ -12,7 +12,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
-import { canAccessSite, type UserPermissions } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   networkEventTypes,
   optionalQueryBooleanSchema,
@@ -71,6 +71,9 @@ networkChangeRoutes.use('*', authMiddleware);
 networkChangeRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listNetworkChangesSchema),
   async (c) => {
     const auth = c.get('auth');

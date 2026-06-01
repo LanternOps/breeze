@@ -30,6 +30,9 @@ const requireReportExport = requirePermission(PERMISSIONS.REPORTS_EXPORT.resourc
 complianceRoutes.get(
   '/compliance',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', complianceSchema),
   async (c) => {
     const auth = c.get('auth');

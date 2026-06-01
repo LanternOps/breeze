@@ -1198,6 +1198,9 @@ type SearchResult =
 mobileRoutes.get(
   '/search',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   userRateLimit('mobile-search', 30, 60),
   zValidator('query', searchQuerySchema),
   async (c) => {

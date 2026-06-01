@@ -314,6 +314,10 @@ tunnelRoutes.post(
 tunnelRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` (only requirePermission sets it, not authMiddleware/
+  // requireScope) so the site narrowing below is live. DEVICES_READ is granted to
+  // every device-viewing role, so this adds no lockout.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -363,6 +367,9 @@ tunnelRoutes.get(
 tunnelRoutes.get(
   '/allowlist',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -502,6 +509,10 @@ tunnelRoutes.delete(
 tunnelRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site-scope re-enforcement below is live (a
+  // site-restricted org user must not read a colleague's tunnel to an out-of-site
+  // device). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

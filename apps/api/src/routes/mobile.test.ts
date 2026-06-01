@@ -41,11 +41,17 @@ vi.mock('../middleware/auth', () => ({
       orgId: 'org-123',
       partnerId: 'partner-123'
     });
-    if (authState.permissions) c.set('permissions', authState.permissions);
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Setting it here would mask a route that relies on
+    // `permissions` for site-scoping but lacks the requirePermission gate.
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // Mirror prod: requirePermission is the gate that populates `permissions`.
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (authState.permissions) c.set('permissions', authState.permissions);
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 

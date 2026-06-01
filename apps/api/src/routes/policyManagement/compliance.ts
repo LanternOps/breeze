@@ -9,13 +9,13 @@ import {
   configurationPolicies,
   devices,
 } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
 import {
   AuthContext,
   listComplianceSchema,
   policyIdSchema,
 } from './schemas';
-import type { UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   ensureOrgAccess,
@@ -489,6 +489,10 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/:id/compliance',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it, not authMiddleware/requireScope). DEVICES_READ is
+  // granted to every device-viewing role, so this adds no lockout.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', policyIdSchema),
   zValidator('query', listComplianceSchema),
   async (c) => {
