@@ -35,6 +35,7 @@ vi.mock('../services/c2cM365', () => ({
     return tokenResult;
   }),
   testGraphAccess: vi.fn(async () => graphResult),
+  isM365TenantId: (x: string) => /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x),
 }));
 vi.mock('../db', () => ({
   db: {
@@ -57,7 +58,7 @@ function app() {
 }
 
 const storedRow = {
-  id: 'conn-1', orgId: 'org-1', tenantId: 'tenant-guid', clientId: 'client-1',
+  id: 'conn-1', orgId: 'org-1', tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1',
   clientSecret: 'ENCRYPTED-SECRET', displayName: 'Contoso', status: 'active',
   lastVerifiedAt: new Date('2026-06-01T00:00:00Z'), createdAt: new Date('2026-06-01T00:00:00Z'),
   updatedAt: new Date('2026-06-01T00:00:00Z'),
@@ -83,7 +84,7 @@ describe('m365 connection routes', () => {
     const res = await app().request('/m365/connection');
     const body = await res.json();
     expect(body.connected).toBe(true);
-    expect(body.tenantId).toBe('tenant-guid');
+    expect(body.tenantId).toBe('11111111-1111-1111-1111-111111111111');
     expect(body.displayName).toBe('Contoso');
     expect(body).not.toHaveProperty('clientSecret');
     expect(JSON.stringify(body)).not.toContain('ENCRYPTED-SECRET');
@@ -94,7 +95,7 @@ describe('m365 connection routes', () => {
     const res = await app().request('/m365/connection', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: 'tenant-guid', clientId: 'client-1', clientSecret: 'super-secret' }),
+      body: JSON.stringify({ tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'super-secret' }),
     });
     expect(res.status).toBe(201);
     expect(acquireClientCredentialsToken).toHaveBeenCalledOnce();
@@ -111,7 +112,7 @@ describe('m365 connection routes', () => {
     const res = await app().request('/m365/connection', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: 'tenant-guid', clientId: 'client-1', clientSecret: 'super-secret' }),
+      body: JSON.stringify({ tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'super-secret' }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -125,7 +126,7 @@ describe('m365 connection routes', () => {
     const res = await app().request('/m365/connection', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: 'tenant-guid', clientId: 'client-1', clientSecret: 'bad' }),
+      body: JSON.stringify({ tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'bad' }),
     });
     expect(res.status).toBe(400);
     expect(encryptSecret).not.toHaveBeenCalled();
@@ -135,9 +136,20 @@ describe('m365 connection routes', () => {
     const res = await app().request('/m365/connection', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: 'tenant-guid', clientId: 'client-1' }),
+      body: JSON.stringify({ tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1' }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('POST /connection rejects a non-GUID tenant id with 400 before any token call', async () => {
+    const res = await app().request('/m365/connection', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId: 'contoso.onmicrosoft.com', clientId: 'client-1', clientSecret: 'super-secret' }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/tenant guid/i);
+    expect(encryptSecret).not.toHaveBeenCalled();
   });
 
   it('DELETE /connection → connected:false', async () => {

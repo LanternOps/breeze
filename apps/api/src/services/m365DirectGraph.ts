@@ -23,7 +23,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { m365Connections } from '../db/schema/m365';
 import { decryptForColumn } from './secretCrypto';
-import { acquireClientCredentialsToken } from './c2cM365';
+import { acquireClientCredentialsToken, isM365TenantId } from './c2cM365';
 import type { DelegantToolName } from './delegantClient';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
@@ -71,9 +71,15 @@ async function getToken(orgId: string): Promise<{ token: string } | DirectInvoke
   if (!secret) {
     return { kind: 'error', code: 'connection_key_error', message: 'Could not decrypt the stored client secret.' };
   }
+  // The stored tenant id must still be a canonical Entra tenant GUID (the
+  // M365TenantId brand acquireClientCredentialsToken requires); fail closed if not.
+  const tenantId = row.tenantId;
+  if (!isM365TenantId(tenantId)) {
+    return { kind: 'error', code: 'connection_key_error', message: 'Stored Microsoft 365 tenant id is not a valid tenant GUID.' };
+  }
   try {
     const t = await acquireClientCredentialsToken({
-      tenantId: row.tenantId,
+      tenantId,
       clientId: row.clientId,
       clientSecret: secret,
     });

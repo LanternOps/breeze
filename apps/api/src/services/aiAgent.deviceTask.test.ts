@@ -57,6 +57,22 @@ describe('createSession device binding', () => {
     await expect(createSession(auth, { deviceId: DEVICE_ID })).rejects.toThrow('Invalid device');
   });
 
+  it('rejects a same-org device in a site the caller cannot access (#1047 site-axis)', async () => {
+    selectMock.mockReturnValueOnce(devSelect([{ id: DEVICE_ID, orgId: 'org-111', siteId: 'site-OTHER' }]));
+    const siteRestricted: any = { ...auth, canAccessSite: (s: string | null) => s === 'site-ALLOWED' };
+    await expect(createSession(siteRestricted, { deviceId: DEVICE_ID })).rejects.toThrow('Invalid device');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('allows a same-org device whose site IS accessible (site-restricted caller)', async () => {
+    selectMock.mockReturnValueOnce(devSelect([{ id: DEVICE_ID, orgId: 'org-111', siteId: 'site-ALLOWED' }]));
+    const siteRestricted: any = { ...auth, canAccessSite: (s: string | null) => s === 'site-ALLOWED' };
+    const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
+    insertMock.mockReturnValueOnce({ values: valuesSpy });
+    await createSession(siteRestricted, { deviceId: DEVICE_ID });
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ deviceId: DEVICE_ID }));
+  });
+
   it('persists deviceId + approvalMode for a valid same-org device', async () => {
     selectMock.mockReturnValueOnce(devSelect([{ id: DEVICE_ID, orgId: 'org-111' }]));
     const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });

@@ -22,7 +22,7 @@ import { encryptSecret } from '../services/secretCrypto';
 import { resolveScopedOrgId } from './c2c/helpers';
 import { PERMISSIONS } from '../services/permissions';
 import { M365_ENABLED } from '../config/env';
-import { acquireClientCredentialsToken, testGraphAccess } from '../services/c2cM365';
+import { acquireClientCredentialsToken, testGraphAccess, isM365TenantId } from '../services/c2cM365';
 
 export const m365Routes = new Hono();
 
@@ -89,13 +89,27 @@ m365Routes.post(
 
     const payload = c.req.valid('json');
 
+    // Tenant id must be a canonical Entra tenant GUID (the M365TenantId brand
+    // acquireClientCredentialsToken now requires). Reject domain-form / malformed
+    // ids here, before they reach the token URL.
+    const tenantId = payload.tenantId;
+    if (!isM365TenantId(tenantId)) {
+      return c.json(
+        {
+          error: 'tenantId must be a Microsoft 365 tenant GUID',
+          hint: 'Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain.',
+        },
+        400,
+      );
+    }
+
     // Fail-closed: prove the app credentials work before storing, by acquiring a
     // client-credentials token and making a live Graph call. Surfaces a bad
     // secret or missing admin consent immediately with a clear message.
     let displayName: string | null = null;
     try {
       const token = await acquireClientCredentialsToken({
-        tenantId: payload.tenantId,
+        tenantId,
         clientId: payload.clientId,
         clientSecret: payload.clientSecret,
       });

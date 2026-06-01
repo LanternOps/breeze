@@ -68,11 +68,17 @@ export async function createSession(
   let deviceId: string | null = null;
   if (options.deviceId) {
     const [dev] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(eq(devices.id, options.deviceId))
       .limit(1);
     if (!dev || dev.orgId !== orgId) {
+      throw new Error('Invalid device');
+    }
+    // Site-axis (SECURITY-CRITICAL, conforms to #1047): a site-restricted caller
+    // must not bind a session to a device outside their accessible sites, even
+    // within an org they can access. Opaque error mirrors the cross-org case.
+    if (auth.canAccessSite && !auth.canAccessSite(dev.siteId)) {
       throw new Error('Invalid device');
     }
     deviceId = dev.id;

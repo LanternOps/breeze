@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the row lookup, secret decryption, and token acquisition so the test
 // focuses on invokeDirect's Graph endpoint/method/body mapping.
-const mockRow = { tenantId: 'tenant-1', clientId: 'client-1', clientSecret: 'enc-secret' };
+const mockRow = { tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'enc-secret' };
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -17,6 +17,7 @@ vi.mock('../db', () => ({
 vi.mock('./secretCrypto', () => ({ decryptForColumn: vi.fn(() => 'plaintext-secret') }));
 vi.mock('./c2cM365', () => ({
   acquireClientCredentialsToken: vi.fn(async () => ({ accessToken: 'TOKEN-123', expiresIn: 3600 })),
+  isM365TenantId: (x: string) => /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x),
 }));
 
 import { invokeDirect } from './m365DirectGraph';
