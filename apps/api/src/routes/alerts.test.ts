@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { alertRoutes } from './alerts';
 
 const { sendSmsNotificationMock } = vi.hoisted(() => ({
@@ -290,6 +291,100 @@ describe('alert routes', () => {
 
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    });
+
+    it('keeps org-wide (device-less) alerts visible to a site-restricted caller', async () => {
+      // Org-wide alerts (deviceId = null) are not site-bound; a leftJoin +
+      // inArray(devices.siteId, allowed) would drop them (null siteId never
+      // matches), hiding them from site-restricted users. The narrowing must be
+      // or(isNull(alerts.deviceId), inArray(devices.siteId, allowed)).
+      let listWhere: any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockImplementation((cond: any) => {
+                  listWhere = cond;
+                  return {
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([])
+                      })
+                    })
+                  };
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token',
+          'x-restrict-site': '11111111-1111-1111-1111-111111111111'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const sqlText = new PgDialect().sqlToQuery(listWhere).sql.toLowerCase();
+      expect(sqlText).toContain('is null'); // org-wide (device-less) branch present
+      expect(sqlText).toMatch(/in \(/); // still narrows device-bound alerts by site
+    });
+
+    it('still surfaces org-wide alerts to a caller restricted to zero sites', async () => {
+      // allowedSiteIds === [] must not blanket-empty the list — org-wide alerts
+      // (deviceId = null) stay visible; only device-bound alerts are excluded.
+      let listWhere: any;
+      let listQueried = false;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockImplementation((cond: any) => {
+                  listWhere = cond;
+                  listQueried = true;
+                  return {
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([])
+                      })
+                    })
+                  };
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token',
+          'x-restrict-site': '__empty__'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(listQueried).toBe(true); // did NOT short-circuit to an empty list
+      const sqlText = new PgDialect().sqlToQuery(listWhere).sql.toLowerCase();
+      expect(sqlText).toContain('is null'); // org-wide branch present
     });
   });
 

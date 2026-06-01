@@ -526,6 +526,13 @@ function paginatedListHandler(
     const { page, limit, offset } = getPagination(query);
 
     const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    // BY DESIGN: the audit-log list is scoped to the org only, NOT the caller's
+    // site allowlist. Audit trails are an org-level compliance record and must
+    // stay complete for any org member with audit-read permission; partitioning
+    // them by site would hide legitimate entries (and the loose details->>
+    // 'rawActorId' device join is not a reliable site key anyway). The by-id
+    // detail view applies an agent-actor site check as defence-in-depth; the
+    // list intentionally does not. (Site-scope review decision, 2026-05-31.)
     const where = buildFilterConditions(orgCond, query);
     // count(*) on audit_logs is 2-3s under RLS even with the org_timestamp
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the

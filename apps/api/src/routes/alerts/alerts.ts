@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
+import { and, or, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   alertRules,
@@ -90,14 +90,15 @@ alertsRoutes.get(
         }
       }
 
-      if (perms.allowedSiteIds.length === 0) {
-        return c.json({
-          data: [],
-          pagination: { page, limit, total: 0 }
-        });
-      }
-
-      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+      // Org-wide alerts (deviceId null) are not site-bound, so keep them visible
+      // alongside in-scope device alerts (the leftJoin makes a device-less alert's
+      // siteId null, which inArray would otherwise drop). A caller restricted to
+      // zero sites still sees org-wide alerts — only device-bound alerts are hidden.
+      conditions.push(
+        perms.allowedSiteIds.length === 0
+          ? isNull(alerts.deviceId)
+          : or(isNull(alerts.deviceId), inArray(devices.siteId, perms.allowedSiteIds))!
+      );
     }
 
     if (query.startDate) {
