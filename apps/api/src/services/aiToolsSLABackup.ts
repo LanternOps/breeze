@@ -291,6 +291,7 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    deviceArgs: ['targetDevices'],
     definition: {
       name: 'configure_backup_sla',
       description: 'Create or update a backup SLA configuration.',

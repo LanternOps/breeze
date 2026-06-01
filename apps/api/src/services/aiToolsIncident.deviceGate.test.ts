@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * SPIKE demonstration: the declarative gate retroactively closes the cross-org
+ * Demonstration: the declarative gate retroactively closes the cross-org
  * incident-tool hole (execute_containment / collect_evidence) with NOTHING but
  * a `deviceArgs: ['deviceId']` declaration — no change to the handler body.
  *
@@ -70,10 +70,10 @@ describe('incident tools are closed by the declarative gate', () => {
       vi.mocked(db.select).mockImplementation(() => deviceLookup([]) as any); // org/site filter excludes it
       const tool = incidentTools().get(name)!;
 
-      const gateError = await enforceDeviceArgs(tool, { deviceId: FOREIGN_DEVICE }, makeAuth());
+      const gate = await enforceDeviceArgs(tool, { deviceId: FOREIGN_DEVICE }, makeAuth());
 
-      expect(gateError).not.toBeNull();
-      expect(JSON.parse(gateError!).error).toMatch(/not found or access denied/i);
+      expect(gate.ok).toBe(false);
+      expect((gate as { error: string }).error).toMatch(/not found or access denied/i);
     },
   );
 
@@ -85,7 +85,7 @@ describe('incident tools are closed by the declarative gate', () => {
       );
       const tool = incidentTools().get(name)!;
 
-      expect(await enforceDeviceArgs(tool, { deviceId: OWN_DEVICE }, makeAuth())).toBeNull();
+      expect(await enforceDeviceArgs(tool, { deviceId: OWN_DEVICE }, makeAuth())).toEqual({ ok: true });
     },
   );
 });

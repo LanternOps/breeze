@@ -11,9 +11,13 @@ import { aiTools } from './aiTools';
  * caused.
  *
  * Tools that resolve the device indirectly (vmId/snapshotId/findingId/alertId)
- * or return a device LIST without a device-id input are NOT matched here — they
- * have no device-id property — and continue to narrow results via the
- * `aiToolsSiteScope` helpers.
+ * do not currently expose a top-level device-id property, so the regex does not
+ * match them; they continue to narrow via the `aiToolsSiteScope` helpers. If
+ * such a tool later adds a device-id filter it must declare it like any other.
+ * NOTE: coverage is only as strong as `DEVICE_ID_PROP` — a device-id input
+ * named outside this pattern (e.g. `agentId`) would be both ungated and
+ * invisible here. All device-id props in this codebase are device(s)/-id(s)
+ * shaped; keep it that way or widen the pattern.
  *
  * Ratchet: `DEVICE_ARGS_BASELINE` lists tools that expose a device-id property
  * but do not yet declare `deviceArgs`. It is frozen and shrink-only — fixing a
@@ -21,9 +25,13 @@ import { aiTools } from './aiTools';
  * device-arg tool fails until it declares. Drive this to empty.
  */
 
-// Property names that denote a device the tool acts on (string or string[]).
-// Excludes siteId, vmId, snapshotId, findingId, etc. (not direct device ids).
-const DEVICE_ID_PROP = /^(?:target)?device_?ids?$/i;
+// Property names that carry a device id / list of device ids (string or
+// string[]): device(s), with an optional target/affected/source prefix and an
+// optional id(s) suffix — e.g. deviceId, deviceIds, device_id, targetDeviceId,
+// targetDevices, devices, affectedDeviceIds. Deliberately does NOT match
+// agentId (the agent, not the device), siteId, vmId, snapshotId, or
+// deviceGroupId (a group, not a device).
+const DEVICE_ID_PROP = /^(?:target|affected|source)?_?devices?(?:_?ids?)?$/i;
 
 // Tools that expose a device-id property but have not yet been converted to a
 // `deviceArgs` declaration. SHRINK ONLY — never add. Each remaining entry is a
@@ -67,5 +75,19 @@ describe('contract: device-arg tools declare deviceArgs for the central gate', (
     const offenderNames = new Set(offenders.map((o) => o.name));
     const stale = [...DEVICE_ARGS_BASELINE].filter((n) => !offenderNames.has(n));
     expect(stale, `stale baseline entries — remove them: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('every declared deviceArgs name exists as an input_schema property (no typos / dead declarations)', () => {
+    const bad: string[] = [];
+    for (const [name, tool] of aiTools.entries()) {
+      const declared = tool.deviceArgs ?? [];
+      if (declared.length === 0) continue;
+      const schema = tool.definition.input_schema as { properties?: Record<string, unknown> } | undefined;
+      const props = new Set(Object.keys(schema?.properties ?? {}));
+      for (const arg of declared) {
+        if (!props.has(arg)) bad.push(`${name}: deviceArgs entry '${arg}' is not an input_schema property`);
+      }
+    }
+    expect(bad, bad.join('\n')).toEqual([]);
   });
 });
