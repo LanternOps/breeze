@@ -120,6 +120,13 @@ jobs:
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 
+      # Site-scope contract tests are pure static analysis (walk routes/*.ts
+      # from disk, no DB/Redis), so they run here in the fast, blocking job
+      # rather than the non-blocking smoke-test. Guards both the `:deviceId`-URL
+      # coverage and the input-sourced/list-style detector against regressions.
+      - name: Run site-scope coverage contract test
+        run: pnpm --filter=@breeze/api test:site-scope-coverage
+
   # Real-Postgres apply of every migration against an empty database.
   # Catches ordering bugs (issue #506) and any SQL error the static
   # autoMigrate.test.ts cannot see. Cheap (~1 min) and blocking on PRs.
