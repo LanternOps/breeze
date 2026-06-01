@@ -204,6 +204,99 @@ describe('snapshot routes', () => {
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
+  it('denies GET /snapshots/:id for a site-restricted caller when the source device is out-of-site', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('configId');
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns GET /snapshots/:id for a site-restricted caller when the source device is in an allowed site', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(SNAPSHOT_ID);
+  });
+
+  it('keeps GET /snapshots/:id unchanged for an unrestricted caller', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(SNAPSHOT_ID);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies GET /snapshots/:id/browse for a site-restricted caller when the source device is out-of-site', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('data');
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns GET /snapshots/:id/browse for a site-restricted caller when the source device is in an allowed site', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]))
+      .mockReturnValueOnce(chainMock([{ sourcePath: 'C:/data/file.txt', size: 10, modifiedAt: null }]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).snapshotId).toBe(SNAPSHOT_ID);
+  });
+
+  it('keeps GET /snapshots/:id/browse unchanged for an unrestricted caller', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
+      .mockReturnValueOnce(chainMock([{ sourcePath: 'C:/data/file.txt', size: 10, modifiedAt: null }]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).snapshotId).toBe(SNAPSHOT_ID);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
   it('returns protection fields in snapshot responses', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({

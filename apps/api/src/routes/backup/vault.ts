@@ -301,6 +301,13 @@ vaultRoutes.get('/:id/status', requirePermission(PERMISSIONS.ORGS_READ.resource,
     return c.json({ error: 'Vault not found' }, 404);
   }
 
+  // Site-scope is an app-layer-only authz axis; RLS does not defend it. The vault
+  // is resolved scoped only to orgId, so re-enforce the source device's site here
+  // (mirrors the LIST + sync paths). Fail closed on null/out-of-site siteId.
+  if (await isDeviceSiteDenied(orgId, vault.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
   return c.json({
     id: vault.id,
     deviceId: vault.deviceId,

@@ -171,6 +171,31 @@ async function getDeviceForTunnel(c: Context, deviceId: string, auth: AuthContex
   return device;
 }
 
+// Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`); RLS
+// does NOT defend it. Org-scope callers are already limited to their own tunnels
+// by the userId filter, but PARTNER-scope callers with `allowedSiteIds` set would
+// otherwise see/read every org tunnel session regardless of site. These helpers
+// resolve device sites so the list can be narrowed and the detail can 403.
+async function resolveSiteAllowedDeviceIds(orgIds: string[], perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  if (orgIds.length === 0) return [];
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(orgIds.length === 1 ? eq(devices.orgId, orgIds[0]!) : inArray(devices.orgId, orgIds));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
+async function isTunnelDeviceSiteDenied(deviceId: string, perms: UserPermissions | undefined): Promise<boolean> {
+  if (!perms?.allowedSiteIds) return false;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  return !device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId);
+}
+
 async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
   const rules = await db
     .select({ pattern: tunnelAllowlists.pattern })
@@ -291,6 +316,7 @@ tunnelRoutes.get(
   requireScope('organization', 'partner', 'system'),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const status = c.req.query('status');
 
     const conditions: ReturnType<typeof eq>[] = [];
@@ -301,6 +327,17 @@ tunnelRoutes.get(
     // Partner/system admins can see all tunnels in the org.
     if (auth.scope === 'organization') {
       conditions.push(eq(tunnelSessions.userId, auth.user.id));
+    }
+    // Site-scope (app-layer-only authz axis) narrowing. The userId filter above
+    // already bounds org-scope callers, but partner-scope callers with
+    // `allowedSiteIds` set would otherwise see every org tunnel session.
+    if (perms?.allowedSiteIds) {
+      const orgPool = auth.orgId ? [auth.orgId] : (auth.accessibleOrgIds ?? []);
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgPool, perms);
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json([]);
+      }
+      conditions.push(inArray(tunnelSessions.deviceId, allowedDeviceIds));
     }
     if (status) {
       const validStatuses = ['pending', 'connecting', 'active', 'disconnected', 'failed'] as const;
@@ -486,6 +523,13 @@ tunnelRoutes.get(
 
     if (!session) {
       return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    // Site-scope (app-layer-only) re-enforcement: deny when the session's device
+    // sits outside the caller's allowed sites. Fail closed on null siteId.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (await isTunnelDeviceSiteDenied(session.deviceId, perms)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     return c.json(session);

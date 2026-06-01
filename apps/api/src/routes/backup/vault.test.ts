@@ -274,6 +274,38 @@ describe('vault routes', () => {
     );
   });
 
+  it('denies vault status for a site-restricted caller when the vault device is out-of-site', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault({ deviceId: OTHER_DEVICE_ID })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}/status`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('lastSyncError');
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns vault status for a site-restricted caller when the vault device is in an allowed site', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault({ deviceId: DEVICE_ID })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}/status`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(VAULT_ID);
+  });
+
   it('should get vault status', async () => {
     selectMock.mockReturnValueOnce(chainMock([makeVault({
       lastSyncAt: new Date('2026-03-28T12:00:00.000Z'),

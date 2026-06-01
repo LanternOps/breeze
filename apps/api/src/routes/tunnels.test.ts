@@ -302,6 +302,159 @@ describe('Malformed UUID params and query strings', () => {
   });
 });
 
+// ─── Site-scope enforcement on tunnel session reads ──────────────────────────
+
+describe('GET /tunnels — site-scope enforcement (partner-scope callers)', () => {
+  let app: Hono;
+  const SITE_A = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+  const SITE_B = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+  const DEVICE_IN_A = 'd1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1';
+  const DEVICE_IN_B = 'd2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  // List flow when site-restricted: 1st select resolves org devices (id+siteId),
+  // 2nd select returns the (already narrowed) sessions list.
+  function rigListNarrowing(orgDevices: Array<{ id: string; siteId: string | null }>, sessions: any[]) {
+    const deviceWhere = vi.fn().mockResolvedValue(orgDevices);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: deviceWhere }),
+    } as any);
+    const listWhere = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(sessions) }),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: listWhere }),
+    } as any);
+    return { deviceWhere, listWhere };
+  }
+
+  it('narrows the session list to allowed-site devices for a site-restricted caller', async () => {
+    const { listWhere } = rigListNarrowing(
+      [
+        { id: DEVICE_IN_A, siteId: SITE_A },
+        { id: DEVICE_IN_B, siteId: SITE_B },
+      ],
+      [{ ...sessionRecord, deviceId: DEVICE_IN_A }]
+    );
+
+    const res = await app.request('/tunnels', {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].deviceId).toBe(DEVICE_IN_A);
+    expect(listWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty session list when a site-restricted caller has no in-scope devices', async () => {
+    const deviceWhere = vi.fn().mockResolvedValue([{ id: DEVICE_IN_B, siteId: SITE_B }]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: deviceWhere }),
+    } as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+    // Only the org-device narrowing select ran; the sessions query was skipped.
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not narrow the session list for an unrestricted caller', async () => {
+    const listWhere = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([sessionRecord]) }),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: listWhere }),
+    } as any);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toHaveLength(1);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /tunnels/:id — site-scope enforcement', () => {
+  let app: Hono;
+  const SITE_A = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+  const SITE_B = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+  const DEVICE_IN_B = 'd2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('returns 403 when a site-restricted caller reads a tunnel whose device is out-of-site', async () => {
+    // 1st select: tunnel session (joins userId); 2nd select: device siteId.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, deviceId: DEVICE_IN_B }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ siteId: SITE_B }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('targetHost');
+  });
+
+  it('returns 403 when a site-restricted caller reads a tunnel whose device has a null siteId', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, deviceId: DEVICE_IN_B }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ siteId: null }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns the tunnel when a site-restricted caller reads a tunnel whose device is in-site', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, deviceId: DEVICE_IN_B }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ siteId: SITE_A }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(SESSION_ID);
+  });
+
+  it('returns the tunnel for an unrestricted caller without a device-site lookup', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(SESSION_ID);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── POST /tunnels/:id/connect-code ───────────────────────────────────────────
 
 describe('POST /tunnels/:id/connect-code', () => {

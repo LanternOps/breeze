@@ -90,6 +90,8 @@ vi.mock('./helpers', () => ({
 
 import { transferRoutes } from './transfers';
 import { db } from '../../db';
+import { getTransferWithOrgCheck } from './helpers';
+import { hasAssembledFile, getFileSize, getFileStream } from '../../services/fileStorage';
 
 const ALLOWED_SITE = 'site-a';
 const FORBIDDEN_SITE = 'site-b';
@@ -256,5 +258,123 @@ describe('remote transfers — site-scope enforcement', () => {
     expect(db.select).toHaveBeenCalledTimes(2);
     expect(countWhere).toHaveBeenCalledTimes(1);
     expect(listWhere).toHaveBeenCalledTimes(1);
+  });
+
+  describe('GET /transfers/:id', () => {
+    function rigTransferDetail(device: Record<string, unknown>) {
+      vi.mocked(getTransferWithOrgCheck).mockResolvedValue({
+        transfer: { ...makeTransferRow(device.id as string) },
+        device: { id: device.id, hostname: 'host-1', osType: 'linux', ...device },
+      } as never);
+      // user info lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+        }),
+      } as never);
+    }
+
+    it('returns 403 when caller is site-restricted away from the transfer device site', async () => {
+      vi.mocked(getTransferWithOrgCheck).mockResolvedValue({
+        transfer: makeTransferRow(DEVICE_IN_FORBIDDEN),
+        device: { id: DEVICE_IN_FORBIDDEN, orgId: 'org-111', siteId: FORBIDDEN_SITE, hostname: 'host-1', osType: 'linux' },
+      } as never);
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site/i);
+      expect(body).not.toHaveProperty('remotePath');
+    });
+
+    it('returns 403 when the transfer device has a null siteId and caller is site-restricted', async () => {
+      vi.mocked(getTransferWithOrgCheck).mockResolvedValue({
+        transfer: makeTransferRow(DEVICE_IN_ALLOWED),
+        device: { id: DEVICE_IN_ALLOWED, orgId: 'org-111', siteId: null, hostname: 'host-1', osType: 'linux' },
+      } as never);
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns the transfer detail when caller is restricted to the transfer device site', async () => {
+      rigTransferDetail({ id: DEVICE_IN_ALLOWED, orgId: 'org-111', siteId: ALLOWED_SITE });
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).id).toBe(TRANSFER_ID);
+    });
+
+    it('returns the transfer detail for an unrestricted caller regardless of device site', async () => {
+      rigTransferDetail({ id: DEVICE_IN_FORBIDDEN, orgId: 'org-111', siteId: FORBIDDEN_SITE });
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}`, {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).id).toBe(TRANSFER_ID);
+    });
+  });
+
+  describe('GET /transfers/:id/download', () => {
+    it('returns 403 when caller is site-restricted away from the transfer device site', async () => {
+      vi.mocked(getTransferWithOrgCheck).mockResolvedValue({
+        transfer: { ...makeTransferRow(DEVICE_IN_FORBIDDEN), direction: 'upload', status: 'completed' },
+        device: { id: DEVICE_IN_FORBIDDEN, orgId: 'org-111', siteId: FORBIDDEN_SITE, hostname: 'host-1', osType: 'linux' },
+      } as never);
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}/download`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+      // Must not stream file content for an out-of-site device.
+      expect(hasAssembledFile).not.toHaveBeenCalled();
+    });
+
+    it('streams the file when caller is restricted to the transfer device site', async () => {
+      vi.mocked(getTransferWithOrgCheck).mockResolvedValue({
+        transfer: { ...makeTransferRow(DEVICE_IN_ALLOWED), direction: 'upload', status: 'completed' },
+        device: { id: DEVICE_IN_ALLOWED, orgId: 'org-111', siteId: ALLOWED_SITE, hostname: 'host-1', osType: 'linux' },
+      } as never);
+      vi.mocked(hasAssembledFile).mockReturnValue(true);
+      vi.mocked(getFileSize).mockReturnValue(128);
+      const { Readable } = await import('stream');
+      vi.mocked(getFileStream).mockReturnValue(Readable.from(Buffer.from('hello')) as never);
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}/download`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      expect(hasAssembledFile).toHaveBeenCalled();
+    });
+
+    it('streams the file for an unrestricted caller regardless of device site', async () => {
+      vi.mocked(getTransferWithOrgCheck).mockResolvedValue({
+        transfer: { ...makeTransferRow(DEVICE_IN_FORBIDDEN), direction: 'upload', status: 'completed' },
+        device: { id: DEVICE_IN_FORBIDDEN, orgId: 'org-111', siteId: FORBIDDEN_SITE, hostname: 'host-1', osType: 'linux' },
+      } as never);
+      vi.mocked(hasAssembledFile).mockReturnValue(true);
+      vi.mocked(getFileSize).mockReturnValue(128);
+      const { Readable } = await import('stream');
+      vi.mocked(getFileStream).mockReturnValue(Readable.from(Buffer.from('hello')) as never);
+
+      const res = await app.request(`/remote/transfers/${TRANSFER_ID}/download`, {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+    });
   });
 });

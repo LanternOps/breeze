@@ -580,6 +580,16 @@ sessionRoutes.get(
     }
 
     const { session, device } = result;
+
+    // Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`);
+    // RLS does NOT defend it. `getSessionWithOrgCheck` only org-gates (unlike
+    // `getDeviceWithOrgCheck`), so re-enforce site scope here before returning
+    // webrtcOffer/answer/iceCandidates/recordingUrl. Fail closed on null siteId.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (!hasSessionOrTransferOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }

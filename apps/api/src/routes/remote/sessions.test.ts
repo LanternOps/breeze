@@ -542,6 +542,77 @@ describe('remote sessions — site-scope enforcement', () => {
     });
   });
 
+  describe('GET /sessions/:id', () => {
+    it('returns 403 when caller is site-restricted away from the session device site', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'active', deviceId: DEVICE_IN_FORBIDDEN },
+        device: { id: DEVICE_IN_FORBIDDEN, orgId: ORG_ID, siteId: FORBIDDEN_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+      });
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site/i);
+      // Must not leak webrtc/ice payload.
+      expect(body).not.toHaveProperty('webrtcOffer');
+    });
+
+    it('returns 403 when the session device has a null siteId and caller is site-restricted', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'active', deviceId: DEVICE_IN_ALLOWED },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: null, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+      });
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns the session detail when caller is restricted to the session device site', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'active', deviceId: DEVICE_IN_ALLOWED, webrtcOffer: 'v=0', webrtcAnswer: null, iceCandidates: [], startedAt: null, endedAt: null, durationSeconds: null, bytesTransferred: null, recordingUrl: null, errorMessage: null, createdAt: new Date('2026-01-01T00:00:00Z') },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+      });
+      // user info lookup: select().from().where().limit()
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).id).toBe(SESSION_ID);
+    });
+
+    it('returns the session detail for an unrestricted caller regardless of device site', async () => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'active', deviceId: DEVICE_IN_FORBIDDEN, webrtcOffer: 'v=0', webrtcAnswer: null, iceCandidates: [], startedAt: null, endedAt: null, durationSeconds: null, bytesTransferred: null, recordingUrl: null, errorMessage: null, createdAt: new Date('2026-01-01T00:00:00Z') },
+        device: { id: DEVICE_IN_FORBIDDEN, orgId: ORG_ID, siteId: FORBIDDEN_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).id).toBe(SESSION_ID);
+    });
+  });
+
   describe('POST /sessions/:id/offer', () => {
     const offerBody = JSON.stringify({ offer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n' });
 

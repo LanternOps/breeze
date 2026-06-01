@@ -309,6 +309,15 @@ transferRoutes.get(
     }
 
     const { transfer, device } = result;
+
+    // Site-scope is an app-layer-only authz axis; RLS does NOT defend it.
+    // `getTransferWithOrgCheck` only org-gates, so re-enforce site scope here.
+    // Fail closed on null siteId.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (!hasSessionOrTransferOwnership(auth, transfer.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
@@ -515,7 +524,16 @@ transferRoutes.get(
       return c.json({ error: 'Transfer not found' }, 404);
     }
 
-    const { transfer } = result;
+    const { transfer, device } = result;
+
+    // Site-scope is an app-layer-only authz axis; RLS does NOT defend it.
+    // `/download` streams the transferred file content, so re-enforce site scope
+    // before any storage access. Fail closed on null siteId.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (!hasSessionOrTransferOwnership(auth, transfer.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
