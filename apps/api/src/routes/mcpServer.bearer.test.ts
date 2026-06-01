@@ -55,6 +55,16 @@ vi.mock('../db/schema', () => ({
     orgAccess: 'partner_users.org_access',
     orgIds: 'partner_users.org_ids',
   },
+  // buildAuthFromApiKey now calls getUserPermissions for org keys (to inherit
+  // the creator's site allowlist), which reads organizationUsers + roles.
+  organizationUsers: {
+    userId: 'organization_users.user_id',
+    orgId: 'organization_users.org_id',
+    roleId: 'organization_users.role_id',
+    siteIds: 'organization_users.site_ids',
+  },
+  roles: { id: 'roles.id' },
+  permissions: {}, rolePermissions: {},
 }));
 
 vi.mock('../services/aiTools', () => ({
@@ -201,6 +211,28 @@ describe('mcpServer bearer auth routing', () => {
     // depend on the shim above; what matters is that the type changed so the
     // "no filter" fall-through path is closed.
     expect(Array.isArray(authArg?.accessibleOrgIds)).toBe(true);
+  });
+
+  it('attaches a site-axis closure to an org API key auth (inherits creator scope)', async () => {
+    // buildAuthFromApiKey for an org key now loads the creating user's
+    // permissions so the AI-tools site gate applies to MCP callers. The shared
+    // db shim returns an org-user row with no siteIds, i.e. an unrestricted
+    // creator — so canAccessSite must be present AND permit any site (the gate
+    // is a no-op for unrestricted callers, never a hard deny).
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    mocks.getToolTier.mockReturnValue(1);
+    mocks.executeTool.mockResolvedValue('ok');
+
+    const res = await postToolsCall({ 'X-API-Key': 'brz_abc' });
+
+    expect(res.status).toBe(200);
+    const authArg = mocks.executeTool.mock.calls.at(-1)?.[2] as
+      | { scope?: string; canAccessSite?: (s: string | null) => boolean; allowedSiteIds?: string[] }
+      | undefined;
+    expect(authArg?.scope).toBe('organization');
+    expect(typeof authArg?.canAccessSite).toBe('function');
+    expect(authArg?.canAccessSite?.('any-site')).toBe(true);
+    expect(authArg?.allowedSiteIds).toBeUndefined();
   });
 
   it('never attributes the per-tool audit event to a client-supplied out-of-scope arguments.orgId (partner-scoped)', async () => {

@@ -29,6 +29,8 @@ import { devices, alerts, scripts, automations, partners, organizations, partner
 import { eq, and, asc, desc, inArray, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
+import { siteAccessCheck } from '../middleware/auth';
+import { getUserPermissions } from '../services/permissions';
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
@@ -1509,6 +1511,15 @@ async function buildAuthFromApiKey(apiKey: {
   };
 
   if (apiKey.orgId) {
+    // A key inherits the CREATING user's access, including their site-axis
+    // restriction — it can never be broader than the user who minted it. Load
+    // the creator's allowedSiteIds for this org so the site gate (verifyDeviceAccess)
+    // applies to MCP/API-key callers exactly as it does to the JWT request path.
+    const creatorPerms = await getUserPermissions(apiKey.createdBy, {
+      partnerId: apiKey.partnerId || undefined,
+      orgId: apiKey.orgId,
+    });
+    const allowedSiteIds = creatorPerms?.allowedSiteIds;
     return {
       user,
       token: {} as AuthContext['token'],
@@ -1517,7 +1528,9 @@ async function buildAuthFromApiKey(apiKey: {
       scope: 'organization',
       accessibleOrgIds: [apiKey.orgId],
       orgCondition: (orgIdColumn) => eq(orgIdColumn, apiKey.orgId!),
-      canAccessOrg: (checkOrgId) => checkOrgId === apiKey.orgId
+      canAccessOrg: (checkOrgId) => checkOrgId === apiKey.orgId,
+      allowedSiteIds,
+      canAccessSite: siteAccessCheck(allowedSiteIds)
     };
   }
 

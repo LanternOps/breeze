@@ -22,6 +22,24 @@ vi.mock('../db/schema', () => ({
   partners: { id: 'partners.id', billingEmail: 'partners.billingEmail' },
 }));
 
+// buildAuthFromApiKey now calls getUserPermissions for org keys (to inherit the
+// creator's site allowlist). Keep every real export the route graph needs and
+// stub only getUserPermissions to an unrestricted org perms object so these
+// transport/bootstrap tests don't need to model the permissions DB queries.
+vi.mock('../services/permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/permissions')>();
+  return {
+    ...actual,
+    getUserPermissions: vi.fn(async () => ({
+      permissions: [],
+      partnerId: null,
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+    })),
+  };
+});
+
 vi.mock('../services/aiTools', () => ({
   getToolDefinitions: () => [],
   executeTool: vi.fn(),
