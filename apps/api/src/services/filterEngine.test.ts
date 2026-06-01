@@ -1,7 +1,32 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildConditionSQL, validateFilter, getFieldDefinition, escapeLikePattern } from './filterEngine';
-import type { FilterCondition } from '@breeze/shared/types/filters';
+import type { FilterCondition, FilterConditionGroup } from '@breeze/shared/types/filters';
+
+// Capture SQL run inside the filter executors' bounded transaction. Hoisted so
+// the vi.mock factory and the tests share the same array.
+const dbMock = vi.hoisted(() => ({ executed: [] as unknown[] }));
+vi.mock('../db', () => {
+  // A chainable, awaitable stub for the drizzle query builder. Every builder
+  // step returns the same object; awaiting it resolves to an empty row set.
+  const chain: Record<string, unknown> = {};
+  for (const m of ['from', 'where', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  (chain as { then: unknown }).then = (resolve: (rows: unknown[]) => unknown) => resolve([]);
+  const tx = {
+    execute: async (q: unknown) => { dbMock.executed.push(q); return []; },
+    select: () => chain,
+  };
+  return { db: { transaction: async (cb: (t: typeof tx) => unknown) => cb(tx) } };
+});
+
+import {
+  buildConditionSQL,
+  validateFilter,
+  getFieldDefinition,
+  escapeLikePattern,
+  evaluateFilter,
+  evaluateFilterWithPreview,
+  deviceMatchesFilter,
+} from './filterEngine';
 
 describe('filterEngine input hardening (#1044)', () => {
   it('escapeLikePattern escapes backslash, percent, and underscore', () => {
@@ -190,5 +215,63 @@ describe('filterEngine device-row catalog completion', () => {
     expect(render({ field: 'watchdogStatus', operator: 'equals', value: 'failover' })).toMatch(/"watchdog_status" = \$/i);
     expect(render({ field: 'quarantinedAt', operator: 'isNotNull', value: '' })).toMatch(/"quarantined_at" is not null/i);
     expect(render({ field: 'lastUser', operator: 'equals', value: 'x' })).not.toMatch(/exists/i);
+  });
+});
+
+describe('filterEngine matches validation recurses into nested groups (#1044)', () => {
+  it('rejects an over-length matches pattern nested inside groups', () => {
+    const nested: FilterConditionGroup = {
+      operator: 'AND',
+      conditions: [
+        { field: 'status', operator: 'equals', value: 'offline' },
+        { operator: 'OR', conditions: [
+          { field: 'hostname', operator: 'matches', value: 'a'.repeat(251) },
+        ] },
+      ],
+    };
+    const res = validateFilter(nested);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some((e) => e.includes('Regex pattern too long'))).toBe(true);
+  });
+
+  it('accepts a within-limit matches pattern nested inside groups', () => {
+    const nested: FilterConditionGroup = {
+      operator: 'OR',
+      conditions: [
+        { operator: 'AND', conditions: [
+          { field: 'hostname', operator: 'matches', value: 'web-[0-9]+' },
+        ] },
+      ],
+    };
+    expect(validateFilter(nested).valid).toBe(true);
+  });
+});
+
+describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => {
+  const dialect = new PgDialect();
+  const renderedSql = () => dbMock.executed.map((q) => dialect.sqlToQuery(q as never).sql);
+  const setsStatementTimeout = () =>
+    renderedSql().some((s) => /set_config\(/i.test(s) && /statement_timeout/i.test(s));
+
+  beforeEach(() => { dbMock.executed.length = 0; });
+
+  const matchesFilter: FilterConditionGroup = {
+    operator: 'AND',
+    conditions: [{ field: 'hostname', operator: 'matches', value: '(a+)+$' }],
+  };
+
+  it('evaluateFilterWithPreview sets a statement_timeout before querying', async () => {
+    await evaluateFilterWithPreview(matchesFilter, { orgId: 'org-1', previewLimit: 5 });
+    expect(setsStatementTimeout()).toBe(true);
+  });
+
+  it('evaluateFilter sets a statement_timeout before querying', async () => {
+    await evaluateFilter(matchesFilter, { orgId: 'org-1' });
+    expect(setsStatementTimeout()).toBe(true);
+  });
+
+  it('deviceMatchesFilter sets a statement_timeout before querying', async () => {
+    await deviceMatchesFilter('device-1', matchesFilter);
+    expect(setsStatementTimeout()).toBe(true);
   });
 });
