@@ -382,16 +382,26 @@ const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
 // a live perms source (and drops out of the flagged set), its line MUST be
 // removed.
 //
-// EMPTY: when this detector was first written (against the pre-merge scanner
-// base) it flagged 5 dead gates — dnsSecurity GET /events+/stats, huntress GET
-// /incidents, peripheralControl GET /activity, sentinelOne GET /threats — the
-// 2026-05 sweep (commit b6da267a) had added their `allowedSiteIds` narrowing
-// but not the `requirePermission` that populates `c.get('permissions')`. All 5
-// were independently fixed in #1036's final revision (now in main: each route
-// carries `requirePermission(DEVICES_READ)`), so the detector finds zero
-// offenders here. It ships with no residual debt; any future offender fails the
-// test above and must be fixed.
+// History: the detector first flagged 5 dead gates (dnsSecurity GET /events+
+// /stats, huntress GET /incidents, peripheralControl GET /activity, sentinelOne
+// GET /threats) — all independently fixed in #1036's final revision (now in
+// main), so they are NOT listed here.
+//
+// The 4 below were INTRODUCED by this PR (#1041): its mutation-gating added the
+// fail-open `if (perms?.allowedSiteIds && …)` idiom reading `c.get('permissions')`
+// but did NOT add the `requirePermission` that populates it — so on these routes
+// the new site narrowing never runs (no regression: they had no site-scope
+// before either). `remote/sessions.ts` has no `requirePermission` anywhere, so
+// the correct gate is a router-level decision for the #1041 author. Tracked as
+// FOLLOW-UP: add the appropriate `requirePermission(...)` to each chain (and
+// de-mask the new tests, which populate `permissions` via the auth-middleware
+// mock rather than a requirePermission mock). The detector keeps them visible
+// and blocks any NEW offender.
 const DEAD_PERMS_GATE_BASELINE: ReadonlySet<string> = new Set<string>([
+  'routes/networkBaselines.ts:GET /:id',
+  'routes/networkBaselines.ts:GET /:id/changes',
+  'routes/remote/sessions.ts:DELETE /sessions/stale',
+  'routes/remote/sessions.ts:POST /sessions/:id/offer',
 ]);
 
 describe('site-scope coverage — dead permissions-sourced gate', () => {

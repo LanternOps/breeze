@@ -330,11 +330,28 @@ describe('analyzeRouteSource — non-user-session auth guard detection', () => {
   });
 
   it('flags agent-role, viewer-token, portal, and platform-admin guards', () => {
-    for (const guard of ['requireAgentRole', 'requireViewerToken', "c.get('portalAuth')", 'users.isPlatformAdmin']) {
+    for (const guard of ['requireAgentRole', 'requireViewerToken', "c.get('portalAuth')", 'platformAdminMiddleware']) {
       const src = `${guard}\nr.get('/x', async (c) => c.json([]));`;
       const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
       expect(route.referencesNonUserAuthGuard, guard).toBe(true);
     }
+  });
+
+  it('treats the routes/admin/ tree as non-user auth (platformAdminMiddleware at admin/index.ts)', () => {
+    const src = `abuseRoutes.post('/partners/:id/suspend-for-abuse', async (c) => c.json({}));`;
+    const route = analyzeRouteSource('routes/admin/abuse.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.referencesNonUserAuthGuard).toBe(true);
+  });
+
+  it('does NOT flag on a bare users.isPlatformAdmin column reference outside routes/admin/', () => {
+    // The column/context field is not an auth guard — a user-session route that
+    // merely reads it must not pass the re-verification (regression guard).
+    const src = [
+      `mcpRoutes.use('*', apiKeyAuthMiddleware);`,
+      `mcpRoutes.get('/x', async (c) => { const a = users.isPlatformAdmin; return c.json([]); });`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/mcpServer.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.referencesNonUserAuthGuard).toBe(false);
   });
 });
 

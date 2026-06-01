@@ -127,7 +127,12 @@ const NON_USER_AUTH_GUARD_NAMES = [
   'requireViewerToken',
   'consumeWsTicket',
   'consumeDesktopConnectCode',
-  'isPlatformAdmin',
+  // The platform-admin gate, detected by the actual middleware name — NOT a
+  // `users.isPlatformAdmin` column/context reference, which a route migrated to
+  // plain user auth would keep, silently passing re-verification. The
+  // `routes/admin/` tree mounts it at admin/index.ts, so the path rule below
+  // covers admin sub-files that don't reference it directly.
+  'platformAdminMiddleware',
 ] as const;
 
 const NON_USER_AUTH_GUARD_PATTERNS: readonly RegExp[] = NON_USER_AUTH_GUARD_NAMES.map(
@@ -336,9 +341,12 @@ export function analyzeRouteSource(
   // The whole `routes/agents/` tree is mounted under agentAuthMiddleware at
   // agents/index.ts (`.use('/:id/*', agentAuthMiddleware)`), so its sub-files
   // never reference the guard token directly — treat the directory as agent auth.
-  const inAgentRouteDir = /^routes\/agents\//.test(relFile);
+  // `routes/admin/` is mounted under platformAdminMiddleware at admin/index.ts
+  // (`.use('*', platformAdminMiddleware)`), so its sub-files (abuse.ts, etc.) are
+  // platform-admin-gated without referencing the guard directly.
+  const inParentMountedAuthDir = /^routes\/(agents|admin)\//.test(relFile);
   const referencesNonUserAuthGuard =
-    inAgentRouteDir || NON_USER_AUTH_GUARD_PATTERNS.some((re) => re.test(text));
+    inParentMountedAuthDir || NON_USER_AUTH_GUARD_PATTERNS.some((re) => re.test(text));
 
   const tableColPattern =
     deviceTables.size > 0
