@@ -71,6 +71,16 @@ export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
   handler: (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+  /**
+   * Names of the tool's input properties that carry a device id (each a string
+   * or string[]). When set, the central dispatch gates every supplied id
+   * through the org+site `verifyDeviceAccess` BEFORE the handler runs — so a
+   * tool author can no longer forget the per-device tenant check (the root
+   * cause of the cross-org incident-tool bug). Tools that resolve the device
+   * indirectly (via a VM/snapshot/alert record) or return a device LIST are
+   * NOT covered by this and must still narrow results themselves.
+   */
+  deviceArgs?: readonly string[];
 }
 
 // ============================================
@@ -93,6 +103,34 @@ export async function verifyDeviceAccess(
   }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
+}
+
+/**
+ * Central declarative device-access gate. For each input property a tool names
+ * in `deviceArgs`, runs the org+site `verifyDeviceAccess` check on every id it
+ * carries (string or string[]). Returns an opaque error-JSON string on the
+ * first denial, or `null` to proceed. No-op for tools without `deviceArgs` and
+ * for unrestricted callers. This is the structural backstop that makes the
+ * per-handler check impossible to forget — see `executeTool`.
+ */
+export async function enforceDeviceArgs(
+  tool: Pick<AiTool, 'deviceArgs'>,
+  input: Record<string, unknown>,
+  auth: AuthContext
+): Promise<string | null> {
+  if (!tool.deviceArgs || tool.deviceArgs.length === 0) return null;
+  for (const argName of tool.deviceArgs) {
+    const raw = input[argName];
+    const ids = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+    for (const id of ids) {
+      // Shape (string vs array) is already Zod-validated upstream; skip
+      // anything that isn't a non-empty string and let the handler reject it.
+      if (typeof id !== 'string' || id.length === 0) continue;
+      const access = await verifyDeviceAccess(id, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+    }
+  }
+  return null;
 }
 
 export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
@@ -206,6 +244,12 @@ export async function executeTool(
   if (!validation.success) {
     return JSON.stringify({ error: validation.error });
   }
+
+  // Structural device-tenant gate: any id named in `tool.deviceArgs` is
+  // org+site-checked before the handler runs, so a tool can't reach a device
+  // outside the caller's scope even if its handler forgets to check.
+  const deviceGateError = await enforceDeviceArgs(tool, input, auth);
+  if (deviceGateError !== null) return deviceGateError;
 
   return tool.handler(input, auth);
 }
