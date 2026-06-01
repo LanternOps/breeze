@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { googleWorkspaceConnections } from '../db/schema/google';
-import { requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { encryptSecret } from '../services/secretCrypto';
@@ -28,6 +28,11 @@ export const googleRoutes = new Hono();
 
 const requireOrgsRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requireOrgsWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+
+// Every endpoint requires an authenticated session (populates c.get('auth') for
+// the requirePermission / requireMfa guards below). Without this the guards see
+// no auth context and reject every request with 401.
+googleRoutes.use('*', authMiddleware);
 
 // Whole group is dark unless the feature flag is on.
 googleRoutes.use('*', async (c, next) => {

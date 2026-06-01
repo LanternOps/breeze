@@ -146,4 +146,16 @@ describe('m365 connection routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ connected: false });
   });
+
+  // Regression: the route module itself must attach authMiddleware. index.ts
+  // does NOT apply a global auth middleware to the /api/v1 group, so a route
+  // that forgets `.use('*', authMiddleware)` reaches requirePermission with no
+  // auth context and 401s every authenticated request. Mount the router WITHOUT
+  // the harness auth and assert the router invoked authMiddleware on its own.
+  it('attaches authMiddleware itself (regression: 401 for all callers when missing)', async () => {
+    const bare = new Hono();
+    bare.route('/m365', m365Routes);
+    await bare.request('/m365/connection');
+    expect(authMiddleware).toHaveBeenCalled();
+  });
 });
