@@ -138,14 +138,18 @@ export async function invokeDirect(
       if (!userId) return { kind: 'error', code: 'bad_request', message: 'userId is required.' };
       return graphFetch(token, 'GET', `/users/${encodeURIComponent(userId)}`);
 
-    case 'get_user_signin_activity':
+    case 'get_user_signin_activity': {
       if (!userId) return { kind: 'error', code: 'bad_request', message: 'userId is required.' };
+      // Escape single quotes per OData (double them) so a quote in the id can't
+      // break out of the literal; encodeURIComponent only handles URL transport.
+      const odataId = userId.replace(/'/g, "''");
       // Sign-in logs require Entra ID P1/P2 on the tenant; a clear error surfaces if not.
       return graphFetch(
         token,
         'GET',
-        `/auditLogs/signIns?$filter=${encodeURIComponent(`userId eq '${userId}'`)}&$top=10`,
+        `/auditLogs/signIns?$filter=${encodeURIComponent(`userId eq '${odataId}'`)}&$top=10`,
       );
+    }
 
     case 'list_groups':
       return graphFetch(token, 'GET', `/groups?$top=50&$select=id,displayName,mail,description`);
