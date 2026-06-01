@@ -3,6 +3,7 @@ import {
   Activity,
   Plug,
   Shield,
+  Users,
   Webhook
 } from 'lucide-react';
 import WebhooksPage from '../webhooks/WebhooksPage';
@@ -10,20 +11,29 @@ import PsaConnectionsPage from '../psa/PsaConnectionsPage';
 import SecurityIntegration from './SecurityIntegration';
 import HuntressIntegration from './HuntressIntegration';
 import MonitoringIntegration from './MonitoringIntegration';
+import GoogleWorkspaceIntegration from './GoogleWorkspaceIntegration';
+import M365Integration from './M365Integration';
 
-type TabId = 'webhooks' | 'psa' | 'security' | 'monitoring';
+type TabId = 'webhooks' | 'psa' | 'security' | 'monitoring' | 'identity';
 type SecuritySubTab = 'sentinelone' | 'huntress';
+type IdentitySubTab = 'google' | 'm365';
 
 const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'webhooks', label: 'Webhooks', icon: Webhook },
   { id: 'psa', label: 'PSA', icon: Plug },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
+  { id: 'identity', label: 'Identity', icon: Users },
 ];
 
 const securitySubTabs: { id: SecuritySubTab; label: string }[] = [
   { id: 'sentinelone', label: 'SentinelOne' },
   { id: 'huntress', label: 'Huntress' },
+];
+
+const identitySubTabs: { id: IdentitySubTab; label: string }[] = [
+  { id: 'google', label: 'Google Workspace' },
+  { id: 'm365', label: 'Microsoft 365' },
 ];
 
 interface IntegrationsPageProps {
@@ -33,6 +43,7 @@ interface IntegrationsPageProps {
 export default function IntegrationsPage({ initialTab = 'webhooks' }: IntegrationsPageProps) {
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>('sentinelone');
+  const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>('google');
 
   return (
     <div className="space-y-6">
@@ -91,12 +102,37 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
         </div>
       )}
 
+      {/* Identity sub-tabs */}
+      {activeTab === 'identity' && (
+        <div className="flex gap-2">
+          {identitySubTabs.map((sub) => {
+            const isActive = sub.id === identitySubTab;
+            return (
+              <button
+                key={sub.id}
+                type="button"
+                onClick={() => setIdentitySubTab(sub.id)}
+                className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
+                  isActive
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {sub.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Tab content */}
       {activeTab === 'webhooks' && <WebhooksPage />}
       {activeTab === 'psa' && <PsaConnectionsPage />}
       {activeTab === 'security' && securitySubTab === 'sentinelone' && <SecurityIntegration />}
       {activeTab === 'security' && securitySubTab === 'huntress' && <HuntressIntegration />}
       {activeTab === 'monitoring' && <MonitoringIntegration />}
+      {activeTab === 'identity' && identitySubTab === 'google' && <GoogleWorkspaceIntegration />}
+      {activeTab === 'identity' && identitySubTab === 'm365' && <M365Integration />}
     </div>
   );
 }

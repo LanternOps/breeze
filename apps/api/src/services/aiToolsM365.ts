@@ -12,7 +12,8 @@
  */
 
 import type { AuthContext } from '../middleware/auth';
-import { invokeDelegantTool, type DelegantToolName } from './delegantClient';
+import { invokeDelegantTool, type DelegantToolName, type DelegantInvokeResult } from './delegantClient';
+import { invokeDirect, hasDirectM365Connection } from './m365DirectGraph';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import {
   loadSession, loadConnection, authorizeConnection, formatResultForLlm, errorString,
@@ -48,18 +49,28 @@ function principals(auth: AuthContext) {
   };
 }
 
-type ResolvedContext =
-  | { error: string }
-  | { conn: DelegantM365ConnectionRow };
+// The handler layer is backend-agnostic: a session resolves to EITHER a direct
+// Graph backend (self-hosted, the org has its own m365_connections row) or the
+// Delegant broker connection (session.delegantM365ConnectionId). `call()`
+// dispatches on this; every handler stays identical.
+type Backend =
+  | { backend: 'direct'; orgId: string }
+  | { backend: 'delegant'; conn: DelegantM365ConnectionRow };
+type ResolvedContext = { error: string } | Backend;
 
 async function resolveContext(auth: AuthContext, sessionId: string): Promise<ResolvedContext> {
   const session = await loadSession(sessionId);
   if (!session) return { error: errorString('session_not_found', 'AI session not found.') };
+  // Prefer the direct Graph backend when this org has its own M365 connection
+  // (no Delegant broker required). Falls back to the Delegant session connection.
+  if (auth.orgId && (await hasDirectM365Connection(auth.orgId))) {
+    return { backend: 'direct', orgId: auth.orgId };
+  }
   if (!session.delegantM365ConnectionId) {
     return {
       error: errorString(
         'no_customer_selected',
-        'No M365 customer is selected for this session. Start a new session and pick a customer.',
+        'No M365 connection for this organization, and no Delegant customer is selected for this session. Connect Microsoft 365 in settings.',
       ),
     };
   }
@@ -68,19 +79,25 @@ async function resolveContext(auth: AuthContext, sessionId: string): Promise<Res
   if (!authz.ok) {
     return { error: errorString('connection_not_found', 'M365 connection not found for this session.') };
   }
-  return { conn: authz.conn };
+  return { backend: 'delegant', conn: authz.conn };
 }
 
 async function call(
-  conn: DelegantM365ConnectionRow,
+  ctx: Backend,
   auth: AuthContext,
   sessionId: string,
   toolName: DelegantToolName,
   parameters: Record<string, unknown>,
-) {
+): Promise<DelegantInvokeResult> {
+  if (ctx.backend === 'direct') {
+    // DirectInvokeResult is structurally a subset of DelegantInvokeResult; its
+    // error `code` is a plain string (formatResultForLlm reads it for display
+    // only), so the cast is sound.
+    return (await invokeDirect(ctx.orgId, toolName, parameters)) as DelegantInvokeResult;
+  }
   const p = principals(auth);
   return invokeDelegantTool(
-    { connection: conn, toolName, parameters, actingUser: p.actingUser, agent: p.agent, sessionId },
+    { connection: ctx.conn, toolName, parameters, actingUser: p.actingUser, agent: p.agent, sessionId },
     { env },
   );
 }
@@ -92,12 +109,12 @@ async function call(
  */
 async function resolveUserId(
   identifier: string,
-  conn: DelegantM365ConnectionRow,
+  ctx: Backend,
   auth: AuthContext,
   sessionId: string,
 ): Promise<string | null> {
   if (!identifier.includes('@')) return identifier;
-  const res = await call(conn, auth, sessionId, 'get_user', { userId: identifier });
+  const res = await call(ctx, auth, sessionId, 'get_user', { userId: identifier });
   if (res.kind === 'ok') return (res.data as any)?.id ?? identifier;
   return null;
 }
@@ -123,7 +140,7 @@ export async function m365LookupUserHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const result = await call(ctx.conn, auth, sessionId, 'get_user', { userId: identifier });
+  const result = await call(ctx, auth, sessionId, 'get_user', { userId: identifier });
   return formatResultForLlm(result, {
     successTemplate: (data) => `M365 user profile: ${JSON.stringify(data)}`,
     errorTemplate,
@@ -140,10 +157,10 @@ export async function m365RecentSigninsHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const userId = await resolveUserId(identifier, ctx.conn, auth, sessionId);
+  const userId = await resolveUserId(identifier, ctx, auth, sessionId);
   if (userId === null) return unresolvedUser(identifier);
 
-  const result = await call(ctx.conn, auth, sessionId, 'get_user_signin_activity', { userId });
+  const result = await call(ctx, auth, sessionId, 'get_user_signin_activity', { userId });
   return formatResultForLlm(result, {
     successTemplate: (data) => `Recent sign-in activity for ${identifier}: ${JSON.stringify(data)}`,
     errorTemplate,
@@ -158,7 +175,7 @@ export async function m365ListGroupMembershipsHandler(
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
 
-  const result = await call(ctx.conn, auth, sessionId, 'list_groups', {});
+  const result = await call(ctx, auth, sessionId, 'list_groups', {});
   return formatResultForLlm(result, {
     successTemplate: (data) => `Groups in the customer tenant: ${JSON.stringify(data)}`,
     errorTemplate,
@@ -178,10 +195,10 @@ export async function m365DisableUserHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const userId = await resolveUserId(identifier, ctx.conn, auth, sessionId);
+  const userId = await resolveUserId(identifier, ctx, auth, sessionId);
   if (userId === null) return unresolvedUser(identifier);
 
-  const result = await call(ctx.conn, auth, sessionId, 'disable_user', { userId, reason });
+  const result = await call(ctx, auth, sessionId, 'disable_user', { userId, reason });
   return formatResultForLlm(result, {
     successTemplate: () => `Disabled (blocked sign-in for) M365 user ${identifier}.`,
     errorTemplate,
@@ -201,10 +218,10 @@ export async function m365ResetPasswordHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const userId = await resolveUserId(identifier, ctx.conn, auth, sessionId);
+  const userId = await resolveUserId(identifier, ctx, auth, sessionId);
   if (userId === null) return unresolvedUser(identifier);
 
-  const result = await call(ctx.conn, auth, sessionId, 'reset_user_password', { userId, reason });
+  const result = await call(ctx, auth, sessionId, 'reset_user_password', { userId, reason });
   return formatResultForLlm(result, {
     successTemplate: (data) => {
       const temp = (data as any)?.temporaryPassword;

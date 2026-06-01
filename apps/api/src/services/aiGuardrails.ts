@@ -390,6 +390,17 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   google_wipe_mobile_device: { resource: 'google', action: 'execute' },
   google_security_drift: { resource: 'google', action: 'read' },
   google_email_report: { resource: 'google', action: 'read' },
+  google_list_user_groups: { resource: 'google', action: 'read' },
+  google_add_to_group: { resource: 'google', action: 'execute' },
+  google_remove_from_group: { resource: 'google', action: 'execute' },
+  google_move_ou: { resource: 'google', action: 'execute' },
+  google_rename_user: { resource: 'google', action: 'execute' },
+  google_reset_2sv: { resource: 'google', action: 'execute' },
+  google_add_mail_delegate: { resource: 'google', action: 'execute' },
+  google_remove_mail_delegate: { resource: 'google', action: 'execute' },
+  google_list_licenses: { resource: 'google', action: 'read' },
+  google_assign_license: { resource: 'google', action: 'execute' },
+  google_remove_license: { resource: 'google', action: 'execute' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {

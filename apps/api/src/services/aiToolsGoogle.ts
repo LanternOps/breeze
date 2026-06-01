@@ -30,6 +30,7 @@ import {
   getDirectoryClient,
   getGmailClient,
   getCalendarClient,
+  getLicensingClient,
   normalizeGoogleError,
   type GoogleApiError,
 } from './googleClient';
@@ -50,6 +51,17 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_wipe_mobile_device: 3,
   google_security_drift: 1,
   google_email_report: 1,
+  google_list_user_groups: 1,
+  google_add_to_group: 3,
+  google_remove_from_group: 3,
+  google_move_ou: 3,
+  google_rename_user: 3,
+  google_reset_2sv: 3,
+  google_add_mail_delegate: 3,
+  google_remove_mail_delegate: 3,
+  google_list_licenses: 1,
+  google_assign_license: 3,
+  google_remove_license: 3,
 };
 
 const CALENDAR_ROLES = ['freeBusyReader', 'reader', 'writer', 'owner'] as const;
@@ -238,6 +250,266 @@ export async function googleRestoreUserHandler(
     const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
     await dir.users.update({ userKey: email, requestBody: { suspended: false } });
     return `Restored (un-suspended) Google Workspace user ${email}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+// ── Group membership (cluster 3) ──────────────────────────────────────────────
+
+export async function googleListUserGroupsHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    const res = await dir.groups.list({ userKey: email, maxResults: 200 });
+    const groups = (res.data.groups ?? []).map((g) => ({ email: g.email, name: g.name, id: g.id }));
+    return `Google Workspace groups for ${email} (${groups.length}): ${JSON.stringify(groups)}`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleAddToGroupHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+  const groupEmail = requireString(input, 'groupEmail');
+  if (!groupEmail) return errorString('missing_group', 'A group email is required.');
+  const roleRaw = requireString(input, 'role');
+  const role =
+    roleRaw && ['MEMBER', 'MANAGER', 'OWNER'].includes(roleRaw.toUpperCase())
+      ? roleRaw.toUpperCase()
+      : 'MEMBER';
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    await dir.members.insert({ groupKey: groupEmail, requestBody: { email, role } });
+    return `Added ${email} to group ${groupEmail} as ${role}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleRemoveFromGroupHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+  const groupEmail = requireString(input, 'groupEmail');
+  if (!groupEmail) return errorString('missing_group', 'A group email is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    await dir.members.delete({ groupKey: groupEmail, memberKey: email });
+    return `Removed ${email} from group ${groupEmail}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleMoveOuHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+  const orgUnitPath = requireString(input, 'orgUnitPath');
+  if (!orgUnitPath) return errorString('missing_ou', 'An orgUnitPath (e.g. "/Sales") is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    await dir.users.update({ userKey: email, requestBody: { orgUnitPath } });
+    return `Moved ${email} to org unit ${orgUnitPath}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleRenameUserHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+  const newPrimaryEmail = requireString(input, 'newPrimaryEmail');
+  if (!newPrimaryEmail) return errorString('missing_new_email', 'A newPrimaryEmail is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    await dir.users.update({ userKey: email, requestBody: { primaryEmail: newPrimaryEmail } });
+    return `Renamed ${email} to ${newPrimaryEmail} (Google keeps the old address as an alias).`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+// ── License management (cluster 3) ────────────────────────────────────────────
+
+export async function googleListLicensesHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const productId = requireString(input, 'productId');
+  if (!productId) return errorString('missing_product', 'A productId is required (e.g. "Google-Apps").');
+
+  try {
+    const lic = getLicensingClient(ctx.keyJson, ctx.conn.adminEmail);
+    const res = await lic.licenseAssignments.listForProduct({
+      productId,
+      customerId: 'my_customer',
+      maxResults: 100,
+    });
+    const items = (res.data.items ?? []).map((a) => ({ user: a.userId, skuId: a.skuId, skuName: a.skuName }));
+    return `Google Workspace license assignments for product ${productId} (${items.length}): ${JSON.stringify(items)}`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleAssignLicenseHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+  const productId = requireString(input, 'productId');
+  const skuId = requireString(input, 'skuId');
+  if (!productId || !skuId) return errorString('missing_sku', 'Both productId and skuId are required.');
+
+  try {
+    const lic = getLicensingClient(ctx.keyJson, ctx.conn.adminEmail);
+    await lic.licenseAssignments.insert({ productId, skuId, requestBody: { userId: email } });
+    return `Assigned license ${productId}/${skuId} to ${email}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleRemoveLicenseHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+  const productId = requireString(input, 'productId');
+  const skuId = requireString(input, 'skuId');
+  if (!productId || !skuId) return errorString('missing_sku', 'Both productId and skuId are required.');
+
+  try {
+    const lic = getLicensingClient(ctx.keyJson, ctx.conn.adminEmail);
+    await lic.licenseAssignments.delete({ productId, skuId, userId: email });
+    return `Removed license ${productId}/${skuId} from ${email}.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleResetTwoSvHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    await dir.twoStepVerification.turnOff({ userKey: email });
+    return `Turned off 2-step verification for ${email}. They can re-enroll on next sign-in (use this when a user lost their second factor).`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleAddMailDelegateHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user (mailbox owner) email is required.');
+  const delegateEmail = requireString(input, 'delegateEmail');
+  if (!delegateEmail) return errorString('missing_delegate', 'A delegateEmail is required.');
+
+  try {
+    const gmailClient = getGmailClient(ctx.keyJson, email);
+    await gmailClient.users.settings.delegates.create({ userId: 'me', requestBody: { delegateEmail } });
+    return `Granted ${delegateEmail} delegated access to ${email}'s mailbox (read/send/manage).`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleRemoveMailDelegateHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user (mailbox owner) email is required.');
+  const delegateEmail = requireString(input, 'delegateEmail');
+  if (!delegateEmail) return errorString('missing_delegate', 'A delegateEmail is required.');
+
+  try {
+    const gmailClient = getGmailClient(ctx.keyJson, email);
+    await gmailClient.users.settings.delegates.delete({ userId: 'me', delegateEmail });
+    return `Removed ${delegateEmail}'s delegated access to ${email}'s mailbox.`;
   } catch (err) {
     return googleError(err);
   }

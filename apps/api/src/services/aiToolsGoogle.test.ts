@@ -19,6 +19,7 @@ vi.mock('./googleClient', async (importOriginal) => {
     getDirectoryClient: vi.fn(),
     getGmailClient: vi.fn(),
     getCalendarClient: vi.fn(),
+    getLicensingClient: vi.fn(),
   };
 });
 // Mock the email service used by google_email_report.
@@ -41,6 +42,17 @@ import {
   googleSecurityDriftHandler,
   googleEmailReportHandler,
   computeSecurityDrift,
+  googleListUserGroupsHandler,
+  googleAddToGroupHandler,
+  googleRemoveFromGroupHandler,
+  googleMoveOuHandler,
+  googleRenameUserHandler,
+  googleResetTwoSvHandler,
+  googleAddMailDelegateHandler,
+  googleRemoveMailDelegateHandler,
+  googleListLicensesHandler,
+  googleAssignLicenseHandler,
+  googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
 
 const auth = {} as any;
@@ -132,6 +144,129 @@ describe('directory operations', () => {
     });
     const out = await googleLookupUserHandler({ userEmail: 'u@x.com' }, auth, SESSION);
     expect(out).toContain('google_forbidden');
+  });
+});
+
+describe('group membership (cluster 3)', () => {
+  it('add_to_group requires a reason', async () => {
+    const out = await googleAddToGroupHandler({ userEmail: 'u@x.com', groupEmail: 'g@x.com' }, auth, SESSION);
+    expect(out).toContain('missing_reason');
+  });
+
+  it('list_user_groups returns the user\'s groups', async () => {
+    const list = vi.fn().mockResolvedValue({ data: { groups: [{ email: 'g@x.com', name: 'G', id: 'grp-1' }] } });
+    (client.getDirectoryClient as any).mockReturnValue({ groups: { list } });
+    const out = await googleListUserGroupsHandler({ userEmail: 'u@x.com' }, auth, SESSION);
+    expect(list).toHaveBeenCalledWith({ userKey: 'u@x.com', maxResults: 200 });
+    expect(out).toContain('g@x.com');
+  });
+
+  it('add_to_group inserts the member (defaults to MEMBER)', async () => {
+    const insert = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({ members: { insert } });
+    const out = await googleAddToGroupHandler({ userEmail: 'u@x.com', groupEmail: 'g@x.com', reason: 'onboard' }, auth, SESSION);
+    expect(insert).toHaveBeenCalledWith({ groupKey: 'g@x.com', requestBody: { email: 'u@x.com', role: 'MEMBER' } });
+    expect(out).toContain('Added u@x.com to group g@x.com');
+  });
+
+  it('remove_from_group deletes the member', async () => {
+    const del = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({ members: { delete: del } });
+    const out = await googleRemoveFromGroupHandler({ userEmail: 'u@x.com', groupEmail: 'g@x.com', reason: 'offboard' }, auth, SESSION);
+    expect(del).toHaveBeenCalledWith({ groupKey: 'g@x.com', memberKey: 'u@x.com' });
+    expect(out).toContain('Removed u@x.com from group g@x.com');
+  });
+});
+
+describe('ou move + rename (cluster 3)', () => {
+  it('move_ou requires a reason', async () => {
+    const out = await googleMoveOuHandler({ userEmail: 'u@x.com', orgUnitPath: '/Sales' }, auth, SESSION);
+    expect(out).toContain('missing_reason');
+  });
+
+  it('move_ou updates orgUnitPath', async () => {
+    const update = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({ users: { update } });
+    const out = await googleMoveOuHandler({ userEmail: 'u@x.com', orgUnitPath: '/Sales', reason: 'team move' }, auth, SESSION);
+    expect(update).toHaveBeenCalledWith({ userKey: 'u@x.com', requestBody: { orgUnitPath: '/Sales' } });
+    expect(out).toContain('Moved u@x.com to org unit /Sales');
+  });
+
+  it('rename_user changes the primary email', async () => {
+    const update = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({ users: { update } });
+    const out = await googleRenameUserHandler({ userEmail: 'old@x.com', newPrimaryEmail: 'new@x.com', reason: 'name change' }, auth, SESSION);
+    expect(update).toHaveBeenCalledWith({ userKey: 'old@x.com', requestBody: { primaryEmail: 'new@x.com' } });
+    expect(out).toContain('Renamed old@x.com to new@x.com');
+  });
+});
+
+describe('license management (cluster 3)', () => {
+  it('assign_license requires a reason', async () => {
+    const out = await googleAssignLicenseHandler(
+      { userEmail: 'u@x.com', productId: 'Google-Apps', skuId: '1010020027' }, auth, SESSION);
+    expect(out).toContain('missing_reason');
+  });
+
+  it('list_licenses returns assignments for a product', async () => {
+    const listForProduct = vi.fn().mockResolvedValue({
+      data: { items: [{ userId: 'u@x.com', skuId: '1010020027', skuName: 'Business Standard' }] }
+    });
+    (client.getLicensingClient as any).mockReturnValue({ licenseAssignments: { listForProduct } });
+    const out = await googleListLicensesHandler({ productId: 'Google-Apps' }, auth, SESSION);
+    expect(listForProduct).toHaveBeenCalledWith({ productId: 'Google-Apps', customerId: 'my_customer', maxResults: 100 });
+    expect(out).toContain('u@x.com');
+  });
+
+  it('assign_license inserts the assignment', async () => {
+    const insert = vi.fn().mockResolvedValue({});
+    (client.getLicensingClient as any).mockReturnValue({ licenseAssignments: { insert } });
+    const out = await googleAssignLicenseHandler(
+      { userEmail: 'u@x.com', productId: 'Google-Apps', skuId: '1010020027', reason: 'onboard' }, auth, SESSION);
+    expect(insert).toHaveBeenCalledWith({ productId: 'Google-Apps', skuId: '1010020027', requestBody: { userId: 'u@x.com' } });
+    expect(out).toContain('Assigned license Google-Apps/1010020027 to u@x.com');
+  });
+
+  it('remove_license deletes the assignment', async () => {
+    const del = vi.fn().mockResolvedValue({});
+    (client.getLicensingClient as any).mockReturnValue({ licenseAssignments: { delete: del } });
+    const out = await googleRemoveLicenseHandler(
+      { userEmail: 'u@x.com', productId: 'Google-Apps', skuId: '1010020027', reason: 'offboard' }, auth, SESSION);
+    expect(del).toHaveBeenCalledWith({ productId: 'Google-Apps', skuId: '1010020027', userId: 'u@x.com' });
+    expect(out).toContain('Removed license Google-Apps/1010020027 from u@x.com');
+  });
+});
+
+describe('2sv reset + mail delegation (cluster 3)', () => {
+  it('reset_2sv requires a reason', async () => {
+    const out = await googleResetTwoSvHandler({ userEmail: 'u@x.com' }, auth, SESSION);
+    expect(out).toContain('missing_reason');
+  });
+
+  it('reset_2sv turns off two-step verification', async () => {
+    const turnOff = vi.fn().mockResolvedValue({});
+    (client.getDirectoryClient as any).mockReturnValue({ twoStepVerification: { turnOff } });
+    const out = await googleResetTwoSvHandler({ userEmail: 'u@x.com', reason: 'lost phone' }, auth, SESSION);
+    expect(turnOff).toHaveBeenCalledWith({ userKey: 'u@x.com' });
+    expect(out).toContain('Turned off 2-step verification for u@x.com');
+  });
+
+  it('add_mail_delegate creates a delegate on the mailbox', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    (client.getGmailClient as any).mockReturnValue({ users: { settings: { delegates: { create } } } });
+    const out = await googleAddMailDelegateHandler(
+      { userEmail: 'owner@x.com', delegateEmail: 'asst@x.com', reason: 'coverage' }, auth, SESSION);
+    expect(create).toHaveBeenCalledWith({ userId: 'me', requestBody: { delegateEmail: 'asst@x.com' } });
+    expect(out).toContain('Granted asst@x.com delegated access');
+  });
+
+  it('remove_mail_delegate deletes the delegate', async () => {
+    const del = vi.fn().mockResolvedValue({});
+    (client.getGmailClient as any).mockReturnValue({ users: { settings: { delegates: { delete: del } } } });
+    const out = await googleRemoveMailDelegateHandler(
+      { userEmail: 'owner@x.com', delegateEmail: 'asst@x.com', reason: 'done' }, auth, SESSION);
+    expect(del).toHaveBeenCalledWith({ userId: 'me', delegateEmail: 'asst@x.com' });
+    expect(out).toContain("Removed asst@x.com's delegated access");
   });
 });
 

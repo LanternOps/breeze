@@ -19,6 +19,7 @@
 import { admin, auth as adminAuth, type admin_directory_v1 } from '@googleapis/admin';
 import { gmail, auth as gmailAuth, type gmail_v1 } from '@googleapis/gmail';
 import { calendar, auth as calendarAuth, type calendar_v3 } from '@googleapis/calendar';
+import { licensing, auth as licensingAuth, type licensing_v1 } from '@googleapis/licensing';
 
 // Least-privilege scope sets. Keep these minimal; the DWD grant authorizes
 // exactly this union, so widening here widens the god-key.
@@ -40,11 +41,16 @@ export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.acls', // share a calendar (ACL insert), nothing more
 ] as const;
 
+export const LICENSING_SCOPES = [
+  'https://www.googleapis.com/auth/apps.licensing', // assign / list / remove Workspace license assignments
+] as const;
+
 /** Comma-separated scope list for the operator's DWD setup instructions. */
 export const ALL_DWD_SCOPES_CSV = [
   ...DIRECTORY_SCOPES,
   ...GMAIL_USER_SCOPES,
   ...CALENDAR_SCOPES,
+  ...LICENSING_SCOPES,
 ].join(',');
 
 interface ServiceAccountKey {
@@ -132,6 +138,24 @@ export function getCalendarClient(
     subject: ownerEmail, // DWD: impersonate the calendar owner
   });
   return calendar({ version: 'v3', auth });
+}
+
+/**
+ * Enterprise License Manager client, impersonating the super-admin. Used to
+ * assign / list / remove Workspace license assignments for users.
+ */
+export function getLicensingClient(
+  decryptedKeyJson: string,
+  adminEmail: string,
+): licensing_v1.Licensing {
+  const key = parseServiceAccountKey(decryptedKeyJson);
+  const auth = new licensingAuth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: [...LICENSING_SCOPES],
+    subject: adminEmail, // DWD: impersonate the super-admin
+  });
+  return licensing({ version: 'v1', auth });
 }
 
 /** Tagged error for Google operations; carries a stable code + safe message. */

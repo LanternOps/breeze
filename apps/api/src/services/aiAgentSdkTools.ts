@@ -28,6 +28,10 @@ import {
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
   googleOffboardUserHandler, googleWipeMobileDeviceHandler,
   googleSecurityDriftHandler, googleEmailReportHandler,
+  googleListUserGroupsHandler, googleAddToGroupHandler, googleRemoveFromGroupHandler,
+  googleMoveOuHandler, googleRenameUserHandler,
+  googleResetTwoSvHandler, googleAddMailDelegateHandler, googleRemoveMailDelegateHandler,
+  googleListLicensesHandler, googleAssignLicenseHandler, googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
 
 /**
@@ -164,6 +168,17 @@ export const TOOL_TIERS = {
   google_wipe_mobile_device: 3,
   google_security_drift: 1,
   google_email_report: 1,
+  google_list_user_groups: 1,
+  google_add_to_group: 3,
+  google_remove_from_group: 3,
+  google_move_ou: 3,
+  google_rename_user: 3,
+  google_reset_2sv: 3,
+  google_add_mail_delegate: 3,
+  google_remove_mail_delegate: 3,
+  google_list_licenses: 1,
+  google_assign_license: 3,
+  google_remove_license: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -587,6 +602,72 @@ export function googleToolDefinitions(
       'Sign a Google Workspace user out of all sessions (the supported substitute for "turn off login challenge", which has no API). Useful for lockout/offboarding. Requires approval.',
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_signout', getAuth, getActiveSession, googleSignOutHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_list_user_groups',
+      "List the Google Workspace groups a user belongs to (email, name, id) in this organization's connected domain.",
+      { userEmail: z.string() },
+      makeSessionAwareHandler('google_list_user_groups', getAuth, getActiveSession, googleListUserGroupsHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_add_to_group',
+      'Add a Google Workspace user to a group. role is one of MEMBER, MANAGER, OWNER (default MEMBER). Requires approval.',
+      { userEmail: z.string(), groupEmail: z.string(), role: z.enum(['MEMBER', 'MANAGER', 'OWNER']).optional(), reason: z.string() },
+      makeSessionAwareHandler('google_add_to_group', getAuth, getActiveSession, googleAddToGroupHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_remove_from_group',
+      'Remove a Google Workspace user from a group. Requires approval.',
+      { userEmail: z.string(), groupEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_remove_from_group', getAuth, getActiveSession, googleRemoveFromGroupHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_move_ou',
+      'Move a Google Workspace user into a different organizational unit (orgUnitPath, e.g. "/Sales" or "/"). Requires approval.',
+      { userEmail: z.string(), orgUnitPath: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_move_ou', getAuth, getActiveSession, googleMoveOuHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_rename_user',
+      'Rename a Google Workspace user by changing their primary email (the old address is retained as an alias). Requires approval.',
+      { userEmail: z.string(), newPrimaryEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_rename_user', getAuth, getActiveSession, googleRenameUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_list_licenses',
+      'List Google Workspace license assignments for a product (e.g. productId "Google-Apps") in this organization. Returns who holds which SKU.',
+      { productId: z.string() },
+      makeSessionAwareHandler('google_list_licenses', getAuth, getActiveSession, googleListLicensesHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_assign_license',
+      'Assign a Google Workspace license (productId + skuId) to a user. Requires approval.',
+      { userEmail: z.string(), productId: z.string(), skuId: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_assign_license', getAuth, getActiveSession, googleAssignLicenseHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_remove_license',
+      'Remove a Google Workspace license (productId + skuId) from a user. Requires approval.',
+      { userEmail: z.string(), productId: z.string(), skuId: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_remove_license', getAuth, getActiveSession, googleRemoveLicenseHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_reset_2sv',
+      'Turn off 2-step verification for a Google Workspace user so they can re-enroll (use when a user lost their second factor / is locked out). Requires approval.',
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_reset_2sv', getAuth, getActiveSession, googleResetTwoSvHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_add_mail_delegate',
+      "Grant another user delegated access to a Google Workspace mailbox (read/send/manage). Requires approval.",
+      { userEmail: z.string(), delegateEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_add_mail_delegate', getAuth, getActiveSession, googleAddMailDelegateHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_remove_mail_delegate',
+      'Remove a delegate from a Google Workspace mailbox. Requires approval.',
+      { userEmail: z.string(), delegateEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_remove_mail_delegate', getAuth, getActiveSession, googleRemoveMailDelegateHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_set_forwarding',
