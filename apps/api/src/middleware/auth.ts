@@ -70,6 +70,27 @@ declare module 'hono' {
 }
 
 /**
+ * Build the AuthContext site-axis closure (`canAccessSite`). An `undefined`
+ * allowlist means unrestricted — returns true for every site (partner/system
+ * scope, or org users with no site restriction). A restricted caller is denied
+ * for a null/undefined siteId (e.g. a device with no site assignment). An empty
+ * allowlist denies all sites, matching `permissions.canAccessSite` semantics.
+ *
+ * Single source of truth for the closure, reused by the request path
+ * (authMiddleware) and the MCP API-key path (buildAuthFromApiKey) so the two
+ * never drift.
+ */
+export function siteAccessCheck(
+  allowedSiteIds?: string[]
+): (siteId: string | null | undefined) => boolean {
+  return (siteId) => {
+    if (!allowedSiteIds) return true;
+    if (!siteId) return false;
+    return allowedSiteIds.includes(siteId);
+  };
+}
+
+/**
  * Resolve whether the user's effective role for the current request has
  * `force_mfa=true`. Returns false for system scope (platform admin is a
  * user flag, not a role) and for any user whose membership row is missing.
@@ -388,6 +409,21 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     return accessibleOrgIds.includes(orgId);
   };
 
+  // Resolve the site-axis allowlist (sub-org restriction). Only organization
+  // scope carries site restrictions (`organizationUsers.siteIds` via
+  // getUserPermissions); partner/system scope stay unrestricted (undefined).
+  // getUserPermissions is cached (and re-used by requirePermission downstream),
+  // so this warms the cache rather than adding a steady-state query.
+  let allowedSiteIds: string[] | undefined;
+  if (payload.scope === 'organization' && payload.orgId) {
+    const userPerms = await getUserPermissions(user.id, {
+      partnerId: payload.partnerId || undefined,
+      orgId: payload.orgId || undefined,
+    });
+    allowedSiteIds = userPerms?.allowedSiteIds;
+  }
+  const canAccessSite = siteAccessCheck(allowedSiteIds);
+
   await withDbAccessContext(
     {
       scope: payload.scope,
@@ -410,7 +446,9 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         scope: payload.scope,
         accessibleOrgIds,
         orgCondition,
-        canAccessOrg
+        canAccessOrg,
+        allowedSiteIds,
+        canAccessSite
       });
 
       await next();
