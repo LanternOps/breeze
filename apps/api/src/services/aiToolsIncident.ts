@@ -15,7 +15,7 @@ import { incidents, incidentEvidence, incidentActions } from '../db/schema';
 import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveWritableToolOrgId } from './aiTools';
+import { resolveWritableToolOrgId, verifyDeviceAccess } from './aiTools';
 import { queueCommandForExecution } from './commandQueue';
 import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
@@ -216,6 +216,14 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       const incident = await findIncidentWithAccess(input.incidentId as string, auth);
       if (!incident) return JSON.stringify({ error: 'Incident not found or access denied' });
 
+      // The target device is supplied directly by the caller and reaches the
+      // agent via queueCommandForExecution (which looks the device up by id
+      // with NO tenant filter). Gate it through the org-scoped device check —
+      // otherwise a user with an incident in their own org could dispatch
+      // containment to a device in another tenant by id.
+      const deviceAccess = await verifyDeviceAccess(input.deviceId as string, auth);
+      if ('error' in deviceAccess) return JSON.stringify({ error: deviceAccess.error });
+
       const payload = {
         incidentId: input.incidentId as string,
         actionType: input.actionType as string,
@@ -303,6 +311,13 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
 
       const incident = await findIncidentWithAccess(input.incidentId as string, auth);
       if (!incident) return JSON.stringify({ error: 'Incident not found or access denied' });
+
+      // Gate the caller-supplied device through the org-scoped device check
+      // before dispatch — queueCommandForExecution resolves the device by id
+      // with no tenant filter, so without this a user could collect forensic
+      // evidence (incl. screenshots) from a device in another tenant by id.
+      const deviceAccess = await verifyDeviceAccess(input.deviceId as string, auth);
+      if ('error' in deviceAccess) return JSON.stringify({ error: deviceAccess.error });
 
       const payload = {
         incidentId: input.incidentId as string,
