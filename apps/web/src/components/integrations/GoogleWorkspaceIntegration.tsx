@@ -246,7 +246,7 @@ export default function GoogleWorkspaceIntegration() {
                 value={serviceAccountKey}
                 onChange={(e) => setServiceAccountKey(e.target.value)}
                 rows={showKey ? 10 : 3}
-                placeholder={isConnected ? '•••••••••• (stored, encrypted)' : '{ "type": "service_account", "project_id": "...", ... }'}
+                placeholder={isConnected ? '•••••••••• (stored, encrypted)' : 'Paste the full service-account JSON key file here'}
                 className={`w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 ${showKey ? '' : 'blur-[3px] focus:blur-0'}`}
               />
               <button
