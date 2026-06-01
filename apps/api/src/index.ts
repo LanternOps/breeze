@@ -1199,14 +1199,31 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     }
   ];
 
+  // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a
+  // heartbeat that arrives mid-shutdown hits an already-closed Postgres pool,
+  // returns HTTP 500, and permanently wedges the agent's heartbeat loop
+  // (cause of fleetwide false-offline after a restart).
+  if (server) {
+    const httpServer = server as unknown as import('http').Server;
+    // Make readiness fail so any load balancer stops routing to us.
+    readinessState.workersHealthy = false;
+    readinessState.checkedAt = new Date().toISOString();
+    httpServer.close();                 // stop accepting NEW connections
+    if (typeof httpServer.closeIdleConnections === 'function') {
+      httpServer.closeIdleConnections(); // drop idle keep-alive sockets now
+    }
+    // Bounded grace for in-flight requests to finish, then force-close stragglers
+    // so server.close() can't hang on keep-alive connections.
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Number(process.env.SHUTDOWN_DRAIN_MS ?? '5000'))
+    );
+    if (typeof httpServer.closeAllConnections === 'function') {
+      httpServer.closeAllConnections();
+    }
+  }
+
   const shutdownResults = await Promise.allSettled(shutdownTasks.map((task) => task()));
   const shutdownFailures = shutdownResults.filter((result) => result.status === 'rejected');
-
-  if (server) {
-    await new Promise<void>((resolve) => {
-      server?.close(() => resolve());
-    });
-  }
 
   if (shutdownFailures.length > 0) {
     console.error(`[shutdown] Completed with ${shutdownFailures.length} failure(s)`);
