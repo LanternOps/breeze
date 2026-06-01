@@ -317,6 +317,8 @@ networkBaselineRoutes.post(
 networkBaselineRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const baselineId = c.req.param('id')!;
@@ -431,6 +433,8 @@ networkBaselineRoutes.post(
 networkBaselineRoutes.get(
   '/:id/changes',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', baselineChangesQuerySchema),
   async (c) => {
     const auth = c.get('auth');

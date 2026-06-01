@@ -70,7 +70,9 @@ vi.mock('../../db/schema', () => ({
   users: { id: 'users.id', name: 'users.name', email: 'users.email' },
 }));
 
-// requireScope seeds auth + permissions; x-restrict-site opts into a single-site allowlist.
+// requireScope seeds auth; requirePermission seeds permissions (mirrors prod — only
+// requirePermission populates c.get('permissions'), which the site-scope gate reads).
+// x-restrict-site opts into a single-site allowlist.
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (c: any, next: any) => {
     c.set('auth', {
@@ -81,6 +83,9 @@ vi.mock('../../middleware/auth', () => ({
       accessibleOrgIds: ['org-111'],
       canAccessOrg: (id: string) => id === 'org-111',
     });
+    return next();
+  }),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
     const restrict = c.req.header('x-restrict-site');
     c.set('permissions', {
       permissions: [],
@@ -96,6 +101,7 @@ vi.mock('../../middleware/auth', () => ({
 
 // Faithful canAccessSite so the route's site gate behaves like production.
 vi.mock('../../services/permissions', () => ({
+  PERMISSIONS: { DEVICES_READ: { resource: 'devices', action: 'read' } },
   canAccessSite: (perms: any, siteId: string) =>
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));

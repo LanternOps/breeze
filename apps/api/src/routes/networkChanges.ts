@@ -195,6 +195,8 @@ networkChangeRoutes.get(
 networkChangeRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const eventId = c.req.param('id')!;

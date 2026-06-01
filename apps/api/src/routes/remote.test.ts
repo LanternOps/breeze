@@ -31,7 +31,10 @@ vi.mock('../services/fileStorage', () => ({
 
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
-    REMOTE_ACCESS: { resource: 'remote', action: 'access' }
+    REMOTE_ACCESS: { resource: 'remote', action: 'access' },
+    // sessions.ts/transfers.ts gained requirePermission(DEVICES_READ) — the mock
+    // must export it or the remote/ router fails to load here.
+    DEVICES_READ: { resource: 'devices', action: 'read' }
   }
 }));
 

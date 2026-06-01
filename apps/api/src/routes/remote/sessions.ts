@@ -9,7 +9,7 @@ import {
   deviceHardware,
   users
 } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
@@ -36,7 +36,7 @@ import {
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { normalizeRecordingUrl } from './recordingUrl';
-import { canAccessSite, type UserPermissions } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
 export const sessionRoutes = new Hono();
 
@@ -53,6 +53,8 @@ async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions
 sessionRoutes.delete(
   '/sessions/stale',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.query('deviceId');
@@ -271,6 +273,8 @@ sessionRoutes.post(
 sessionRoutes.get(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listSessionsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -405,6 +409,8 @@ sessionRoutes.get(
 sessionRoutes.get(
   '/sessions/history',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', sessionHistorySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -564,6 +570,8 @@ sessionRoutes.get(
 sessionRoutes.get(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -765,6 +773,8 @@ sessionRoutes.get(
 sessionRoutes.post(
   '/sessions/:id/offer',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', sessionIdParamSchema),
   zValidator('json', webrtcOfferSchema),
   async (c) => {

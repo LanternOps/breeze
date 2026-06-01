@@ -359,36 +359,20 @@ const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
 // GET /threats) — all independently fixed in #1036's final revision (now in
 // main), so they are NOT listed here.
 //
-// The 4 below were INTRODUCED by this PR (#1041): its mutation-gating added the
-// fail-open `if (perms?.allowedSiteIds && …)` idiom reading `c.get('permissions')`
-// but did NOT add the `requirePermission` that populates it — so on these routes
-// the new site narrowing never runs (no regression: they had no site-scope
-// before either). `remote/sessions.ts` has no `requirePermission` anywhere, so
-// the correct gate is a router-level decision for the #1041 author. Tracked as
-// FOLLOW-UP: add the appropriate `requirePermission(...)` to each chain (and
-// de-mask the new tests, which populate `permissions` via the auth-middleware
-// mock rather than a requirePermission mock). The detector keeps them visible
-// and blocks any NEW offender.
+// The 11 dead read/mutation gates introduced by #1041 (mutations batch1) and
+// #1042 (reads batch2) — networkBaselines GET /:id + /:id/changes, networkChanges
+// GET /:id, remote/sessions {DELETE /sessions/stale, GET /sessions, GET
+// /sessions/history, GET /sessions/:id, POST /sessions/:id/offer}, and
+// remote/transfers {GET /transfers, GET /transfers/:id, GET /transfers/:id/download}
+// — were all FIXED by #1051: each chain now carries
+// `requirePermission(DEVICES_READ)` immediately after `requireScope`, which
+// populates `c.get('permissions')` so the existing `allowedSiteIds` site
+// narrowing actually runs. DEVICES_READ is granted to every device-viewing role
+// (no lockout). The route tests were de-masked to populate `permissions` via a
+// `requirePermission` mock rather than the auth-middleware mock. The baseline is
+// therefore empty; the shrink-only ratchet keeps it that way and blocks any NEW
+// offender.
 const DEAD_PERMS_GATE_BASELINE: ReadonlySet<string> = new Set<string>([
-  // Introduced by #1041 (mutations batch1) — added the perms gate, omitted requirePermission.
-  'routes/networkBaselines.ts:GET /:id',
-  'routes/networkBaselines.ts:GET /:id/changes',
-  'routes/remote/sessions.ts:DELETE /sessions/stale',
-  'routes/remote/sessions.ts:POST /sessions/:id/offer',
-  // Introduced by #1042 (reads batch2) — same shape: these reads gate on
-  // `perms?.allowedSiteIds` (and pass `perms` to getDeviceWithOrgCheck) but no
-  // `requirePermission` populates `c.get('permissions')`, so the gate is dead.
-  // remote/sessions + remote/transfers routers carry NO requirePermission at all
-  // (router-level decision for the author). No regression — these reads had no
-  // site-scope before. FOLLOW-UP: one focused PR adds requirePermission(DEVICES_READ)
-  // to all 11 dead reads here + de-masks the route tests. Detector keeps them visible.
-  'routes/networkChanges.ts:GET /:id',
-  'routes/remote/sessions.ts:GET /sessions',
-  'routes/remote/sessions.ts:GET /sessions/history',
-  'routes/remote/sessions.ts:GET /sessions/:id',
-  'routes/remote/transfers.ts:GET /transfers',
-  'routes/remote/transfers.ts:GET /transfers/:id',
-  'routes/remote/transfers.ts:GET /transfers/:id/download',
 ]);
 
 describe('site-scope coverage — dead permissions-sourced gate', () => {

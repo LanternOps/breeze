@@ -8,7 +8,7 @@ import {
   devices,
   users
 } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
 import { saveChunk, assembleChunks, getFileStream, getFileSize, hasAssembledFile, getTotalBytesReceived, MAX_TRANSFER_SIZE_BYTES } from '../../services/fileStorage';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { Readable } from 'stream';
@@ -23,7 +23,7 @@ import {
   MAX_ACTIVE_TRANSFERS_PER_ORG,
   MAX_ACTIVE_TRANSFERS_PER_USER
 } from './helpers';
-import { canAccessSite, type UserPermissions } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
 export const transferRoutes = new Hono();
 
@@ -174,6 +174,8 @@ transferRoutes.post(
 transferRoutes.get(
   '/transfers',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listTransfersSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -299,6 +301,8 @@ transferRoutes.get(
 transferRoutes.get(
   '/transfers/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const transferId = c.req.param('id')!;
@@ -515,6 +519,8 @@ transferRoutes.post(
 transferRoutes.get(
   '/transfers/:id/download',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const transferId = c.req.param('id')!;
