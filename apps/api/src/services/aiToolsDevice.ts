@@ -21,11 +21,12 @@ import {
   sites,
   customFieldDefinitions,
 } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -76,6 +77,19 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         conditions.push(
           sql`(${devices.hostname} ILIKE ${searchPattern} OR ${devices.displayName} ILIKE ${searchPattern})`
         );
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+      // caller may only enumerate devices in their allowed sites. The optional
+      // `siteId` input is attacker-controlled (a filter, not a restriction), so
+      // narrow to the real allowed device set instead.
+      const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+      if (auth.allowedSiteIds && queryOrgId) {
+        const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({ devices: [], total: 0, showing: 0 });
+        }
+        conditions.push(inArray(devices.id, allowed));
       }
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
@@ -363,6 +377,17 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
+
+        // Site axis: a site-restricted caller may only enumerate tags from
+        // devices in their allowed sites (RLS does NOT enforce site).
+        const tagsOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        if (auth.allowedSiteIds && tagsOrgId) {
+          const allowed = await resolveSiteAllowedDeviceIds(tagsOrgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({ tags: [], total: 0 });
+          }
+          conditions.push(inArray(devices.id, allowed));
+        }
 
         const search = input.search as string | undefined;
         const whereClause = conditions.length > 0 ? and(...conditions) : sql`true`;

@@ -15,6 +15,7 @@ import { eq, and, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { deviceSiteDenied } from './aiToolsSiteScope';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -121,11 +122,13 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [targetDevice] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
+      // Site axis (app-layer only; RLS does NOT enforce it).
+      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -252,11 +255,13 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [targetDevice] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
+      // Site axis (app-layer only; RLS does NOT enforce it).
+      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'

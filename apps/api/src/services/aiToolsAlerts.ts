@@ -8,19 +8,29 @@
 
 import { db } from '../db';
 import { alerts, devices, notificationChannels } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
+import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
+function getOrgId(auth: AuthContext): string | null {
+  return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+// Resolve an alert within org scope AND enforce the site axis (app-layer only;
+// RLS does NOT enforce site): the alert's device must be in a site the caller
+// can access. Returns null when not found or site-denied.
 async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(alerts.id, alertId)];
   const orgCond = auth.orgCondition(alerts.orgId);
   if (orgCond) conditions.push(orgCond);
   const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  return alert || null;
+  if (!alert) return null;
+  if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
+  return alert;
 }
 
 export function registerAlertTools(aiTools: Map<string, AiTool>): void {
@@ -62,6 +72,20 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (input.status) conditions.push(eq(alerts.status, input.status as typeof alerts.status.enumValues[number]));
         if (input.severity) conditions.push(eq(alerts.severity, input.severity as typeof alerts.severity.enumValues[number]));
         if (input.deviceId) conditions.push(eq(alerts.deviceId, input.deviceId as string));
+
+        // Site axis: a site-restricted caller may only see alerts for devices in
+        // their allowed sites (RLS does NOT enforce site). Narrow to that set.
+        const listOrgId = getOrgId(auth);
+        if (auth.allowedSiteIds && listOrgId) {
+          const allowed = await resolveSiteAllowedDeviceIds(listOrgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({ alerts: [], total: 0, showing: 0 });
+          }
+          if (input.deviceId && !allowed.includes(input.deviceId as string)) {
+            return JSON.stringify({ alerts: [], total: 0, showing: 0 });
+          }
+          conditions.push(inArray(alerts.deviceId, allowed));
+        }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 

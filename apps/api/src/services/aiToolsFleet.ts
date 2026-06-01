@@ -59,6 +59,7 @@ import { devices, sites } from '../db/schema';
 import { eq, and, desc, sql, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -462,17 +463,21 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
-        // Validate devices belong to this org
-        const ownedDevices = await db.select({ id: devices.id })
+        // Validate devices belong to this org AND the caller's site scope. Site
+        // is an app-layer axis (RLS does NOT enforce it), so a site-restricted
+        // caller installing patches must be denied for out-of-site devices.
+        const ownedDevices = await db.select({ id: devices.id, siteId: devices.siteId })
           .from(devices)
           .where(and(
             eq(devices.orgId, orgId),
             inArray(devices.id, input.deviceIds as string[]),
           ));
-        const ownedIds = new Set(ownedDevices.map((d) => d.id));
+        const ownedIds = new Set(
+          ownedDevices.filter((d) => !deviceSiteDenied(auth, d.siteId)).map((d) => d.id),
+        );
         const unauthorizedIds = (input.deviceIds as string[]).filter((id) => !ownedIds.has(id));
         if (unauthorizedIds.length > 0) {
-          return JSON.stringify({ error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization` });
+          return JSON.stringify({ error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization or site scope` });
         }
 
         const [job] = await db.insert(patchJobs).values({
@@ -496,11 +501,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         // Validate device belongs to this org
-        const [device] = await db.select({ id: devices.id })
+        const [device] = await db.select({ id: devices.id, siteId: devices.siteId })
           .from(devices)
           .where(and(eq(devices.orgId, orgId), eq(devices.id, (input.deviceIds as string[])[0]!)))
           .limit(1);
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
 
         const [rollback] = await db.insert(patchRollbacks).values({
           deviceId: device.id,
@@ -772,8 +779,20 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
 
         const deviceIdList = (input.deviceIds as string[]).slice(0, 100);
+        // Only add devices that belong to the group's org AND are in the caller's
+        // site scope. Site is an app-layer axis (RLS does NOT enforce it), so
+        // restrict the membership write to in-scope, owned devices.
+        const candidateRows = await db.select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.orgId, group.orgId), inArray(devices.id, deviceIdList)));
+        const insertableIds = candidateRows
+          .filter((d) => !deviceSiteDenied(auth, d.siteId))
+          .map((d) => d.id);
+        if (insertableIds.length === 0) {
+          return JSON.stringify({ success: true, added: 0, message: 'No in-scope devices to add' });
+        }
         const results = await db.insert(deviceGroupMemberships)
-          .values(deviceIdList.map((deviceId) => ({
+          .values(insertableIds.map((deviceId) => ({
             groupId: group.id,
             deviceId,
             orgId: group.orgId,
@@ -782,7 +801,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .onConflictDoNothing()
           .returning({ deviceId: deviceGroupMemberships.deviceId });
 
-        return JSON.stringify({ success: true, added: results.length, message: `${results.length} device(s) added to group "${group.name}"` });
+        const skipped = deviceIdList.length - insertableIds.length;
+        return JSON.stringify({ success: true, added: results.length, ...(skipped > 0 ? { skipped } : {}), message: `${results.length} device(s) added to group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
       }
 
       if (action === 'remove_devices') {
@@ -1476,6 +1496,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const reportType = input.reportType as string;
 
         if (reportType === 'device_inventory') {
+          const inventoryConditions: SQL[] = [eq(devices.orgId, orgId)];
+          // Site axis: a site-restricted caller may only enumerate devices in
+          // their allowed sites (RLS does NOT enforce site).
+          if (auth.allowedSiteIds) {
+            const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+            if (!allowed || allowed.length === 0) {
+              return JSON.stringify({ reportType, data: [], showing: 0 });
+            }
+            inventoryConditions.push(inArray(devices.id, allowed));
+          }
           const rows = await db.select({
             id: devices.id,
             hostname: devices.hostname,
@@ -1487,7 +1517,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             siteName: sites.name,
           }).from(devices)
             .leftJoin(sites, eq(devices.siteId, sites.id))
-            .where(eq(devices.orgId, orgId))
+            .where(and(...inventoryConditions))
             .orderBy(desc(devices.lastSeenAt))
             .limit(limit);
 
