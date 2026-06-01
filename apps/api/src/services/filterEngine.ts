@@ -42,6 +42,18 @@ const OPERATORS_BY_TYPE: Record<FilterFieldType, FilterOperator[]> = {
 
 const CUSTOM_FIELD_KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
 
+// Upper bound on a user-supplied `matches` (regex) pattern. Postgres regex is
+// susceptible to catastrophic backtracking; capping the pattern length is a
+// cheap guard against query-time DoS (issue #1044, item 2).
+const MAX_REGEX_PATTERN_LENGTH = 250;
+
+// Escape LIKE/ILIKE wildcards in a user value so `%` and `_` match literally
+// (default ESCAPE is backslash). Without this a value of `%` matches every row
+// — a matching-semantics surprise, not injection (issue #1044, item 1).
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 function getCustomFieldKey(field: string): string | null {
   if (!field.startsWith('custom.')) {
     return null;
@@ -228,7 +240,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     switch (operator) {
       case 'contains':
       case 'notContains':
-        match = sql`${softwareInventory.name} ILIKE ${'%' + String(value) + '%'}`;
+        match = sql`${softwareInventory.name} ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
         break;
       case 'equals':
         match = sql`${softwareInventory.name} = ${String(value)}`;
@@ -331,13 +343,13 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
     case 'lessThanOrEquals':
       return sql`${columnRef} <= ${value}`;
     case 'contains':
-      return sql`${columnRef} ILIKE ${'%' + value + '%'}`;
+      return sql`${columnRef} ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
     case 'notContains':
-      return sql`${columnRef} NOT ILIKE ${'%' + value + '%'}`;
+      return sql`${columnRef} NOT ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
     case 'startsWith':
-      return sql`${columnRef} ILIKE ${value + '%'}`;
+      return sql`${columnRef} ILIKE ${escapeLikePattern(String(value)) + '%'}`;
     case 'endsWith':
-      return sql`${columnRef} ILIKE ${'%' + value}`;
+      return sql`${columnRef} ILIKE ${'%' + escapeLikePattern(String(value))}`;
     case 'matches':
       return sql`${columnRef} ~ ${value}`;
     case 'in':
@@ -599,6 +611,13 @@ export function validateFilter(filter: FilterConditionGroup | FilterCondition): 
     }
     if (fieldDef && !fieldDef.operators.includes(filter.operator)) {
       errors.push(`Operator ${filter.operator} not valid for field ${filter.field}`);
+    }
+    if (
+      filter.operator === 'matches' &&
+      typeof filter.value === 'string' &&
+      filter.value.length > MAX_REGEX_PATTERN_LENGTH
+    ) {
+      errors.push(`Regex pattern too long for field ${filter.field} (max ${MAX_REGEX_PATTERN_LENGTH} characters)`);
     }
   } else {
     errors.push('Invalid filter structure');

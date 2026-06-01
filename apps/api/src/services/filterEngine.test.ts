@@ -1,7 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildConditionSQL, validateFilter, getFieldDefinition } from './filterEngine';
+import { buildConditionSQL, validateFilter, getFieldDefinition, escapeLikePattern } from './filterEngine';
 import type { FilterCondition } from '@breeze/shared/types/filters';
+
+describe('filterEngine input hardening (#1044)', () => {
+  it('escapeLikePattern escapes backslash, percent, and underscore', () => {
+    expect(escapeLikePattern('100%')).toBe('100\\%');
+    expect(escapeLikePattern('a_b')).toBe('a\\_b');
+    expect(escapeLikePattern('a\\b')).toBe('a\\\\b');
+    expect(escapeLikePattern('%_\\')).toBe('\\%\\_\\\\');
+    expect(escapeLikePattern('plain')).toBe('plain');
+  });
+
+  it('validateFilter rejects a matches pattern longer than 250 characters', () => {
+    const long = 'a'.repeat(251);
+    const res = validateFilter({ field: 'hostname', operator: 'matches', value: long } as FilterCondition);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some((e) => e.includes('Regex pattern too long'))).toBe(true);
+  });
+
+  it('validateFilter accepts a matches pattern at the 250-character limit', () => {
+    const ok = 'a'.repeat(250);
+    expect(validateFilter({ field: 'hostname', operator: 'matches', value: ok } as FilterCondition).valid).toBe(true);
+  });
+
+  it('validateFilter rejects an unknown field', () => {
+    const res = validateFilter({ field: 'totally_made_up', operator: 'equals', value: 'x' } as FilterCondition);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some((e) => e.includes('Unknown field'))).toBe(true);
+  });
+});
 
 const dialect = new PgDialect();
 const render = (cond: FilterCondition): string => dialect.sqlToQuery(buildConditionSQL(cond)).sql;
