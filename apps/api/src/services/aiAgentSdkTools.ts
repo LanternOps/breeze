@@ -27,6 +27,7 @@ import {
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
   googleOffboardUserHandler, googleWipeMobileDeviceHandler,
+  googleSecurityDriftHandler, googleEmailReportHandler,
 } from './aiToolsGoogle';
 
 /**
@@ -161,6 +162,8 @@ export const TOOL_TIERS = {
   google_share_calendar: 3,
   google_offboard_user: 3,
   google_wipe_mobile_device: 3,
+  google_security_drift: 1,
+  google_email_report: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -644,6 +647,18 @@ export function googleToolDefinitions(
       'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_security_drift',
+      'Read-only Google Workspace security posture for the connected domain: counts and lists of users with no 2-step verification, super-admins, suspended accounts, never-logged-in accounts, and accounts stale beyond staleDays (default 90). No changes are made.',
+      { staleDays: z.number().int().min(1).max(3650).optional() },
+      makeSessionAwareHandler('google_security_drift', getAuth, getActiveSession, googleSecurityDriftHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_email_report',
+      "Run the Google Workspace security-drift report and email it to the connection's own admin address (recipient is fixed to the admin, not arbitrary). Use when asked to email a Workspace report. staleDays optional (default 90).",
+      { staleDays: z.number().int().min(1).max(3650).optional() },
+      makeSessionAwareHandler('google_email_report', getAuth, getActiveSession, googleEmailReportHandler, onPreToolUse, onPostToolUse)
     ),
   ];
 }

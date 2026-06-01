@@ -34,6 +34,7 @@ import {
   type GoogleApiError,
 } from './googleClient';
 import type { GoogleWorkspaceConnectionRow } from '../db/schema/google';
+import { getEmailService } from './email';
 
 export const googleToolTiers: Record<string, 1 | 3> = {
   google_lookup_user: 1,
@@ -47,6 +48,8 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_share_calendar: 3,
   google_offboard_user: 3,
   google_wipe_mobile_device: 3,
+  google_security_drift: 1,
+  google_email_report: 1,
 };
 
 const CALENDAR_ROLES = ['freeBusyReader', 'reader', 'writer', 'owner'] as const;
@@ -573,5 +576,152 @@ export async function googleWipeMobileDeviceHandler(
   }
 }
 
+// ── Cluster 2: security drift (read) + reports-by-email ───────────────────────
+
+interface DriftUser {
+  primaryEmail?: string | null;
+  isAdmin?: boolean | null;
+  suspended?: boolean | null;
+  isEnrolledIn2Sv?: boolean | null;
+  lastLoginTime?: string | null;
+}
+
+/** Page through every user in the customer's directory (projection kept small). */
+async function listAllDomainUsers(dir: DirectoryClient): Promise<DriftUser[]> {
+  const users: DriftUser[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await dir.users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      orderBy: 'email',
+      pageToken,
+      fields: 'nextPageToken,users(primaryEmail,isAdmin,suspended,isEnrolledIn2Sv,lastLoginTime)',
+    });
+    for (const u of res.data.users ?? []) users.push(u as DriftUser);
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return users;
+}
+
+interface DriftBucket {
+  count: number;
+  users: string[];
+}
+interface SecurityDrift {
+  totalUsers: number;
+  noTwoStep: DriftBucket;
+  superAdmins: DriftBucket;
+  suspended: DriftBucket;
+  neverLoggedIn: DriftBucket;
+  stale: DriftBucket & { thresholdDays: number };
+}
+
+/** Bucket users into the security-drift categories. Pure function (testable). */
+function computeSecurityDrift(users: DriftUser[], staleDays: number, nowMs: number): SecurityDrift {
+  const staleMs = staleDays * 86_400_000;
+  const emailOf = (u: DriftUser) => u.primaryEmail ?? '(unknown)';
+  const active = users.filter((u) => !u.suspended);
+  const bucket = (list: DriftUser[]): DriftBucket => ({ count: list.length, users: list.map(emailOf).slice(0, 50) });
+
+  const noTwoStep = active.filter((u) => u.isEnrolledIn2Sv === false);
+  const superAdmins = users.filter((u) => u.isAdmin === true);
+  const suspended = users.filter((u) => u.suspended === true);
+  const neverLoggedIn = active.filter((u) => {
+    const t = Date.parse(u.lastLoginTime ?? '');
+    return !u.lastLoginTime || Number.isNaN(t) || t <= 0;
+  });
+  const stale = active.filter((u) => {
+    const t = Date.parse(u.lastLoginTime ?? '');
+    return t > 0 && nowMs - t > staleMs;
+  });
+
+  return {
+    totalUsers: users.length,
+    noTwoStep: bucket(noTwoStep),
+    superAdmins: bucket(superAdmins),
+    suspended: bucket(suspended),
+    neverLoggedIn: bucket(neverLoggedIn),
+    stale: { ...bucket(stale), thresholdDays: staleDays },
+  };
+}
+
+function resolveStaleDays(input: Record<string, unknown>): number {
+  const v = input.staleDays;
+  return typeof v === 'number' && v > 0 && v <= 3650 ? v : 90;
+}
+
+export async function googleSecurityDriftHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const staleDays = resolveStaleDays(input);
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    const users = await listAllDomainUsers(dir);
+    const drift = computeSecurityDrift(users, staleDays, Date.now());
+    return `Google Workspace security drift for ${ctx.conn.customerDomain}: ${JSON.stringify(drift)}`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+/** Minimal HTML report for the drift email. */
+function renderDriftHtml(domain: string, drift: SecurityDrift): string {
+  const row = (label: string, b: DriftBucket) =>
+    `<tr><td style="padding:4px 12px 4px 0"><b>${label}</b></td><td style="padding:4px 0">${b.count}</td></tr>`;
+  const list = (label: string, b: DriftBucket) =>
+    b.users.length
+      ? `<h4 style="margin:14px 0 4px">${label} (${b.count}${b.count > b.users.length ? ', first ' + b.users.length : ''})</h4><div style="font:13px/1.5 monospace">${b.users.join('<br>')}</div>`
+      : '';
+  return `<div style="font:14px/1.5 -apple-system,Segoe UI,sans-serif">
+<h2 style="margin:0 0 8px">Google Workspace security drift — ${domain}</h2>
+<p>${drift.totalUsers} users scanned. Stale threshold: ${drift.stale.thresholdDays} days.</p>
+<table>${row('No 2-step', drift.noTwoStep)}${row('Super-admins', drift.superAdmins)}${row('Suspended', drift.suspended)}${row('Never logged in', drift.neverLoggedIn)}${row('Stale', drift.stale)}</table>
+${list('Users with no 2-step verification', drift.noTwoStep)}
+${list('Super-admins', drift.superAdmins)}
+${list('Never logged in', drift.neverLoggedIn)}
+${list('Stale accounts', drift.stale)}
+</div>`;
+}
+
+/**
+ * Run the security-drift report and email it. The recipient is LOCKED to the
+ * connection's admin address (no arbitrary recipient) so the agent cannot use
+ * this to exfiltrate directory data. Tier 1: it changes no Google or device
+ * state, only emails a read-only summary to the org's own admin.
+ */
+export async function googleEmailReportHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const svc = getEmailService();
+  if (!svc) {
+    return errorString('email_not_configured', 'No email provider is configured on this instance; cannot send the report.');
+  }
+  const staleDays = resolveStaleDays(input);
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    const users = await listAllDomainUsers(dir);
+    const drift = computeSecurityDrift(users, staleDays, Date.now());
+    const to = ctx.conn.adminEmail; // locked to the connection admin
+    await svc.sendEmail({
+      to,
+      subject: `Google Workspace security drift — ${ctx.conn.customerDomain}`,
+      html: renderDriftHtml(ctx.conn.customerDomain, drift),
+    });
+    return `Emailed the Google Workspace security-drift report for ${ctx.conn.customerDomain} to ${to} (${users.length} users scanned, stale threshold ${staleDays}d).`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
 // Keep the GoogleApiError type referenced for downstream importers/tests.
-export type { GoogleApiError };
+export type { GoogleApiError, SecurityDrift };
+export { computeSecurityDrift };

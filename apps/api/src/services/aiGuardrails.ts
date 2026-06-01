@@ -388,6 +388,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   google_share_calendar: { resource: 'google', action: 'execute' },
   google_offboard_user: { resource: 'google', action: 'execute' },
   google_wipe_mobile_device: { resource: 'google', action: 'execute' },
+  google_security_drift: { resource: 'google', action: 'read' },
+  google_email_report: { resource: 'google', action: 'read' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {

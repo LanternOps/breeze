@@ -21,9 +21,12 @@ vi.mock('./googleClient', async (importOriginal) => {
     getCalendarClient: vi.fn(),
   };
 });
+// Mock the email service used by google_email_report.
+vi.mock('./email', () => ({ getEmailService: vi.fn() }));
 
 import * as helpers from './googleHelpers';
 import * as client from './googleClient';
+import * as emailSvc from './email';
 import {
   googleLookupUserHandler,
   googleResetPasswordHandler,
@@ -35,6 +38,9 @@ import {
   googleShareCalendarHandler,
   googleOffboardUserHandler,
   googleWipeMobileDeviceHandler,
+  googleSecurityDriftHandler,
+  googleEmailReportHandler,
+  computeSecurityDrift,
 } from './aiToolsGoogle';
 
 const auth = {} as any;
@@ -46,6 +52,7 @@ function armConnection(connOverride?: Record<string, unknown>) {
     orgId: 'org-A',
     status: 'active',
     adminEmail: 'admin@x.com',
+    customerDomain: 'x.com',
     ...connOverride,
   });
 }
@@ -324,5 +331,69 @@ describe('stolen-device full wipe', () => {
     });
     const out = await googleWipeMobileDeviceHandler({ userEmail: 'u@x.com', reason: 'stolen' }, auth, SESSION);
     expect(out).toContain('nothing to wipe');
+  });
+});
+
+describe('computeSecurityDrift', () => {
+  const NOW = Date.parse('2026-05-31T00:00:00Z');
+  const users = [
+    { primaryEmail: 'admin@x.com', isAdmin: true, suspended: false, isEnrolledIn2Sv: true, lastLoginTime: '2026-05-30T00:00:00Z' },
+    { primaryEmail: 'no2sv@x.com', isAdmin: false, suspended: false, isEnrolledIn2Sv: false, lastLoginTime: '2026-05-29T00:00:00Z' },
+    { primaryEmail: 'stale@x.com', isAdmin: false, suspended: false, isEnrolledIn2Sv: true, lastLoginTime: '2026-01-01T00:00:00Z' },
+    { primaryEmail: 'never@x.com', isAdmin: false, suspended: false, isEnrolledIn2Sv: false, lastLoginTime: '1970-01-01T00:00:00Z' },
+    { primaryEmail: 'gone@x.com', isAdmin: false, suspended: true, isEnrolledIn2Sv: false, lastLoginTime: null },
+  ];
+
+  it('buckets users correctly', () => {
+    const d = computeSecurityDrift(users, 90, NOW);
+    expect(d.totalUsers).toBe(5);
+    expect(d.superAdmins.users).toEqual(['admin@x.com']);
+    expect(d.suspended.users).toEqual(['gone@x.com']);
+    // no2sv + never are active + not enrolled; gone is suspended so excluded
+    expect(d.noTwoStep.users.sort()).toEqual(['never@x.com', 'no2sv@x.com']);
+    expect(d.neverLoggedIn.users).toEqual(['never@x.com']);
+    expect(d.stale.users).toEqual(['stale@x.com']);
+    expect(d.stale.thresholdDays).toBe(90);
+  });
+
+  it('excludes suspended users from active buckets', () => {
+    const d = computeSecurityDrift(users, 90, NOW);
+    expect(d.noTwoStep.users).not.toContain('gone@x.com');
+  });
+});
+
+describe('security drift + email report', () => {
+  function armUserList(users: any[]) {
+    (client.getDirectoryClient as any).mockReturnValue({
+      users: { list: vi.fn().mockResolvedValue({ data: { users, nextPageToken: undefined } }) },
+    });
+  }
+
+  it('security_drift returns a summary with counts', async () => {
+    armUserList([
+      { primaryEmail: 'a@x.com', isAdmin: true, suspended: false, isEnrolledIn2Sv: true, lastLoginTime: '2026-05-30T00:00:00Z' },
+      { primaryEmail: 'b@x.com', isAdmin: false, suspended: false, isEnrolledIn2Sv: false, lastLoginTime: '2026-05-30T00:00:00Z' },
+    ]);
+    const out = await googleSecurityDriftHandler({}, auth, SESSION);
+    expect(out).toContain('security drift for x.com');
+    expect(out).toContain('"superAdmins"');
+    expect(out).toContain('b@x.com');
+  });
+
+  it('email_report sends to the admin address and reports success', async () => {
+    armUserList([{ primaryEmail: 'b@x.com', isAdmin: false, suspended: false, isEnrolledIn2Sv: false, lastLoginTime: '2026-05-30T00:00:00Z' }]);
+    const sendEmail = vi.fn().mockResolvedValue(undefined);
+    (emailSvc.getEmailService as any).mockReturnValue({ sendEmail });
+    const out = await googleEmailReportHandler({}, auth, SESSION);
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'admin@x.com', subject: expect.stringContaining('x.com') }),
+    );
+    expect(out).toContain('Emailed the Google Workspace security-drift report');
+  });
+
+  it('email_report errors cleanly when no email provider is configured', async () => {
+    (emailSvc.getEmailService as any).mockReturnValue(null);
+    const out = await googleEmailReportHandler({}, auth, SESSION);
+    expect(out).toContain('email_not_configured');
   });
 });
