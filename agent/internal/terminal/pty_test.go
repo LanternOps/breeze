@@ -66,6 +66,10 @@ func TestSessionStartInvalidShell(t *testing.T) {
 }
 
 func TestSessionStartSetsTermEnv(t *testing.T) {
+	t.Setenv("LANG", "")
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_CTYPE", "")
+
 	s := &Session{
 		ID:       "start-env",
 		Cols:     100,
@@ -110,6 +114,31 @@ func TestSessionStartSetsTermEnv(t *testing.T) {
 	}
 	if !foundLang {
 		t.Fatal("expected LANG=C.UTF-8 in env")
+	}
+}
+
+func TestSessionStartPreservesExistingUTF8Locale(t *testing.T) {
+	t.Setenv("LANG", "en_US.UTF-8")
+
+	s := &Session{
+		ID:       "start-env-preserve",
+		Cols:     80,
+		Rows:     24,
+		Shell:    "/bin/sh",
+		onOutput: func([]byte) {},
+		onClose:  func(error) {},
+	}
+
+	if err := s.start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer s.close()
+
+	if !containsEnv(s.cmd.Env, "LANG=en_US.UTF-8") {
+		t.Fatalf("expected existing UTF-8 locale to be preserved, got %v", s.cmd.Env)
+	}
+	if containsEnv(s.cmd.Env, "LANG=C.UTF-8") {
+		t.Fatalf("expected LANG=C.UTF-8 not to be appended when UTF-8 locale exists, got %v", s.cmd.Env)
 	}
 }
 
