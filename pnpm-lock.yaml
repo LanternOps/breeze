@@ -129,8 +129,8 @@ importers:
         specifier: ^6.1.3
         version: 6.1.3
       nanoid:
-        specifier: ^5.1.7
-        version: 5.1.7
+        specifier: ^5.1.11
+        version: 5.1.11
       node-stream-zip:
         specifier: ^1.15.0
         version: 1.15.0
@@ -3116,6 +3116,9 @@ packages:
 
   '@nodable/entities@2.1.0':
     resolution: {integrity: sha512-nyT7T3nbMyBI/lvr6L5TyWbFJAI9FTgVRakNoBqCD+PmID8DzFrrNdLLtHMwMszOtqZa8PAOV24ZqDnQrhQINA==}
+
+  '@nodable/entities@2.1.1':
+    resolution: {integrity: sha512-Pig3HxDIoMgjdEH8OCf/dkcTmLFjJRjWuq8jSnklu284/TKOPibSRERmOykiwmyXTtv61mP+44f3GMx0tLAyjg==}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -6429,8 +6432,8 @@ packages:
   dompurify@3.4.0:
     resolution: {integrity: sha512-nolgK9JcaUXMSmW+j1yaSvaEaoXYHwWyGJlkoCTghc97KgGDDSnpoU/PlEnw63Ah+TGKFOyY+X5LnxaWbCSfXg==}
 
-  dompurify@3.4.6:
-    resolution: {integrity: sha512-+7gzEI8trIIQkVCvQ3ucGtNfH3nOmDgVTzc62rAAOlMxLth78pwpPoZCPc7CyRzAQF89MqcfPdEWkDwnjgqktg==}
+  dompurify@3.4.7:
+    resolution: {integrity: sha512-2jBxDJY4RR06tQNy4w5FlFH7kfxsQZlufd0sbv+chfHCxeJwrFw2baUDsSwvBISD4K4RDbd0PTfy3uNXsR6siA==}
 
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
@@ -7261,6 +7264,10 @@ packages:
 
   hasown@2.0.3:
     resolution: {integrity: sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg==}
+    engines: {node: '>= 0.4'}
+
+  hasown@2.0.4:
+    resolution: {integrity: sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==}
     engines: {node: '>= 0.4'}
 
   hast-util-embedded@3.0.0:
@@ -8599,8 +8606,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nanoid@5.1.7:
-    resolution: {integrity: sha512-ua3NDgISf6jdwezAheMOk4mbE1LXjm1DfMUDMuJf4AqxLFK3ccGpgWizwa5YV7Yz9EpXwEaWoRXSb/BnV0t5dQ==}
+  nanoid@5.1.11:
+    resolution: {integrity: sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==}
     engines: {node: ^18 || >=20}
     hasBin: true
 
@@ -10114,6 +10121,10 @@ packages:
 
   tinyglobby@0.2.16:
     resolution: {integrity: sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==}
+    engines: {node: '>=12.0.0'}
+
+  tinyglobby@0.2.17:
+    resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
 
   tinyrainbow@3.1.0:
@@ -14089,6 +14100,9 @@ snapshots:
 
   '@nodable/entities@2.1.0': {}
 
+  '@nodable/entities@2.1.1':
+    optional: true
+
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
       '@nodelib/fs.stat': 2.0.5
@@ -14725,7 +14739,7 @@ snapshots:
       hermes-parser: 0.32.0
       invariant: 2.2.4
       nullthrows: 1.1.1
-      tinyglobby: 0.2.16
+      tinyglobby: 0.2.17
       yargs: 17.7.2
 
   '@react-native/community-cli-plugin@0.83.2(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.0))':
@@ -17982,7 +17996,7 @@ snapshots:
       '@types/trusted-types': 2.0.7
     optional: true
 
-  dompurify@3.4.6:
+  dompurify@3.4.7:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
@@ -18605,7 +18619,7 @@ snapshots:
 
   fast-xml-parser@5.8.0:
     dependencies:
-      '@nodable/entities': 2.1.0
+      '@nodable/entities': 2.1.1
       fast-xml-builder: 1.2.0
       path-expression-matcher: 1.5.0
       strnum: 2.3.0
@@ -18988,6 +19002,10 @@ snapshots:
       has-symbols: 1.1.0
 
   hasown@2.0.3:
+    dependencies:
+      function-bind: 1.1.2
+
+  hasown@2.0.4:
     dependencies:
       function-bind: 1.1.2
 
@@ -19433,7 +19451,7 @@ snapshots:
 
   is-core-module@2.16.2:
     dependencies:
-      hasown: 2.0.3
+      hasown: 2.0.4
 
   is-decimal@2.0.1: {}
 
@@ -21091,7 +21109,7 @@ snapshots:
 
   monaco-editor@0.55.1:
     dependencies:
-      dompurify: 3.4.6
+      dompurify: 3.4.7
       marked: 14.0.0
 
   mrmime@2.0.1: {}
@@ -21128,7 +21146,7 @@ snapshots:
 
   nanoid@3.3.12: {}
 
-  nanoid@5.1.7: {}
+  nanoid@5.1.11: {}
 
   natural-compare@1.4.0: {}
 
@@ -21250,7 +21268,7 @@ snapshots:
       jose: 6.2.3
       jsesc: 3.1.0
       koa: 3.2.0
-      nanoid: 5.1.7
+      nanoid: 5.1.11
       quick-lru: 7.3.0
       raw-body: 3.0.2
     transitivePeerDependencies:
@@ -22910,6 +22928,11 @@ snapshots:
       picomatch: 4.0.4
 
   tinyglobby@0.2.16:
+    dependencies:
+      fdir: 6.5.0(picomatch@4.0.4)
+      picomatch: 4.0.4
+
+  tinyglobby@0.2.17:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.4)
       picomatch: 4.0.4
