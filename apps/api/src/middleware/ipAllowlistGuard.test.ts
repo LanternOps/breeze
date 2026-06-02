@@ -8,11 +8,12 @@ vi.mock('../services/ipAllowlist', () => ({
 }));
 
 import { ipAllowlistGuard } from './ipAllowlistGuard';
+import type { AuthContext } from './auth';
 
 function appWithAuth(auth: Record<string, unknown>) {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('auth', auth);
+    c.set('auth', auth as unknown as AuthContext);
     return ipAllowlistGuard(c, next);
   });
   app.get('/x', (c) => c.json({ ok: true }));
