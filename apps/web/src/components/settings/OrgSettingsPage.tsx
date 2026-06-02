@@ -438,9 +438,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          if (nameDraft.trim() && nameDraft.trim() !== orgDetails?.name) {
-                            void handleSaveName();
-                          }
+                          // handleSaveName guards empty/unchanged internally.
+                          void handleSaveName();
                         }
                       }}
                       className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-primary"
