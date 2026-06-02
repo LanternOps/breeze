@@ -1,13 +1,30 @@
 import { useEffect, useState } from 'react';
-import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
+import { bootstrapFromCfAccessRedirect, restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
+
+const CF_ACCESS_LOGIN_PARAM = 'cf-access-login';
+
+function consumeCfAccessLoginParam(): boolean {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get(CF_ACCESS_LOGIN_PARAM) !== 'success') return false;
+  params.delete(CF_ACCESS_LOGIN_PARAM);
+  const cleanSearch = params.toString();
+  const cleanUrl =
+    window.location.pathname +
+    (cleanSearch ? `?${cleanSearch}` : '') +
+    window.location.hash;
+  window.history.replaceState({}, '', cleanUrl);
+  return true;
+}
 
 export default function AuthOverlay() {
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
+  const [cfBootstrapAttempted, setCfBootstrapAttempted] = useState(false);
   const [fadeState, setFadeState] = useState<'visible' | 'fading' | 'hidden'>('visible');
 
   useEffect(() => {
@@ -42,6 +59,27 @@ export default function AuthOverlay() {
       return;
     }
 
+    // CF Access redirect bootstrap: the server's GET /api/v1/auth/cf-access-login
+    // endpoint sets a refresh cookie and redirects here with ?cf-access-login=success.
+    // The SPA has no in-memory session yet, so trade the cookie for tokens and fetch
+    // the user before falling through to the normal "no session, redirect to /login"
+    // path. This runs once per overlay mount.
+    if (!isAuthenticated && !cfBootstrapAttempted) {
+      const shouldBootstrap = consumeCfAccessLoginParam();
+      if (shouldBootstrap) {
+        setCfBootstrapAttempted(true);
+        setIsRecovering(true);
+        void bootstrapFromCfAccessRedirect().then((ok) => {
+          if (cancelled) return;
+          setIsRecovering(false);
+          if (!ok) {
+            void navigateTo('/login?error=cf-access', { replace: true });
+          }
+        });
+        return () => { cancelled = true; };
+      }
+    }
+
     // Slow path: authenticated but no token (e.g. first load after login on another tab)
     if (isAuthenticated && !tokens?.accessToken && !recoverAttempted) {
       setRecoverAttempted(true);
@@ -68,7 +106,7 @@ export default function AuthOverlay() {
     }
 
     return () => { cancelled = true; };
-  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering]);
+  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted]);
 
   // Authenticated with token — fade out then unmount
   const shouldHide = !isChecking && !isLoading && isAuthenticated && !!tokens?.accessToken;

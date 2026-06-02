@@ -156,6 +156,25 @@ export default function Header() {
 
   const handleSignOut = async () => {
     setIsLoggingOut(true);
+
+    // When CF Access trust is in front of Breeze, a normal SPA-side logout
+    // only clears the Breeze session — CF Access still holds a session for
+    // the user, so the SSO redirect on the next /login visit silently
+    // re-enters them. Route through the server-side cf-access-logout
+    // endpoint, which clears the Breeze refresh cookie and bounces the
+    // browser through CF Access's own logout endpoint with returnTo set
+    // to /login?signedOut=1.
+    const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
+    if (cfAccessEnabled) {
+      // Drop in-memory state first so any racing component doesn't read
+      // stale tokens before the navigation lands.
+      try { useAuthStore.getState().logout(); } catch { /* zustand always present */ }
+      try { localStorage.removeItem('breeze-auth'); } catch { /* localStorage may be unavailable */ }
+      try { localStorage.removeItem('breeze-org'); } catch { /* localStorage may be unavailable */ }
+      window.location.assign('/api/v1/auth/cf-access-logout');
+      return;
+    }
+
     try {
       await apiLogout();
       await navigateTo('/login', { replace: true });

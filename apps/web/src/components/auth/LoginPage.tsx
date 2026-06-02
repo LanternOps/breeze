@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
 import McpUrlCard from '../shared/McpUrlCard';
@@ -12,6 +12,34 @@ function getRegistrationDisabledNotice(): string | undefined {
   const params = new URLSearchParams(window.location.search);
   if (params.get('reason') === 'registration-disabled') {
     return 'New registrations are currently disabled. Please contact your administrator.';
+  }
+}
+
+function shouldSkipCfAccessRedirect(): boolean {
+  if (typeof window === 'undefined') return true;
+  const params = new URLSearchParams(window.location.search);
+  // Don't loop:
+  // - error=cf-access  → we just bounced off a failed JWT verification
+  // - cf-access-login=success → we just succeeded; AuthOverlay handles the rest
+  // - signedOut=1 → the user just hit Sign out; respect that intent
+  if (params.get('error') === 'cf-access') return true;
+  if (params.get('cf-access-login') === 'success') return true;
+  if (params.get('signedOut') === '1') return true;
+  return false;
+}
+
+async function checkCfAccessLoginEnabled(): Promise<boolean> {
+  try {
+    const apiHost = import.meta.env.PUBLIC_API_URL || '';
+    const res = await fetch(`${apiHost}/api/v1/config`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { cfAccessLogin?: { enabled?: boolean } };
+    return !!body.cfAccessLogin?.enabled;
+  } catch {
+    return false;
   }
 }
 
@@ -30,8 +58,29 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
+  const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(shouldSkipCfAccessRedirect());
 
   const login = useAuthStore((state) => state.login);
+
+  // CF Access trust mode: if the deployment has it on AND we're not already
+  // in the post-redirect bounce (which AuthOverlay handles), top-level
+  // navigate to the redirect endpoint. The browser's redirect-following
+  // behaviour resolves CF Access's per-app cookie handshake silently when
+  // the user has an active session at the root app with the same IdP.
+  useEffect(() => {
+    if (cfAccessRedirectChecked) return;
+    let cancelled = false;
+    void checkCfAccessLoginEnabled().then((enabled) => {
+      if (cancelled) return;
+      if (enabled) {
+        const nextParam = safeNext === '/' ? '' : `?next=${encodeURIComponent(safeNext)}`;
+        window.location.assign(`/api/v1/auth/cf-access-login${nextParam}`);
+        return;
+      }
+      setCfAccessRedirectChecked(true);
+    });
+    return () => { cancelled = true; };
+  }, [cfAccessRedirectChecked, safeNext]);
 
   const handleLogin = async (values: { email: string; password: string }) => {
     setLoading(true);
@@ -107,6 +156,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
 
     setSmsSending(false);
   };
+
+  // While the CF Access config check is in flight, render an empty placeholder
+  // so the user doesn't see the password form flash before a redirect kicks in.
+  if (!cfAccessRedirectChecked) {
+    return <div data-testid="login-cf-access-check" className="min-h-[160px]" />;
+  }
 
   if (mfaRequired) {
     return (

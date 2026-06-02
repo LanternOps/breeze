@@ -291,6 +291,54 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   }
 }
 
+/**
+ * Bootstraps the auth store after a Cloudflare Access redirect login.
+ *
+ * The server's GET /api/v1/auth/cf-access-login endpoint mints a Breeze
+ * session and sets the HttpOnly refresh cookie, but there's no JSON body
+ * for the SPA to consume since it's a 302 redirect. This helper completes
+ * the handshake:
+ *
+ *   1. Trade the refresh cookie for a fresh access token (`/auth/refresh`)
+ *   2. Fetch the user record (`/users/me`) with that token
+ *   3. Populate the store via `login(user, tokens)`
+ *
+ * Returns true if the store was populated; false if any step failed (the
+ * caller should fall back to the regular login form).
+ */
+export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
+  const tokens = await requestTokenRefreshShared();
+  if (!tokens?.accessToken) return false;
+
+  let meResponse: Response;
+  try {
+    meResponse = await fetch(buildApiUrl('/users/me'), {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${tokens.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+    });
+  } catch {
+    return false;
+  }
+
+  if (!meResponse.ok) return false;
+
+  const user = (await meResponse.json()) as User | null;
+  if (!user || !user.id) return false;
+
+  useAuthStore.getState().login(user, tokens);
+
+  // Mirror what LoginPage does after a successful password login: pull
+  // /users/me into the store and apply the theme to the DOM. Without
+  // this, dark mode reverts to default and the onboarding tour reads
+  // an empty preferences object on first render.
+  await fetchAndApplyPreferences();
+  return true;
+}
+
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
