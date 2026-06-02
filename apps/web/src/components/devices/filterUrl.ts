@@ -57,22 +57,35 @@ export function writeFilterToHash(group: FilterConditionGroup | null): void {
   }
 }
 
-const FLAG_QUERY = 'filtersV2';
+// Flag override lives in the hash (per CLAUDE.md: transient UI state uses
+// `window.location.hash`, never query params). A distinct key from the value's
+// `filtersV2=` so the two never collide; `writeFilterToHash` preserves it like
+// any other non-value fragment.
+const FLAG_HASH_KEY = 'filtersV2Flag';
 const FLAG_STORAGE_KEY = 'breeze.filtersV2';
+
+function readHashFlag(): string | null {
+  const raw = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  for (const part of raw.split('&')) {
+    const [k, v] = part.split('=');
+    if (k === FLAG_HASH_KEY) return v ?? '';
+  }
+  return null;
+}
 
 /**
  * Whether the v2 chip filter UI is active. Default ON; opt OUT via
- * `?filtersV2=0` (one-off) or `localStorage['breeze.filtersV2'] = 'off'`
- * (sticky). `?filtersV2=1` / `'on'` force it back on. This is the
+ * `#filtersV2Flag=off` (one-off) or `localStorage['breeze.filtersV2'] = 'off'`
+ * (sticky). `#filtersV2Flag=on` forces it back on. This is the
  * one-release-window flag (#968): default-on, opt-out, removed once the
  * chip bar is proven, along with the legacy DeviceFilterBar.
  */
 export function isFiltersV2Enabled(): boolean {
   if (typeof window === 'undefined') return true;
   try {
-    const q = new URLSearchParams(window.location.search).get(FLAG_QUERY);
-    if (q === '0' || q === 'off' || q === 'false') return false;
-    if (q === '1' || q === 'on' || q === 'true') return true;
+    const h = readHashFlag();
+    if (h === '0' || h === 'off' || h === 'false') return false;
+    if (h === '1' || h === 'on' || h === 'true') return true;
     const stored = window.localStorage.getItem(FLAG_STORAGE_KEY);
     if (stored === 'off' || stored === 'false') return false;
     if (stored === 'on' || stored === 'true') return true;
