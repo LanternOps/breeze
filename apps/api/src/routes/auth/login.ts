@@ -52,6 +52,7 @@ import {
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
+import { captureException } from '../../services/sentry';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -358,12 +359,20 @@ loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   // Partner IP allowlist: block before issuing tokens so the login form shows
   // a precise error. Platform admins and untrusted-IP fail-open are handled
   // inside enforceIpAllowlist.
-  const ipDecision = await enforceIpAllowlist(c, {
-    partnerId: context.partnerId,
-    isPlatformAdmin: user.isPlatformAdmin === true,
-    actorId: user.id,
-    actorEmail: user.email,
-  });
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: context.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch (err) {
+    console.error('[auth] IP allowlist check failed during login:', err);
+    captureException(err, c);
+    await floorPromise;
+    return c.json(genericAuthError(), 401);
+  }
   if (ipDecision.decision === 'deny') {
     void auditUserLoginFailure(c, {
       userId: user.id,

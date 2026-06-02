@@ -117,6 +117,10 @@ vi.mock('../../services/ipAllowlist', () => ({
   enforceIpAllowlist: vi.fn(),
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 import { loginRoutes } from './login';
 import { db } from '../../db';
 import { createTokenPair } from '../../services';
@@ -176,6 +180,17 @@ describe('POST /login — IP allowlist', () => {
 
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'ip_not_allowed' });
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('denies login and does not mint tokens when the IP allowlist check fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(enforceIpAllowlist).mockRejectedValueOnce(new Error('db unavailable'));
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'Invalid email or password' });
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });

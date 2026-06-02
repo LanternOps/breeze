@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 // Mock the enforcement service so we control the decision.
-const enforceMock = vi.fn();
 vi.mock('../services/ipAllowlist', () => ({
-  enforceIpAllowlist: (...args: unknown[]) => enforceMock(...args),
+  enforceIpAllowlist: vi.fn(),
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 import { ipAllowlistGuard } from './ipAllowlistGuard';
+import { enforceIpAllowlist } from '../services/ipAllowlist';
 import type { AuthContext } from './auth';
 
 function appWithAuth(auth: Record<string, unknown>) {
@@ -21,10 +25,12 @@ function appWithAuth(auth: Record<string, unknown>) {
 }
 
 describe('ipAllowlistGuard', () => {
-  beforeEach(() => enforceMock.mockReset());
+  beforeEach(() => {
+    vi.mocked(enforceIpAllowlist).mockReset();
+  });
 
   it('passes the request through on allow', async () => {
-    enforceMock.mockResolvedValue({ decision: 'allow' });
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
     const res = await appWithAuth({
       user: { id: 'u1', email: 'a@b.c', isPlatformAdmin: false },
       partnerId: 'p1',
@@ -33,7 +39,7 @@ describe('ipAllowlistGuard', () => {
   });
 
   it('passes the request through on skip', async () => {
-    enforceMock.mockResolvedValue({ decision: 'skip', reason: 'empty_list' });
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'skip', reason: 'empty_list' });
     const res = await appWithAuth({
       user: { id: 'u1', email: 'a@b.c', isPlatformAdmin: false },
       partnerId: 'p1',
@@ -42,12 +48,34 @@ describe('ipAllowlistGuard', () => {
   });
 
   it('returns 403 with ip_not_allowed on deny', async () => {
-    enforceMock.mockResolvedValue({ decision: 'deny', reason: 'not_in_list' });
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'deny', reason: 'not_in_list' });
     const res = await appWithAuth({
       user: { id: 'u1', email: 'a@b.c', isPlatformAdmin: false },
       partnerId: 'p1',
     }).request('/x');
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'ip_not_allowed' });
+  });
+
+  it('fails closed with 503 when the IP allowlist check fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(enforceIpAllowlist).mockRejectedValue(new Error('db unavailable'));
+    const res = await ipAllowlistGuard({
+      get: () => ({
+        user: { id: 'u1', email: 'a@b.c', isPlatformAdmin: false },
+        partnerId: 'p1',
+      }),
+      req: {
+        method: 'GET',
+        path: '/x',
+        header: () => undefined,
+      },
+      json: (body: unknown, status: number) => new Response(JSON.stringify(body), { status }),
+    } as any, vi.fn()) as Response;
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      code: 'ip_check_failed',
+      error: 'Access temporarily unavailable',
+    });
   });
 });
