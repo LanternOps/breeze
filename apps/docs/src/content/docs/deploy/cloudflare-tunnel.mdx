@@ -1,0 +1,218 @@
+---
+title: Cloudflare Tunnel
+description: Run Breeze behind a Cloudflare Tunnel with no inbound ports, and optionally lock the dashboard behind Cloudflare Access.
+sidebar:
+  order: 5
+  label: Cloudflare Tunnel
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) lets you expose Breeze without opening any inbound ports on your server. The `cloudflared` daemon makes an outbound connection to Cloudflare's edge, and all traffic reaches Breeze through that tunnel. Your origin IP stays hidden, and the firewall can deny all inbound traffic.
+
+This is a popular self-hosting setup, and the bundled Caddy config is built to support it out of the box.
+
+## Traffic Chain
+
+```
+Internet → Cloudflare edge → cloudflared → Caddy → API / Web
+```
+
+Both the dashboard and agent traffic arrive on the same hostname (port 443) and are split by path inside Caddy:
+
+| Path | Backend |
+|---|---|
+| `/api/v1/agents/*`, `/api/v1/agent-ws/*` | API (agent REST + WebSocket) |
+| `/api/v1/desktop-ws`, `/api/v1/tunnel-ws`, `/api/v1/remote/sessions` | API (remote desktop / terminal) |
+| `/api/*`, `/health`, `/metrics/*` | API |
+| `/` (catch-all) | Web dashboard |
+
+<Aside type="caution">
+  A Cloudflare Tunnel only carries TCP/HTTP. TURN, which powers remote desktop across NATs, needs UDP and **cannot run on the same host** behind a tunnel. Deploy TURN on a separate VPS — see [TURN Server](/deploy/turn-server/).
+</Aside>
+
+---
+
+## TLS Termination: HTTP Origin Required
+
+Cloudflare terminates HTTPS at its edge, and the tunnel from `cloudflared` to your server is already encrypted. The hop from `cloudflared` into Breeze must therefore be **plain HTTP**. If Caddy also tries to obtain its own Let's Encrypt certificate, the two TLS layers collide — ACME validation has no inbound port to answer on, and the tunnel fails to connect.
+
+There are two supported ways to satisfy this. **Option A keeps Caddy** as the path router (recommended). **Option B bypasses Caddy** and routes paths in the tunnel itself.
+
+### Option A — Caddy in HTTP mode (recommended)
+
+Keep Caddy in front and have it listen on plain `:80`. Caddy still handles the path split, compression, security headers, and SSE tuning. Plain `:80` is the default `CADDY_SITE_ADDRESS`, so the only rule is: **do not set `CADDY_SITE_ADDRESS` to a domain** — a domain value switches Caddy into Let's Encrypt mode, which is exactly what you must avoid behind a tunnel.
+
+**Breeze `.env`:**
+
+```bash
+# Plain HTTP — let Cloudflare handle TLS at the edge.
+# Do NOT set this to a domain when behind a tunnel.
+CADDY_SITE_ADDRESS=:80
+```
+
+**Tunnel ingress (`/opt/breeze/cloudflared/config.yml`):**
+
+```yaml
+ingress:
+  - hostname: breeze.example.com
+    service: http://caddy:80
+  - service: http_status:404
+```
+
+In the Cloudflare dashboard, the public hostname's **Service** is `HTTP` → `caddy:80`. No origin certificate is needed.
+
+### Option B — Bypass Caddy
+
+Point the tunnel straight at the `api` and `web` containers and replicate the path split in the tunnel's ingress rules. cloudflared evaluates rules top to bottom, first match wins.
+
+**Tunnel ingress (`/opt/breeze/cloudflared/config.yml`):**
+
+```yaml
+ingress:
+  # API surface: REST, agents, websockets, health, metrics, oauth, activation
+  - hostname: breeze.example.com
+    path: '^/(api|oauth|\.well-known|s|i|activate|health|metrics|ready)(/.*)?$'
+    service: http://api:3001
+  # Everything else → the dashboard
+  - hostname: breeze.example.com
+    service: http://web:4321
+  - service: http_status:404
+```
+
+<Aside type="caution">
+  Bypassing Caddy means you give up what Caddy provides: gzip/zstd compression, the HSTS and `X-Content-Type-Options` security headers, SSE flush tuning for AI streaming, the OAuth consent-page split, and the billing sidecar route. Only choose this if you are not running Caddy at all. For most deployments, Option A is simpler and safer.
+</Aside>
+
+---
+
+## Prerequisites
+
+- A domain on a Cloudflare account (the zone must be active on Cloudflare).
+- A working Breeze stack reachable internally on the Caddy container.
+- The bundled `tunnel` (cloudflared) service from `deploy/docker-compose.prod.yml`, or your own `cloudflared` install.
+
+---
+
+## Setup
+
+<Steps>
+
+1. **Create the tunnel in the Cloudflare dashboard**
+
+   Go to **Zero Trust → Networks → Tunnels → Create a tunnel**, choose **Cloudflared**, and name it (for example `breeze`). Cloudflare generates a tunnel token. Copy it.
+
+2. **Add a public hostname**
+
+   In the tunnel's **Public Hostname** tab, add your Breeze hostname (for example `breeze.example.com`) and point its **Service** at the Caddy container. The service type must be **HTTP**, not HTTPS — see [TLS Termination](#tls-termination-http-origin-required) above.
+
+   ```
+   Service type: HTTP
+   URL: caddy:80
+   ```
+
+   In the bundled compose, `cloudflared` and `caddy` share the `breeze` network, so `caddy:80` resolves directly. If you run `cloudflared` on the host instead, use `http://localhost:80`. (Using Option B? Point the service at `api:3001` / `web:4321` per the ingress rules instead.)
+
+3. **Provide the tunnel credentials**
+
+   The bundled `tunnel` service reads its config from `/opt/breeze/cloudflared/config.yml`:
+
+   ```yaml
+   tunnel: <TUNNEL_ID>
+   credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+   ingress:
+     - hostname: breeze.example.com
+       service: http://caddy:80
+     - service: http_status:404
+   ```
+
+   Place the matching `<TUNNEL_ID>.json` credentials file (downloaded from Cloudflare) in the same directory. Set `CLOUDFLARED_IMAGE_REF` in your `.env` to a digest-pinned `cloudflared` image.
+
+4. **Tell Breeze it sits behind a proxy**
+
+   Because every request now arrives from `cloudflared` → Caddy, both layers must be told which hop to trust for the real client IP. The traffic chain is `cloudflared (172.30.0.10) → caddy (172.30.0.11) → api`.
+
+   In your `.env`:
+
+   ```bash
+   # Caddy trusts the cloudflared hop for CF-Connecting-IP / X-Forwarded-For
+   CADDY_TRUSTED_PROXIES=172.30.0.10/32
+   CADDY_CLIENT_IP_HEADERS=CF-Connecting-IP X-Forwarded-For
+
+   # The API trusts the Caddy hop
+   TRUST_PROXY_HEADERS=true
+   TRUSTED_PROXY_CIDRS=172.30.0.11/32
+   ```
+
+   <Aside type="danger">
+     In production, when `TRUST_PROXY_HEADERS=true` the API refuses to boot unless `TRUSTED_PROXY_CIDRS` is set. This prevents header spoofing of client IPs (used by rate limiting and audit logs). See [Environment Variables](/deploy/environment/).
+   </Aside>
+
+   Using **Option B** (no Caddy)? The API's immediate upstream is now `cloudflared`, so set `TRUSTED_PROXY_CIDRS=172.30.0.10/32` and omit the `CADDY_*` variables.
+
+5. **Start the stack**
+
+   ```bash
+   docker compose up -d
+   ```
+
+   `cloudflared` connects outbound to Cloudflare and registers the hostname. You can now close all inbound ports on the host firewall.
+
+6. **Verify**
+
+   ```bash
+   curl https://breeze.example.com/health
+   ```
+
+   A `200` confirms traffic is flowing Internet → Cloudflare → tunnel → Caddy → API.
+
+</Steps>
+
+---
+
+## Restricting the Dashboard with Cloudflare Access
+
+Breeze has no built-in IP allowlist for the dashboard, so IP or identity restrictions belong at the proxy. With a tunnel already in place, [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/) is the cleanest way to gate the admin UI while leaving agent traffic open to the internet.
+
+The key constraint: agents connect from wherever your managed machines live (roaming laptops, customer sites, dynamic IPs), so you cannot allowlist the agents. Instead, protect everything **except** the agent paths.
+
+<Steps>
+
+1. **Create an Access application**
+
+   In **Zero Trust → Access → Applications**, add a **Self-hosted** application for `breeze.example.com`.
+
+2. **Add a bypass policy for agent paths**
+
+   Agents and remote sessions must reach these paths without an Access login. Add an **Access policy** with action **Bypass** (source: *Everyone*) scoped to the agent paths, or define the Access application path so it excludes them:
+
+   - `/api/v1/agents/*` — agent REST (enroll, heartbeat, logs)
+   - `/api/v1/agent-ws/*` — agent WebSocket (the live connection)
+   - `/api/v1/desktop-ws`, `/api/v1/tunnel-ws`, `/api/v1/remote/sessions` — remote desktop / terminal
+
+3. **Require identity for everything else**
+
+   Add an **Allow** policy on the application that requires your identity provider (Google Workspace, Okta, one-time PIN to an email domain, etc.). Now the dashboard and dashboard API require an Access login, while agents keep connecting normally.
+
+</Steps>
+
+<Aside type="tip">
+  Prefer plain IP filtering over Access? You can do the same split in Caddy with a `remote_ip` matcher: allow the agent paths from anywhere, and return `403` on every other path unless the source is one of your office/VPN CIDRs. Because Caddy trusts `CF-Connecting-IP` (set in step 4), `remote_ip` sees the real visitor, not the Cloudflare edge.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**Client IP shows as a Cloudflare address in audit logs / rate limits**
+- Confirm `CADDY_TRUSTED_PROXIES` lists the `cloudflared` hop and `CADDY_CLIENT_IP_HEADERS` includes `CF-Connecting-IP`.
+- Confirm `TRUST_PROXY_HEADERS=true` and `TRUSTED_PROXY_CIDRS` lists the Caddy hop.
+
+**API container won't start after enabling proxy trust**
+- In production, `TRUST_PROXY_HEADERS=true` requires a non-empty `TRUSTED_PROXY_CIDRS`. Set it to the Caddy container's CIDR (default `172.30.0.11/32`).
+
+**Remote desktop fails behind the tunnel**
+- Expected if TURN runs on the same host. The tunnel can't carry UDP. Move TURN to a separate VPS — see [TURN Server](/deploy/turn-server/).
+
+**Agents can't connect after adding Cloudflare Access**
+- The Access bypass for `/api/v1/agents/*` and `/api/v1/agent-ws/*` is missing or too narrow. Agents have no browser session and will be blocked by an identity policy.

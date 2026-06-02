@@ -15,6 +15,8 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('../services/filterEngine', () => ({
+  // /preview now validates conditions up front (#1044); default to valid.
+  validateFilter: vi.fn(() => ({ valid: true, errors: [] })),
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
     totalCount: 2,
     devices: [

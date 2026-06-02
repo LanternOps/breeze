@@ -36,7 +36,12 @@ const listLogsSchema = z.object({
   to: z.string().datetime().optional(),
   // RecentActivity widget doesn't display "X of Y total"; the count(*) is a
   // 2-3s RLS-bound scan even with an index. Pass skipCount=true to skip it.
-  skipCount: z.enum(['true', 'false']).optional()
+  skipCount: z.enum(['true', 'false']).optional(),
+  // Explicit org filter from the org-selector dropdown. fetchWithAuth
+  // auto-injects ?orgId=<current-org>; whitelist it here so zValidator keeps
+  // it — otherwise it is stripped and every page spans the caller's full
+  // accessible-org set, ignoring the dropdown selection.
+  orgId: z.string().uuid().optional()
 });
 
 const searchSchema = listLogsSchema.extend({
@@ -525,7 +530,12 @@ function paginatedListHandler(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    // Explicit per-request org scope from the org-selector dropdown. If the
+    // caller asks for an org they cannot access, return 403 — do NOT silently
+    // fall back to the full accessible-org set.
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
     // BY DESIGN: the audit-log list is scoped to the org only, NOT the caller's
     // site allowlist. Audit trails are an org-level compliance record and must
     // stay complete for any org member with audit-read permission; partitioning
@@ -533,22 +543,32 @@ function paginatedListHandler(
     // 'rawActorId' device join is not a reliable site key anyway). The by-id
     // detail view applies an agent-actor site check as defence-in-depth; the
     // list intentionally does not. (Site-scope review decision, 2026-05-31.)
+    // A pinned ?orgId= narrows to that single (accessible) org; otherwise the
+    // standard condition spans every accessible org.
+    const orgCond = query.orgId
+      ? eq(auditLogsTable.orgId, query.orgId)
+      : auth.orgCondition(auditLogsTable.orgId);
     const where = buildFilterConditions(orgCond, query);
     // count(*) on audit_logs is 2-3s under RLS even with the org_timestamp
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the
     // count — it never displays "X of Y total". Pass skipCount=true there.
     const skipCount = query.skipCount === 'true';
     const hasFilters = !!(query.user || query.action || query.resource || query.from || query.to);
+    // Fast-path org list: a pinned ?orgId= scopes the LATERAL per-org scan to
+    // that single org; otherwise it spans every accessible org.
+    const fastPathOrgIds: string[] | null = query.orgId
+      ? [query.orgId]
+      : (Array.isArray(auth.accessibleOrgIds) ? (auth.accessibleOrgIds as string[]) : null);
     const canUseFastPath =
       skipCount &&
       offset === 0 &&
       !hasFilters &&
-      Array.isArray(auth.accessibleOrgIds) &&
-      auth.accessibleOrgIds.length > 0;
+      fastPathOrgIds !== null &&
+      fastPathOrgIds.length > 0;
     const [total, rows] = await Promise.all([
       skipCount ? Promise.resolve(-1) : countRows(where),
       canUseFastPath
-        ? queryLatestPerOrg(auth.accessibleOrgIds as string[], limit)
+        ? queryLatestPerOrg(fastPathOrgIds as string[], limit)
         : queryRows(where, limit, offset)
     ]);
 
