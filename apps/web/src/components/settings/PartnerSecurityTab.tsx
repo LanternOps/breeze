@@ -1,16 +1,11 @@
-import type { InheritableSecuritySettings } from '@breeze/shared';
-
-export type IpAllowlistStatus = {
-  currentIp: string | null;
-  proxyTrustOk: boolean;
-  enforced: boolean;
-  active: boolean;
-};
+import type { InheritableSecuritySettings, IpAllowlistStatus } from '@breeze/shared';
 
 type Props = {
   data: InheritableSecuritySettings;
   onChange: (data: InheritableSecuritySettings) => void;
   status?: IpAllowlistStatus | null;
+  /** True when the status fetch failed (distinct from "no status yet"). */
+  statusUnavailable?: boolean;
 };
 
 const PLACEHOLDER = 'Not set — orgs configure individually';
@@ -42,7 +37,7 @@ export function currentIpCovered(currentIp: string | null, list: string[]): bool
   });
 }
 
-export default function PartnerSecurityTab({ data, onChange, status }: Props) {
+export default function PartnerSecurityTab({ data, onChange, status, statusUnavailable }: Props) {
   const set = (patch: Partial<InheritableSecuritySettings>) =>
     onChange({ ...data, ...patch });
 
@@ -138,6 +133,12 @@ export default function PartnerSecurityTab({ data, onChange, status }: Props) {
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             Allowlist configured but <strong>inactive</strong> — the API isn’t seeing real client IPs.
             Configure proxy trust (<code>TRUST_PROXY_HEADERS</code> + <code>TRUSTED_PROXY_CIDRS</code>) for it to take effect.
+          </div>
+        )}
+
+        {statusUnavailable && (
+          <div className="rounded-md border border-muted-foreground/30 bg-muted px-3 py-2 text-xs text-muted-foreground">
+            Couldn’t verify allowlist status. The server still enforces any saved allowlist — double-check your own IP is covered before saving.
           </div>
         )}
 
