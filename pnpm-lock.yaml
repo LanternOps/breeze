@@ -13398,8 +13398,6 @@ snapshots:
   '@nodable/entities@2.1.0':
     optional: true
 
-  '@nodable/entities@2.1.1': {}
-
   '@nodable/entities@2.1.1':
     optional: true
 
