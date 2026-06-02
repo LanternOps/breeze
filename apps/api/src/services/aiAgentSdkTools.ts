@@ -25,6 +25,7 @@ import {
 import {
   googleLookupUserHandler, googleResetPasswordHandler, googleSuspendUserHandler,
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
+  googleDisableForwardingHandler,
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
   googleOffboardUserHandler, googleWipeMobileDeviceHandler,
   googleSecurityDriftHandler, googleEmailReportHandler,
@@ -161,6 +162,7 @@ export const TOOL_TIERS = {
   google_restore_user: 3,
   google_signout: 3,
   google_set_forwarding: 3,
+  google_disable_forwarding: 3,
   google_set_vacation: 3,
   google_update_user: 3,
   google_share_calendar: 3,
@@ -508,12 +510,14 @@ export const __test__ = { makeSessionAwareHandler };
 // ============================================
 
 /**
- * The Microsoft 365 helpdesk tool definitions, gated on the Delegant
- * integration being configured. Returns [] (so the tools are NOT advertised to
- * the model) on instances where DELEGANT_BASE_URL is unset/blank — without a
- * configured Delegant endpoint + a seeded customer connection the tools can
- * only ever no-op with `no_customer_selected`, so there's no reason to surface
- * them. Read from process.env at call time so it tracks runtime config.
+ * The Microsoft 365 helpdesk tool definitions, gated on EITHER backend being
+ * usable: the direct app-only Graph path (M365_ENABLED + a per-org
+ * m365_connections row) OR the Delegant broker (DELEGANT_BASE_URL). Returns []
+ * (so the tools are NOT advertised to the model) only when neither is
+ * configured — gating on DELEGANT_BASE_URL alone left the direct path dead in
+ * production (M365_ENABLED instances with a saved connection but no broker).
+ * Read from process.env at call time so it tracks runtime config (mirrors
+ * googleToolDefinitions).
  */
 export function m365ToolDefinitions(
   getAuth: () => AuthContext,
@@ -521,7 +525,10 @@ export function m365ToolDefinitions(
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
-  if (!(process.env.DELEGANT_BASE_URL ?? '').trim()) return [];
+  const m365Flag = (process.env.M365_ENABLED ?? '').trim().toLowerCase();
+  const m365Enabled = ['1', 'true', 'yes', 'on'].includes(m365Flag);
+  const delegantConfigured = !!(process.env.DELEGANT_BASE_URL ?? '').trim();
+  if (!m365Enabled && !delegantConfigured) return [];
   return [
     tool(
       'm365_lookup_user',
@@ -674,6 +681,12 @@ export function googleToolDefinitions(
       'Enable Gmail forwarding from one user to another, optionally keeping a copy in the original mailbox. Requires approval.',
       { userEmail: z.string(), forwardTo: z.string(), keepCopy: z.boolean().optional(), reason: z.string() },
       makeSessionAwareHandler('google_set_forwarding', getAuth, getActiveSession, googleSetForwardingHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_disable_forwarding',
+      "Turn OFF Gmail auto-forwarding for a user's mailbox. Optionally also remove the forwarding address (pass removeAddress=true and the forwardTo address). Requires approval.",
+      { userEmail: z.string(), forwardTo: z.string().optional(), removeAddress: z.boolean().optional(), reason: z.string() },
+      makeSessionAwareHandler('google_disable_forwarding', getAuth, getActiveSession, googleDisableForwardingHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_set_vacation',

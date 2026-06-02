@@ -34,6 +34,7 @@ import {
   googleSuspendUserHandler,
   googleSignOutHandler,
   googleSetForwardingHandler,
+  googleDisableForwardingHandler,
   googleSetVacationHandler,
   googleUpdateUserHandler,
   googleShareCalendarHandler,
@@ -274,7 +275,7 @@ describe('gmail operations', () => {
   it('forwarding without keep-copy uses disposition=archive', async () => {
     const updateAutoForwarding = vi.fn().mockResolvedValue({});
     (client.getGmailClient as any).mockReturnValue({
-      users: { settings: { forwardingAddresses: { create: vi.fn().mockResolvedValue({}) }, updateAutoForwarding } },
+      users: { settings: { forwardingAddresses: { create: vi.fn().mockResolvedValue({ data: { verificationStatus: 'accepted' } }) }, updateAutoForwarding } },
     });
     const out = await googleSetForwardingHandler(
       { userEmail: 'a@x.com', forwardTo: 'b@x.com', keepCopy: false, reason: 'leave' },
@@ -285,6 +286,54 @@ describe('gmail operations', () => {
       expect.objectContaining({ requestBody: expect.objectContaining({ enabled: true, emailAddress: 'b@x.com', disposition: 'archive' }) }),
     );
     expect(out).toContain('not keeping a copy');
+  });
+
+  it('forwarding to an unverified destination returns a pending-verification error, not a false success', async () => {
+    const updateAutoForwarding = vi.fn().mockResolvedValue({});
+    (client.getGmailClient as any).mockReturnValue({
+      users: { settings: { forwardingAddresses: { create: vi.fn().mockResolvedValue({ data: { verificationStatus: 'pending' } }) }, updateAutoForwarding } },
+    });
+    const out = await googleSetForwardingHandler({ userEmail: 'a@x.com', forwardTo: 'b@x.com', reason: 'leave' }, auth, SESSION);
+    const parsed = JSON.parse(out);
+    expect(parsed.error).toBe('forwarding_pending_verification');
+    expect(parsed.message).toContain('not yet verified');
+  });
+
+  it('forwarding surfaces a real create failure instead of enabling forwarding that cannot deliver', async () => {
+    const create = vi.fn().mockRejectedValue({ code: 403, message: 'denied' });
+    const get = vi.fn().mockRejectedValue({ code: 404, message: 'no such address' });
+    const updateAutoForwarding = vi.fn().mockResolvedValue({});
+    (client.getGmailClient as any).mockReturnValue({
+      users: { settings: { forwardingAddresses: { create, get }, updateAutoForwarding } },
+    });
+    const out = await googleSetForwardingHandler({ userEmail: 'a@x.com', forwardTo: 'b@x.com', reason: 'leave' }, auth, SESSION);
+    expect(JSON.parse(out).error).toBe('google_forbidden');
+    expect(updateAutoForwarding).not.toHaveBeenCalled();
+  });
+
+  it('forwarding tolerates an already-existing address by reading its verification status', async () => {
+    const create = vi.fn().mockRejectedValue({ code: 409, message: 'exists' });
+    const get = vi.fn().mockResolvedValue({ data: { verificationStatus: 'accepted' } });
+    const updateAutoForwarding = vi.fn().mockResolvedValue({});
+    (client.getGmailClient as any).mockReturnValue({
+      users: { settings: { forwardingAddresses: { create, get }, updateAutoForwarding } },
+    });
+    const out = await googleSetForwardingHandler({ userEmail: 'a@x.com', forwardTo: 'b@x.com', reason: 'leave' }, auth, SESSION);
+    expect(get).toHaveBeenCalled();
+    expect(updateAutoForwarding).toHaveBeenCalled();
+    expect(out).toContain('forwarding now');
+  });
+
+  it('disable forwarding turns auto-forwarding off and removes the address when asked', async () => {
+    const updateAutoForwarding = vi.fn().mockResolvedValue({});
+    const del = vi.fn().mockResolvedValue({});
+    (client.getGmailClient as any).mockReturnValue({
+      users: { settings: { updateAutoForwarding, forwardingAddresses: { delete: del } } },
+    });
+    const out = await googleDisableForwardingHandler({ userEmail: 'a@x.com', forwardTo: 'b@x.com', removeAddress: true, reason: 'no longer needed' }, auth, SESSION);
+    expect(updateAutoForwarding).toHaveBeenCalledWith(expect.objectContaining({ requestBody: { enabled: false } }));
+    expect(del).toHaveBeenCalledWith({ userId: 'me', forwardingEmail: 'b@x.com' });
+    expect(out).toContain('Disabled mail forwarding');
   });
 
   it('vacation responder enables with a message', async () => {
@@ -384,7 +433,7 @@ describe('offboard workflow', () => {
       users: {
         settings: {
           updateVacation: vi.fn().mockResolvedValue({}),
-          forwardingAddresses: { create: vi.fn().mockResolvedValue({}) },
+          forwardingAddresses: { create: vi.fn().mockResolvedValue({ data: { verificationStatus: 'accepted' } }) },
           updateAutoForwarding: vi.fn().mockResolvedValue({}),
         },
       },
@@ -424,6 +473,15 @@ describe('offboard workflow', () => {
     expect(out).toContain('remove_from_groups: FAILED');
     // suspend still happened despite the group failure
     expect(dir.users.update).toHaveBeenCalledWith({ userKey: 'leaver@x.com', requestBody: { suspended: true } });
+  });
+
+  it('returns a structured error envelope when a step fails, so the audit records a FAILED mutation', async () => {
+    const dir = mockDir({ groups: { list: vi.fn().mockRejectedValue({ code: 403, message: 'no group scope' }) } });
+    (client.getDirectoryClient as any).mockReturnValue(dir);
+    const out = await googleOffboardUserHandler({ userEmail: 'leaver@x.com', reason: 'departure' }, auth, SESSION);
+    const parsed = JSON.parse(out);
+    expect(parsed.error).toBe('offboard_incomplete');
+    expect(parsed.message).toContain('FAILED');
   });
 
   it('can skip optional steps via flags', async () => {

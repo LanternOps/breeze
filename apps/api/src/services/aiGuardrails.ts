@@ -383,6 +383,7 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   google_restore_user: { resource: 'google', action: 'execute' },
   google_signout: { resource: 'google', action: 'execute' },
   google_set_forwarding: { resource: 'google', action: 'execute' },
+  google_disable_forwarding: { resource: 'google', action: 'execute' },
   google_set_vacation: { resource: 'google', action: 'execute' },
   google_update_user: { resource: 'google', action: 'execute' },
   google_share_calendar: { resource: 'google', action: 'execute' },

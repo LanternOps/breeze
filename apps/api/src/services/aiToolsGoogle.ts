@@ -44,6 +44,7 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_restore_user: 3,
   google_signout: 3,
   google_set_forwarding: 3,
+  google_disable_forwarding: 3,
   google_set_vacation: 3,
   google_update_user: 3,
   google_share_calendar: 3,
@@ -536,6 +537,54 @@ export async function googleSignOutHandler(
   }
 }
 
+type ForwardingOutcome =
+  | { ok: true; verificationStatus: string }
+  | { ok: false; error: { code: string; message: string } };
+
+/**
+ * Ensure the forwarding address exists and turn on auto-forwarding for the
+ * impersonated mailbox. Returns the destination's verificationStatus ('accepted'
+ * once mail will actually forward; 'pending' until the owner confirms Google's
+ * verification email). A create failure is NOT swallowed: if the create throws,
+ * we probe with a read — the address may already exist from a prior run (Gmail
+ * returns 409, which normalizeGoogleError can't tell apart from other 4xx by
+ * code) — and only surface the create error when the address is genuinely
+ * absent, so we never report forwarding "enabled" when it can't deliver.
+ */
+async function enableAutoForwarding(
+  gmailClient: ReturnType<typeof getGmailClient>,
+  forwardTo: string,
+  keepCopy: boolean,
+): Promise<ForwardingOutcome> {
+  let verificationStatus: string | null | undefined;
+  try {
+    const created = await gmailClient.users.settings.forwardingAddresses.create({
+      userId: 'me',
+      requestBody: { forwardingEmail: forwardTo },
+    });
+    verificationStatus = created.data.verificationStatus;
+  } catch (createErr) {
+    try {
+      const existing = await gmailClient.users.settings.forwardingAddresses.get({
+        userId: 'me',
+        forwardingEmail: forwardTo,
+      });
+      verificationStatus = existing.data.verificationStatus;
+    } catch {
+      return { ok: false, error: normalizeGoogleError(createErr) };
+    }
+  }
+  await gmailClient.users.settings.updateAutoForwarding({
+    userId: 'me',
+    requestBody: {
+      enabled: true,
+      emailAddress: forwardTo,
+      disposition: keepCopy ? 'leaveInInbox' : 'archive',
+    },
+  });
+  return { ok: true, verificationStatus: verificationStatus ?? 'unknown' };
+}
+
 export async function googleSetForwardingHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
@@ -554,30 +603,69 @@ export async function googleSetForwardingHandler(
   try {
     // Gmail per-mailbox settings impersonate the USER, not the admin.
     const gmailClient = getGmailClient(ctx.keyJson, email);
-    // The forwarding address must exist first. Creating it may require the user
-    // to verify it (Google sends a confirmation) unless same-domain policy
-    // auto-accepts. Tolerate "already exists".
-    try {
-      await gmailClient.users.settings.forwardingAddresses.create({
-        userId: 'me',
-        requestBody: { forwardingEmail: forwardTo },
-      });
-    } catch (err) {
-      const norm = normalizeGoogleError(err);
-      // 409/duplicate is fine; anything else (e.g. needs verification) is surfaced.
-      if (norm.code !== 'google_error' && norm.code !== 'google_not_found') {
-        // fall through to enabling; if it truly failed, updateAutoForwarding errors next.
-      }
+    const outcome = await enableAutoForwarding(gmailClient, forwardTo, keepCopy);
+    if (!outcome.ok) {
+      return errorString(
+        outcome.error.code,
+        `Could not set up forwarding from ${email} to ${forwardTo}: ${outcome.error.message}`,
+      );
     }
+    if (outcome.verificationStatus !== 'accepted') {
+      // Forwarding is configured but the destination is unverified — Gmail will
+      // NOT deliver until the owner confirms. Surface this as a structured error
+      // so it is not recorded as a completed forward (it isn't, yet).
+      return errorString(
+        'forwarding_pending_verification',
+        `Forwarding from ${email} to ${forwardTo} is configured but the destination is not yet verified (status: ${outcome.verificationStatus}). Mail will NOT forward until the owner of ${forwardTo} confirms the verification email Google sent; it will start automatically once verified.`,
+      );
+    }
+    return `Enabled forwarding from ${email} to ${forwardTo} (${keepCopy ? 'keeping' : 'not keeping'} a copy in ${email}). The destination is verified, so mail is forwarding now.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleDisableForwardingHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'A user email (the mailbox to stop forwarding) is required.');
+  // Optionally also delete the forwarding address; `forwardTo` is only needed
+  // for that. Disabling auto-forwarding alone is enough to stop delivery.
+  const removeAddress = input.removeAddress === true;
+  const forwardTo = requireString(input, 'forwardTo');
+
+  try {
+    // Gmail per-mailbox settings impersonate the USER, not the admin.
+    const gmailClient = getGmailClient(ctx.keyJson, email);
     await gmailClient.users.settings.updateAutoForwarding({
       userId: 'me',
-      requestBody: {
-        enabled: true,
-        emailAddress: forwardTo,
-        disposition: keepCopy ? 'leaveInInbox' : 'archive',
-      },
+      requestBody: { enabled: false },
     });
-    return `Enabled forwarding from ${email} to ${forwardTo} (${keepCopy ? 'keeping' : 'not keeping'} a copy in ${email}). If Google requires the destination to be verified, the owner must confirm the verification email before forwarding takes effect.`;
+    if (removeAddress && forwardTo) {
+      try {
+        await gmailClient.users.settings.forwardingAddresses.delete({
+          userId: 'me',
+          forwardingEmail: forwardTo,
+        });
+      } catch (delErr) {
+        const norm = normalizeGoogleError(delErr);
+        // Already gone is fine; surface any other deletion failure.
+        if (norm.code !== 'google_not_found') {
+          return errorString(
+            norm.code,
+            `Disabled forwarding for ${email}, but could not remove the forwarding address ${forwardTo}: ${norm.message}`,
+          );
+        }
+      }
+    }
+    return `Disabled mail forwarding for ${email}.${removeAddress && forwardTo ? ` Removed the forwarding address ${forwardTo}.` : ''}`;
   } catch (err) {
     return googleError(err);
   }
@@ -749,19 +837,13 @@ export async function googleOffboardUserHandler(
   if (forwardTo) {
     steps.push(await runStep('forwarding', async () => {
       const g = getGmailClient(ctx.keyJson, email);
-      try {
-        await g.users.settings.forwardingAddresses.create({
-          userId: 'me',
-          requestBody: { forwardingEmail: forwardTo },
-        });
-      } catch {
-        // tolerate already-exists / pending-verification; updateAutoForwarding will surface a real failure
-      }
-      await g.users.settings.updateAutoForwarding({
-        userId: 'me',
-        requestBody: { enabled: true, emailAddress: forwardTo, disposition: 'archive' },
-      });
-      return `forwarding to ${forwardTo} (no copy kept)`;
+      const outcome = await enableAutoForwarding(g, forwardTo, false);
+      // A genuine create/enable failure throws so this step is recorded FAILED
+      // (and the offboard reports incomplete), rather than being swallowed.
+      if (!outcome.ok) throw new Error(`${outcome.error.code}: ${outcome.error.message}`);
+      return outcome.verificationStatus === 'accepted'
+        ? `forwarding to ${forwardTo} (no copy kept)`
+        : `forwarding to ${forwardTo} configured but PENDING verification (status: ${outcome.verificationStatus}); will not deliver until ${forwardTo} is confirmed`;
     }));
   }
 
@@ -817,7 +899,15 @@ export async function googleOffboardUserHandler(
 
   const okCount = steps.filter((s) => s.ok).length;
   const lines = steps.map((s) => `  - ${s.step}: ${s.ok ? 'OK' : 'FAILED'} (${s.detail})`).join('\n');
-  return `Offboard of ${email}: ${okCount}/${steps.length} steps OK.\n${lines}\nNote: the mobile step removed only the corporate account (BYOD-safe), not the whole device.`;
+  const summary = `Offboard of ${email}: ${okCount}/${steps.length} steps OK.\n${lines}\nNote: the mobile step removed only the corporate account (BYOD-safe), not the whole device.`;
+  // If any step failed, surface a structured error so the post-tool-use audit
+  // records this as a FAILED Tier-3 mutation. Returning prose makes the success
+  // detector (JSON-with-error-key) treat a 0/6 offboard as a success — a leaver
+  // who still has access showing a green check in the audit trail.
+  if (okCount < steps.length) {
+    return errorString('offboard_incomplete', summary);
+  }
+  return summary;
 }
 
 /**

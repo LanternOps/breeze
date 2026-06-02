@@ -130,6 +130,28 @@ describe('m365_disable_user', () => {
   });
 });
 
+describe('m365 user resolution surfaces real failures (not a phantom "user not found")', () => {
+  beforeEach(() => {
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+  });
+
+  it('surfaces an auth failure on get_user as itself, not as "user not found"', async () => {
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'error', code: 'auth_failed', message: 'token expired' });
+    // UPN (with @) forces a get_user resolution, which fails on auth.
+    const out = await m365DisableUserHandler({ userIdentifier: 'jane@x.com', reason: 'offboarding' }, auth, 'sess-1');
+    const parsed = JSON.parse(out);
+    expect(parsed.error).toBe('auth_failed');
+    expect(parsed.error).not.toBe('user_not_found');
+  });
+
+  it('reports a genuinely-absent user (404) as user_not_found', async () => {
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'error', code: 'not_found', message: 'no such user' });
+    const out = await m365DisableUserHandler({ userIdentifier: 'ghost@x.com', reason: 'offboarding' }, auth, 'sess-1');
+    expect(JSON.parse(out).error).toBe('user_not_found');
+  });
+});
+
 describe('m365_list_group_memberships', () => {
   it('lists groups without needing a user identifier', async () => {
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });

@@ -105,22 +105,32 @@ async function call(
 /**
  * Resolve a user identifier to a Graph object id. UPNs (containing '@') are
  * resolved via a get_user call first; bare object ids are returned as-is.
- * Returns null if resolution fails (so the caller can surface a graceful error).
+ * On failure returns the underlying error (code + message) so the caller can
+ * distinguish a genuinely-absent user (404 'not_found') from an auth/permission/
+ * transport failure that must not masquerade as "user not found".
  */
+type ResolveUserResult =
+  | { ok: true; userId: string }
+  | { ok: false; error: { code: string; message: string } };
+
 async function resolveUserId(
   identifier: string,
   ctx: Backend,
   auth: AuthContext,
   sessionId: string,
-): Promise<string | null> {
-  if (!identifier.includes('@')) return identifier;
+): Promise<ResolveUserResult> {
+  if (!identifier.includes('@')) return { ok: true, userId: identifier };
   const res = await call(ctx, auth, sessionId, 'get_user', { userId: identifier });
-  if (res.kind === 'ok') return (res.data as any)?.id ?? identifier;
-  return null;
+  if (res.kind === 'ok') return { ok: true, userId: (res.data as { id?: string } | null)?.id ?? identifier };
+  // Propagate the real failure instead of collapsing every non-ok result to
+  // "user not found": only a 404 (code 'not_found') means the user is genuinely
+  // absent. auth_failed / forbidden / 5xx are config/permission/transport
+  // errors that must surface as themselves, not as a phantom missing user.
+  return { ok: false, error: { code: res.code, message: res.message } };
 }
 
 const errorTemplate = (e: { code: string; message: string }): string =>
-  `Could not complete the M365 operation: ${e.message}`;
+  errorString(e.code, `Could not complete the M365 operation: ${e.message}`);
 
 const unresolvedUser = (identifier: string): string =>
   errorString('user_not_found', `Could not find an M365 user matching "${identifier}".`);
@@ -157,8 +167,13 @@ export async function m365RecentSigninsHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const userId = await resolveUserId(identifier, ctx, auth, sessionId);
-  if (userId === null) return unresolvedUser(identifier);
+  const resolved = await resolveUserId(identifier, ctx, auth, sessionId);
+  if (!resolved.ok) {
+    return resolved.error.code === 'not_found'
+      ? unresolvedUser(identifier)
+      : errorTemplate(resolved.error);
+  }
+  const userId = resolved.userId;
 
   const result = await call(ctx, auth, sessionId, 'get_user_signin_activity', { userId });
   return formatResultForLlm(result, {
@@ -195,8 +210,13 @@ export async function m365DisableUserHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const userId = await resolveUserId(identifier, ctx, auth, sessionId);
-  if (userId === null) return unresolvedUser(identifier);
+  const resolved = await resolveUserId(identifier, ctx, auth, sessionId);
+  if (!resolved.ok) {
+    return resolved.error.code === 'not_found'
+      ? unresolvedUser(identifier)
+      : errorTemplate(resolved.error);
+  }
+  const userId = resolved.userId;
 
   const result = await call(ctx, auth, sessionId, 'disable_user', { userId, reason });
   return formatResultForLlm(result, {
@@ -218,8 +238,13 @@ export async function m365ResetPasswordHandler(
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const userId = await resolveUserId(identifier, ctx, auth, sessionId);
-  if (userId === null) return unresolvedUser(identifier);
+  const resolved = await resolveUserId(identifier, ctx, auth, sessionId);
+  if (!resolved.ok) {
+    return resolved.error.code === 'not_found'
+      ? unresolvedUser(identifier)
+      : errorTemplate(resolved.error);
+  }
+  const userId = resolved.userId;
 
   const result = await call(ctx, auth, sessionId, 'reset_user_password', { userId, reason });
   return formatResultForLlm(result, {
