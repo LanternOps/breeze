@@ -61,7 +61,7 @@ describe('FilterChipBar', () => {
         onChange={onChange}
       />
     );
-    expect(screen.getByTestId('filter-number-input')).toBeDefined();
+    expect(screen.getByTestId('value-number-input')).toBeDefined();
     u1();
 
     const enumField = getFieldDef('osType')!;
@@ -72,7 +72,7 @@ describe('FilterChipBar', () => {
         onChange={onChange}
       />
     );
-    expect(screen.getByTestId('filter-enum-select')).toBeDefined();
+    expect(screen.getByTestId('value-enum-select')).toBeDefined();
     u2();
 
     render(
@@ -82,7 +82,7 @@ describe('FilterChipBar', () => {
         onChange={onChange}
       />
     );
-    expect(screen.getByTestId('filter-multi-enum')).toBeDefined();
+    expect(screen.getByTestId('value-multi-input')).toBeDefined();
   });
 
   it('catalog covers spec section 5.1 Tier 1 fields', () => {

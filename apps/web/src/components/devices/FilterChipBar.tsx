@@ -20,6 +20,8 @@ import { FilterValueEditor, summarizeCondition, type NamedRef } from './FilterVa
 import { FilterPreviewFooter } from './FilterPreviewFooter';
 import { FilterSentenceBuilder, isChipRenderable } from './FilterSentenceBuilder';
 import { FilterHelpPopover } from './FilterHelpPopover';
+import { useClickOutside } from '../../hooks/useClickOutside';
+import { useEscapeClose } from '../../hooks/useEscapeClose';
 
 export interface FilterChipBarProps {
   value: FilterConditionGroup | null;
@@ -264,24 +266,9 @@ function Chip({ condition, onChange, onRemove, orgs, sites, softwareOptions, sof
   const field = getFieldDef(condition.field)
     ?? V2_FILTER_FIELDS.find(f => f.key === condition.field);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
+  useClickOutside(open, ref, () => setOpen(false));
   // Esc closes the popover when chip focused.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
+  useEscapeClose(open, () => setOpen(false));
 
   if (!field) {
     return (

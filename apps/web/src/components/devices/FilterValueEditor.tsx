@@ -21,6 +21,7 @@ import type {
   FilterValue
 } from '@breeze/shared';
 import { operatorLabel } from './filterFields';
+import { ValueInput } from '../filters/ValueInput';
 import { X, Search } from 'lucide-react';
 
 const NO_VALUE_OPERATORS: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
@@ -136,137 +137,10 @@ export function FilterValueEditor({
       {!NO_VALUE_OPERATORS.includes(op) && (
         <>
           <label className="text-xs font-medium text-muted-foreground">Value</label>
-          {renderValueInput(field, op, condition.value, setValue)}
+          <ValueInput field={field} operator={op} value={condition.value} onChange={setValue} />
         </>
       )}
     </div>
-  );
-}
-
-function renderValueInput(
-  field: FilterFieldDefinition,
-  op: FilterOperator,
-  value: FilterValue,
-  onChange: (v: FilterValue) => void
-) {
-  // Multi-value operators
-  if (op === 'in' || op === 'notIn' || op === 'hasAny' || op === 'hasAll') {
-    if (field.type === 'enum' && field.enumValues) {
-      const selected = Array.isArray(value) ? (value as string[]) : [];
-      return (
-        <div data-testid="filter-multi-enum" className="flex flex-col gap-1 max-h-40 overflow-y-auto rounded border p-2">
-          {field.enumValues.map(v => (
-            <label key={v} className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={selected.includes(v)}
-                onChange={e => {
-                  if (e.target.checked) onChange([...selected, v]);
-                  else onChange(selected.filter(x => x !== v));
-                }}
-              />
-              {v}
-            </label>
-          ))}
-        </div>
-      );
-    }
-    // string array via comma-separated input
-    const asText = Array.isArray(value) ? (value as string[]).join(', ') : '';
-    return (
-      <input
-        type="text"
-        data-testid="filter-csv-input"
-        value={asText}
-        onChange={e => onChange(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
-        placeholder="value1, value2, ..."
-        className="rounded border bg-background px-2 py-1 text-sm"
-      />
-    );
-  }
-
-  // Relative-date amount+unit
-  if (op === 'withinLast' || op === 'notWithinLast') {
-    const v = (typeof value === 'object' && value && 'amount' in value)
-      ? value as { amount: number; unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' }
-      : { amount: 7, unit: 'days' as const };
-    return (
-      <div className="flex gap-2" data-testid="filter-relative-date">
-        <input
-          type="number"
-          value={v.amount}
-          min={1}
-          onChange={e => onChange({ amount: Number(e.target.value), unit: v.unit })}
-          className="w-20 rounded border bg-background px-2 py-1 text-sm"
-        />
-        <select
-          value={v.unit}
-          onChange={e => onChange({ amount: v.amount, unit: e.target.value as typeof v.unit })}
-          className="rounded border bg-background px-2 py-1 text-sm"
-        >
-          <option value="minutes">minutes</option>
-          <option value="hours">hours</option>
-          <option value="days">days</option>
-          <option value="weeks">weeks</option>
-          <option value="months">months</option>
-        </select>
-      </div>
-    );
-  }
-
-  // Number
-  if (field.type === 'number') {
-    return (
-      <input
-        type="number"
-        data-testid="filter-number-input"
-        value={typeof value === 'number' ? value : 0}
-        onChange={e => onChange(Number(e.target.value))}
-        className="rounded border bg-background px-2 py-1 text-sm"
-      />
-    );
-  }
-
-  // Single enum
-  if (field.type === 'enum' && field.enumValues) {
-    return (
-      <select
-        data-testid="filter-enum-select"
-        value={typeof value === 'string' ? value : (field.enumValues[0] ?? '')}
-        onChange={e => onChange(e.target.value)}
-        className="rounded border bg-background px-2 py-1 text-sm"
-      >
-        {field.enumValues.map(v => (
-          <option key={v} value={v}>{v}</option>
-        ))}
-      </select>
-    );
-  }
-
-  // Date (before/after) - simple date input
-  if (field.type === 'datetime' && (op === 'before' || op === 'after')) {
-    const asString = typeof value === 'string' ? value : '';
-    return (
-      <input
-        type="date"
-        data-testid="filter-date-input"
-        value={asString}
-        onChange={e => onChange(e.target.value)}
-        className="rounded border bg-background px-2 py-1 text-sm"
-      />
-    );
-  }
-
-  // Default: text input
-  return (
-    <input
-      type="text"
-      data-testid="filter-text-input"
-      value={typeof value === 'string' ? value : ''}
-      onChange={e => onChange(e.target.value)}
-      className="rounded border bg-background px-2 py-1 text-sm"
-      placeholder="value"
-    />
   );
 }
 

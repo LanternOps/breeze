@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Plus } from 'lucide-react';
 import type { FilterFieldDefinition } from '@breeze/shared';
 import { V2_FILTER_FIELDS, fieldCategoryLabel } from './filterFields';
+import { useClickOutside } from '../../hooks/useClickOutside';
 
 export interface FilterAddDropdownProps {
   onSelect: (field: FilterFieldDefinition) => void;
@@ -19,16 +20,7 @@ export function FilterAddDropdown({ onSelect }: FilterAddDropdownProps) {
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [open]);
+  useClickOutside(open, containerRef, () => setOpen(false));
 
   const groups = useMemo(() => {
     const lcq = q.toLowerCase().trim();
