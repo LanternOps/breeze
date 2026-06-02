@@ -1585,5 +1585,88 @@ describe('user routes', () => {
         expect(body2.equals(PNG_BYTES)).toBe(true);
       });
     });
+
+    describe('GET /users/:id/avatar — cross-tenant authorization', () => {
+      const OTHER_ID = 'other-456';
+
+      function authAs(userId: string, partnerId: string) {
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'partner',
+            partnerId,
+            orgId: null,
+            user: { id: userId, email: `${userId}@example.com` },
+          });
+          return next();
+        });
+      }
+
+      // getScopedUser (partner scope) resolves :id via
+      // select().from().innerJoin().innerJoin().where().limit(). Force the
+      // resolved row so we control "in scope" vs "not in scope".
+      function mockScopedUser(rows: unknown[]) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
+              }),
+            }),
+          }),
+        } as any);
+      }
+
+      async function uploadAvatarFor(userId: string, partnerId: string) {
+        authAs(userId, partnerId);
+        makeUpdateMock([{ id: userId, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() }]);
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        const res = await app.request('/users/me/avatar', { method: 'POST', body, headers });
+        expect(res.status).toBe(200);
+      }
+
+      it('blocks a cross-tenant read — another user not in the caller\'s scope returns 404 even though the avatar file exists', async () => {
+        // A real avatar file now exists on disk for other-456.
+        await uploadAvatarFor(OTHER_ID, 'partner-999');
+
+        // Caller is in a DIFFERENT partner; getScopedUser resolves to nothing.
+        authAs(ME_ID, 'partner-123');
+        mockScopedUser([]);
+
+        const res = await app.request(`/users/${OTHER_ID}/avatar`, { method: 'GET' });
+        // Same 404 as "no avatar" — never reveals that other-456 exists.
+        expect(res.status).toBe(404);
+      });
+
+      it('serves another user\'s avatar when getScopedUser resolves them within the caller\'s scope', async () => {
+        await uploadAvatarFor(OTHER_ID, 'partner-123');
+
+        authAs(ME_ID, 'partner-123');
+        mockScopedUser([
+          { id: OTHER_ID, email: 'other-456@example.com', name: 'Other', status: 'active', roleId: 'r1', roleName: 'Admin', orgAccess: 'all', orgIds: null },
+        ]);
+
+        const res = await app.request(`/users/${OTHER_ID}/avatar`, { method: 'GET' });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/png');
+        const bytes = Buffer.from(await res.arrayBuffer());
+        expect(bytes.equals(PNG_BYTES)).toBe(true);
+      });
+
+      it('serves the caller\'s OWN avatar without a scope lookup (top bar must work without USERS_READ)', async () => {
+        await uploadAvatarFor(ME_ID, 'partner-123');
+
+        authAs(ME_ID, 'partner-123');
+        // Force getScopedUser to resolve to nothing — it must NOT be consulted
+        // for a self read, so the avatar still serves.
+        mockScopedUser([]);
+
+        const res = await app.request(`/users/${ME_ID}/avatar`, { method: 'GET' });
+        expect(res.status).toBe(200);
+        const bytes = Buffer.from(await res.arrayBuffer());
+        expect(bytes.equals(PNG_BYTES)).toBe(true);
+      });
+    });
   });
 });

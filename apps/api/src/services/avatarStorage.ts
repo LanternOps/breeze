@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, createReadStream } from 'fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, createReadStream, readFileSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -166,6 +166,31 @@ export function readAvatarStream(userId: string): { stream: Readable; mime: Avat
     size: stat.size,
     mtimeMs: stat.mtimeMs,
   };
+}
+
+/**
+ * Read a user's avatar fully into a Buffer. Avatars are capped at
+ * MAX_AVATAR_SIZE_BYTES on write, so buffering is bounded and lets the
+ * caller send an exact Content-Length with no risk of a truncated body
+ * (a mid-stream read error becomes a clean failure before any bytes or
+ * headers are sent, rather than a 200 with a short body).
+ */
+export function readAvatarBuffer(userId: string): { buffer: Buffer; mime: AvatarMime; size: number; mtimeMs: number } | null {
+  const found = findAvatar(userId);
+  if (!found) return null;
+
+  try {
+    const stat = statSync(found.path);
+    const buffer = readFileSync(found.path);
+    return {
+      buffer,
+      mime: found.mime,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

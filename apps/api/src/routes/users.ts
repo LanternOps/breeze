@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { bodyLimit } from 'hono/body-limit';
-import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
@@ -12,7 +11,7 @@ import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '
 import {
   MAX_AVATAR_SIZE_BYTES,
   deleteAvatar,
-  readAvatarStream,
+  readAvatarBuffer,
   sniffImageMime,
   statAvatar,
   weakEtagFor,
@@ -802,9 +801,14 @@ userRoutes.delete('/me/avatar', async (c) => {
   return c.json({ avatarUrl: null });
 });
 
-// Serve any user's avatar (tenant-scoped via auth middleware; the avatar is
-// not more sensitive than the user's display name).
+// Serve a user's avatar. Authorization mirrors GET /:id: a caller may always
+// read their OWN avatar (the top bar shows it without USERS_READ), but reading
+// another user's avatar requires that user to be resolvable within the caller's
+// tenant scope. Without this, any authenticated user could fetch any other
+// user's avatar across partners/orgs — the `*` partner-scope middleware only
+// gates full-org partner reads, not per-id reads (Todd's #1059 review).
 userRoutes.get('/:id/avatar', async (c) => {
+  const auth = c.get('auth');
   const userId = c.req.param('id')!;
 
   // Basic shape check — userId comes from the URL and is fed straight to the
@@ -814,6 +818,17 @@ userRoutes.get('/:id/avatar', async (c) => {
   // tidy.
   if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
     return c.json({ error: 'Invalid user id' }, 400);
+  }
+
+  // Cross-tenant guard. Own avatar is always allowed; any other id must resolve
+  // within the caller's tenant scope (same resolution path as GET /:id). The
+  // failure returns the same 404 as a missing avatar so the route never reveals
+  // which user ids exist in other tenants.
+  if (userId !== auth.user.id) {
+    const record = await getScopedUser(userId, getScopeContext(auth));
+    if (!record) {
+      return c.json({ error: 'No avatar' }, 404);
+    }
   }
 
   const stat = statAvatar(userId);
@@ -829,25 +844,26 @@ userRoutes.get('/:id/avatar', async (c) => {
     return c.body(null, 304);
   }
 
-  const opened = readAvatarStream(userId);
+  // Read the whole file (avatars are capped at MAX_AVATAR_SIZE_BYTES) before
+  // sending any headers, so an I/O error is a clean 500 rather than a 200 with
+  // a truncated body under a full Content-Length (Todd's #1059 review).
+  const opened = readAvatarBuffer(userId);
   if (!opened) {
-    return c.json({ error: 'No avatar' }, 404);
+    // statAvatar passed just above, so a null here is a real read failure (or a
+    // delete race), not a "no avatar" — surface it as a 500 rather than a 404.
+    return c.json({ error: 'Failed to read avatar' }, 500);
   }
 
-  c.header('Content-Type', opened.mime);
-  c.header('Content-Length', String(opened.size));
-  c.header('Cache-Control', 'private, max-age=300');
-  c.header('ETag', etag);
-
-  return stream(c, async (s) => {
-    // Pipe the node Readable into the Hono stream helper.
-    await new Promise<void>((resolve, reject) => {
-      opened.stream.on('data', (chunk: Buffer) => {
-        s.write(chunk).catch(reject);
-      });
-      opened.stream.on('end', () => resolve());
-      opened.stream.on('error', reject);
-    });
+  // Copy into a plain Uint8Array — Node's Buffer generic isn't accepted as a
+  // BodyInit by the DOM lib types; the copy is bounded by the 5 MB cap.
+  return new Response(new Uint8Array(opened.buffer), {
+    status: 200,
+    headers: {
+      'Content-Type': opened.mime,
+      'Content-Length': String(opened.size),
+      'Cache-Control': 'private, max-age=300',
+      ETag: etag,
+    },
   });
 });
 
