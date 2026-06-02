@@ -19,6 +19,7 @@ import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/o
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { isAllowedLauncherScheme } from '@breeze/shared';
+import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
@@ -412,12 +413,14 @@ orgRoutes.get('/partners/me/ip-allowlist/status', requireScope('partner'), requi
   const enforced = ipAllowlistMode() === 'enforce' && allowlist.length > 0;
   const proxyTrustOk = currentIp !== null;
 
-  return c.json({
+  // Typed against the shared contract so a field rename breaks this build too.
+  const status: IpAllowlistStatus = {
     currentIp,
     proxyTrustOk,
     enforced,
     active: enforced && proxyTrustOk,
-  });
+  };
+  return c.json(status);
 });
 
 // Update own partner settings (for partner-scoped users)
