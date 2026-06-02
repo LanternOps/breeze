@@ -4,6 +4,7 @@ import { partners } from '../db/schema/orgs';
 import { ipMatchesAny } from './ipMatch';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { writeAuditEvent, type RequestLike } from './auditEvents';
+import { captureException } from './sentry';
 
 export type IpAllowlistMode = 'enforce' | 'off';
 
@@ -41,6 +42,8 @@ export function ipAllowlistMode(): IpAllowlistMode {
 
 const CACHE_TTL_MS = 30_000;
 const cache = new Map<string, { value: string[]; expiresAt: number }>();
+const INACTIVE_ALLOWLIST_WARN_INTERVAL_MS = 60_000;
+const inactiveAllowlistWarnedAt = new Map<string, number>();
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
@@ -71,6 +74,17 @@ export async function readPartnerAllowlist(partnerId: string): Promise<string[]>
 
 export function clearPartnerAllowlistCache(partnerId: string): void {
   cache.delete(partnerId);
+}
+
+function warnInactiveAllowlist(partnerId: string): void {
+  const now = Date.now();
+  const lastWarnedAt = inactiveAllowlistWarnedAt.get(partnerId) ?? 0;
+  if (now - lastWarnedAt < INACTIVE_ALLOWLIST_WARN_INTERVAL_MS) return;
+
+  inactiveAllowlistWarnedAt.set(partnerId, now);
+  const message = `[ipAllowlist] configured but inactive: client IP not trusted for partner ${partnerId}`;
+  console.warn(message);
+  captureException(new Error(message));
 }
 
 /**
@@ -123,9 +137,7 @@ export async function enforceIpAllowlist(
       details: { clientIp: clientIp ?? null },
     });
   } else if (decision.decision === 'skip' && decision.reason === 'untrusted_ip') {
-    console.warn(
-      `[ipAllowlist] configured but inactive: client IP not trusted for partner ${params.partnerId}`,
-    );
+    warnInactiveAllowlist(params.partnerId);
   }
 
   return decision;
