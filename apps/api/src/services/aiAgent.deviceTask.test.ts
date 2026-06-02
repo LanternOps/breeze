@@ -94,4 +94,45 @@ describe('createSession device binding', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ deviceId: null }));
   });
+
+  // A partner / multi-org caller has no home orgId; "Fix with AI" dispatches a
+  // device task without an explicit orgId. The session must anchor to the
+  // DEVICE's org — not auth.accessibleOrgIds[0], which is an unrelated org and
+  // made every dispatch fail the cross-org check with a 500 "Invalid device".
+  it('binds the session to the device org for a multi-org caller who passes no orgId', async () => {
+    const partner: any = {
+      user: { id: 'user-1' },
+      orgId: null,
+      accessibleOrgIds: ['org-FIRST', 'org-DEVICE'],
+      canAccessOrg: (id: string) => id === 'org-FIRST' || id === 'org-DEVICE',
+      orgCondition: () => undefined,
+    };
+    selectMock.mockReturnValueOnce(devSelect([{ id: DEVICE_ID, orgId: 'org-DEVICE', siteId: null }]));
+    const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
+    insertMock.mockReturnValueOnce({ values: valuesSpy });
+
+    const result = await createSession(partner, { deviceId: DEVICE_ID });
+
+    expect(result.orgId).toBe('org-DEVICE');
+    expect(valuesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'org-DEVICE', deviceId: DEVICE_ID }),
+    );
+  });
+
+  // Anchoring to the device org must not weaken the explicit-scope contract:
+  // a caller who names an orgId that does not own the device is still rejected.
+  it('rejects when an explicit orgId does not match the device org', async () => {
+    const partner: any = {
+      user: { id: 'user-1' },
+      orgId: null,
+      accessibleOrgIds: ['org-A', 'org-DEVICE'],
+      canAccessOrg: () => true,
+      orgCondition: () => undefined,
+    };
+    selectMock.mockReturnValueOnce(devSelect([{ id: DEVICE_ID, orgId: 'org-DEVICE', siteId: null }]));
+    await expect(
+      createSession(partner, { deviceId: DEVICE_ID, orgId: 'org-A' }),
+    ).rejects.toThrow('Invalid device');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
 });

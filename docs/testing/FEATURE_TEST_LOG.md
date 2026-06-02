@@ -4,6 +4,40 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Since-Release E2E Sweep (v0.68.2 → HEAD) — 2026-06-01
+
+**Branch tested:** `feat/google-identity-device-tasks` @ `cba95590` (16 identity commits on top of merged main work since the v0.68.2 tag)
+**Tested by:** Claude (feature-testing skill, live Playwright + API)
+**Result:** **8/9 areas PASS, 1 real bug found** (Fix-with-AI), several items deferred (need external creds)
+
+### Environment note (important)
+The running stack was stale **v0.63.5** (`breeze-api:local`, `node dist/index.cjs`) on an otherwise-current DB — none of the since-release features existed in it. Brought api+web up in **dev mode** (`docker-compose.override.yml.dev`, code-mounted hot-reload) so the mounted source = this branch; started the missing `breeze-caddy` (`:80` → web/api) since `2breeze.app` tunnel is down (530) and `PUBLIC_API_URL=http://localhost`. Auto-migrate applied this branch's 2 identity migrations (217→219). Identity feature flags enabled via untracked `docker-compose.identity-test.yml` (`GOOGLE_WORKSPACE_ENABLED`/`M365_ENABLED=true`). Creds: `admin@breeze.local` / `BreezeAdmin123!` (partner-scoped, multi-org).
+
+### Results
+| # | Area | Result | Evidence |
+|---|---|---|---|
+| 7 | Identity routes auth-gated (`cedce292`) | **PASS** | All 6 unauth GET/POST/DELETE on `/google/connection` + `/m365/connection` → 401; malformed-key POSTs → 400 fail-closed (`not valid JSON` / `missing client_email or private_key`) |
+| 1 | UI smoke (login, dashboard, nav) | **PASS** | Login → dashboard, all dashboard API calls 200. Minor: `GET /admin/account-deletion-requests/pending-count` → **403** console error on every page for partner admin (frontend fires without permission) |
+| 2 | Devices per-user columns + reorder (`#737`) | **PASS** | Added "Agent Version" from hidden pool + moved "Organization" below "Site"; both **persisted across full reload** |
+| 3 | Device filter chip engine (`#1012`) | **PASS** | status=Online narrowed to the 1 "Up" device, live count + Clear-filters |
+| 4 | Google Workspace connection UI (branch) | **PASS** | "Not connected" badge, in-form "how to get credentials" help, **plain placeholder** on key field + mask toggle; malformed key → inline error "Service-account key is not valid JSON." |
+| 5 | M365 connection UI + helpdesk (`#991`) | **PASS** | Mirrors Google; fake creds → inline "Could not verify… Token acquisition failed (HTTP 400)". API log confirms a **live Graph call reached Microsoft** (`AADSTS900021`) |
+| 6 | Fix-with-AI (Phase 3) / drift dash (Phase 6) | **FAIL (bug) / DEFERRED** | Button renders; clicking → `POST /ai/sessions {deviceId}` → **500 "Invalid device"**. Drift/reports are AI tools gated behind a live Google connection (creds-gated, deferred) |
+| 8 | Site-scope RBAC (`#1041/#1042/#1047/#1056`) | **PASS (org-axis)** | `e2e-sitea` (Default Org + Default Site) list shows only own-org devices, cross-org Acme read → 404 (opaque, untrickable via `orgId` param), cross-org list → 403, no cross-org mutation succeeded. Intra-org **site-axis not exercisable** (all 8 Default-Org devices share one site) |
+| 9 | Hardening: patch-pin / notif-link / SSRF | **PASS / PASS / verified-by-inspection** | `#1006`: Linux+version → 422 reject, Win+version → 200 queued, Linux no-version → past guard. `#1018/#1038`: notif `link` CHECK constraint rejects `https://…` and `//…`, allows `/devices/123`. `#1025`: SSRF guard confirmed (blocks 169.254 metadata/loopback/RFC1918/IPv6), live egress trigger deferred |
+
+### Bug found — Fix-with-AI 500 for partner/multi-org admins
+`apps/api/src/services/aiAgent.ts:37` — `const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null`. The web "Fix with AI" (`aiStore.startDeviceTask` → `createSession({deviceId})`) sends **no orgId** and partner admins have `auth.orgId=null`, so the session binds to `accessibleOrgIds[0]` (here VM Test Org, 0 devices). The device then fails the SECURITY-CRITICAL cross-org check (`aiAgent.ts:76`, `dev.orgId !== orgId`) → bare `throw` surfaces as HTTP **500**. Repro 100% for this admin. Fixes: (1) derive orgId from the device when `deviceId` is provided (or have web pass active orgId); (2) map the cross-org/site throw to a 400/403 instead of 500. Security control itself is correct — the bug is upstream org resolution + error mapping. Single-org users likely unaffected; unit tests pass orgId explicitly so they miss it.
+
+### Deferred (need external credentials / live agents)
+Real Google Workspace + M365 tenants (actual connect, offboard/wipe Phase 5, drift dashboard/reports-by-email Phase 6, M365 helpdesk tool execution & OData-escaping `baf12b2a` on real sign-in data); agent-side items (macOS `.pkg` sig verify `#1010`, quarantine re-enroll `#1011`, remote-desktop self-heal `#1003`/revocation `#1020` — need live Win/macOS agents); SSRF live egress + `#1005` patch-tombstone reporting (need fixtures).
+
+### Side effects (local dev DB)
+- Enabled identity feature flags (untracked `docker-compose.identity-test.yml`); api recreated in dev mode; caddy started.
+- `e2e-sitea@breeze.local` password set to `BreezeAdmin123!` (copied admin hash) for RBAC tests.
+- Case 9C dispatched a real `software_update firefox 123.0` command to online device `WIN-DHQNR1F8LO2` (benign winget upgrade).
+- All test notification rows cleaned up.
+
 ## Recently-Merged-PR Batch Verification (9 PRs) — 2026-05-17
 
 **Branch tested:** `origin/main` @ `c8c8725e` (dev containers checked out detached to main, then restored to `feat/add-device-modal-expiry-picker`)

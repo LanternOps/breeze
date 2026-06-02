@@ -34,7 +34,30 @@ export async function createSession(
     approvalMode?: AiApprovalMode;
   }
 ): Promise<{ id: string; orgId: string; delegantM365ConnectionId: string | null }> {
-  const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+  // A device-scoped task ("Fix with AI") anchors the session to the device's
+  // org. Resolve the device up front so its org can drive org selection for
+  // partner / multi-org callers who have no home orgId — otherwise the session
+  // would bind to accessibleOrgIds[0] (an unrelated org) and the cross-org
+  // check below would reject every dispatch with a 500.
+  let deviceRow: { id: string; orgId: string; siteId: string | null } | null = null;
+  if (options.deviceId) {
+    const rows = await db
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, options.deviceId))
+      .limit(1);
+    deviceRow = rows[0] ?? null;
+  }
+
+  const orgId =
+    options.orgId ??
+    // Anchor to the device's org when the caller can reach it; otherwise fall
+    // through so the opaque device check below rejects without leaking the
+    // device's existence to callers outside its org.
+    (deviceRow && auth.canAccessOrg(deviceRow.orgId) ? deviceRow.orgId : undefined) ??
+    auth.orgId ??
+    auth.accessibleOrgIds?.[0] ??
+    null;
   if (!orgId) throw new Error('Organization context required');
   if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
     throw new Error('Access denied to this organization');
@@ -67,21 +90,16 @@ export async function createSession(
   // the approving technician.
   let deviceId: string | null = null;
   if (options.deviceId) {
-    const [dev] = await db
-      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
-      .from(devices)
-      .where(eq(devices.id, options.deviceId))
-      .limit(1);
-    if (!dev || dev.orgId !== orgId) {
+    if (!deviceRow || deviceRow.orgId !== orgId) {
       throw new Error('Invalid device');
     }
     // Site-axis (SECURITY-CRITICAL, conforms to #1047): a site-restricted caller
     // must not bind a session to a device outside their accessible sites, even
     // within an org they can access. Opaque error mirrors the cross-org case.
-    if (auth.canAccessSite && !auth.canAccessSite(dev.siteId)) {
+    if (auth.canAccessSite && !auth.canAccessSite(deviceRow.siteId)) {
       throw new Error('Invalid device');
     }
-    deviceId = dev.id;
+    deviceId = deviceRow.id;
   }
 
   const [session] = await db

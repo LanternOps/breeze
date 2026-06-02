@@ -101,6 +101,7 @@ aiRoutes.post(
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Organization context required') return c.json({ error: message }, 400);
       if (message === 'Invalid M365 connection') return c.json({ error: message }, 400);
+      if (message === 'Invalid device') return c.json({ error: message }, 400);
       if (message === 'Access denied to this organization') return c.json({ error: message }, 403);
       return c.json({ error: message }, 500);
     }

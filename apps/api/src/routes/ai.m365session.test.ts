@@ -156,6 +156,20 @@ describe('AI M365 session binding', () => {
       expect(body.error).toBe('Invalid M365 connection');
     });
 
+    it('maps an Invalid device rejection to 400 (not 500)', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(new Error('Invalid device'));
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceId: '44444444-4444-4444-4444-444444444444' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid device');
+    });
+
     it('creates a session with NO connection (back-compat)', async () => {
       vi.mocked(createSession).mockResolvedValueOnce({
         id: SESSION_ID,
