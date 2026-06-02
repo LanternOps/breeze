@@ -4,7 +4,8 @@
       "pattern": "apps/api/src/services/clientIp.ts",
       "docs": [
         "reference/audit-logs.mdx",
-        "security/hardening.mdx"
+        "security/hardening.mdx",
+        "deploy/cloudflare-tunnel.mdx"
       ]
     },
     {
@@ -744,6 +745,20 @@
       "docs": [
         "deploy/production.mdx",
         "security/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "docker/Caddyfile.prod",
+      "docs": [
+        "deploy/cloudflare-tunnel.mdx",
+        "deploy/production.mdx"
+      ]
+    },
+    {
+      "pattern": "deploy/docker-compose.prod.yml",
+      "docs": [
+        "deploy/cloudflare-tunnel.mdx",
+        "deploy/production.mdx"
       ]
     }
   ]
