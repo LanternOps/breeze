@@ -80,6 +80,22 @@ describe('auth store fetchWithAuth', () => {
     expect(secondUrl).toBe('/api/v1/api-keys');
   });
 
+  it('does not double the /v1 for server-stored /api/v1/ paths (e.g. avatar_url)', async () => {
+    // users.avatar_url is stored as /api/v1/users/:id/avatar and round-trips
+    // through fetchWithAuth (the avatar blob fetch). Without the /api/v1/
+    // branch in buildApiUrl it became /api/v1/v1/users/:id/avatar → 404 and a
+    // broken avatar.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/api/v1/users/user-9/avatar');
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('/api/v1/users/user-9/avatar');
+    expect(url).not.toContain('/v1/v1/');
+  });
+
   it('refreshes and retries when access token is expired', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const refreshedTokens: Tokens = {
