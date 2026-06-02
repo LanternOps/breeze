@@ -5,6 +5,8 @@ import { captureException } from '../services/sentry';
 /**
  * Enforces the partner IP allowlist for an already-authenticated request.
  * Assumes c.get('auth') is set. Returns a 403 on deny; otherwise calls next().
+ * Agent routes are exempt because agent authentication never passes through
+ * authMiddleware; partner-scoped API-key/MCP callers enforce this separately.
  */
 export async function ipAllowlistGuard(c: Context, next: Next): Promise<void | Response> {
   const auth = c.get('auth');

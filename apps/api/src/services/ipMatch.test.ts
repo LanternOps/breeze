@@ -12,6 +12,11 @@ describe('ipMatchesAny — IPv4', () => {
     expect(ipMatchesAny('10.1.5.7', ['10.0.0.0/16'])).toBe(false);
   });
 
+  it('matches /32 IPv4 hosts exactly', () => {
+    expect(ipMatchesAny('10.0.0.5', ['10.0.0.5/32'])).toBe(true);
+    expect(ipMatchesAny('10.0.0.5', ['10.0.0.6/32'])).toBe(false);
+  });
+
   it('treats /0 as matching everything', () => {
     expect(ipMatchesAny('1.2.3.4', ['0.0.0.0/0'])).toBe(true);
   });
@@ -35,9 +40,27 @@ describe('ipMatchesAny — IPv6', () => {
     expect(ipMatchesAny('2001:db9::1', ['2001:db8::/32'])).toBe(false);
   });
 
+  it('matches /128 IPv6 hosts exactly', () => {
+    expect(ipMatchesAny('2001:db8::5', ['2001:db8::5/128'])).toBe(true);
+    expect(ipMatchesAny('2001:db8::5', ['2001:db8::6/128'])).toBe(false);
+  });
+
+  it('keeps IPv4-mapped IPv6 entries in the IPv6 family', () => {
+    expect(ipMatchesAny('::ffff:1.2.3.4', ['::ffff:1.2.3.4'])).toBe(true);
+    expect(ipMatchesAny('::ffff:1.2.3.4', ['::ffff:0:0/96'])).toBe(true);
+    expect(ipMatchesAny('::ffff:1.2.3.4', ['1.2.3.4'])).toBe(false);
+  });
+
   it('does not cross address families', () => {
     expect(ipMatchesAny('203.0.113.10', ['2001:db8::/32'])).toBe(false);
     expect(ipMatchesAny('2001:db8::1', ['10.0.0.0/8'])).toBe(false);
+  });
+
+  it('does not match malformed CIDR entries', () => {
+    expect(ipMatchesAny('10.0.0.1', ['10.0.0.0/'])).toBe(false);
+    expect(ipMatchesAny('10.0.0.1', ['10.0.0.0/abc'])).toBe(false);
+    expect(ipMatchesAny('10.0.0.1', ['10.0.0.0/33'])).toBe(false);
+    expect(ipMatchesAny('2001:db8::1', ['2001:db8::/129'])).toBe(false);
   });
 });
 

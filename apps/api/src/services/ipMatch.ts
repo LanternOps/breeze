@@ -83,7 +83,9 @@ function matchOne(ip: string, entry: string): boolean {
     return ipNum === netNum;
   }
 
-  const bits = Number(entry.slice(slash + 1));
+  const bitsRaw = entry.slice(slash + 1);
+  if (!/^\d+$/.test(bitsRaw)) return false;
+  const bits = Number(bitsRaw);
   if (!Number.isInteger(bits) || bits < 0 || bits > maxBits) return false;
   const mask =
     bits === 0 ? 0n : ((1n << BigInt(bits)) - 1n) << (totalBits - BigInt(bits));
@@ -110,7 +112,9 @@ export function isValidIpOrCidr(entry: string): boolean {
   const parsed = v6 ? ipv6ToInt(network) : ipv4ToInt(network);
   if (parsed === null) return false;
   if (slash === -1) return true;
-  const bits = Number(trimmed.slice(slash + 1));
+  const bitsRaw = trimmed.slice(slash + 1);
+  if (!/^\d+$/.test(bitsRaw)) return false;
+  const bits = Number(bitsRaw);
   const maxBits = v6 ? 128 : 32;
   return Number.isInteger(bits) && bits >= 0 && bits <= maxBits;
 }

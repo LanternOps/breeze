@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { evaluateIpAllowlist } from './ipAllowlist';
-import { readPartnerAllowlist, clearPartnerAllowlistCache } from './ipAllowlist';
+import {
+  evaluateIpAllowlist,
+  enforceIpAllowlist,
+  readPartnerAllowlist,
+  clearPartnerAllowlistCache,
+} from './ipAllowlist';
+
+const serviceMocks = vi.hoisted(() => ({
+  getTrustedClientIpOrUndefined: vi.fn(),
+  writeAuditEvent: vi.fn(),
+}));
 
 vi.mock('../db', () => {
   const limit = vi.fn();
@@ -13,6 +22,14 @@ vi.mock('../db', () => {
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
 });
+
+vi.mock('./clientIp', () => ({
+  getTrustedClientIpOrUndefined: serviceMocks.getTrustedClientIpOrUndefined,
+}));
+
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: serviceMocks.writeAuditEvent,
+}));
 
 describe('evaluateIpAllowlist', () => {
   const base = {
@@ -91,5 +108,104 @@ describe('readPartnerAllowlist caching', () => {
     await expect(readPartnerAllowlist('p1')).rejects.toThrow('ipAllowlist: partner p1 not found');
     expect(await readPartnerAllowlist('p1')).toEqual(['10.0.0.0/8']);
     expect(limit).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads from the DB again after cache invalidation', async () => {
+    limit
+      .mockResolvedValueOnce([{ settings: { security: { ipAllowlist: ['10.0.0.0/8'] } } }])
+      .mockResolvedValueOnce([{ settings: { security: { ipAllowlist: ['192.0.2.0/24'] } } }]);
+
+    expect(await readPartnerAllowlist('p1')).toEqual(['10.0.0.0/8']);
+    expect(limit).toHaveBeenCalledTimes(1);
+
+    clearPartnerAllowlistCache('p1');
+
+    expect(await readPartnerAllowlist('p1')).toEqual(['192.0.2.0/24']);
+    expect(limit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('enforceIpAllowlist', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let limit: any;
+  const c = { req: { header: vi.fn() } };
+
+  beforeEach(async () => {
+    const mod = await import('../db');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    limit = (mod.db as any).__limit;
+    limit.mockReset();
+    serviceMocks.getTrustedClientIpOrUndefined.mockReset();
+    serviceMocks.writeAuditEvent.mockReset();
+    delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+    clearPartnerAllowlistCache('partner-deny');
+    clearPartnerAllowlistCache('partner-admin');
+  });
+
+  it('denies a non-matching trusted IP and writes an audit event', async () => {
+    limit.mockResolvedValueOnce([{ settings: { security: { ipAllowlist: ['10.0.0.0/8'] } } }]);
+    serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
+
+    const decision = await enforceIpAllowlist(c, {
+      partnerId: 'partner-deny',
+      isPlatformAdmin: false,
+      actorId: 'user-1',
+      actorEmail: 'admin@example.com',
+    });
+
+    expect(decision).toEqual({ decision: 'deny', reason: 'not_in_list' });
+    expect(serviceMocks.writeAuditEvent).toHaveBeenCalledWith(
+      c,
+      expect.objectContaining({
+        action: 'ip_allowlist.denied',
+        resourceId: 'partner-deny',
+        result: 'denied',
+      }),
+    );
+  });
+
+  it('skips for platform admins on non-matching IPs and writes a bypass audit event', async () => {
+    limit.mockResolvedValueOnce([{ settings: { security: { ipAllowlist: ['10.0.0.0/8'] } } }]);
+    serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
+
+    const decision = await enforceIpAllowlist(c, {
+      partnerId: 'partner-admin',
+      isPlatformAdmin: true,
+      actorId: 'admin-1',
+      actorEmail: 'platform@example.com',
+    });
+
+    expect(decision).toEqual({ decision: 'skip', reason: 'platform_admin' });
+    expect(serviceMocks.writeAuditEvent).toHaveBeenCalledWith(
+      c,
+      expect.objectContaining({
+        action: 'ip_allowlist.bypass_platform_admin',
+        resourceId: 'partner-admin',
+        result: 'success',
+      }),
+    );
+  });
+
+  it('skips without reading the allowlist when partnerId is null', async () => {
+    const decision = await enforceIpAllowlist(c, {
+      partnerId: null,
+      isPlatformAdmin: false,
+    });
+
+    expect(decision).toEqual({ decision: 'skip', reason: 'no_partner' });
+    expect(limit).not.toHaveBeenCalled();
+  });
+
+  it('skips without reading the allowlist when enforcement mode is off', async () => {
+    process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
+    serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
+
+    const decision = await enforceIpAllowlist(c, {
+      partnerId: 'partner-deny',
+      isPlatformAdmin: false,
+    });
+
+    expect(decision).toEqual({ decision: 'skip', reason: 'mode_off' });
+    expect(limit).not.toHaveBeenCalled();
   });
 });
