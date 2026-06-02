@@ -9,6 +9,8 @@ vi.mock('../db', () => {
       select: () => ({ from: () => ({ where: () => ({ limit }) }) }),
       __limit: limit,
     },
+    hasDbAccessContext: vi.fn(() => true),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
 });
 
@@ -79,5 +81,15 @@ describe('readPartnerAllowlist caching', () => {
   it('returns [] when no allowlist is set', async () => {
     limit.mockResolvedValueOnce([{ settings: {} }]);
     expect(await readPartnerAllowlist('p1')).toEqual([]);
+  });
+
+  it('throws and does not cache when the partner row is missing', async () => {
+    limit
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ settings: { security: { ipAllowlist: ['10.0.0.0/8'] } } }]);
+
+    await expect(readPartnerAllowlist('p1')).rejects.toThrow('ipAllowlist: partner p1 not found');
+    expect(await readPartnerAllowlist('p1')).toEqual(['10.0.0.0/8']);
+    expect(limit).toHaveBeenCalledTimes(2);
   });
 });

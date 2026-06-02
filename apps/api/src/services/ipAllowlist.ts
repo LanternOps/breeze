@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema/orgs';
 import { ipMatchesAny } from './ipMatch';
 import { getTrustedClientIpOrUndefined } from './clientIp';
@@ -57,6 +57,10 @@ export async function readPartnerAllowlist(partnerId: string): Promise<string[]>
     .where(eq(partners.id, partnerId))
     .limit(1);
 
+  if (!row) {
+    throw new Error(`ipAllowlist: partner ${partnerId} not found`);
+  }
+
   const security = asRecord(asRecord(row?.settings).security);
   const raw = security.ipAllowlist;
   const value = Array.isArray(raw) ? raw.filter((e): e is string => typeof e === 'string') : [];
@@ -81,7 +85,10 @@ export async function enforceIpAllowlist(
   if (!params.partnerId) return { decision: 'skip', reason: 'empty_list' };
 
   const mode = ipAllowlistMode();
-  const allowlist = mode === 'off' ? [] : await readPartnerAllowlist(params.partnerId);
+  const readList = () => readPartnerAllowlist(params.partnerId as string);
+  const allowlist = mode === 'off'
+    ? []
+    : (hasDbAccessContext() ? await readList() : await withSystemDbAccessContext(readList));
   const clientIp = getTrustedClientIpOrUndefined(c);
 
   const decision = evaluateIpAllowlist({
