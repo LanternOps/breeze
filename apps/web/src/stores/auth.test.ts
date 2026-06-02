@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tokens, User } from './auth';
 import {
   apiAcceptInvite,
@@ -8,6 +8,7 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   fetchWithAuth,
+  registerOrgIdProvider,
   restoreAccessTokenFromCookie,
   useAuthStore,
   waitForPendingRefresh
@@ -204,6 +205,54 @@ describe('auth store fetchWithAuth', () => {
     expect(second.ok).toBe(true);
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'))).toHaveLength(1);
+  });
+});
+
+describe('fetchWithAuth orgId injection + skipOrgIdInjection opt-out', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.getState().login(baseUser, baseTokens);
+    // Simulate a selected current org so the auto-injection has something to add.
+    registerOrgIdProvider(() => 'org-x');
+  });
+
+  afterEach(() => {
+    // Reset the module-level provider so this block doesn't leak an orgId
+    // into the other fetchWithAuth tests (which assert exact URLs).
+    registerOrgIdProvider(() => null);
+  });
+
+  it('auto-injects orgId by default (preserves existing always-scoped behaviour)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/devices');
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('/api/v1/devices?orgId=org-x');
+  });
+
+  it('skips orgId injection when skipOrgIdInjection is true (All-orgs view)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/devices?limit=200', {}, { skipOrgIdInjection: true });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('/api/v1/devices?limit=200');
+    expect(url).not.toContain('orgId=');
+  });
+
+  it('still injects orgId when skipOrgIdInjection is explicitly false', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/devices', {}, { skipOrgIdInjection: false });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain('orgId=org-x');
   });
 });
 

@@ -28,6 +28,23 @@ describe('fetchAllDevices', () => {
     expect(firstCall).not.toContain('cursor=');
   });
 
+  it('passes skipOrgIdInjection through to the fetcher (All-orgs view widens server scope)', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      jsonResponse({ data: [{ id: 'a' }], pagination: { page: 1, limit: 200, total: 1 } }),
+    );
+    await fetchAllDevices({ fetcher, skipOrgIdInjection: true });
+    // Third arg to fetchWithAuth carries the opt-out flag.
+    expect(fetcher.mock.calls[0][2]).toEqual({ skipOrgIdInjection: true });
+  });
+
+  it('defaults skipOrgIdInjection to undefined (keeps the org-scoped behaviour)', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      jsonResponse({ data: [{ id: 'a' }], pagination: { page: 1, limit: 200, total: 1 } }),
+    );
+    await fetchAllDevices({ fetcher });
+    expect(fetcher.mock.calls[0][2]).toEqual({ skipOrgIdInjection: undefined });
+  });
+
   it('new cursor API — walks pages until nextCursor goes null', async () => {
     const fetcher = vi
       .fn()

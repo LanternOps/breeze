@@ -76,6 +76,14 @@ export interface FetchAllDevicesOptions {
    *  arrived partial). Callers should display this rather than the
    *  pagesWalked * pageLimit product. (Todd's #778 review.) */
   onTruncated?: (info: { pagesWalked: number; pageLimit: number; actualCount: number }) => void;
+  /** Opt out of `fetchWithAuth`'s auto-injected `orgId` query param so the
+   *  server returns every device in the caller's accessible scope (across
+   *  all accessible orgs), not just the current-org subset. Used by the
+   *  Devices page's All-orgs view; the server still enforces access via the
+   *  user's accessibleOrgIds / site allowlist, so this only widens within
+   *  what the user is authorized to see. Default (false) keeps the current
+   *  org-scoped behaviour. */
+  skipOrgIdInjection?: boolean;
 }
 
 /**
@@ -124,7 +132,11 @@ export async function fetchAllDevices(
     // received on page 0.
     if (pageNum === 0) params.set('includeTotal', 'true');
 
-    const resp = await fetcher(`/devices?${params.toString()}`);
+    const resp = await fetcher(
+      `/devices?${params.toString()}`,
+      {},
+      { skipOrgIdInjection: options.skipOrgIdInjection },
+    );
     if (!resp.ok) throw resp;
     const body = (await resp.json()) as {
       data?: Record<string, unknown>[];

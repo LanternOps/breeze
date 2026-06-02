@@ -291,13 +291,33 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   }
 }
 
-export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
+export interface FetchWithAuthOptions {
+  /**
+   * Opt out of the auto-injected `orgId` query param. Use when the caller
+   * wants the server to return everything in the user's accessible scope
+   * (e.g. the All-orgs view on Devices), not just the current-org subset.
+   * Default false preserves the existing "always-scoped" behaviour for
+   * every other caller. The server still enforces access via the user's
+   * accessibleOrgIds / site allowlist (devices core.ts orgCondition), so
+   * this only widens the client's view within what the user is already
+   * authorized to see — it is not a tenant-isolation bypass.
+   */
+  skipOrgIdInjection?: boolean;
+}
+
+export async function fetchWithAuth(
+  rawUrl: string,
+  options: RequestInit = {},
+  opts: FetchWithAuthOptions = {}
+): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
-  const orgId = _getOrgId?.();
-  if (orgId && !url.includes('orgId=')) {
-    const separator = url.includes('?') ? '&' : '?';
-    url = `${url}${separator}orgId=${orgId}`;
+  if (!opts.skipOrgIdInjection) {
+    const orgId = _getOrgId?.();
+    if (orgId && !url.includes('orgId=')) {
+      const separator = url.includes('?') ? '&' : '?';
+      url = `${url}${separator}orgId=${orgId}`;
+    }
   }
 
   const { tokens: initialTokens, isAuthenticated, logout, setTokens } = useAuthStore.getState();
