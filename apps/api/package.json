@@ -70,13 +70,13 @@
     "@types/nodemailer": "^7.0.11",
     "@types/oidc-provider": "^9.5.0",
     "@types/pg": "^8.20.0",
-    "@vitest/coverage-v8": "^4.1.7",
+    "@vitest/coverage-v8": "^4.1.8",
     "dotenv": "^16.4.5",
     "drizzle-kit": "^0.31.10",
     "jszip": "^3.10.1",
     "tsup": "^8.3.5",
     "tsx": "^4.22.4",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.8"
   }
 }
