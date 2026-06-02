@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, WifiOff } from 'lucide-react';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { cn } from '@/lib/utils';
 
@@ -21,6 +22,8 @@ export default function DeviceStatusChart() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
 
   useEffect(() => {
     const fetchDeviceStatus = async () => {
@@ -56,7 +59,7 @@ export default function DeviceStatusChart() {
     };
 
     fetchDeviceStatus();
-  }, [retryCount]);
+  }, [retryCount, currentOrgId, orgScope]);
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
