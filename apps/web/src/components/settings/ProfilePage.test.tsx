@@ -12,6 +12,14 @@ vi.mock('../../stores/auth', () => ({
   )
 }));
 
+// The avatar blob hook fetches /api/v1/users/<id>/avatar through fetchWithAuth
+// when an avatarUrl is present. The tests below are about the upload/delete
+// flow on /users/me/avatar; mocking the hook keeps the fetch mock consumption
+// order deterministic.
+vi.mock('@/lib/avatarBlobCache', () => ({
+  useAvatarBlobUrl: (url: string | null | undefined) => url ?? null,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

@@ -30,6 +30,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { useFeaturesStore } from '../../stores/featuresStore';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '../../lib/navigation';
+import { useAvatarBlobUrl } from '../../lib/avatarBlobCache';
 
 export default function Header() {
   const [mounted, setMounted] = useState(false);
@@ -45,6 +46,9 @@ export default function Header() {
   const themeRef = useRef<HTMLDivElement>(null);
 
   const { user, isAuthenticated } = useAuthStore();
+  // Resolve the avatar through fetchWithAuth so internal /api/v1/users/<id>/avatar
+  // paths return a blob: URL that <img> can render. External URLs pass through.
+  const resolvedAvatarUrl = useAvatarBlobUrl(user?.avatarUrl ?? null);
   const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
   const { isOpen: isHelpOpen, toggle: toggleHelp } = useHelpStore();
   const { toggleMobileMenu } = useUiStore();
@@ -282,10 +286,10 @@ export default function Header() {
             aria-expanded={showUserMenu}
             aria-haspopup="true"
           >
-            {mounted && user?.avatarUrl ? (
+            {mounted && resolvedAvatarUrl ? (
               <img
-                src={user.avatarUrl}
-                alt={user.name}
+                src={resolvedAvatarUrl}
+                alt={user?.name ?? 'User avatar'}
                 className="h-8 w-8 rounded-full object-cover"
               />
             ) : (
@@ -301,10 +305,10 @@ export default function Header() {
               {/* User Info Section */}
               <div className="border-b p-4">
                 <div className="flex items-center gap-3">
-                  {user?.avatarUrl ? (
+                  {resolvedAvatarUrl ? (
                     <img
-                      src={user.avatarUrl}
-                      alt={user.name}
+                      src={resolvedAvatarUrl}
+                      alt={user?.name ?? 'User avatar'}
                       className="h-10 w-10 rounded-full object-cover"
                     />
                   ) : (
