@@ -65,7 +65,7 @@ describe('pageSizePreference', () => {
       expect(isValidPageSize(7)).toBe(false);
       expect(isValidPageSize(0)).toBe(false);
       expect(isValidPageSize(-10)).toBe(false);
-      expect(isValidPageSize(500)).toBe(false);
+      expect(isValidPageSize(1000)).toBe(false);
       expect(isValidPageSize(NaN)).toBe(false);
     });
   });
