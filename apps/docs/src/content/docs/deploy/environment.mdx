@@ -64,6 +64,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `IS_HOSTED` | — | Yes (prod) | `true` for hosted SaaS edition, `false` for self-hosted. Must be set explicitly — the API refuses to boot otherwise. Controls signup gating, billing, and email-verification policy. |
 | `TRUST_PROXY_HEADERS` | — | Yes (prod) | `true` when behind a reverse proxy (Caddy, Cloudflare). Must be set explicitly in production. |
 | `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`). Required when proxy headers are trusted. |
+| `IP_ALLOWLIST_ENFORCEMENT_MODE` | `enforce` | | Partner dashboard IP allowlist mode. Use `off` only as a break-glass switch if an allowlist locks everyone out. The allowlist only enforces when a partner has entries configured and proxy trust is working through `TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`. |
 | `DASHBOARD_URL` | — | | URL for links in emails |
 | `PUBLIC_APP_URL` | — | | Public-facing app URL |
 

@@ -9,6 +9,13 @@
       ]
     },
     {
+      "pattern": "apps/api/src/services/ipAllowlist.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/security.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/db/index.ts",
       "docs": [
         "deploy/environment.mdx"
