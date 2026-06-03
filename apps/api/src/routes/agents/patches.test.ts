@@ -48,6 +48,7 @@ const tables = vi.hoisted(() => ({
 
 vi.mock('drizzle-orm', () => ({
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
+  and: (...conds: unknown[]) => ({ op: 'and', conds }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: 'sql',
     strings: Array.from(strings),
@@ -59,6 +60,8 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     transaction: vi.fn(),
+    // tombstone prune (#1004) runs after the scan txn via db.delete(...).where(...)
+    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
