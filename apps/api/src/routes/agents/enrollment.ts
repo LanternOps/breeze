@@ -196,6 +196,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           result: 'denied',
           errorMessage: 'Enrollment secret required',
         });
+        recordAgentEnrollment('error');
         return c.json({ error: 'Enrollment secret required' }, 403);
       }
 
@@ -211,6 +212,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           result: 'denied',
           errorMessage: 'Invalid enrollment secret',
         });
+        recordAgentEnrollment('error');
         return c.json({ error: 'Invalid enrollment secret' }, 403);
       }
     } else if (configuredSecret) {
@@ -225,6 +227,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           result: 'denied',
           errorMessage: 'Enrollment secret required',
         });
+        recordAgentEnrollment('error');
         return c.json({ error: 'Enrollment secret required' }, 403);
       }
 
@@ -239,6 +242,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           result: 'denied',
           errorMessage: 'Invalid enrollment secret',
         });
+        recordAgentEnrollment('error');
         return c.json({ error: 'Invalid enrollment secret' }, 403);
       }
     } else if (process.env.NODE_ENV === 'production') {
@@ -281,6 +285,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           result: 'denied',
           errorMessage: 'Enrollment secret required in production',
         });
+        recordAgentEnrollment('error');
         return c.json({ error: 'Enrollment secret required' }, 403);
       }
     }
@@ -560,6 +565,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           }).catch((err) => {
             console.error('[Enrollment] Failed to dispatch device-limit hook:', err instanceof Error ? err.message : err);
           });
+          recordAgentEnrollment('error', deviceLimitPartnerId);
           throw new HTTPException(403, {
             message: JSON.stringify({
               error: 'Device limit reached',
