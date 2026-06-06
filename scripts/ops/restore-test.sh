@@ -30,6 +30,11 @@
 #                             (default: 1)
 #   RESTORE_TEST_ALERT_URL    optional webhook (Slack/Alertmanager) POSTed on
 #                             failure; if unset, failures only log + exit non-zero
+#   RESTORE_TEST_HEARTBEAT_URL optional dead-man's-switch ping URL (e.g. a
+#                             healthchecks.io check); pinged on each PASS so a
+#                             silently-stopped cron (host down, creds expired,
+#                             script removed) — which emits no failure — becomes
+#                             the alarm via absence of the ping. Unset = no ping.
 #
 # Exit codes:
 #   0 — restore verified
@@ -64,6 +69,16 @@ alert() {
     curl -fsS -m 10 -X POST -H 'Content-Type: application/json' \
       -d "{\"text\":\"[Breeze restore-test FAILED] ${msg}\"}" \
       "${RESTORE_TEST_ALERT_URL}" >/dev/null 2>&1 || log "WARNING: alert webhook POST failed"
+  fi
+}
+
+# Dead-man's-switch success ping. A failure-only alert can't distinguish "the
+# restore test passed" from "the test never ran" — both are silent. Ping a
+# monitor on every PASS so the monitor alerts when the ping goes stale.
+heartbeat() {
+  if [ -n "${RESTORE_TEST_HEARTBEAT_URL:-}" ]; then
+    curl -fsS -m 10 --retry 3 "${RESTORE_TEST_HEARTBEAT_URL}" >/dev/null 2>&1 \
+      || log "WARNING: success heartbeat ping failed"
   fi
 }
 
@@ -152,4 +167,5 @@ if [ "${device_count}" -lt "${MIN_DEVICES}" ]; then
 fi
 
 log "SUCCESS: restore verified — ${device_count} devices, dump ${dump_size}"
+heartbeat
 exit 0
