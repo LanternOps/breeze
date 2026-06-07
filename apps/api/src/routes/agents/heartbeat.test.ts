@@ -613,3 +613,117 @@ describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)',
     expect(capturedInsertValues).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------
+// #1104 — watchdog-branch agent recovery: when the watchdog heartbeats
+// and the MAIN agent is silent (wedged) AND its recorded version is
+// behind latest, the response must carry an agent `upgradeTo` so the
+// watchdog's existing failover doUpdateAgent() path can recover it.
+// Gated on silence to avoid the watchdog and a healthy main agent both
+// updating the same binary.
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeTo (#1104)', () => {
+  const sixteenMinutesAgo = new Date(Date.now() - 16 * 60 * 1000);
+  const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    runOutsideDbContextMock.mockClear();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    });
+  });
+
+  // device lookup (once) then all agentVersions lookups resolve to `latest`.
+  function primeSelects(deviceRow: Record<string, unknown>, latest: unknown[]) {
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving(latest));
+  }
+
+  async function post() {
+    return buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // agentVersion here is the WATCHDOG's own version — not the agent's.
+      body: JSON.stringify({ role: 'watchdog', agentVersion: '0.65.20', watchdogState: 'FAILOVER' }),
+    });
+  }
+
+  it('main agent silent + recorded agentVersion behind → returns agent upgradeTo', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // latest > recorded
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: null,
+      },
+      [{ version: '0.66.0' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string };
+    expect(body.upgradeTo).toBe('0.66.0');
+  });
+
+  it('main agent NOT silent (healthy) → no agent upgradeTo even if version behind', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+        lastSeenAt: oneMinuteAgo, mainAgentSilentSince: null,
+      },
+      [{ version: '0.66.0' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string };
+    expect(body.upgradeTo).toBeUndefined();
+  });
+
+  it('main agent silent but already on latest → no agent upgradeTo', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(0); // up to date
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: '0.66.0', watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+      },
+      [{ version: '0.66.0' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string };
+    expect(body.upgradeTo).toBeUndefined();
+  });
+
+  it('main agent silent but no recorded agentVersion → no agent upgradeTo', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: null, watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+      },
+      [{ version: '0.66.0' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string };
+    expect(body.upgradeTo).toBeUndefined();
+  });
+});

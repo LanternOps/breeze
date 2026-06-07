@@ -191,6 +191,45 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
+    // #1104 — agent recovery via the watchdog. A live watchdog whose main
+    // agent is wedged (silent past the #800 threshold) and behind the latest
+    // release has no other recovery path: the watchdog's failover loop routes
+    // an agent `upgradeTo` into doUpdateAgent(), which replaces the wedged
+    // binary. Compute it off the device's RECORDED main-agent version
+    // (`device.agentVersion`) — `data.agentVersion` in this branch is the
+    // WATCHDOG's own version. Gated on `mainAgentSilent` so a healthy main
+    // agent (which self-updates from its own heartbeat) and the watchdog never
+    // both write the same binary.
+    let agentUpgradeTo: string | undefined;
+    if (
+      mainAgentSilent &&
+      normalizedArch &&
+      device.agentVersion &&
+      !device.agentVersion.startsWith('dev-')
+    ) {
+      try {
+        const [latestAgent] = await db
+          .select({ version: agentVersions.version })
+          .from(agentVersions)
+          .where(
+            and(
+              eq(agentVersions.platform, device.osType),
+              eq(agentVersions.architecture, normalizedArch),
+              eq(agentVersions.component, 'agent'),
+              eq(agentVersions.isLatest, true)
+            )
+          )
+          .orderBy(desc(agentVersions.createdAt))
+          .limit(1);
+
+        if (latestAgent && compareAgentVersions(latestAgent.version, device.agentVersion) > 0) {
+          agentUpgradeTo = latestAgent.version;
+        }
+      } catch (err) {
+        console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
+      }
+    }
+
     return c.json({
       commands: watchdogCommands.map(cmd => ({
         id: cmd.id,
@@ -198,6 +237,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         payload: cmd.payload,
       })),
       watchdogUpgradeTo,
+      upgradeTo: agentUpgradeTo,
     });
   }
 
