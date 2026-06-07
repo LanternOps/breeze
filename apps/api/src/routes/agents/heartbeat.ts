@@ -191,6 +191,38 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
+    // Check for a pending *agent* upgrade so a live watchdog can recover a
+    // wedged or behind-version main agent. The watchdog already acts on
+    // `upgradeTo` (processHeartbeatResponse -> doUpdateAgent) but the server
+    // never populated it on the watchdog branch, so a watchdog had no way to
+    // pull the main agent forward. The watchdog reports its *own* version in
+    // `data.agentVersion`, so compare the device's recorded main-agent version
+    // (`device.agentVersion`) against the latest agent release. (#1104)
+    let upgradeTo: string | undefined;
+    if (normalizedArch && device.agentVersion && !device.agentVersion.startsWith('dev-')) {
+      try {
+        const [latestAgent] = await db
+          .select({ version: agentVersions.version })
+          .from(agentVersions)
+          .where(
+            and(
+              eq(agentVersions.platform, device.osType),
+              eq(agentVersions.architecture, normalizedArch),
+              eq(agentVersions.component, 'agent'),
+              eq(agentVersions.isLatest, true)
+            )
+          )
+          .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
+          .limit(1);
+
+        if (latestAgent && compareAgentVersions(latestAgent.version, device.agentVersion) > 0) {
+          upgradeTo = latestAgent.version;
+        }
+      } catch (err) {
+        console.error(`[agents] failed to evaluate agent upgrade target (watchdog path) for ${agentId}:`, err);
+      }
+    }
+
     return c.json({
       commands: watchdogCommands.map(cmd => ({
         id: cmd.id,
@@ -198,6 +230,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         payload: cmd.payload,
       })),
       watchdogUpgradeTo,
+      upgradeTo,
     });
   }
 
