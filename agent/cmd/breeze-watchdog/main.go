@@ -465,7 +465,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 						"error": err.Error(),
 					})
 				} else {
-					processHeartbeatResponse(resp, wd, journal, cfg, tokenStore, recovery)
+					processHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
 
@@ -569,7 +569,7 @@ func handleFailoverPoll(
 		})
 		return
 	}
-	processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	processHeartbeatResponse(fc, resp, wd, journal, cfg, tokens, recovery)
 
 	// Poll for commands.
 	commands, err := fc.PollCommands()
@@ -585,8 +585,9 @@ func handleFailoverPoll(
 	}
 }
 
-// processHeartbeatResponse handles upgrade directives from the API.
+// processHeartbeatResponse handles upgrade directives and commands from the API.
 func processHeartbeatResponse(
+	fc *watchdog.FailoverClient,
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
@@ -608,6 +609,14 @@ func processHeartbeatResponse(
 			"version": resp.WatchdogUpgradeTo,
 		})
 		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
+	}
+	// Execute commands delivered inline on the heartbeat response. The server
+	// claims pending watchdog-targeted commands during the heartbeat itself
+	// (marking them 'sent') and returns them here, so the separate command
+	// poll never sees them. Without dispatching them here a watchdog-targeted
+	// command (e.g. restart_agent) is consumed but never run. (#1103)
+	for _, cmd := range resp.Commands {
+		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
 	}
 }
 
