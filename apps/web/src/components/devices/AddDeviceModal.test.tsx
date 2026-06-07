@@ -395,4 +395,27 @@ describe('AddDeviceModal', () => {
       expect(screen.getByText(/Valid for 5 device enrollments/)).toBeDefined();
     });
   });
+
+  it('shows the real token expiry instead of a hard-coded "24 hours" (#1108)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        token: 'token-exp',
+        maxUsage: 1,
+        // ~1 hour out → formatTokenExpiry renders "in about 1 hour".
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    await waitFor(() => {
+      expect(screen.getByText('token-exp')).toBeDefined();
+    });
+
+    // The corrected, server-derived copy is shown…
+    expect(screen.getByText(/expires in about 1 hour/)).toBeDefined();
+    // …and the old misleading hard-coded string is gone.
+    expect(screen.queryByText(/expires in 24 hours/)).toBeNull();
+  });
 });

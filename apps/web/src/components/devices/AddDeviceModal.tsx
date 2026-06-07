@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Download, Copy, Loader2, Check, Link } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
@@ -156,11 +156,20 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
     }
   }, [isOpen]);
 
-  // Fetch a CLI onboarding token for `count` machines (#1108). Always fetches —
-  // the once-per-open gating lives at the call site (handleTabChange) so the
-  // "Generate new token" button and error-retry can re-mint freely without
-  // fighting a stale cliInitialized closure.
+  // Guards against overlapping CLI token fetches (the auto-init effect racing a
+  // manual "Generate new token", or a fast double-click). A ref, not state, so
+  // the check is synchronous and never stale inside the useCallback. Without it
+  // two in-flight POSTs could resolve out of order and display a token whose
+  // real maxUsage disagrees with the UI — the exact defect #1108 fixes.
+  const cliFetchInFlight = useRef(false);
+
+  // Fetch a CLI onboarding token for `count` machines (#1108). The once-per-open
+  // gating lives in the auto-init effect; the "Generate new token" button and
+  // error-retry call this directly to re-mint, so it only self-guards against
+  // concurrent runs rather than against being called again.
   const initializeCli = useCallback(async (count: number) => {
+    if (cliFetchInFlight.current) return;
+    cliFetchInFlight.current = true;
     setCliInitialized(true);
     setTokenLoading(true);
     setOnboardingToken('');
@@ -221,6 +230,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       );
     } finally {
       setTokenLoading(false);
+      cliFetchInFlight.current = false;
     }
   }, []);
 
