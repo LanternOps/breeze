@@ -286,6 +286,77 @@ describe('device routes', () => {
       expect(body.additionalSecretRequired).toBe(true);
       expect(body.enrollmentSecret).toBe('global-secret');
     });
+
+    it('defaults to a single-use token when no count is supplied (#1108)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.maxUsage).toBe(1);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 1 }));
+    });
+
+    it('honors a caller-supplied count as maxUsage for multi-machine installs (#1108)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 5, ttlMinutes: 1440 })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.maxUsage).toBe(5);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 5 }));
+    });
+
+    it('clamps an out-of-range count to the allowed bounds (#1108)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 999999 })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.maxUsage).toBe(1000);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 1000 }));
+    });
   });
 
   describe('GET /devices', () => {

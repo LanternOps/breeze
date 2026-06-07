@@ -349,11 +349,50 @@ describe('AddDeviceModal', () => {
     fireEvent.click(screen.getByText('CLI Commands'));
 
     await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/onboarding-token', { method: 'POST' });
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/devices/onboarding-token',
+        // #1108: the request now carries a device count → maxUsage.
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 1 }) })
+      );
     });
 
     await waitFor(() => {
       expect(screen.getByText('test-token-xyz')).toBeDefined();
+    });
+  });
+
+  it('requests a multi-use token after the operator raises the device count (#1108)', async () => {
+    // Initial single-device fetch on tab open.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'token-single', maxUsage: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    await waitFor(() => {
+      expect(screen.getByText('token-single')).toBeDefined();
+    });
+
+    // Operator bumps the count and regenerates → server returns a 5-use token.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'token-multi', maxUsage: 5, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+    );
+
+    const countInput = screen.getByLabelText('Number of devices') as HTMLInputElement;
+    fireEvent.change(countInput, { target: { value: '5' } });
+    fireEvent.click(screen.getByText('Generate new token'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
+        '/devices/onboarding-token',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 5 }) })
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('token-multi')).toBeDefined();
+      expect(screen.getByText(/Valid for 5 device enrollments/)).toBeDefined();
     });
   });
 });

@@ -192,6 +192,12 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// #1108: caller-supplied onboarding-token limits. Count maps to maxUsage so one
+// copied CLI command can enroll a whole batch; TTL cap mirrors the enrollment-
+// keys route's 365-day ceiling.
+const ENROLL_TOKEN_MAX_COUNT = 1000;
+const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
+
 // POST /devices/onboarding-token - Generate a short-lived enrollment key.
 // If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
 // shared secret; otherwise the short-lived key stands on its own.
@@ -235,9 +241,24 @@ coreRoutes.post(
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
+    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
+    // command is frequently pasted onto several machines during a migration;
+    // without these the historical hard-coded single-use token failed on every
+    // machine after the first. Defaults preserve the old single-use, 60-min
+    // behaviour for callers that send no body.
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const rawCount = Number((body as { count?: unknown }).count);
+    const maxUsage = Number.isFinite(rawCount)
+      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
+      : 1;
+    const rawTtl = Number((body as { ttlMinutes?: unknown }).ttlMinutes);
+    const defaultTtlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+    const ttlMinutes = Number.isFinite(rawTtl)
+      ? Math.min(ENROLL_TOKEN_MAX_TTL_MINUTES, Math.max(1, Math.trunc(rawTtl)))
+      : defaultTtlMinutes;
+
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
-    const ttlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
 
     await db.insert(enrollmentKeys).values({
@@ -245,7 +266,7 @@ coreRoutes.post(
       siteId: site.id,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
       key: keyHash,
-      maxUsage: 1,
+      maxUsage,
       expiresAt,
       createdBy: auth.user.id,
     });
@@ -255,6 +276,7 @@ coreRoutes.post(
 
     return c.json({
       token: key,
+      maxUsage,
       expiresAt: expiresAt.toISOString(),
       enrollmentSecretMode: secretRequired ? 'global_env' : 'none',
       additionalSecretRequired: secretRequired,
