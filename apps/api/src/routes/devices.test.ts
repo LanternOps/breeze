@@ -401,7 +401,7 @@ describe('device routes', () => {
       };
 
       const expiryMinutesFrom = (valuesMock: ReturnType<typeof vi.fn>): number => {
-        const { expiresAt } = valuesMock.mock.calls[0][0] as { expiresAt: Date };
+        const { expiresAt } = valuesMock.mock.calls[0]![0] as { expiresAt: Date };
         return Math.round((expiresAt.getTime() - Date.now()) / 60000);
       };
 
