@@ -1360,8 +1360,8 @@ describe('auth routes', () => {
       // before the jti is revoked, so a concurrent racer that observes the
       // revoked state also observes the marker and treats the replay as benign
       // instead of killing the family. Lock the order in against refactors.
-      const markOrder = vi.mocked(markRefreshTokenJtiRotated).mock.invocationCallOrder[0];
-      const revokeOrder = vi.mocked(revokeRefreshTokenJti).mock.invocationCallOrder[0];
+      const markOrder = vi.mocked(markRefreshTokenJtiRotated).mock.invocationCallOrder[0]!;
+      const revokeOrder = vi.mocked(revokeRefreshTokenJti).mock.invocationCallOrder[0]!;
       expect(markOrder).toBeLessThan(revokeOrder);
     });
 
