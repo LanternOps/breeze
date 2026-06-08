@@ -207,12 +207,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setIsUploadingAvatar(true);
       const form = new FormData();
       form.append('file', avatarFile);
-      // fetchWithAuth merges in JSON content-type by default; bypass by passing
-      // an explicit headers object so the browser sets the multipart boundary.
+      // fetchWithAuth skips its default JSON content-type for FormData bodies so
+      // the browser can set multipart/form-data with the correct boundary.
       const response = await fetchWithAuth('/users/me/avatar', {
         method: 'POST',
         body: form,
-        headers: {},
       });
 
       if (!response.ok) {

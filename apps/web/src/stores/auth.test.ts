@@ -63,6 +63,24 @@ describe('auth store fetchWithAuth', () => {
     expect(headers.get('Content-Type')).toBe('application/json');
   });
 
+  it('does not force a JSON content-type on FormData bodies (avatar upload)', async () => {
+    // Forcing application/json on a multipart body strips the boundary the
+    // browser would otherwise add, so the server cannot parse the upload and
+    // 400s. The avatar POST must leave Content-Type unset for FormData.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const form = new FormData();
+    form.append('file', new Blob(['x'], { type: 'image/png' }), 'a.png');
+    await fetchWithAuth('/users/me/avatar', { method: 'POST', body: form });
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = options.headers as Headers;
+    expect(headers.get('Authorization')).toBe(`Bearer ${baseTokens.accessToken}`);
+    expect(headers.get('Content-Type')).toBeNull();
+  });
+
   it('strips only exact /api prefix while preserving /api-* routes', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi

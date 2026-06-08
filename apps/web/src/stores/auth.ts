@@ -327,7 +327,12 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
   }
 
-  headers.set('Content-Type', 'application/json');
+  // Don't force a JSON content-type on FormData uploads — the browser must set
+  // `multipart/form-data` itself so it can append the boundary. Forcing JSON
+  // here strips the boundary and the server can't parse the body (avatar upload).
+  if (!(options.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
   const externalSignal = options.signal;
