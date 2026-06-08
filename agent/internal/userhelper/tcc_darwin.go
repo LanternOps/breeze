@@ -409,14 +409,14 @@ func showTCCDialog(missing []string) {
 
 	var msg, script string
 	if fdaMissing {
-		msg = "Breeze Agent needs Full Disk Access to function properly.\\n\\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\\n\\nScreen Recording and Accessibility will be configured automatically."
+		msg = "Breeze Agent needs Full Disk Access to function properly.\n\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\n\nScreen Recording and Accessibility will be configured automatically."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
 			escapeAppleScript(msg),
 		)
 	} else {
-		msg = "Screen Recording and Accessibility are being configured automatically.\\n\\nThis should resolve within a few minutes. If this persists, check agent logs or restart the agent."
+		msg = "Screen Recording and Accessibility are being configured automatically.\n\nThis should resolve within a few minutes. If this persists, check agent logs or restart the agent."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Configuring" giving up after 60`,

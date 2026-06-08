@@ -471,6 +471,15 @@ if [[ "\$OS" == "darwin" ]]; then
 
   success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
 
+  # Verify Apple notarization/signature before installing as root — the installer
+  # CLI does not enforce Gatekeeper on its own, so a tampered/MITM'd download
+  # would otherwise be installed with full privileges.
+  info "Verifying installer package signature..."
+  if ! spctl --assess --type install "\$TMPPKG" >/dev/null 2>&1; then
+    fatal "Installer package failed Gatekeeper notarization assessment. Refusing to install."
+  fi
+  success "Verified installer package notarization"
+
   info "Installing Breeze Agent..."
   installer -pkg "\$TMPPKG" -target /
   success "Package installed (binary, launchd service, directories)"
@@ -497,8 +506,12 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
   success "Agent enrolled successfully"
 
-  # Restart the service so it picks up the new enrollment config
-  launchctl kickstart -k system/com.breeze.agent 2>/dev/null || true
+  # Restart the service so it picks up the new enrollment config. Surface a
+  # failure instead of swallowing it — otherwise an enrolled device that never
+  # starts looks like a success to the operator.
+  if ! launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+    warn "Could not restart the agent service automatically; it will start on next login or reboot."
+  fi
 
   echo ""
   success "Breeze agent installation complete!"

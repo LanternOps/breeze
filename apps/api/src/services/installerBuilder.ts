@@ -12,6 +12,7 @@ import {
   getGithubReleaseRepository,
 } from './binarySource';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
+import { isS3Configured } from './s3Storage';
 
 // --- Enrollment key validation ---
 
@@ -144,9 +145,12 @@ case "$(uname -m)" in
 esac
 
 # Download the architecture-matched installer package from the server.
+# Clean up BOTH the temp pkg and the credential file on any exit — every guard
+# below can abort under \`set -e\`, and enrollment.json holds the enrollment
+# secret, so it must never be left behind in the extracted download folder.
 PKG_URL="\${SERVER_URL}/api/v1/agents/download/darwin/\${ARCH}/pkg"
 TMPPKG_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMPPKG_DIR"' EXIT
+trap 'rm -rf "$TMPPKG_DIR"; rm -f "$ENROLLMENT_JSON"' EXIT
 TMPPKG="$TMPPKG_DIR/breeze-agent.pkg"
 
 echo "Downloading Breeze Agent installer (\${ARCH})..."
@@ -157,6 +161,15 @@ if [ "$HTTP_CODE" != "200" ]; then
 fi
 if [ ! -s "$TMPPKG" ]; then
   echo "Error: downloaded installer package is empty (architecture \${ARCH} may be unavailable)"
+  exit 1
+fi
+
+# Verify the package is Apple-notarized and Developer-ID signed BEFORE installing
+# as root. The \`installer\` CLI does NOT enforce Gatekeeper/notarization on its
+# own (stapling is only checked in the Finder double-click flow), so without this
+# an MITM'd or tampered download would be installed with full root privileges.
+if ! spctl --assess --type install "$TMPPKG" >/dev/null 2>&1; then
+  echo "Error: installer package failed Gatekeeper notarization assessment. Refusing to install."
   exit 1
 fi
 
@@ -172,12 +185,14 @@ ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 echo "Enrolling agent..."
 sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
 
-# Restart the service so it picks up the new enrollment config.
-sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null || true
+# Restart the service so it picks up the new enrollment config. Surface a failure
+# rather than swallowing it — a silent kickstart failure leaves an enrolled
+# device that never checks in, with the user told everything succeeded.
+if ! sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+  echo "Note: could not restart the agent service automatically; it will start on next login or reboot."
+fi
 
-# Clean up credentials
-rm -f "$ENROLLMENT_JSON"
-
+# Credentials are removed by the EXIT trap above.
 echo "Breeze agent installed and enrolled successfully."
 `;
 
@@ -249,25 +264,34 @@ export async function fetchRegularMsi(): Promise<Buffer> {
   return readFile(join(binaryDir, 'breeze-agent.msi'));
 }
 
-export async function fetchMacosPkg(): Promise<Buffer> {
+/**
+ * Pre-flight reachability check for the macOS installer, run at link-creation
+ * time so a broken installer fails fast for the admin instead of silently at
+ * install time on the end user's Mac. The installer downloads the arch-matched
+ * pkg at install time, so BOTH architectures are validated here (not just arm64
+ * — an amd64-only outage must not pass a probe that Intel customers then hit).
+ */
+export async function assertMacosInstallerPkgsReachable(): Promise<void> {
+  const arches = ['amd64', 'arm64'] as const;
   if (getBinarySource() === 'github') {
-    const url = getGithubAgentPkgUrl('darwin', 'arm64');
-    const resp = await fetch(url, { redirect: 'follow' });
-    if (!resp.ok) throw new Error(`Failed to fetch macOS PKG: ${resp.status}`);
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    await verifyGithubReleaseArtifactBuffer({
-      assetName: 'breeze-agent-darwin-arm64.pkg',
-      assetBuffer: buffer,
-      manifestUrl: getGithubReleaseArtifactManifestUrl(),
-      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
-      expectedRepository: getGithubReleaseRepository(),
-      expectedRelease: getGithubExpectedReleaseTag(),
-      expectedPlatformTrust: 'macos-developer-id-notarization-required',
-    });
-    return buffer;
+    for (const arch of arches) {
+      const url = getGithubAgentPkgUrl('darwin', arch);
+      const resp = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+      if (!resp.ok) {
+        throw new Error(`macOS ${arch} installer package not reachable: ${resp.status}`);
+      }
+    }
+    return;
   }
+  // Local mode: the /download/:os/:arch/pkg endpoint resolves S3 then disk at
+  // request time. When S3 is configured we can't verify here without duplicating
+  // that logic, so don't false-fail; otherwise confirm both arch packages exist
+  // on disk (catches the common "binaries not staged" misconfig).
+  if (isS3Configured()) return;
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
+  for (const arch of arches) {
+    await stat(join(binaryDir, `breeze-agent-darwin-${arch}.pkg`));
+  }
 }
 
 /**

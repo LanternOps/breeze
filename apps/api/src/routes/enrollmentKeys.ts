@@ -27,7 +27,7 @@ import {
   buildMacosInstallerZip,
   buildWindowsInstallerZip,
   fetchRegularMsi,
-  fetchMacosPkg,
+  assertMacosInstallerPkgsReachable,
   fetchMacosInstallerAppZip,
 } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
@@ -190,7 +190,7 @@ function writeEnrollmentKeyAudit(
   });
 }
 
-// fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
+// fetchRegularMsi and the macOS installer helpers live in installerBuilder.ts
 
 const shortCodeAlphabet =
   "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
@@ -1400,7 +1400,9 @@ enrollmentKeyRoutes.post(
           await fetchRegularMsi();
         }
       } else {
-        await fetchMacosPkg();
+        // macOS installer downloads the arch-matched pkg at install time —
+        // validate BOTH architectures are reachable, not just arm64.
+        await assertMacosInstallerPkgsReachable();
       }
     } catch (err) {
       console.error(
