@@ -369,6 +369,33 @@ describe('refresh rotation-race recovery (#1107)', () => {
     expect(restored).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('routes refresh through the Web Locks API when available, under the right lock name (#1107)', async () => {
+    // jsdom has no navigator.locks, so the rest of the suite exercises the
+    // fallback. Stub it here to prove the cross-tab serialization wiring:
+    // correct lock name, fn run inside the lock, result propagated.
+    const requestMock = vi.fn((_name: string, fn: () => Promise<unknown>) => fn());
+    const prevLocks = (navigator as unknown as { locks?: unknown }).locks;
+    Object.defineProperty(navigator, 'locks', { value: { request: requestMock }, configurable: true });
+
+    try {
+      const refreshed: Tokens = { accessToken: 'access-locked', expiresInSeconds: 3600 };
+      const fetchMock = vi.fn().mockResolvedValue(makeResponse({ tokens: refreshed }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const restored = await restoreAccessTokenFromCookie();
+
+      expect(restored).toBe(true);
+      expect(requestMock).toHaveBeenCalledWith('breeze-token-refresh', expect.any(Function));
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-locked');
+    } finally {
+      if (prevLocks === undefined) {
+        delete (navigator as unknown as { locks?: unknown }).locks;
+      } else {
+        Object.defineProperty(navigator, 'locks', { value: prevLocks, configurable: true });
+      }
+    }
+  });
 });
 
 describe('waitForPendingRefresh (#950)', () => {

@@ -1356,6 +1356,13 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(markRefreshTokenJtiRotated).toHaveBeenCalledWith('refresh-jti-winner');
+      // Ordering is load-bearing (#1107): the grace marker MUST be written
+      // before the jti is revoked, so a concurrent racer that observes the
+      // revoked state also observes the marker and treats the replay as benign
+      // instead of killing the family. Lock the order in against refactors.
+      const markOrder = vi.mocked(markRefreshTokenJtiRotated).mock.invocationCallOrder[0];
+      const revokeOrder = vi.mocked(revokeRefreshTokenJti).mock.invocationCallOrder[0];
+      expect(markOrder).toBeLessThan(revokeOrder);
     });
 
     it('should re-derive token claims from current memberships', async () => {

@@ -376,12 +376,48 @@ describe('tokenRevocation', () => {
 
   describe('rotation-grace markers (#1107)', () => {
     it('markRefreshTokenJtiRotated writes a short-lived grace key (default 15s)', async () => {
-      const { redis } = createMockRedis();
-      mockGetRedis.mockReturnValue(redis);
+      const prev = process.env.REFRESH_ROTATION_GRACE_SECONDS;
+      delete process.env.REFRESH_ROTATION_GRACE_SECONDS; // pin the default, don't rely on global state
+      try {
+        const { redis } = createMockRedis();
+        mockGetRedis.mockReturnValue(redis);
 
-      await markRefreshTokenJtiRotated('jti-rot');
+        await markRefreshTokenJtiRotated('jti-rot');
 
-      expect(redis.setex).toHaveBeenCalledWith('refresh-rotated-grace:jti-rot', 15, '1');
+        expect(redis.setex).toHaveBeenCalledWith('refresh-rotated-grace:jti-rot', 15, '1');
+      } finally {
+        if (prev === undefined) delete process.env.REFRESH_ROTATION_GRACE_SECONDS;
+        else process.env.REFRESH_ROTATION_GRACE_SECONDS = prev;
+      }
+    });
+
+    it('parses REFRESH_ROTATION_GRACE_SECONDS: honors a custom value, falls back to 15 on garbage/negative', async () => {
+      const prev = process.env.REFRESH_ROTATION_GRACE_SECONDS;
+      try {
+        // Custom positive value flows into the marker TTL end-to-end.
+        process.env.REFRESH_ROTATION_GRACE_SECONDS = '30';
+        let redis = createMockRedis().redis;
+        mockGetRedis.mockReturnValue(redis);
+        await markRefreshTokenJtiRotated('jti-30');
+        expect(redis.setex).toHaveBeenCalledWith('refresh-rotated-grace:jti-30', 30, '1');
+
+        // Non-numeric → default 15.
+        process.env.REFRESH_ROTATION_GRACE_SECONDS = 'abc';
+        redis = createMockRedis().redis;
+        mockGetRedis.mockReturnValue(redis);
+        await markRefreshTokenJtiRotated('jti-nan');
+        expect(redis.setex).toHaveBeenCalledWith('refresh-rotated-grace:jti-nan', 15, '1');
+
+        // Negative → default 15 (the `raw >= 0` guard rejects it).
+        process.env.REFRESH_ROTATION_GRACE_SECONDS = '-5';
+        redis = createMockRedis().redis;
+        mockGetRedis.mockReturnValue(redis);
+        await markRefreshTokenJtiRotated('jti-neg');
+        expect(redis.setex).toHaveBeenCalledWith('refresh-rotated-grace:jti-neg', 15, '1');
+      } finally {
+        if (prev === undefined) delete process.env.REFRESH_ROTATION_GRACE_SECONDS;
+        else process.env.REFRESH_ROTATION_GRACE_SECONDS = prev;
+      }
     });
 
     it('strict mode (REFRESH_ROTATION_GRACE_SECONDS=0) writes no marker and never reports recent rotation', async () => {
