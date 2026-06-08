@@ -78,11 +78,9 @@ describe('evaluateIpAllowlist', () => {
 });
 
 describe('readPartnerAllowlist caching', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let limit: any;
   beforeEach(async () => {
     const mod = await import('../db');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     limit = (mod.db as any).__limit;
     limit.mockReset();
     clearPartnerAllowlistCache('p1');
@@ -126,13 +124,11 @@ describe('readPartnerAllowlist caching', () => {
 });
 
 describe('enforceIpAllowlist', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let limit: any;
   const c = { req: { header: vi.fn() } };
 
   beforeEach(async () => {
     const mod = await import('../db');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     limit = (mod.db as any).__limit;
     limit.mockReset();
     serviceMocks.getTrustedClientIpOrUndefined.mockReset();
