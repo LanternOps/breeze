@@ -3,7 +3,7 @@ module github.com/breeze-rmm/agent
 go 1.25.10
 
 require (
-	cloud.google.com/go/storage v1.62.2
+	cloud.google.com/go/storage v1.62.3
 	github.com/0xrawsec/golang-etw v1.6.2
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.7.0
 	github.com/Backblaze/blazer v0.7.2
