@@ -14,7 +14,7 @@
  *
  * See Task 7 of the launch-readiness fixes plan.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { generate, generateSecret } from 'otplib';
@@ -90,12 +90,25 @@ async function refreshWithCookies(
 describe('Refresh-Token Family Revocation (Task 7)', () => {
   let app: Hono;
   let testPartnerId: string;
+  let prevGrace: string | undefined;
 
   beforeEach(async () => {
+    // These tests assert the STRICT reuse-detection contract: an immediate
+    // replay of a revoked jti kills the family. The #1107 rotation-leeway
+    // (default 15s) would otherwise treat that immediate replay as a benign
+    // race, so we pin leeway to 0 here. The benign-race behaviour is covered
+    // separately below.
+    prevGrace = process.env.REFRESH_ROTATION_GRACE_SECONDS;
+    process.env.REFRESH_ROTATION_GRACE_SECONDS = '0';
     app = new Hono();
     app.route('/auth', authRoutes);
     const partner = await createPartner();
     testPartnerId = partner.id;
+  });
+
+  afterEach(() => {
+    if (prevGrace === undefined) delete process.env.REFRESH_ROTATION_GRACE_SECONDS;
+    else process.env.REFRESH_ROTATION_GRACE_SECONDS = prevGrace;
   });
 
   it('revokes the entire family when a revoked jti is replayed (reuse detected)', async () => {
@@ -271,5 +284,53 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     // …but family 2 must still be alive — separate /login = separate family.
     const stillAlive = await refreshWithCookies(app, cookiesFam2);
     expect(stillAlive.status).toBe(200);
+  });
+});
+
+describe('Refresh-Token Rotation Leeway (#1107)', () => {
+  let app: Hono;
+  let testPartnerId: string;
+  let prevGrace: string | undefined;
+
+  beforeEach(async () => {
+    // Exercise the leeway path with a generous window so an immediate replay
+    // lands inside it.
+    prevGrace = process.env.REFRESH_ROTATION_GRACE_SECONDS;
+    process.env.REFRESH_ROTATION_GRACE_SECONDS = '30';
+    app = new Hono();
+    app.route('/auth', authRoutes);
+    const partner = await createPartner();
+    testPartnerId = partner.id;
+  });
+
+  afterEach(() => {
+    if (prevGrace === undefined) delete process.env.REFRESH_ROTATION_GRACE_SECONDS;
+    else process.env.REFRESH_ROTATION_GRACE_SECONDS = prevGrace;
+  });
+
+  it('does NOT kill the family when a just-rotated jti is replayed within the leeway window', async () => {
+    await createUser({
+      partnerId: testPartnerId,
+      email: 'leeway@example.com',
+      password: 'FamilyPass123!'
+    });
+
+    // login → A
+    const cookiesA = await loginAndExtractCookies(app, 'leeway@example.com', 'FamilyPass123!');
+
+    // rotate A → B (A revoked, grace marker dropped for A)
+    const r2 = await refreshWithCookies(app, cookiesA);
+    expect(r2.status).toBe(200);
+    const cookiesB = r2.nextCookies!;
+
+    // Replay A immediately (multi-tab / reload-mid-flight). Within the leeway
+    // window this is a benign race: rejected (can't mint) but the family must
+    // SURVIVE so the winning sibling's cookie B keeps working.
+    const replay = await refreshWithCookies(app, cookiesA);
+    expect(replay.status).toBe(401);
+
+    // The critical assertion: B is still alive — the family was NOT revoked.
+    const followup = await refreshWithCookies(app, cookiesB);
+    expect(followup.status).toBe(200);
   });
 });

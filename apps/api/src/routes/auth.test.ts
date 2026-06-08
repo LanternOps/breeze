@@ -26,6 +26,10 @@ vi.mock('../services', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined),
   isRefreshTokenJtiRevoked: vi.fn().mockResolvedValue(false),
   revokeRefreshTokenJti: vi.fn().mockResolvedValue(true),
+  // #1107: rotation-grace helpers. Default mock = "not recently rotated" so
+  // existing reuse-detection tests keep exercising the family-kill path.
+  markRefreshTokenJtiRotated: vi.fn().mockResolvedValue(undefined),
+  wasRefreshTokenJtiRecentlyRotated: vi.fn().mockResolvedValue(false),
   // Task 7: refresh-token family revocation helpers. Default mock behaviour
   // mirrors a healthy "no reuse, no revocation" path so existing /refresh
   // tests continue to assert success on the happy path.
@@ -172,6 +176,10 @@ import {
   revokeAllUserTokens,
   isRefreshTokenJtiRevoked,
   revokeRefreshTokenJti,
+  markRefreshTokenJtiRotated,
+  wasRefreshTokenJtiRecentlyRotated,
+  revokeFamily,
+  getFamilyForJti,
   getTrustedClientIp,
   rateLimiter,
   getRedis,
@@ -203,6 +211,10 @@ describe('auth routes', () => {
     });
     vi.mocked(isUserTokenRevoked).mockResolvedValue(false);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    // #1107: reset rotation-grace + family helpers to the happy-path baseline.
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
+    vi.mocked(getFamilyForJti).mockResolvedValue(null);
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
     // Task 10: reset lockout-helper mocks to the "not locked" happy path so
@@ -1227,6 +1239,130 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(401);
       expect(createTokenPair).not.toHaveBeenCalled();
+      // #1107: a lost race must surface refresh_raced and must NOT clear the
+      // cookie — the winning sibling already set a fresh one this browser shares.
+      const body = await res.json();
+      expect(body.reason).toBe('refresh_raced');
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).not.toContain('breeze_refresh_token=;');
+    });
+
+    it('#1107: benign concurrent replay within the rotation-grace window is not treated as reuse', async () => {
+      // The same cookie is replayed seconds after its own legitimate rotation
+      // (multi-tab / heartbeat / reload-mid-flight). isRefreshTokenJtiRevoked is
+      // true, but wasRefreshTokenJtiRecentlyRotated is also true → benign race.
+      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
+      vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(true);
+      vi.mocked(getFamilyForJti).mockResolvedValue('fam-raced');
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: null,
+        orgId: null,
+        partnerId: null,
+        scope: 'system',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-graced'
+      });
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=graced-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      const body = await res.json();
+      expect(body.reason).toBe('refresh_raced');
+      // The whole point: the family must survive, and the cookie must NOT be cleared.
+      expect(revokeFamily).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).not.toContain('breeze_refresh_token=;');
+    });
+
+    it('#1107: a genuine replay outside the grace window still kills the family', async () => {
+      // Revoked jti, NOT recently rotated → real token-reuse → family revoked.
+      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
+      vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
+      vi.mocked(getFamilyForJti).mockResolvedValue('fam-attacked');
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: null,
+        orgId: null,
+        partnerId: null,
+        scope: 'system',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-stolen'
+      });
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=stolen-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(revokeFamily).toHaveBeenCalledWith('fam-attacked', 'reuse-detected');
+      // Genuine reuse DOES clear the cookie.
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_refresh_token=;');
+    });
+
+    it('#1107: a successful refresh records a rotation-grace marker for the old jti', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-1',
+        orgId: 'org-1',
+        partnerId: null,
+        scope: 'organization',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-winner'
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'test@example.com',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=winning-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(markRefreshTokenJtiRotated).toHaveBeenCalledWith('refresh-jti-winner');
+      // Ordering is load-bearing (#1107): the grace marker MUST be written
+      // before the jti is revoked, so a concurrent racer that observes the
+      // revoked state also observes the marker and treats the replay as benign
+      // instead of killing the family. Lock the order in against refactors.
+      const markOrder = vi.mocked(markRefreshTokenJtiRotated).mock.invocationCallOrder[0]!;
+      const revokeOrder = vi.mocked(revokeRefreshTokenJti).mock.invocationCallOrder[0]!;
+      expect(markOrder).toBeLessThan(revokeOrder);
     });
 
     it('should re-derive token claims from current memberships', async () => {

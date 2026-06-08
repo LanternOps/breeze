@@ -340,6 +340,98 @@ describe('auth API helpers', () => {
   });
 });
 
+describe('refresh rotation-race recovery (#1107)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.setState({
+      user: baseUser,
+      tokens: null,
+      isAuthenticated: true,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null
+    });
+  });
+
+  const racedResponse = (): Response =>
+    ({
+      ok: false,
+      status: 401,
+      json: vi.fn().mockResolvedValue({ error: 'Refresh already in progress', reason: 'refresh_raced' })
+    }) as unknown as Response;
+
+  it('retries refresh once when the server reports a benign race, then succeeds', async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-race', expiresInSeconds: 3600 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(racedResponse())
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(true);
+    // First attempt raced; the second (retry) won — exactly one retry.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith('/api/v1/auth/refresh'))).toBe(true);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-race');
+  });
+
+  it('gives up after a single retry if the race persists (no infinite loop)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(racedResponse())
+      .mockResolvedValueOnce(racedResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on a non-raced 401 (genuine auth failure)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Invalid refresh token' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes refresh through the Web Locks API when available, under the right lock name (#1107)', async () => {
+    // jsdom has no navigator.locks, so the rest of the suite exercises the
+    // fallback. Stub it here to prove the cross-tab serialization wiring:
+    // correct lock name, fn run inside the lock, result propagated.
+    const requestMock = vi.fn((_name: string, fn: () => Promise<unknown>) => fn());
+    const prevLocks = (navigator as unknown as { locks?: unknown }).locks;
+    Object.defineProperty(navigator, 'locks', { value: { request: requestMock }, configurable: true });
+
+    try {
+      const refreshed: Tokens = { accessToken: 'access-locked', expiresInSeconds: 3600 };
+      const fetchMock = vi.fn().mockResolvedValue(makeResponse({ tokens: refreshed }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const restored = await restoreAccessTokenFromCookie();
+
+      expect(restored).toBe(true);
+      expect(requestMock).toHaveBeenCalledWith('breeze-token-refresh', expect.any(Function));
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-locked');
+    } finally {
+      if (prevLocks === undefined) {
+        delete (navigator as unknown as { locks?: unknown }).locks;
+      } else {
+        Object.defineProperty(navigator, 'locks', { value: prevLocks, configurable: true });
+      }
+    }
+  });
+});
+
 describe('waitForPendingRefresh (#950)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

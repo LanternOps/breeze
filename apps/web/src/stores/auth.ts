@@ -214,7 +214,15 @@ function buildApiUrl(path: string): string {
   return `${apiHost}/api/v1${cleanPath}`;
 }
 
-async function requestTokenRefresh(): Promise<Tokens | null> {
+const REFRESH_LOCK_NAME = 'breeze-token-refresh';
+
+// One low-level /auth/refresh attempt. Returns the new tokens on success, or a
+// discriminated result so the caller can tell a benign concurrent race (server
+// reason 'refresh_raced', #1107) — which is retryable — apart from a hard
+// failure. A raced 401 means the winning sibling already rotated the SHARED
+// refresh cookie and the server deliberately did NOT clear it or kill the
+// session family, so a retry picks up the fresh cookie.
+async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean }> {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   const csrfToken = readCookie(CSRF_COOKIE_NAME);
   if (csrfToken) {
@@ -234,17 +242,54 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
       signal: controller.signal,
     });
   } catch {
-    return null;
+    return { tokens: null, raced: false };
   } finally {
     clearTimeout(timeout);
   }
 
-  if (!refreshResponse.ok) {
-    return null;
+  if (refreshResponse.ok) {
+    const { tokens } = await refreshResponse.json().catch(() => ({ tokens: undefined })) as { tokens?: Tokens };
+    return { tokens: tokens?.accessToken ? tokens : null, raced: false };
   }
 
-  const { tokens } = await refreshResponse.json() as { tokens?: Tokens };
-  return tokens?.accessToken ? tokens : null;
+  if (refreshResponse.status === 401) {
+    const body = await refreshResponse.json().catch(() => null) as { reason?: string } | null;
+    if (body?.reason === 'refresh_raced') {
+      return { tokens: null, raced: true };
+    }
+  }
+
+  return { tokens: null, raced: false };
+}
+
+// Serialize refresh across tabs AND across reloads via the Web Locks API.
+// Multiple browser contexts share one refresh cookie jar; without a lock they
+// can fire concurrent rotations that replay each other's just-revoked jti and
+// (pre-#1107) tripped reuse-detection, logging everyone out on a hard refresh.
+// Falls back to a direct call where Web Locks are unavailable (older browsers).
+async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined'
+    ? (navigator as Navigator & { locks?: LockManager }).locks
+    : undefined;
+  if (!locks?.request) {
+    return fn();
+  }
+  return locks.request(REFRESH_LOCK_NAME, fn) as Promise<T>;
+}
+
+async function requestTokenRefresh(): Promise<Tokens | null> {
+  return withRefreshLock(async () => {
+    const first = await refreshFetchOnce();
+    if (first.tokens) return first.tokens;
+    if (!first.raced) return null;
+
+    // Benign race (#1107): a sibling context won the rotation. Give the
+    // winner's rotated cookie a beat to settle in the shared jar, then retry
+    // exactly once. The retry sends the now-current cookie and succeeds.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const second = await refreshFetchOnce();
+    return second.tokens;
+  });
 }
 
 let tokenRefreshInFlight: Promise<Tokens | null> | null = null;
