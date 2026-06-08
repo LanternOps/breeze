@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { and, eq, sql } from 'drizzle-orm';
+import { db, type Database } from '../../db';
 import { devices, patches, devicePatches } from '../../db/schema';
 import { enqueueWingetReleaseTest } from '../../jobs/wingetReleaseTestWorker';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -15,6 +15,38 @@ function deriveVendor(packageId: string | null | undefined, fallback: string | n
     return packageId.split('.')[0] ?? fallback ?? null;
   }
   return fallback ?? null;
+}
+
+/**
+ * Bound tombstone growth (#1004): delete device_patches rows that have stayed
+ * 'missing' (absent from every scan) longer than the grace window.
+ *
+ * `updatedAt` is bumped only when a scan actually reports the patch — the bulk
+ * mark-missing in the scan ingest sets `status='missing'` + `lastCheckedAt` but
+ * leaves `updatedAt` untouched — so `updatedAt` dates the patch's last real
+ * sighting. A transient partial-provider failure (e.g. winget fails while
+ * chocolatey succeeds under the shared 'third_party' source bucket) self-heals:
+ * the row is re-upserted on the next clean scan inside the window, so only
+ * genuinely-removed packages age out. The window is generous (default 7 days,
+ * `PATCH_TOMBSTONE_PRUNE_AFTER_HOURS`) so a missed scan never prunes prematurely.
+ * Scoped to a single device + org (cross-tenant safe).
+ */
+export async function pruneStaleTombstones(
+  executor: Database,
+  deviceId: string,
+  orgId: string,
+  pruneAfterHours = Number(process.env.PATCH_TOMBSTONE_PRUNE_AFTER_HOURS) || 168,
+): Promise<void> {
+  await executor
+    .delete(devicePatches)
+    .where(
+      and(
+        eq(devicePatches.deviceId, deviceId),
+        eq(devicePatches.orgId, orgId),
+        eq(devicePatches.status, 'missing'),
+        sql`${devicePatches.updatedAt} < now() - make_interval(hours => ${pruneAfterHours})`,
+      ),
+    );
 }
 
 export const patchesRoutes = new Hono();
@@ -203,6 +235,11 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
       }
     }
   });
+
+  // Prune stale tombstones after the scan commits. Outside the txn on purpose:
+  // it reads the just-committed state, and a crash before it runs is harmless
+  // (the next scan prunes). Runs in the same request DB context as the ingest.
+  await pruneStaleTombstones(db, device.id, device.orgId);
 
   writeAuditEvent(c, {
     orgId: agent?.orgId ?? device.orgId,

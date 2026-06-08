@@ -571,17 +571,50 @@ func handleFailoverPoll(
 	}
 	processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
-	// Poll for commands.
-	commands, err := fc.PollCommands()
+	// Commands targeted at the watchdog are claimed by the heartbeat (the
+	// server marks them 'sent' and returns them inline), so the poll below
+	// won't re-return them. Execute the heartbeat-delivered batch here, then
+	// the poll batch, deduped — otherwise a `restart_agent` etc. is consumed
+	// but never run (#1103).
+	var heartbeatCmds []watchdog.FailoverCommand
+	if resp != nil {
+		heartbeatCmds = resp.Commands
+	}
+
+	// Poll for any still-pending commands. A poll failure must not drop the
+	// heartbeat-delivered batch, so fall through with an empty poll set.
+	pollCmds, err := fc.PollCommands()
 	if err != nil {
 		journal.Log(watchdog.LevelError, "failover.poll_failed", map[string]any{
 			"error": err.Error(),
 		})
-		return
+		pollCmds = nil
 	}
 
-	for _, cmd := range commands {
+	executeFailoverCommands(heartbeatCmds, pollCmds, func(cmd watchdog.FailoverCommand) {
 		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+	})
+}
+
+// executeFailoverCommands runs the heartbeat-delivered command batch first,
+// then the poll-delivered batch, invoking run() once per unique command id.
+// The server claims+marks heartbeat commands 'sent' so the poll normally
+// won't re-return them; the dedup is defensive against any overlap. Order is
+// preserved (heartbeat batch, then poll batch). (#1103)
+func executeFailoverCommands(
+	heartbeatCmds, pollCmds []watchdog.FailoverCommand,
+	run func(watchdog.FailoverCommand),
+) {
+	seen := make(map[string]bool, len(heartbeatCmds))
+	for _, cmd := range heartbeatCmds {
+		run(cmd)
+		seen[cmd.ID] = true
+	}
+	for _, cmd := range pollCmds {
+		if seen[cmd.ID] {
+			continue
+		}
+		run(cmd)
 	}
 }
 

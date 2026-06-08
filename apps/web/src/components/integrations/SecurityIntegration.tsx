@@ -12,6 +12,7 @@ import {
   Unplug
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 type Integration = {
   id: string;
@@ -76,6 +77,13 @@ export default function SecurityIntegration() {
   const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
   const [siteMapSaving, setSiteMapSaving] = useState<Record<string, boolean>>({});
   const [siteMapError, setSiteMapError] = useState<string | null>(null);
+
+  // The SentinelOne integration is per organization. Under the "All orgs" scope
+  // toggle there is no single org to load, and the API returns a 400; show a
+  // prompt instead of firing a doomed call.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
+  const isAllOrgs = orgScope === 'all';
 
   const fetchIntegration = useCallback(async () => {
     try {
@@ -143,14 +151,20 @@ export default function SecurityIntegration() {
   }, []);
 
   useEffect(() => {
+    if (isAllOrgs) {
+      setIsLoading(false);
+      setLoadError(null);
+      return;
+    }
     const load = async () => {
       setIsLoading(true);
+      setLoadError(null);
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchSites(), fetchOrgs()]);
       setIsLoading(false);
     };
     load();
-  }, [fetchIntegration, fetchStatus, fetchSites, fetchOrgs]);
+  }, [fetchIntegration, fetchStatus, fetchSites, fetchOrgs, isAllOrgs, currentOrgId]);
 
   const handleSave = async () => {
     setSaveState({ status: 'saving' });
@@ -225,6 +239,22 @@ export default function SecurityIntegration() {
       setSiteMapSaving((prev) => ({ ...prev, [siteName]: false }));
     }
   };
+
+  if (isAllOrgs) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">SentinelOne Integration</h1>
+          <p className="text-sm text-muted-foreground">Connect your SentinelOne tenant for endpoint detection and response.</p>
+        </div>
+        <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
+          The SentinelOne integration is configured per organization. Switch the scope in the top bar
+          from <span className="font-medium text-foreground">All orgs</span> to a single organization
+          to view or edit its connection.
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (

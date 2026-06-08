@@ -81,7 +81,7 @@ describe('scheduleCisScan', () => {
       'run-baseline-scan',
       expect.objectContaining({ baselineId: 'baseline-1', deviceIds: ['device-1', 'device-2'] }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^cis-manual-scan:baseline-1:device-1,device-2:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^cis-manual-scan-baseline-1-device-1,device-2-[a-z0-9]+$/),
       }),
     );
   });

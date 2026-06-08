@@ -13,6 +13,7 @@ import {
   Webhook
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
 
 type WebhookEndpoint = {
@@ -188,6 +189,13 @@ export default function MonitoringIntegration() {
   const [newWebhookName, setNewWebhookName] = useState('');
   const [newWebhookUrl, setNewWebhookUrl] = useState('');
 
+  // Monitoring settings are per organization. When the global scope toggle is
+  // on "All orgs" there is no single org to load/save, and the API rejects the
+  // request with a 400; show a prompt instead of firing a doomed call.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
+  const isAllOrgs = orgScope === 'all';
+
   const selectedMetricsCount = settings.metrics.selected.length;
 
   const normalizeSettings = useCallback((payload?: Partial<MonitoringSettings> | null): MonitoringSettings => {
@@ -241,8 +249,13 @@ export default function MonitoringIntegration() {
   }, [normalizeSettings]);
 
   useEffect(() => {
+    if (isAllOrgs) {
+      setLoading(false);
+      setLoadError(undefined);
+      return;
+    }
     fetchSettings();
-  }, [fetchSettings]);
+  }, [fetchSettings, isAllOrgs, currentOrgId]);
 
   function updateSection<K extends keyof MonitoringSettings>(key: K, updates: Partial<MonitoringSettings[K]>) {
     setSettings(prev => ({
@@ -381,6 +394,24 @@ export default function MonitoringIntegration() {
       });
     }
   };
+
+  if (isAllOrgs) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Monitoring integrations</h1>
+          <p className="text-sm text-muted-foreground">
+            Connect observability platforms, alerting tools, and external monitoring endpoints.
+          </p>
+        </div>
+        <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
+          Monitoring integrations are configured per organization. Switch the scope in the top bar
+          from <span className="font-medium text-foreground">All orgs</span> to a single organization
+          to view or edit its monitoring settings.
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

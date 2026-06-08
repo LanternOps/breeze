@@ -3,7 +3,7 @@ import { FileCode, User, Settings, Monitor, AlertCircle, Activity } from 'lucide
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTimeAgo } from '@/lib/formatTime';
-import { formatAuditAction } from '@/lib/auditFormat';
+import { formatAuditAction, DEFAULT_DASHBOARD_EXCLUDE_ACTIONS } from '@/lib/auditFormat';
 
 interface AuditLogEntry {
   id: string;
@@ -55,7 +55,10 @@ export default function RecentActivity() {
         setIsLoading(true);
         setError(null);
 
-        const response = await fetchWithAuth('/audit-logs/logs?limit=5&skipCount=true');
+        const excludeParam = encodeURIComponent(DEFAULT_DASHBOARD_EXCLUDE_ACTIONS.join(','));
+        const response = await fetchWithAuth(
+          `/audit-logs/logs?limit=5&skipCount=true&excludeActions=${excludeParam}`
+        );
 
         if (!response.ok) {
           throw response;

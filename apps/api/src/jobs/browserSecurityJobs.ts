@@ -95,7 +95,9 @@ export async function triggerBrowserPolicyEvaluation(
 ): Promise<string> {
   const queue = getEvalQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_EVAL_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = ['browser-policy-eval', orgId, policyId ?? 'all', slot].join(':');
+  // '-' separator (not ':') — BullMQ rejects custom jobIds whose colon-split
+  // length !== 3, and this 4-part id would throw. See #1101.
+  const jobId = ['browser-policy-eval', orgId, policyId ?? 'all', slot].join('-');
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

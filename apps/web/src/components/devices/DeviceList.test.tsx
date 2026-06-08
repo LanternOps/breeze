@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
@@ -91,5 +91,43 @@ describe('DeviceList — agent-silent (watchdog OK) badge (#800 web-UI gap)', ()
     const badge = screen.getByTestId(`device-${device.id}-agent-silent-badge`);
     // 2h should render as "2h"
     expect(badge.textContent).toMatch(/2h/);
+  });
+
+  it('keeps the badge on a single line so it renders as a pill, not a circle (#1013)', () => {
+    const device: Device = {
+      ...baseDevice,
+      id: '66666666-6666-6666-6666-666666666666',
+      hostname: 'host-narrow-column',
+      mainAgentSilentSince: new Date(Date.now() - 12 * 24 * 3600 * 1000).toISOString(),
+      watchdogStatus: 'connected',
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    const badge = screen.getByTestId(`device-${device.id}-agent-silent-badge`);
+    // Without whitespace-nowrap the text wraps to multiple lines and rounded-full
+    // renders the box as a circular blob instead of a pill.
+    expect(badge.className).toContain('whitespace-nowrap');
+  });
+});
+
+describe('DeviceList — row action menu (#1013 clipping fix)', () => {
+  it('renders the action menu in a portal outside the overflow-x-auto table wrapper so it is not clipped', () => {
+    const device: Device = {
+      ...baseDevice,
+      id: '77777777-7777-7777-7777-777777777777',
+      hostname: 'host-menu',
+    };
+
+    const { container } = render(<DeviceList devices={[device]} />);
+
+    fireEvent.click(screen.getByLabelText('Device actions'));
+
+    const menuItem = screen.getByText('Remote Terminal');
+    // The scroll container that was clipping the dropdown.
+    const scrollWrapper = container.querySelector('.overflow-x-auto');
+    expect(scrollWrapper).not.toBeNull();
+    // The menu must live OUTSIDE that wrapper (portaled to body) so overflow can't clip it.
+    expect(scrollWrapper?.contains(menuItem)).toBe(false);
   });
 });

@@ -23,7 +23,7 @@ let drExecutionQueue: Queue<DrExecutionQueueJobData> | null = null;
 let drExecutionWorkerInstance: Worker<DrExecutionQueueJobData> | null = null;
 
 function getDrExecutionReconcileJobId(executionId: string): string {
-  return `dr-execution:${executionId}`;
+  return `dr-execution-${executionId}`;
 }
 
 function getDrExecutionQueue(): Queue<DrExecutionQueueJobData> {

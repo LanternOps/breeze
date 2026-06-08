@@ -67,7 +67,7 @@ describe('log correlation queue helpers', () => {
       'rules-detect',
       expect.objectContaining({ orgId: 'org-1', ruleIds: ['r1', 'r2'] }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^log-correlation-rules:org-1:[a-z0-9]+:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^log-correlation-rules-org-1-[a-z0-9]+-[a-z0-9]+$/),
       }),
     );
   });

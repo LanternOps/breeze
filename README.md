@@ -143,6 +143,9 @@ Requires [Docker](https://docs.docker.com/get-docker/) and Docker Compose.
 mkdir breeze && cd breeze
 curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/docker-compose.yml
 curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/.env.example
+# Caddy config — the compose file bind-mounts this, so it must exist on disk first.
+# (If it's missing, Docker creates docker/Caddyfile.prod as a directory and Caddy fails.)
+curl -fsSL --create-dirs -o docker/Caddyfile.prod https://raw.githubusercontent.com/lanternops/breeze/main/docker/Caddyfile.prod
 cp .env.example .env
 
 # Edit .env — at minimum set these:

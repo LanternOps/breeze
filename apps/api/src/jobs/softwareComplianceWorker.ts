@@ -578,13 +578,15 @@ export async function scheduleSoftwareComplianceCheck(
         type: 'scan-policies',
       },
     {
+      // '-' separator (not ':') — BullMQ rejects custom jobIds whose colon-split
+      // length !== 3, and this 4-part id would throw. See #1101.
       jobId: policyId
         ? [
           'software-compliance',
           policyId,
           stableShortHash(JSON.stringify(uniqueDeviceIds ?? [])),
           Math.floor(Date.now() / ON_DEMAND_DEDUPE_WINDOW_MS).toString(36),
-        ].join(':')
+        ].join('-')
         : undefined,
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 },

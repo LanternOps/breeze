@@ -18,8 +18,17 @@ Get a working Breeze instance running with a single `docker compose up`.
    mkdir breeze && cd breeze
    curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/docker-compose.yml
    curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/.env.example
+   # Caddy config — the compose file bind-mounts this, so it must exist on disk first
+   curl -fsSL --create-dirs -o docker/Caddyfile.prod https://raw.githubusercontent.com/lanternops/breeze/main/docker/Caddyfile.prod
    cp .env.example .env
    ```
+
+   <Aside type="caution">
+     Don't skip the `docker/Caddyfile.prod` download. The compose file bind-mounts
+     it into the `caddy` container; if the file isn't on disk when you run
+     `docker compose up`, Docker silently creates `docker/Caddyfile.prod` as an empty
+     **directory** and Caddy fails to start.
+   </Aside>
 
 2. **Edit `.env` and set the required values**
 

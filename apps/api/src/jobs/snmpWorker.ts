@@ -262,7 +262,10 @@ export async function enqueueSnmpPoll(
   orgId: string
 ): Promise<string> {
   const queue = getSnmpQueue();
-  const stableJobId = `snmp-poll:${deviceId}`;
+  // BullMQ rejects a custom jobId containing ':' (unless it has exactly two, a
+  // legacy repeatable-job carve-out), so use '-' as the separator. A ':' here
+  // makes queue.add throw "Custom Id cannot contain :" and polling never runs.
+  const stableJobId = `snmp-poll-${deviceId}`;
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();
@@ -298,7 +301,8 @@ export async function enqueueSnmpPollResults(
   pollId?: string,
 ): Promise<string> {
   const queue = getSnmpQueue();
-  const stableJobId = pollId ? `snmp-result:${pollId}` : null;
+  // '-' separator, not ':', so BullMQ does not reject the custom jobId (see enqueueSnmpPoll).
+  const stableJobId = pollId ? `snmp-result-${pollId}` : null;
   if (stableJobId) {
     const existing = await queue.getJob(stableJobId);
     if (existing) {

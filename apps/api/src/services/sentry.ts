@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
+import { API_VERSION } from '../version';
 
 let initialized = false;
 
@@ -25,7 +26,11 @@ export function initSentry(): void {
   Sentry.init({
     dsn,
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
-    release: process.env.SENTRY_RELEASE,
+    // Track the deployed version (API_VERSION <- APP_VERSION <- BREEZE_VERSION),
+    // which is already correct on every deploy. The old SENTRY_RELEASE env was
+    // hand-maintained and went stale on the droplets (pinned at 0.64.1 while the
+    // fleet ran 0.69.0), mistagging every event — so we no longer read it.
+    release: API_VERSION,
     tracesSampleRate
   });
 

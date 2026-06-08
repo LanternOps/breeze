@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
-const { addBulkMock, warnSpy, devicesSchema, organizationsSchema, fleetState } = vi.hoisted(() => ({
+const { addBulkMock, addMock, getJobMock, warnSpy, devicesSchema, organizationsSchema, fleetState } = vi.hoisted(() => ({
   addBulkMock: vi.fn(async () => undefined),
+  addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
+  getJobMock: vi.fn(async () => null),
   warnSpy: vi.fn(),
   devicesSchema: { id: 'devices.id', orgId: 'devices.orgId', status: 'devices.status', lastSeenAt: 'devices.lastSeenAt' } as const,
   organizationsSchema: { id: 'organizations.id', status: 'organizations.status' } as const,
@@ -63,6 +65,8 @@ vi.mock('../db', () => ({
 vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = addBulkMock;
+    add = addMock;
+    getJob = getJobMock;
   },
   Worker: class {
     on = vi.fn();
@@ -85,7 +89,7 @@ vi.mock('../services/bullmqUtils', () => ({
   isReusableState: vi.fn(() => false)
 }));
 
-import { processEvaluateAll } from './alertWorker';
+import { processEvaluateAll, triggerFullEvaluation } from './alertWorker';
 
 describe('alertWorker.processEvaluateAll cursor fan-out', () => {
   beforeEach(() => {
@@ -166,5 +170,31 @@ describe('alertWorker.processEvaluateAll cursor fan-out', () => {
 
     expect(result.queued).toBe(0);
     expect(addBulkMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('alertWorker.triggerFullEvaluation jobId', () => {
+  beforeEach(() => {
+    addMock.mockClear();
+    getJobMock.mockClear();
+    getJobMock.mockResolvedValue(null);
+    addMock.mockResolvedValue({ id: 'queued-job-1' });
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Regression for "Custom Id cannot contain :" — BullMQ rejects a custom
+  // jobId whose colon-split length !== 3. `alert-evaluate-all:<slot>` is 2
+  // parts and would throw, silently dropping the full-evaluation enqueue.
+  it('does not use a colon in the enqueued BullMQ job id', async () => {
+    await triggerFullEvaluation();
+
+    expect(addMock).toHaveBeenCalled();
+    const [, , opts] = addMock.mock.calls[0] as unknown as [string, unknown, { jobId: string }];
+    expect(String(opts.jobId)).not.toContain(':');
+    expect(String(opts.jobId)).toMatch(/^alert-evaluate-all-[a-z0-9]+$/);
   });
 });

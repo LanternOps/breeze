@@ -130,7 +130,20 @@ filterRoutes.post(
       return c.json({ error: 'Invalid filter', details: validation.errors }, 400);
     }
 
-    const orgIds = await getOrgIdsForAuth(auth);
+    // Honor a pinned ?orgId= (the web client injects the current org-scope
+    // selection via fetchWithAuth). Without it the preview spans every
+    // accessible org, which over-counts when a partner user is scoped to a
+    // single org — the count then disagrees with the org-scoped device list.
+    const pinnedOrgId = c.req.query('orgId');
+    let orgIds: string[] | null;
+    if (pinnedOrgId) {
+      if (!(await ensureOrgAccess(pinnedOrgId, auth))) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      orgIds = [pinnedOrgId];
+    } else {
+      orgIds = await getOrgIdsForAuth(auth);
+    }
     if (!orgIds || orgIds.length === 0) {
       return c.json({ data: { totalCount: 0, devices: [], evaluatedAt: new Date().toISOString() } });
     }

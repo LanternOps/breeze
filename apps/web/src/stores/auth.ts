@@ -195,13 +195,20 @@ function buildApiUrl(path: string): string {
   // Ensure path starts with /
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
 
-  // Remove only the exact "/api" prefix boundary to avoid "/api/v1/api/..."
-  // while preserving legitimate paths like "/api-keys".
+  // Remove only the exact "/api" or "/api/v1" prefix boundary to avoid
+  // both "/api/v1/api/..." and "/api/v1/v1/..." while preserving legitimate
+  // paths like "/api-keys". The "/api/v1/" case matters for server-stored
+  // URLs (e.g. users.avatar_url = "/api/v1/users/:id/avatar") that the SPA
+  // round-trips through buildApiUrl.
   const cleanPath = normalizedPath === '/api'
     ? ''
-    : normalizedPath.startsWith('/api/')
-      ? normalizedPath.slice(4)
-      : normalizedPath;
+    : normalizedPath === '/api/v1'
+      ? ''
+      : normalizedPath.startsWith('/api/v1/')
+        ? normalizedPath.slice(7)
+        : normalizedPath.startsWith('/api/')
+          ? normalizedPath.slice(4)
+          : normalizedPath;
 
   const apiHost = resolveApiHost();
   return `${apiHost}/api/v1${cleanPath}`;
@@ -291,6 +298,54 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   }
 }
 
+/**
+ * Bootstraps the auth store after a Cloudflare Access redirect login.
+ *
+ * The server's GET /api/v1/auth/cf-access-login endpoint mints a Breeze
+ * session and sets the HttpOnly refresh cookie, but there's no JSON body
+ * for the SPA to consume since it's a 302 redirect. This helper completes
+ * the handshake:
+ *
+ *   1. Trade the refresh cookie for a fresh access token (`/auth/refresh`)
+ *   2. Fetch the user record (`/users/me`) with that token
+ *   3. Populate the store via `login(user, tokens)`
+ *
+ * Returns true if the store was populated; false if any step failed (the
+ * caller should fall back to the regular login form).
+ */
+export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
+  const tokens = await requestTokenRefreshShared();
+  if (!tokens?.accessToken) return false;
+
+  let meResponse: Response;
+  try {
+    meResponse = await fetch(buildApiUrl('/users/me'), {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${tokens.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+    });
+  } catch {
+    return false;
+  }
+
+  if (!meResponse.ok) return false;
+
+  const user = (await meResponse.json()) as User | null;
+  if (!user || !user.id) return false;
+
+  useAuthStore.getState().login(user, tokens);
+
+  // Mirror what LoginPage does after a successful password login: pull
+  // /users/me into the store and apply the theme to the DOM. Without
+  // this, dark mode reverts to default and the onboarding tour reads
+  // an empty preferences object on first render.
+  await fetchAndApplyPreferences();
+  return true;
+}
+
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
@@ -320,7 +375,12 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
   }
 
-  headers.set('Content-Type', 'application/json');
+  // Don't force a JSON content-type on FormData uploads — the browser must set
+  // `multipart/form-data` itself so it can append the boundary. Forcing JSON
+  // here strips the boundary and the server can't parse the body (avatar upload).
+  if (!(options.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
   const externalSignal = options.signal;

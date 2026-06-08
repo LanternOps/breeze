@@ -189,6 +189,14 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
 }
 
 /**
+ * Final path segment of routes that open their own withDbAccessContext around
+ * their DB work instead of relying on the request-long wrap in
+ * agentAuthMiddleware. See the #1105 note at the wrap site. Auth still runs in
+ * full for these routes — only the org-context transaction wrap is skipped.
+ */
+const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat']);
+
+/**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
  * Enforces per-agent rate limiting via Redis.
@@ -411,6 +419,19 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     siteId: device.siteId,
     role: match.role,
   });
+
+  // #1105 — high-frequency, high-concurrency routes that self-manage their DB
+  // context to avoid holding ONE transaction across the whole request (which
+  // pins a pooled connection idle-in-transaction across non-DB work and
+  // self-deadlocks the pool under a mass agent reconnect). These routes MUST
+  // open withDbAccessContext themselves around their DB work. Everything else
+  // keeps the convenient request-long wrap below.
+  const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
+  const action = pathSegments[pathSegments.length - 1] ?? '';
+  if (SELF_MANAGED_DB_CONTEXT_ACTIONS.has(action)) {
+    await next();
+    return;
+  }
 
   await withDbAccessContext(
     {

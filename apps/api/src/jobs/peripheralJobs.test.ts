@@ -91,7 +91,7 @@ describe('schedulePeripheralPolicyDistribution', () => {
     const addCall = queueMock.add.mock.calls[0];
     expect(addCall?.[0]).toBe('policy-distribution');
     expect(addCall?.[1]?.changedPolicyIds).toEqual(['pA', 'pB']);
-    expect(addCall?.[2]?.jobId).toBe('policy-distribution:org-2');
+    expect(addCall?.[2]?.jobId).toBe('policy-distribution-org-2');
   });
 
   it('removes stale completed job before creating a new one', async () => {
@@ -117,7 +117,7 @@ describe('schedulePeripheralPolicyDistribution', () => {
     expect(jobId).toBe('job-new');
     const addCall = queueMock.add.mock.calls[0];
     expect(addCall?.[1]?.changedPolicyIds).toEqual(['p-new']);
-    expect(addCall?.[2]?.jobId).toBe('policy-distribution:org-3');
+    expect(addCall?.[2]?.jobId).toBe('policy-distribution-org-3');
   });
 
   it('still creates a new job when stale job removal fails', async () => {

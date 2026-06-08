@@ -135,7 +135,7 @@ describe('patch job executor queueing', () => {
       'execute-patch-job',
       { type: 'execute-patch-job', patchJobId: 'job-2' },
       expect.objectContaining({
-        jobId: 'patch-job:job-2',
+        jobId: 'patch-job-job-2',
         delay: 1234,
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 200 },
@@ -176,7 +176,7 @@ describe('patch job executor queueing', () => {
         orgId: 'org-1',
       },
       {
-        jobId: 'patch-job-device:job-1:device-1',
+        jobId: 'patch-job-device-job-1-device-1',
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 200 },
       },
@@ -185,12 +185,42 @@ describe('patch job executor queueing', () => {
       'check-completion',
       { type: 'check-completion', patchJobId: 'job-1' },
       expect.objectContaining({
-        jobId: 'patch-job-completion:job-1',
+        jobId: 'patch-job-completion-job-1',
         removeOnComplete: { count: 50 },
         removeOnFail: { count: 100 },
       }),
     );
     expect(result).toEqual({ dispatched: 2 });
+  });
+
+  // Regression for "Custom Id cannot contain :" — BullMQ throws when a custom
+  // jobId contains a single ':' (it only allows the legacy 3-part repeatable
+  // form), which silently stopped scheduled patching from being enqueued
+  // (observed daily on EU prod). No enqueued jobId may contain a ':'.
+  it('does not use a colon in any enqueued BullMQ job id', async () => {
+    // Direct enqueue path
+    await enqueuePatchJob('job-2', 1234);
+
+    // Worker fanout path (per-device + completion ids)
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'scheduled',
+        targets: { deviceIds: ['device-1'] },
+      }]) as any);
+    vi.mocked(db.update)
+      .mockImplementationOnce(() => createUpdateChain([{ id: 'job-1' }]) as any);
+
+    createPatchJobWorker();
+    await shared.processorRef({
+      data: { type: 'execute-patch-job', patchJobId: 'job-1' },
+    });
+
+    expect(shared.addMock.mock.calls.length).toBeGreaterThan(0);
+    for (const call of shared.addMock.mock.calls) {
+      expect(String(call[2].jobId)).not.toContain(':');
+    }
   });
 
   it('skips fanout when another worker already claimed the job row', async () => {

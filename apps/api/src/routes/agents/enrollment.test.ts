@@ -28,6 +28,10 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../../services/anomalyMetrics', () => ({
+  recordAgentEnrollment: vi.fn(),
+}));
+
 vi.mock('../../db/schema', () => ({
   enrollmentKeys: {
     id: 'id',
@@ -98,6 +102,7 @@ vi.mock('../../services/tenantStatus', () => ({
 
 import { db } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { enrollmentRoutes } from './enrollment';
@@ -848,6 +853,8 @@ describe('POST /agents/enroll — ENROLLMENT_SECRET_ENFORCEMENT_MODE', () => {
         result: 'denied',
       })
     );
+    // #984: the rejection must be visible to the EnrollmentSpike anomaly metric.
+    expect(recordAgentEnrollment).toHaveBeenCalledWith('error');
   });
 
   it('blocks production enrollment with no secret when mode is explicitly enforce', async () => {

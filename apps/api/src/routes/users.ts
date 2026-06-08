@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
@@ -7,6 +8,15 @@ import { nanoid } from 'nanoid';
 import { db } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
+import {
+  MAX_AVATAR_SIZE_BYTES,
+  deleteAvatar,
+  readAvatarBuffer,
+  sniffImageMime,
+  statAvatar,
+  weakEtagFor,
+  writeAvatar,
+} from '../services/avatarStorage';
 import {
   clearPermissionCache,
   getUserPermissions,
@@ -435,18 +445,15 @@ userRoutes.get('/me', async (c) => {
   });
 });
 
-// Update current user's profile
+// Update current user's profile.
+// NOTE: `avatarUrl` is intentionally NOT part of this schema. Avatars are
+// managed exclusively through POST/DELETE /users/me/avatar (file upload). The
+// strict() refinement causes any client still sending avatarUrl to get a 400,
+// which is what we want — silent drop would mask client bugs.
 const updateMeSchema = z
   .object({
     name: z.string().min(1).max(255).optional(),
     email: z.string().email().max(255).optional(),
-    avatarUrl: z
-      .string()
-      .url()
-      .max(2048)
-      .refine((u) => /^https?:/i.test(u), { message: 'avatarUrl must be an http(s) URL' })
-      .nullable()
-      .optional(),
     preferences: z
       .union([
         z.record(z.string().max(64), z.unknown()),
@@ -475,7 +482,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  const updates: { name?: string; email?: string; avatarUrl?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
+  const updates: { name?: string; email?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
     updatedAt: new Date()
   };
 
@@ -488,10 +495,6 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
 
   if (body.name) {
     updates.name = body.name.slice(0, 255);
-  }
-
-  if (body.avatarUrl !== undefined && body.avatarUrl !== null) {
-    updates.avatarUrl = body.avatarUrl;
   }
 
   if (body.preferences !== undefined) {
@@ -647,6 +650,221 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   }
 
   return c.json(updated);
+});
+
+// --- Avatars ---
+//
+// POST /users/me/avatar     multipart upload of png/jpeg/webp, 5 MB max
+// GET  /users/:id/avatar    stream the bytes (auth required)
+// DELETE /users/me/avatar   unlink + clear users.avatar_url
+//
+// Storage: filesystem, /data/avatars/<userId>.<ext> on the api_data volume.
+// Magic-byte verification is required because we don't trust the
+// browser-supplied Content-Type. Filenames are derived from the auth'd user
+// id, so path traversal is impossible.
+
+const ALLOWED_AVATAR_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+userRoutes.post(
+  '/me/avatar',
+  bodyLimit({
+    maxSize: MAX_AVATAR_SIZE_BYTES + 64 * 1024, // small slack for multipart overhead
+    onError: (c) => c.json({ error: 'Avatar file too large (max 5 MB)' }, 413),
+  }),
+  async (c) => {
+    const auth = c.get('auth');
+    const userId = auth.user.id;
+
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.parseBody({ all: true });
+    } catch {
+      return c.json({ error: 'Invalid multipart body' }, 400);
+    }
+
+    const file = body.file;
+    if (!(file instanceof File)) {
+      return c.json({ error: 'file field is required' }, 400);
+    }
+
+    if (file.size === 0) {
+      return c.json({ error: 'file is empty' }, 400);
+    }
+
+    if (file.size > MAX_AVATAR_SIZE_BYTES) {
+      return c.json({ error: 'Avatar file too large (max 5 MB)' }, 413);
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    const sniffedMime = sniffImageMime(buffer);
+    if (!sniffedMime) {
+      return c.json(
+        { error: 'Unsupported image format. Allowed: PNG, JPEG, WebP.' },
+        415
+      );
+    }
+
+    // Defense in depth: if a Content-Type was supplied, it must agree with the
+    // sniffed mime. (Clients are allowed to omit it.)
+    const claimedMime = (file.type || '').toLowerCase();
+    if (claimedMime && claimedMime !== sniffedMime && ALLOWED_AVATAR_MIMES.has(claimedMime)) {
+      return c.json(
+        { error: 'Content-Type does not match file contents' },
+        400
+      );
+    }
+
+    let written;
+    try {
+      written = await writeAvatar(userId, sniffedMime, buffer);
+    } catch (err) {
+      console.error('[users/avatar] failed to write avatar:', err);
+      return c.json({ error: 'Failed to store avatar' }, 500);
+    }
+
+    const avatarUrl = `/api/v1/users/${userId}/avatar`;
+    const [updated] = await db
+      .update(users)
+      .set({ avatarUrl, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning({
+        id: users.id,
+        avatarUrl: users.avatarUrl,
+        updatedAt: users.updatedAt,
+      });
+
+    if (!updated) {
+      return c.json({ error: 'Failed to update profile' }, 500);
+    }
+
+    createAuditLogAsync({
+      orgId: auth.orgId || undefined,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.avatar.upload',
+      resourceType: 'user',
+      resourceId: userId,
+      resourceName: auth.user.name,
+      details: {
+        mime: sniffedMime,
+        size: written.size,
+        ext: written.ext,
+      },
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'success'
+    });
+
+    return c.json({
+      avatarUrl: updated.avatarUrl,
+      size: written.size,
+      mime: sniffedMime,
+      updatedAt: updated.updatedAt
+    });
+  }
+);
+
+userRoutes.delete('/me/avatar', async (c) => {
+  const auth = c.get('auth');
+  const userId = auth.user.id;
+
+  deleteAvatar(userId);
+
+  const [updated] = await db
+    .update(users)
+    .set({ avatarUrl: null, updatedAt: new Date() })
+    .where(eq(users.id, userId))
+    .returning({
+      id: users.id,
+      avatarUrl: users.avatarUrl,
+    });
+
+  if (!updated) {
+    return c.json({ error: 'Failed to clear avatar' }, 500);
+  }
+
+  createAuditLogAsync({
+    orgId: auth.orgId || undefined,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'user.avatar.delete',
+    resourceType: 'user',
+    resourceId: userId,
+    resourceName: auth.user.name,
+    details: {},
+    ipAddress: getTrustedClientIpOrUndefined(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
+
+  return c.json({ avatarUrl: null });
+});
+
+// Serve a user's avatar. Authorization mirrors GET /:id: a caller may always
+// read their OWN avatar (the top bar shows it without USERS_READ), but reading
+// another user's avatar requires that user to be resolvable within the caller's
+// tenant scope. Without this, any authenticated user could fetch any other
+// user's avatar across partners/orgs — the `*` partner-scope middleware only
+// gates full-org partner reads, not per-id reads (Todd's #1059 review).
+userRoutes.get('/:id/avatar', async (c) => {
+  const auth = c.get('auth');
+  const userId = c.req.param('id')!;
+
+  // Basic shape check — userId comes from the URL and is fed straight to the
+  // filesystem (after concatenation with the extension). The filesystem layer
+  // joins it via path.join, so traversal isn't possible, but rejecting obviously
+  // bogus values up-front avoids confusing errors and keeps the on-disk listing
+  // tidy.
+  if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
+    return c.json({ error: 'Invalid user id' }, 400);
+  }
+
+  // Cross-tenant guard. Own avatar is always allowed; any other id must resolve
+  // within the caller's tenant scope (same resolution path as GET /:id). The
+  // failure returns the same 404 as a missing avatar so the route never reveals
+  // which user ids exist in other tenants.
+  if (userId !== auth.user.id) {
+    const record = await getScopedUser(userId, getScopeContext(auth));
+    if (!record) {
+      return c.json({ error: 'No avatar' }, 404);
+    }
+  }
+
+  const stat = statAvatar(userId);
+  if (!stat) {
+    return c.json({ error: 'No avatar' }, 404);
+  }
+
+  const etag = weakEtagFor(stat.size, stat.mtimeMs);
+  const ifNoneMatch = c.req.header('if-none-match');
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'private, max-age=300');
+    return c.body(null, 304);
+  }
+
+  // Read the whole file (avatars are capped at MAX_AVATAR_SIZE_BYTES) before
+  // sending any headers, so an I/O error is a clean 500 rather than a 200 with
+  // a truncated body under a full Content-Length (Todd's #1059 review).
+  const opened = readAvatarBuffer(userId);
+  if (!opened) {
+    // statAvatar passed just above, so a null here is a real read failure (or a
+    // delete race), not a "no avatar" — surface it as a 500 rather than a 404.
+    return c.json({ error: 'Failed to read avatar' }, 500);
+  }
+
+  // Copy into a plain Uint8Array — Node's Buffer generic isn't accepted as a
+  // BodyInit by the DOM lib types; the copy is bounded by the 5 MB cap.
+  return new Response(new Uint8Array(opened.buffer), {
+    status: 200,
+    headers: {
+      'Content-Type': opened.mime,
+      'Content-Length': String(opened.size),
+      'Cache-Control': 'private, max-age=300',
+      ETag: etag,
+    },
+  });
 });
 
 userRoutes.get(

@@ -105,7 +105,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `HELPER_BINARY_DIR` | `/data/binaries/helper` | | Local directory containing helper binaries |
 | `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
 | `BINARY_VERSION` | — | | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
-| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | — | Yes (prod) | Comma-separated base64 SPKI of the Ed25519 keys that sign release manifests. The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
+| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
 
 See [Binary Distribution](/deploy/binaries/) for details on local vs GitHub mode and S3 offloading.
 
@@ -230,6 +230,15 @@ Two rate-limit tiers protect the API. The generic per-user limit covers logged-i
 <Aside>
   mTLS is fully optional. When these variables are unset, Breeze operates normally without mutual TLS.
 </Aside>
+
+## Cloudflare Access JWT trust
+
+| Variable | Default | Description |
+|---|---|---|
+| `CF_ACCESS_TRUST_ENABLED` | `false` | Set `true` to short-circuit `POST /auth/login` when a valid `Cf-Access-Jwt-Assertion` header is present. Off by default. See [Cloudflare Access trust](/deploy/cloudflare-access-trust/). |
+| `CF_ACCESS_TEAM_DOMAIN` | — | Required when trust is enabled. Bare hostname of your Cloudflare team domain, e.g. `example.cloudflareaccess.com`. No scheme. |
+| `CF_ACCESS_AUD` | — | Required when trust is enabled. AUD tag for the Cloudflare Access application protecting Breeze. |
+| `CF_ACCESS_TRUSTS_MFA` | `false` | Treat a valid CF Access JWT as MFA-satisfied for the minted Breeze session. Only enable if your CF Access policy actually requires step-up MFA. |
 
 ## Cloud-to-Cloud Backup (M365)
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, ilike, inArray, not, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { auditLogs as auditLogsTable, users, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
@@ -41,7 +41,10 @@ const listLogsSchema = z.object({
   // auto-injects ?orgId=<current-org>; whitelist it here so zValidator keeps
   // it — otherwise it is stripped and every page spans the caller's full
   // accessible-org set, ignoring the dropdown selection.
-  orgId: z.string().uuid().optional()
+  orgId: z.string().uuid().optional(),
+  // CSV of action codes to exclude (e.g. routine agent telemetry). Applied to
+  // both the LATERAL fast-path (RecentActivity) and the standard query path.
+  excludeActions: z.string().optional()
 });
 
 const searchSchema = listLogsSchema.extend({
@@ -256,9 +259,17 @@ function toFullEntry(row: DbRow, includeDetails = true) {
   return entry;
 }
 
+function parseExcludeActions(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 function buildFilterConditions(
   orgCond: SQL | undefined,
-  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string }
+  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string; excludeActions?: string }
 ): SQL | undefined {
   const conditions: SQL[] = [];
 
@@ -294,6 +305,11 @@ function buildFilterConditions(
 
   if (filters.to) {
     conditions.push(lte(auditLogsTable.timestamp, new Date(filters.to)));
+  }
+
+  const excludeList = parseExcludeActions(filters.excludeActions);
+  if (excludeList.length > 0) {
+    conditions.push(not(inArray(auditLogsTable.action, excludeList)));
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -358,8 +374,18 @@ interface LateralAuditRow extends Record<string, unknown> {
   device_display_name: string | null;
 }
 
-async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow[]> {
+async function queryLatestPerOrg(
+  orgIds: string[],
+  limit: number,
+  excludeActions: string[] = []
+): Promise<DbRow[]> {
   const orgIdsSql = sql.join(orgIds.map((id) => sql`${id}::uuid`), sql`, `);
+  // Apply the exclude filter INSIDE the LATERAL subquery so the per-org
+  // LIMIT N kicks in after filtering noise — otherwise we fetch N noisy rows
+  // per org and drop them all.
+  const excludeFilter = excludeActions.length > 0
+    ? sql` AND audit_logs.action <> ALL(ARRAY[${sql.join(excludeActions.map((a) => sql`${a}`), sql`, `)}]::text[])`
+    : sql``;
   const rows = await db.execute<LateralAuditRow>(sql`
     SELECT
       al.id, al.org_id, al.timestamp, al.actor_type, al.actor_id,
@@ -372,7 +398,7 @@ async function queryLatestPerOrg(orgIds: string[], limit: number): Promise<DbRow
     FROM unnest(ARRAY[${orgIdsSql}]::uuid[]) AS o(org_id)
     CROSS JOIN LATERAL (
       SELECT * FROM audit_logs
-      WHERE audit_logs.org_id = o.org_id
+      WHERE audit_logs.org_id = o.org_id${excludeFilter}
       ORDER BY timestamp DESC
       LIMIT ${limit}
     ) al
@@ -554,6 +580,10 @@ function paginatedListHandler(
     // count — it never displays "X of Y total". Pass skipCount=true there.
     const skipCount = query.skipCount === 'true';
     const hasFilters = !!(query.user || query.action || query.resource || query.from || query.to);
+    // excludeActions is compatible with the fast path — it's applied inside the
+    // LATERAL subquery before the per-org LIMIT. The standard path picks it up
+    // via buildFilterConditions(orgCond, query) above.
+    const excludeActions = parseExcludeActions(query.excludeActions);
     // Fast-path org list: a pinned ?orgId= scopes the LATERAL per-org scan to
     // that single org; otherwise it spans every accessible org.
     const fastPathOrgIds: string[] | null = query.orgId
@@ -568,7 +598,7 @@ function paginatedListHandler(
     const [total, rows] = await Promise.all([
       skipCount ? Promise.resolve(-1) : countRows(where),
       canUseFastPath
-        ? queryLatestPerOrg(fastPathOrgIds as string[], limit)
+        ? queryLatestPerOrg(fastPathOrgIds as string[], limit, excludeActions)
         : queryRows(where, limit, offset)
     ]);
 

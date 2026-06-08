@@ -697,6 +697,11 @@ func retryTCCGrant() {
 		log.Debug("retrying TCC permission auto-grant")
 		if attemptTCCGrant() {
 			log.Info("TCC permissions all granted, stopping retries")
+			// The user just granted Full Disk Access, letting us write the
+			// Screen Recording + Accessibility grants. Already-running desktop
+			// helpers cached the old (denied) state — kickstart them so the new
+			// permissions take effect without the user manually restarting.
+			heartbeat.KickstartDesktopHelpers()
 			return
 		}
 	}
