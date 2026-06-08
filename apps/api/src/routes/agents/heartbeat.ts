@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import {
   devices,
   deviceMetrics,
@@ -40,6 +40,24 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (!agent?.deviceId) {
     return c.json({ error: 'Agent context not found' }, 401);
   }
+
+  // #1105 — run the RLS-scoped DB work in a SHORT-LIVED context that is
+  // released before the manifest-trust-keyset fetch at the end. The heartbeat
+  // opts out of agentAuthMiddleware's request-long withDbAccessContext wrap
+  // (see agentAuth.ts) and self-manages here, so the org transaction is held
+  // only across this block — not across getActiveTrustKeyset(), which acquires
+  // its OWN (second) pooled connection. Holding both at once self-deadlocks the
+  // pool under a mass agent reconnect (idle-in-transaction → killed → outage).
+  const dbContext = {
+    scope: 'organization' as const,
+    orgId: agent.orgId,
+    accessibleOrgIds: [agent.orgId],
+    accessiblePartnerIds: [],
+  };
+
+  const scoped = await withDbAccessContext(
+    dbContext,
+    async (): Promise<Response | { mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -547,40 +565,48 @@ if (latestHelper) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
   }
 
-  // Returns the active signing keyset from manifest_signing_keys. On hosted
-  // SaaS the table is empty because nothing in the GitHub-source path calls
-  // ensureActiveSigningKey(); on self-host (BINARY_SOURCE=local) syncBinaries
-  // populates it. See docs/deploy/agent-update-trust-bootstrap.md (#625).
-  // runOutsideDbContext is required because this handler runs inside an
-  // agentAuthMiddleware withDbAccessContext(organization) scope, which would
-  // suppress the inner withSystemDbAccessContext inside getActiveTrustKeyset
-  // (short-circuit at db/index.ts:103-105), causing the RLS policy
-  // manifest_signing_keys_system_only to return zero rows.
+  // Main-branch response payload — built inside the org context, but the
+  // manifest-trust-keyset is fetched AFTER this context closes (see below).
+  return {
+    mainResponse: {
+      commands: commands.map(cmd => ({
+        id: cmd.id,
+        type: cmd.type,
+        payload: cmd.payload
+      })),
+      configUpdate: mergedConfigUpdate,
+      upgradeTo,
+      helperUpgradeTo: helperUpgradeTo ?? undefined,
+      watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
+      renewCert: renewCert || undefined,
+      rotateToken: rotateToken || undefined,
+      helperEnabled: helperSettings?.enabled ?? false,
+      helperSettings: helperSettings ?? undefined,
+      manageRemoteManagement: manageRemoteManagement || undefined,
+    },
+  };
+    },
+  );
+
+  // 404 / 401 / watchdog branches returned a Response directly from the scoped
+  // block — pass it through.
+  if (scoped instanceof Response) return scoped;
+
+  // #1105 — the org transaction is now released. Fetch the manifest trust
+  // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped
+  // context/connection, so no withDbAccessContext(org) is held while it
+  // acquires a second connection. (Returns the active signing keyset from
+  // manifest_signing_keys; empty on hosted SaaS — see
+  // docs/deploy/agent-update-trust-bootstrap.md, #625.)
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
-    manifestTrustKeys = await runOutsideDbContext(() => getActiveTrustKeyset());
+    manifestTrustKeys = await getActiveTrustKeyset();
   } catch (err) {
     console.error(`[heartbeat] Failed to load manifest trust keyset for agentId=${agentId}:`, err);
     captureException(err);
   }
 
-  return c.json({
-    commands: commands.map(cmd => ({
-      id: cmd.id,
-      type: cmd.type,
-      payload: cmd.payload
-    })),
-    configUpdate: mergedConfigUpdate,
-    upgradeTo,
-    helperUpgradeTo: helperUpgradeTo ?? undefined,
-    watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
-    renewCert: renewCert || undefined,
-    rotateToken: rotateToken || undefined,
-    helperEnabled: helperSettings?.enabled ?? false,
-    helperSettings: helperSettings ?? undefined,
-    manageRemoteManagement: manageRemoteManagement || undefined,
-    manifestTrustKeys,
-  });
+  return c.json({ ...scoped.mainResponse, manifestTrustKeys });
 });
 
 // Receive service/process monitoring check results from agent

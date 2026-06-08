@@ -8,6 +8,11 @@ const updateMock = vi.fn();
 const insertMock = vi.fn();
 const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
 
+// Records the order of key lifecycle events so a test can assert the
+// manifest-trust-keyset fetch happens AFTER the org DB context closes
+// (the #1105 pool-poison fix). Reset per test.
+const callOrder: string[] = [];
+
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
@@ -16,6 +21,13 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: (...args: unknown[]) =>
     runOutsideDbContextMock(...(args as [any])),
+  // Pass-through that records when the scoped callback resolves — in
+  // production the org transaction is released at this point.
+  withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => {
+    const result = await fn();
+    callOrder.push('dbContext:released');
+    return result;
+  },
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -119,8 +131,10 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
 const getActiveTrustKeysetMock = vi.fn();
 
 vi.mock('../../services/manifestSigning', () => ({
-  getActiveTrustKeyset: (...args: unknown[]) =>
-    getActiveTrustKeysetMock(...(args as [])),
+  getActiveTrustKeyset: (...args: unknown[]) => {
+    callOrder.push('trustKeyset:fetched');
+    return getActiveTrustKeysetMock(...(args as []));
+  },
 }));
 
 import { heartbeatRoutes } from './heartbeat';
@@ -259,8 +273,9 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(body.manifestTrustKeys).toEqual([]);
   });
 
-  it('invokes runOutsideDbContext so the system-scoped read isn\'t suppressed by tenant RLS', async () => {
+  it('#1105: fetches the trust keyset AFTER the org DB context is released (not while holding the tx)', async () => {
     getActiveTrustKeysetMock.mockResolvedValue([]);
+    callOrder.length = 0;
 
     await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
@@ -268,10 +283,15 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
       body: JSON.stringify(minimalHeartbeatBody),
     });
 
-    // Confirm runOutsideDbContext was used — without it, the inner
-    // withSystemDbAccessContext inside getActiveTrustKeyset short-circuits
-    // and the manifest_signing_keys read returns zero rows.
-    expect(runOutsideDbContextMock).toHaveBeenCalled();
+    // The whole-request transaction must close before getActiveTrustKeyset
+    // runs — otherwise the heartbeat holds its org connection while the trust
+    // keyset acquires a SECOND pooled connection, which self-deadlocks the
+    // pool under a mass agent reconnect (#1105).
+    const released = callOrder.indexOf('dbContext:released');
+    const fetched = callOrder.indexOf('trustKeyset:fetched');
+    expect(released).toBeGreaterThanOrEqual(0);
+    expect(fetched).toBeGreaterThanOrEqual(0);
+    expect(released).toBeLessThan(fetched);
   });
 
   it('omits manifestTrustKeys (still 200) when getActiveTrustKeyset throws', async () => {
