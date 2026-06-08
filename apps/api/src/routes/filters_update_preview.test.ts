@@ -303,6 +303,64 @@ describe('filter routes', () => {
       expect(body.data.evaluatedAt).toBeDefined();
     });
 
+    it('scopes the count to a pinned ?orgId= instead of spanning all accessible orgs', async () => {
+      // Partner user who can see two orgs. Without a pinned orgId the preview
+      // sums both (2 + 2 = 4); with ?orgId= it must evaluate only that org.
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request(`/filters/preview?orgId=${ORG_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'offline' }] }
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.totalCount).toBe(2); // one org, not both
+      expect(evaluateFilterWithPreview).toHaveBeenCalledTimes(1);
+      expect(evaluateFilterWithPreview).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID })
+      );
+    });
+
+    it('rejects a pinned ?orgId= the caller cannot access with 403', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        return next();
+      });
+
+      const res = await app.request(`/filters/preview?orgId=${ORG_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'offline' }] }
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(evaluateFilterWithPreview).not.toHaveBeenCalled();
+    });
+
     it('should return empty when user has no org access', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
