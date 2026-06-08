@@ -1,5 +1,29 @@
-import { describe, expect, it } from 'vitest';
-import { readEarliestUnauthorizedDetection, shouldQueueAutoRemediation } from './softwareComplianceWorker';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { addMock } = vi.hoisted(() => ({
+  addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
+}));
+
+vi.mock('bullmq', () => ({
+  Queue: class {
+    add = addMock;
+  },
+  Worker: class {
+    on = vi.fn();
+    close = vi.fn();
+  },
+  Job: class {},
+}));
+
+vi.mock('../services/redis', () => ({
+  getBullMQConnection: vi.fn(() => ({})),
+}));
+
+import {
+  readEarliestUnauthorizedDetection,
+  scheduleSoftwareComplianceCheck,
+  shouldQueueAutoRemediation,
+} from './softwareComplianceWorker';
 
 const NOW = new Date('2025-01-15T12:00:00Z');
 const PAST_VIOLATION = [{ type: 'unauthorized', detectedAt: '2025-01-01T00:00:00Z' }];
@@ -138,5 +162,25 @@ describe('readEarliestUnauthorizedDetection', () => {
     ];
     const result = readEarliestUnauthorizedDetection(violations);
     expect(result?.toISOString()).toBe('2025-01-05T00:00:00.000Z');
+  });
+});
+
+describe('scheduleSoftwareComplianceCheck jobId', () => {
+  beforeEach(() => {
+    addMock.mockClear();
+    addMock.mockResolvedValue({ id: 'queued-job-1' });
+  });
+
+  // Regression for "Custom Id cannot contain :" — BullMQ rejects a custom
+  // jobId whose colon-split length !== 3. The per-policy id is 4 parts and
+  // would throw, silently dropping the compliance-check enqueue.
+  it('does not use a colon in the per-policy BullMQ job id', async () => {
+    await scheduleSoftwareComplianceCheck('policy-1', ['device-1']);
+
+    expect(addMock).toHaveBeenCalled();
+    const [, , opts] = addMock.mock.calls[0] as unknown as [string, unknown, { jobId?: string }];
+    expect(opts.jobId).toBeDefined();
+    expect(String(opts.jobId)).not.toContain(':');
+    expect(String(opts.jobId)).toMatch(/^software-compliance-policy-1-[a-z0-9]+-[a-z0-9]+$/);
   });
 });

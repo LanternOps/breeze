@@ -51,19 +51,23 @@ const PATCH_JOB_COMPLETION_RETENTION = {
 let patchJobQueue: Queue | null = null;
 let patchJobDeviceQueue: Queue | null = null;
 
+// NOTE: BullMQ rejects a custom jobId containing ':' (it reserves that for the
+// legacy 3-part repeatable-job form), so these ids use '-' as the separator.
+// A ':' here silently breaks queue.add() — see #1101 (SNMP) for the same bug.
+// patchJobId/deviceId are UUID-shaped (no ':'), so ids stay stable and unique.
 function getPatchJobExecutionId(patchJobId: string): string {
-  return `patch-job:${patchJobId}`;
+  return `patch-job-${patchJobId}`;
 }
 
 function getPatchJobDeviceExecutionId(
   patchJobId: string,
   deviceId: string
 ): string {
-  return `patch-job-device:${patchJobId}:${deviceId}`;
+  return `patch-job-device-${patchJobId}-${deviceId}`;
 }
 
 function getPatchJobCompletionId(patchJobId: string): string {
-  return `patch-job-completion:${patchJobId}`;
+  return `patch-job-completion-${patchJobId}`;
 }
 
 async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {

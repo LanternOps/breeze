@@ -172,7 +172,7 @@ describe('deployment worker queueing', () => {
     expect(shared.addMock).toHaveBeenCalledWith(
       'process-deployment',
       { deploymentId: 'deployment-2' },
-      { jobId: 'deployment-process:deployment-2' },
+      { jobId: 'deployment-process-deployment-2' },
     );
   });
 

@@ -172,12 +172,14 @@ export async function enqueueLogCorrelationDetection(options?: {
     ? Array.from(new Set(options.ruleIds.filter((ruleId) => typeof ruleId === 'string' && ruleId.length > 0))).sort()
     : undefined;
   const slot = Math.floor(Date.now() / ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
+  // '-' separator (not ':') — BullMQ rejects custom jobIds whose colon-split
+  // length !== 3, and this 4-part id would throw. See #1101.
   const jobId = [
     'log-correlation-rules',
     options?.orgId ?? 'all',
     stableShortHash(JSON.stringify(normalizedRuleIds ?? [])),
     slot,
-  ].join(':');
+  ].join('-');
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
