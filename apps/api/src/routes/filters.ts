@@ -5,7 +5,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { savedFilters } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilterWithPreview, FilterConditionGroup } from '../services/filterEngine';
+import { evaluateFilterWithPreview, validateFilter, FilterConditionGroup } from '../services/filterEngine';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -121,6 +121,14 @@ filterRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { conditions, limit } = c.req.valid('json');
+
+    // Validate field/operator names (and regex length) up front so an unknown
+    // field or over-long `matches` pattern returns a clean 400 instead of a 500
+    // from the engine's getColumnForField throw (issue #1044, item 3).
+    const validation = validateFilter(conditions as unknown as FilterConditionGroup);
+    if (!validation.valid) {
+      return c.json({ error: 'Invalid filter', details: validation.errors }, 400);
+    }
 
     // Honor a pinned ?orgId= (the web client injects the current org-scope
     // selection via fetchWithAuth). Without it the preview spans every

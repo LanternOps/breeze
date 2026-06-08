@@ -4,7 +4,10 @@
 // a future enhancement may lift it to users.settings.devicesPageSize so
 // the preference follows the user across browsers (see Discussion #684).
 
-export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200] as const;
+// This is a client-side table page size: the Devices list fetches the full
+// accessible fleet up front via the /devices cursor walk (devicesFetch.ts) and
+// paginates in memory, so 500 just lets a 200+-endpoint fleet show on one page.
+export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200, 500] as const;
 export type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 
 export const DEFAULT_PAGE_SIZE: PageSize = 10;

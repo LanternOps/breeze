@@ -51,7 +51,7 @@ describe('dr execution queueing', () => {
         meta: expect.objectContaining({ actorType: 'system' }),
       }),
       expect.objectContaining({
-        jobId: 'dr-execution:exec-1',
+        jobId: 'dr-execution-exec-1',
         delay: 1234,
         attempts: 3,
       }),

@@ -386,7 +386,7 @@ export async function triggerDeviceEvaluation(deviceId: string, orgId: string): 
 export async function triggerFullEvaluation(): Promise<string> {
   const queue = getAlertQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_ALERT_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `alert-evaluate-all:${slot}`;
+  const jobId = `alert-evaluate-all-${slot}`;
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

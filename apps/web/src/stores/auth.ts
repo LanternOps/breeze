@@ -195,13 +195,20 @@ function buildApiUrl(path: string): string {
   // Ensure path starts with /
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
 
-  // Remove only the exact "/api" prefix boundary to avoid "/api/v1/api/..."
-  // while preserving legitimate paths like "/api-keys".
+  // Remove only the exact "/api" or "/api/v1" prefix boundary to avoid
+  // both "/api/v1/api/..." and "/api/v1/v1/..." while preserving legitimate
+  // paths like "/api-keys". The "/api/v1/" case matters for server-stored
+  // URLs (e.g. users.avatar_url = "/api/v1/users/:id/avatar") that the SPA
+  // round-trips through buildApiUrl.
   const cleanPath = normalizedPath === '/api'
     ? ''
-    : normalizedPath.startsWith('/api/')
-      ? normalizedPath.slice(4)
-      : normalizedPath;
+    : normalizedPath === '/api/v1'
+      ? ''
+      : normalizedPath.startsWith('/api/v1/')
+        ? normalizedPath.slice(7)
+        : normalizedPath.startsWith('/api/')
+          ? normalizedPath.slice(4)
+          : normalizedPath;
 
   const apiHost = resolveApiHost();
   return `${apiHost}/api/v1${cleanPath}`;
@@ -320,7 +327,12 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
   }
 
-  headers.set('Content-Type', 'application/json');
+  // Don't force a JSON content-type on FormData uploads — the browser must set
+  // `multipart/form-data` itself so it can append the boundary. Forcing JSON
+  // here strips the boundary and the server can't parse the body (avatar upload).
+  if (!(options.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
   const externalSignal = options.signal;

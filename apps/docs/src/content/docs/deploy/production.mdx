@@ -73,10 +73,10 @@ An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail,
    # Self-hosted by default. Set to "true" only if you're running the hosted SaaS edition.
    IS_HOSTED=false
 
-   # Base64 SPKI of the Ed25519 key used to sign release manifests. The hosted releases
-   # we publish on GitHub are anchored to this key — leave the published default unless
-   # you build and sign your own binaries.
-   RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=<base64-spki>
+   # Trust anchor (raw base64 Ed25519 public key) for the official Breeze GitHub
+   # releases. This is a public key — also embedded in the agent and CI — so it is
+   # safe to commit. Leave the default below unless you build and sign your own binaries.
+   RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=
    ```
 
    If Breeze is behind a reverse proxy, also set `TRUST_PROXY_HEADERS=true` and list the proxy's CIDRs in `TRUSTED_PROXY_CIDRS`. See [Environment Variables](/deploy/environment/) for details.

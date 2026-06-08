@@ -1,3 +1,23 @@
+// Routine agent telemetry + MCP plumbing actions that saturate the
+// dashboard Recent Activity widget. Passed as a CSV `excludeActions=` query
+// param to GET /audit-logs/logs so the API filters them server-side. The
+// full Audit Log viewer does NOT use this list — it shows everything.
+export const DEFAULT_DASHBOARD_EXCLUDE_ACTIONS: readonly string[] = [
+  'agent.sessions.submit',
+  'agent.security_status.submit',
+  'agent.management_posture.submit',
+  'agent.patches.submit',
+  'agent.eventlogs.submit',
+  'agent.reliability.submit',
+  'agent.filesystem.threshold_scan.queued',
+  'mcp.tools.list',
+  'mcp.resources.list',
+  'mcp.notifications.initialized',
+  'mcp.initialize',
+  'api.post.events.ws-ticket',
+  'api.get.events.ws-ticket',
+];
+
 // Map raw audit action codes (dotted, machine-shaped) to human-readable
 // phrases. Falls back to a generic prettifier for unknown codes.
 

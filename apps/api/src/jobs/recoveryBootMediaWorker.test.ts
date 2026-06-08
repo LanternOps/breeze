@@ -46,7 +46,7 @@ describe('recovery boot media queueing', () => {
     expect(shared.addMock).toHaveBeenCalledWith(
       'build-boot-media',
       expect.objectContaining({ artifactId: 'artifact-1' }),
-      expect.objectContaining({ jobId: 'recovery-boot-media:artifact-1' }),
+      expect.objectContaining({ jobId: 'recovery-boot-media-artifact-1' }),
     );
   });
 

@@ -42,6 +42,18 @@ const OPERATORS_BY_TYPE: Record<FilterFieldType, FilterOperator[]> = {
 
 const CUSTOM_FIELD_KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
 
+// Upper bound on a user-supplied `matches` (regex) pattern. Postgres regex is
+// susceptible to catastrophic backtracking; capping the pattern length is a
+// cheap guard against query-time DoS (issue #1044, item 2).
+const MAX_REGEX_PATTERN_LENGTH = 250;
+
+// Escape LIKE/ILIKE wildcards in a user value so `%` and `_` match literally
+// (default ESCAPE is backslash). Without this a value of `%` matches every row
+// — a matching-semantics surprise, not injection (issue #1044, item 1).
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 function getCustomFieldKey(field: string): string | null {
   if (!field.startsWith('custom.')) {
     return null;
@@ -228,7 +240,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     switch (operator) {
       case 'contains':
       case 'notContains':
-        match = sql`${softwareInventory.name} ILIKE ${'%' + String(value) + '%'}`;
+        match = sql`${softwareInventory.name} ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
         break;
       case 'equals':
         match = sql`${softwareInventory.name} = ${String(value)}`;
@@ -331,13 +343,13 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
     case 'lessThanOrEquals':
       return sql`${columnRef} <= ${value}`;
     case 'contains':
-      return sql`${columnRef} ILIKE ${'%' + value + '%'}`;
+      return sql`${columnRef} ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
     case 'notContains':
-      return sql`${columnRef} NOT ILIKE ${'%' + value + '%'}`;
+      return sql`${columnRef} NOT ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
     case 'startsWith':
-      return sql`${columnRef} ILIKE ${value + '%'}`;
+      return sql`${columnRef} ILIKE ${escapeLikePattern(String(value)) + '%'}`;
     case 'endsWith':
-      return sql`${columnRef} ILIKE ${'%' + value}`;
+      return sql`${columnRef} ILIKE ${'%' + escapeLikePattern(String(value))}`;
     case 'matches':
       return sql`${columnRef} ~ ${value}`;
     case 'in':
@@ -448,6 +460,35 @@ export interface EvaluateFilterOptions {
   offset?: number;
 }
 
+// The `matches` operator emits a Postgres regex (`~`). `MAX_REGEX_PATTERN_LENGTH`
+// bounds the pattern's *size*, but not catastrophic backtracking — `(a+)+$` is six
+// characters and still pathological — so a crafted short pattern could otherwise
+// pin a worker (ReDoS). This caps the *execution time* of any filter query with a
+// transaction-local statement_timeout, which the length cap cannot do on its own.
+const FILTER_QUERY_TIMEOUT_MS = 500;
+
+type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Run a filter query under a bounded statement_timeout. Uses `db.transaction` so
+ * the timeout applies whether the caller is inside the request's RLS transaction
+ * (a SAVEPOINT that inherits the tenant GUCs) or on the bare connection pool (the
+ * AI-fleet tool path runs outside the request db context). The DB role and RLS
+ * posture are identical to running the query directly — this only adds the bound.
+ * Queries MUST run on the passed `tx` (not the `db` proxy) so they execute inside
+ * the transaction where the timeout is set.
+ */
+async function withFilterStatementTimeout<T>(
+  run: (tx: FilterQueryTx) => Promise<T>
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select set_config('statement_timeout', ${`${FILTER_QUERY_TIMEOUT_MS}ms`}, true)`
+    );
+    return run(tx);
+  });
+}
+
 /**
  * Evaluate a filter and return matching device IDs
  */
@@ -468,16 +509,14 @@ export async function evaluateFilter(
   // Build the WHERE clause
   const filterSQL = buildGroupSQL(filter);
 
-  // Build the query with required joins
-  let query = db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(eq(devices.orgId, orgId), filterSQL));
-
   // Note: In a real implementation, we'd add the joins here
   // For now, we'll handle simple device-table-only queries
-
-  const results = await query;
+  const results = await withFilterStatementTimeout(async (tx) =>
+    tx
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), filterSQL))
+  );
 
   return {
     deviceIds: results.map(r => r.id),
@@ -497,25 +536,29 @@ export async function evaluateFilterWithPreview(
 
   const filterSQL = buildGroupSQL(filter);
 
-  // Get count first
-  const [countResult] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(devices)
-    .where(and(eq(devices.orgId, orgId), filterSQL));
+  const { countResult, previewDevices } = await withFilterStatementTimeout(async (tx) => {
+    // Get count first
+    const [countResult] = await tx
+      .select({ count: sql<number>`count(*)` })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), filterSQL));
 
-  // Get preview devices
-  const previewDevices = await db
-    .select({
-      id: devices.id,
-      hostname: devices.hostname,
-      displayName: devices.displayName,
-      osType: devices.osType,
-      status: devices.status,
-      lastSeenAt: devices.lastSeenAt
-    })
-    .from(devices)
-    .where(and(eq(devices.orgId, orgId), filterSQL))
-    .limit(previewLimit);
+    // Get preview devices
+    const previewDevices = await tx
+      .select({
+        id: devices.id,
+        hostname: devices.hostname,
+        displayName: devices.displayName,
+        osType: devices.osType,
+        status: devices.status,
+        lastSeenAt: devices.lastSeenAt
+      })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), filterSQL))
+      .limit(previewLimit);
+
+    return { countResult, previewDevices };
+  });
 
   return {
     totalCount: Number(countResult?.count ?? 0),
@@ -540,11 +583,13 @@ export async function deviceMatchesFilter(
 ): Promise<boolean> {
   const filterSQL = buildGroupSQL(filter);
 
-  const [result] = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(eq(devices.id, deviceId), filterSQL))
-    .limit(1);
+  const [result] = await withFilterStatementTimeout(async (tx) =>
+    tx
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(eq(devices.id, deviceId), filterSQL))
+      .limit(1)
+  );
 
   return Boolean(result);
 }
@@ -599,6 +644,13 @@ export function validateFilter(filter: FilterConditionGroup | FilterCondition): 
     }
     if (fieldDef && !fieldDef.operators.includes(filter.operator)) {
       errors.push(`Operator ${filter.operator} not valid for field ${filter.field}`);
+    }
+    if (
+      filter.operator === 'matches' &&
+      typeof filter.value === 'string' &&
+      filter.value.length > MAX_REGEX_PATTERN_LENGTH
+    ) {
+      errors.push(`Regex pattern too long for field ${filter.field} (max ${MAX_REGEX_PATTERN_LENGTH} characters)`);
     }
   } else {
     errors.push('Invalid filter structure');

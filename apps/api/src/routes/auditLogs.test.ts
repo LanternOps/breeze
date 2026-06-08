@@ -141,6 +141,34 @@ describe('audit log routes', () => {
       const body = await res.json();
       expect(body.data).toEqual([]);
     });
+
+    it('accepts excludeActions on the standard query path', async () => {
+      const res = await app.request(
+        '/audit-logs/logs?action=device&excludeActions=agent.sessions.submit,mcp.tools.list'
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
+
+    it('accepts excludeActions on the LATERAL fast path (skipCount)', async () => {
+      const res = await app.request(
+        '/audit-logs/logs?limit=5&skipCount=true&excludeActions=agent.sessions.submit'
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
+
+    it('ignores empty excludeActions tokens', async () => {
+      const res = await app.request('/audit-logs/logs?excludeActions=,,%20,');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
   });
 
   describe('GET /audit-logs/logs/:id', () => {
