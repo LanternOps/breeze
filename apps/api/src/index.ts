@@ -114,7 +114,7 @@ import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
-import { captureException } from './services/sentry';
+import { captureException, flushSentry, initSentry } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
 
@@ -1196,7 +1196,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       if (typeof closeDb === 'function') {
         await closeDb();
       }
-    }
+    },
+    // Drain any buffered Sentry events before the process exits (no-op if
+    // Sentry is disabled). Bounded internally by a 2s flush timeout.
+    () => flushSentry(),
   ];
 
   // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a
@@ -1265,6 +1268,11 @@ function installSignalHandlers(): void {
 
 async function bootstrap(): Promise<void> {
   console.log(`Breeze API starting on port ${port}...`);
+
+  // Initialize error reporting first so failures during the rest of startup
+  // (migrations, seeds, self-tests) and the global onError/unhandledRejection
+  // handlers are actually captured. No-op unless SENTRY_DSN is set.
+  initSentry();
 
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().

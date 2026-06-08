@@ -9,7 +9,6 @@ import {
 import {
   buildMacosInstallerZip,
   buildWindowsInstallerZip,
-  fetchMacosPkg,
   fetchRegularMsi,
 } from '../../services/installerBuilder';
 
@@ -217,8 +216,9 @@ export function mountInviteLandingRoutes(app: Hono): void {
         });
         filename = 'breeze-agent-windows.zip';
       } else {
-        const pkg = await fetchMacosPkg();
-        buf = await buildMacosInstallerZip(pkg, {
+        // macOS: install.sh downloads the arch-matched pkg at install time, so
+        // no binary is bundled here (one zip serves Intel + Apple Silicon).
+        buf = await buildMacosInstallerZip({
           serverUrl,
           enrollmentKey: redeemed.rawKey,
           enrollmentSecret,

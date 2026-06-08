@@ -96,6 +96,7 @@ services:
       MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
       TRANSFER_STORAGE_PATH: /data/transfers
       PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+      AVATAR_STORAGE_PATH: /data/avatars
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_JSON: ${LOG_JSON:-true}
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}

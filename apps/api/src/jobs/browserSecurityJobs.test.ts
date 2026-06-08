@@ -68,7 +68,7 @@ describe('triggerBrowserPolicyEvaluation', () => {
       'evaluate',
       expect.objectContaining({ orgId: 'org-1', policyId: 'policy-1' }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^browser-policy-eval:org-1:policy-1:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^browser-policy-eval-org-1-policy-1-[a-z0-9]+$/),
       }),
     );
   });

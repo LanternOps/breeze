@@ -11,6 +11,9 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
+import { FilterChipBar } from './FilterChipBar';
+import { QuickAddChips } from './QuickAddChips';
+import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices } from '../../lib/devicesFetch';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
@@ -57,7 +60,13 @@ export default function DevicesPage() {
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
-  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
+  // v2 chip bar seeds its filter from the URL hash so a filtered view is
+  // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
+  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return decodeFilterFromHash(window.location.hash);
+  });
+  const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -286,6 +295,13 @@ export default function DevicesPage() {
   useEffect(() => {
     subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
   }, [subscribe]);
+
+  // Mirror the chip-bar filter into the URL hash so the view is shareable.
+  // Only active under v2; the legacy bar doesn't expect hash interop.
+  useEffect(() => {
+    if (!filtersV2) return;
+    writeFilterToHash(advancedFilter);
+  }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
     void navigateTo(`/devices/${device.id}`);
@@ -708,12 +724,24 @@ export default function DevicesPage() {
         </div>
       </div>
 
-      <DeviceFilterBar
-        value={advancedFilter}
-        onChange={setAdvancedFilter}
-        showSavedFilters={true}
-        collapsible={true}
-      />
+      {filtersV2 ? (
+        <div className="flex flex-col gap-2">
+          <FilterChipBar
+            value={advancedFilter}
+            onChange={setAdvancedFilter}
+            orgs={orgs}
+            sites={sites}
+          />
+          <QuickAddChips value={advancedFilter} onChange={setAdvancedFilter} />
+        </div>
+      ) : (
+        <DeviceFilterBar
+          value={advancedFilter}
+          onChange={setAdvancedFilter}
+          showSavedFilters={true}
+          collapsible={true}
+        />
+      )}
 
       {bulkProgress && (
         <div className="rounded-md border bg-muted/20 px-4 py-3">

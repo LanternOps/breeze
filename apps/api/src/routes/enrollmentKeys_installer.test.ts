@@ -67,7 +67,7 @@ vi.mock('../services/installerBuilder', () => ({
   buildMacosInstallerZip: vi.fn(async () => Buffer.from('fake-zip')),
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from('fake-windows-zip')),
   fetchRegularMsi: vi.fn(async () => Buffer.alloc(2048, 0xbb)),
-  fetchMacosPkg: vi.fn(async () => Buffer.alloc(2048, 0xcc)),
+  assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   // Plan C — returns null so macOS tests fall through to the legacy pkg path.
   fetchMacosInstallerAppZip: vi.fn(async () => null),
 }));

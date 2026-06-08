@@ -53,6 +53,7 @@ import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 import { captureException } from '../../services/sentry';
+import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -173,8 +174,12 @@ async function recordAccountFailureAndMaybeNotify(
 
 export const loginRoutes = new Hono();
 
-// Login
-loginRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
+// Login. cfAccessLoginMiddleware runs first; on a valid Cloudflare Access JWT
+// it short-circuits with a minted session. On any failure (trust disabled,
+// header absent, invalid JWT, JWKS down, user not found, etc.) it calls
+// next() and the password handler below validates the body normally.
+// See Discussion #702 and apps/api/src/middleware/cfAccessLogin.ts.
+loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
   const ip = getClientIP(c);
   const rateLimitClient = getClientRateLimitKey(c);

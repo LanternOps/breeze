@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cfAccessTrustEnabled } from '../config/env';
 
 export const configRoutes = new Hono();
 
@@ -11,6 +12,9 @@ configRoutes.get('/', (c) => {
     features: {
       billing: hasExternalServices,
       support: hasExternalServices,
+    },
+    cfAccessLogin: {
+      enabled: cfAccessTrustEnabled(),
     },
   });
 });

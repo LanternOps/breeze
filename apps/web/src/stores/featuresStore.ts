@@ -6,16 +6,23 @@ export interface Features {
   support: boolean;
 }
 
+export interface CfAccessLoginConfig {
+  enabled: boolean;
+}
+
 interface FeaturesState {
   features: Features;
+  cfAccessLogin: CfAccessLoginConfig;
   loaded: boolean;
   load: () => Promise<void>;
 }
 
-const DEFAULT: Features = { billing: false, support: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false };
+const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 
 export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
-  features: DEFAULT,
+  features: DEFAULT_FEATURES,
+  cfAccessLogin: DEFAULT_CF_ACCESS,
   loaded: false,
   load: async () => {
     if (get().loaded) return;
@@ -26,11 +33,17 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
         set({ loaded: true });
         return;
       }
-      const data = (await res.json()) as { features?: Partial<Features> };
+      const data = (await res.json()) as {
+        features?: Partial<Features>;
+        cfAccessLogin?: Partial<CfAccessLoginConfig>;
+      };
       set({
         features: {
           billing: !!data.features?.billing,
           support: !!data.features?.support,
+        },
+        cfAccessLogin: {
+          enabled: !!data.cfAccessLogin?.enabled,
         },
         loaded: true,
       });

@@ -76,7 +76,7 @@ export async function enqueueC2cSync(
       configId,
       orgId,
     },
-    `c2c-sync:${jobId}`,
+    `c2c-sync-${jobId}`,
     {
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
@@ -102,7 +102,7 @@ export async function enqueueC2cRestore(
       itemIds,
       targetConnectionId,
     },
-    `c2c-restore:${restoreJobId}`,
+    `c2c-restore-${restoreJobId}`,
     {
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },

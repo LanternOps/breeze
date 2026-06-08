@@ -128,7 +128,75 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
     return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
   }
 
-  return c.redirect(getGithubAgentPkgUrl(os, arch), 302);
+  const filename = `breeze-agent-darwin-${arch}.pkg`;
+
+  // GitHub redirect mode — no local packages needed
+  if (getBinarySource() === 'github') {
+    return c.redirect(getGithubAgentPkgUrl(os, arch), 302);
+  }
+
+  // Local mode: try S3 presigned redirect first (bandwidth offload)
+  if (isS3Configured()) {
+    try {
+      const url = await getPresignedUrl(`agent/${filename}`);
+      return c.redirect(url, 302);
+    } catch (err) {
+      const errName = (err as { name?: string }).name;
+      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
+      const level = isNotFound ? 'warn' : 'error';
+      console[level](`[pkg-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+    }
+  }
+
+  // Local mode: serve from disk
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const filePath = join(binaryDir, filename);
+
+  let fileStat: ReturnType<typeof statSync>;
+  let stream: ReturnType<typeof createReadStream>;
+  try {
+    fileStat = statSync(filePath);
+    stream = createReadStream(filePath);
+  } catch (err) {
+    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound) {
+      console.error(`[pkg-download] Failed to read package ${filename}:`, err);
+      return c.json({ error: 'Internal server error', message: 'Failed to read installer package' }, 500);
+    }
+    console.warn('[pkg-download] Local package missing', { filename });
+    return c.json(
+      {
+        error: 'Package not found',
+        message: `Installer package "${filename}" is not available.`,
+      },
+      404
+    );
+  }
+
+  const webStream = new ReadableStream({
+    start(controller) {
+      stream.on('data', (chunk: string | Buffer) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        controller.enqueue(new Uint8Array(bytes));
+      });
+      stream.on('end', () => { controller.close(); });
+      stream.on('error', (err) => {
+        console.error(`[pkg-download] Stream error while serving ${filename}:`, err);
+        controller.error(err);
+      });
+    },
+    cancel() { stream.destroy(); },
+  });
+
+  return new Response(webStream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': String(fileStat.size),
+      'Cache-Control': 'no-cache',
+    },
+  });
 });
 
 // ============================================
@@ -403,6 +471,15 @@ if [[ "\$OS" == "darwin" ]]; then
 
   success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
 
+  # Verify Apple notarization/signature before installing as root — the installer
+  # CLI does not enforce Gatekeeper on its own, so a tampered/MITM'd download
+  # would otherwise be installed with full privileges.
+  info "Verifying installer package signature..."
+  if ! spctl --assess --type install "\$TMPPKG" >/dev/null 2>&1; then
+    fatal "Installer package failed Gatekeeper notarization assessment. Refusing to install."
+  fi
+  success "Verified installer package notarization"
+
   info "Installing Breeze Agent..."
   installer -pkg "\$TMPPKG" -target /
   success "Package installed (binary, launchd service, directories)"
@@ -429,8 +506,12 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
   success "Agent enrolled successfully"
 
-  # Restart the service so it picks up the new enrollment config
-  launchctl kickstart -k system/com.breeze.agent 2>/dev/null || true
+  # Restart the service so it picks up the new enrollment config. Surface a
+  # failure instead of swallowing it — otherwise an enrolled device that never
+  # starts looks like a success to the operator.
+  if ! launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+    warn "Could not restart the agent service automatically; it will start on next login or reboot."
+  fi
 
   echo ""
   success "Breeze agent installation complete!"

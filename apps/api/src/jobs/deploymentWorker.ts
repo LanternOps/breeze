@@ -231,7 +231,7 @@ let deploymentQueue: Queue | null = null;
 let deploymentDeviceQueue: Queue | null = null;
 
 function getDeploymentProcessJobId(deploymentId: string): string {
-  return `deployment-process:${deploymentId}`;
+  return `deployment-process-${deploymentId}`;
 }
 
 function getDeploymentNextBatchJobId(

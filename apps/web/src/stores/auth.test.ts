@@ -63,6 +63,24 @@ describe('auth store fetchWithAuth', () => {
     expect(headers.get('Content-Type')).toBe('application/json');
   });
 
+  it('does not force a JSON content-type on FormData bodies (avatar upload)', async () => {
+    // Forcing application/json on a multipart body strips the boundary the
+    // browser would otherwise add, so the server cannot parse the upload and
+    // 400s. The avatar POST must leave Content-Type unset for FormData.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const form = new FormData();
+    form.append('file', new Blob(['x'], { type: 'image/png' }), 'a.png');
+    await fetchWithAuth('/users/me/avatar', { method: 'POST', body: form });
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = options.headers as Headers;
+    expect(headers.get('Authorization')).toBe(`Bearer ${baseTokens.accessToken}`);
+    expect(headers.get('Content-Type')).toBeNull();
+  });
+
   it('strips only exact /api prefix while preserving /api-* routes', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi
@@ -78,6 +96,22 @@ describe('auth store fetchWithAuth', () => {
     const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(firstUrl).toBe('/api/v1/devices');
     expect(secondUrl).toBe('/api/v1/api-keys');
+  });
+
+  it('does not double the /v1 for server-stored /api/v1/ paths (e.g. avatar_url)', async () => {
+    // users.avatar_url is stored as /api/v1/users/:id/avatar and round-trips
+    // through fetchWithAuth (the avatar blob fetch). Without the /api/v1/
+    // branch in buildApiUrl it became /api/v1/v1/users/:id/avatar → 404 and a
+    // broken avatar.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/api/v1/users/user-9/avatar');
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('/api/v1/users/user-9/avatar');
+    expect(url).not.toContain('/v1/v1/');
   });
 
   it('refreshes and retries when access token is expired', async () => {

@@ -3,6 +3,7 @@ import { Monitor, CheckCircle, AlertTriangle, XCircle, AlertCircle, ArrowRight, 
 import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '@/stores/aiStore';
 
 interface DashboardStatsData {
@@ -29,6 +30,12 @@ export default function DashboardStats() {
   const [retryCount, setRetryCount] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [updatedText, setUpdatedText] = useState('');
+
+  // Re-fetch when the global org scope toggle (or selected org) changes so the
+  // tiles track the All-orgs / Current view like the rest of the app. Without
+  // these in the fetch effect's deps the stats are stale after a toggle.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
 
   useEffect(() => { setGreeting(getGreeting()); }, []);
 
@@ -74,7 +81,7 @@ export default function DashboardStats() {
     };
 
     fetchStats();
-  }, [retryCount]);
+  }, [retryCount, currentOrgId, orgScope]);
 
   // Auto-refresh every 60 seconds
   useEffect(() => {

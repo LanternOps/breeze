@@ -610,6 +610,15 @@ func findGUIUserUIDs() []string {
 	return parseGUIUserUIDs(string(out))
 }
 
+// KickstartDesktopHelpers restarts the macOS desktop helper LaunchAgents so they
+// re-evaluate TCC permissions. Exported for the daemon's TCC auto-grant retry
+// path (main): once the user grants Full Disk Access, the daemon writes the
+// Screen Recording + Accessibility grants, but already-running helpers cached the
+// old denied state and need a restart to pick them up.
+func KickstartDesktopHelpers() {
+	kickstartDarwinDesktopHelpers()
+}
+
 // kickstartDarwinDesktopHelpers re-kickstarts the macOS desktop helper
 // LaunchAgents for every logged-in GUI user session. This is called after a
 // self-update restart to force helpers to reconnect to the new IPC socket

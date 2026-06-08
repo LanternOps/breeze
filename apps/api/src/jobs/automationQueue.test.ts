@@ -87,7 +87,7 @@ describe('enqueueAutomationRun', () => {
     expect(addMock).toHaveBeenCalledWith(
       'execute-run',
       expect.objectContaining({ runId: 'run-1', targetDeviceIds: ['device-1'] }),
-      expect.objectContaining({ jobId: 'automation-run:run-1' }),
+      expect.objectContaining({ jobId: 'automation-run-run-1' }),
     );
     expect(result).toEqual({ enqueued: true, jobId: 'queue-job-1' });
   });

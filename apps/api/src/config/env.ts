@@ -55,3 +55,18 @@ export const DELEGANT_BASE_URL = process.env.DELEGANT_BASE_URL ?? '';
 export const DELEGANT_SERVICE_TOKEN = process.env.DELEGANT_SERVICE_TOKEN ?? '';
 export const DELEGANT_PRINCIPAL_SIGNING_KEY = process.env.DELEGANT_PRINCIPAL_SIGNING_KEY ?? '';
 export const DELEGANT_PRINCIPAL_KID = process.env.DELEGANT_PRINCIPAL_KID ?? '';
+
+// Cloudflare Access JWT trust on /auth/login (Discussion #702). Read at call
+// time so tests can flip per-test without resetting modules.
+export function cfAccessTrustEnabled(): boolean {
+  return envFlag('CF_ACCESS_TRUST_ENABLED');
+}
+export function cfAccessTeamDomain(): string {
+  return (process.env.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+}
+export function cfAccessAud(): string {
+  return (process.env.CF_ACCESS_AUD ?? '').trim();
+}
+export function cfAccessTrustsMfa(): boolean {
+  return envFlag('CF_ACCESS_TRUSTS_MFA');
+}

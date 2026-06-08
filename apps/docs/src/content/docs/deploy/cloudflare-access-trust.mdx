@@ -1,0 +1,69 @@
+---
+title: Cloudflare Access JWT trust
+description: Skip the Breeze login form when a deployment sits behind Cloudflare Access using the same identity provider.
+sidebar:
+  order: 9
+  label: Cloudflare Access trust
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+When you put Breeze behind Cloudflare Access (or any Zero Trust gateway that mints CF Access JWTs) and use the same identity provider that you've configured users for in Breeze, the user ends up authenticating twice: once at the CF Access edge, once at the Breeze login form. Enabling Cloudflare Access JWT trust lets a valid `Cf-Access-Jwt-Assertion` header short-circuit `POST /api/v1/auth/login` and mint a Breeze session directly.
+
+This is an opt-in, deployment-wide flag. It does not affect any deployment that does not set `CF_ACCESS_TRUST_ENABLED=true`.
+
+<Aside type="caution">
+  Only turn this on if you actually have Cloudflare Access in front of `/api/v1/auth/login`. If the path is reachable without going through Access (for example: agent connections, installer short-links, or any bypass rule), an attacker could submit a self-signed JWT and bypass the password check. The verifier rejects anything that isn't signed by your team's JWKS, but the safer posture is to only enable trust when the path is guaranteed to be Access-protected.
+</Aside>
+
+## How it works
+
+1. The browser hits the Breeze SPA. Cloudflare Access authenticates the user against your IdP and attaches a signed `CF_Authorization` cookie plus the `Cf-Access-Jwt-Assertion` request header.
+2. The SPA POSTs `/api/v1/auth/login`. The CF Access middleware runs first.
+3. The middleware verifies the JWT using the team's JWKS at `https://<team-domain>/cdn-cgi/access/certs`. It checks:
+   - signature (RS256 only)
+   - issuer = `https://<team-domain>`
+   - audience = the configured AUD tag for your application
+   - `exp`, `iat`, `email`, `aud`, `iss`, `sub` claims all present
+4. On a verified JWT, it looks up the user by `email` claim, confirms the account is `active`, resolves the user's partner/org context, mints a token pair, and returns the same shape `POST /login` returns on a successful password login.
+5. On any failure — flag off, header absent, invalid signature, expired token, wrong audience, JWKS unreachable, user not in Breeze, user inactive — it falls through to the existing password handler. The browser then sees the normal login form.
+
+## Failure semantics
+
+| Failure | Behaviour | Reason |
+|---|---|---|
+| `CF_ACCESS_TRUST_ENABLED=false` or unset | No JWT path; password handler runs as before | Default off |
+| Header absent | Fall through to password | Not every browser session has a CF Access JWT |
+| Invalid signature, wrong issuer/aud, expired, missing claim | Fall through; logged as `[cf-access-login] rejected JWT` with the jose error code | Fail-closed on trust: we never mint a session from an unverified JWT |
+| JWKS fetch / network failure | Fall through; logged as `[cf-access-login] JWKS unavailable...` | Fail-open on availability: a transient CF outage shouldn't wedge `/login` |
+| User from JWT email not present in Breeze | Fall through | Password handler will 401 with the same generic error, no email enumeration |
+| User present but `status != 'active'` | Fall through; failure audited as `account_inactive` with `method: cf_access_jwt` | Same denial path as password login |
+
+## MFA
+
+The Cloudflare Access JWT does not carry an MFA claim — it tells you the user satisfied your CF Access policy, but not how. Whether your CF Access policy required step-up (hardware key, WARP attestation, etc.) is an operator-level assertion. `CF_ACCESS_TRUSTS_MFA` is the knob:
+
+- `CF_ACCESS_TRUSTS_MFA=false` (default) — even on a valid JWT, if the matched Breeze user has MFA enrolled, the middleware issues a `tempToken` and the SPA's normal MFA challenge runs. The user does not have to re-enter their password, but they do enter their TOTP code.
+- `CF_ACCESS_TRUSTS_MFA=true` — the minted Breeze session is marked as MFA-satisfied. Only turn this on if your CF Access policy actually requires step-up. The setting is honoured deployment-wide; it does not vary per partner or per user.
+
+## Configuration
+
+| Variable | Required when trust is on | Description |
+|---|---|---|
+| `CF_ACCESS_TRUST_ENABLED` | — | `true` to enable. Boolean (true/false/1/0/yes/no/on/off). Default off. |
+| `CF_ACCESS_TEAM_DOMAIN` | Yes | Bare hostname of your Cloudflare team domain, e.g. `example.cloudflareaccess.com`. No `https://` scheme. |
+| `CF_ACCESS_AUD` | Yes | The AUD tag for the Cloudflare Access application that protects Breeze. Get it from the Cloudflare Zero Trust dashboard → Access → Applications → your app → AUD. |
+| `CF_ACCESS_TRUSTS_MFA` | — | Boolean. Default false. See **MFA** above. |
+
+The config validator refuses to boot if `CF_ACCESS_TRUST_ENABLED=true` but `CF_ACCESS_TEAM_DOMAIN` or `CF_ACCESS_AUD` is empty, or if the team domain looks like a URL instead of a hostname.
+
+## Recommended Cloudflare Access setup
+
+- Application path: cover the SPA root and `/api/v1/auth/login` only. Leave bypass rules on `/api/*` agent paths, `/health`, `/installers/*`, and any installer short-links (the agent fleet does not have a CF Access session).
+- Identity provider: pick the same IdP whose `email` claim is the same one your Breeze users are provisioned with. If a Breeze user's email is `alice@acme.com` and your IdP issues the JWT with `email=alice@acme.com`, you're set.
+- Session duration: anything you like. Breeze mints its own refresh token independently of the CF Access cookie.
+- Application AUD: copy from the dashboard once the application is created. This is stable for the life of the application.
+
+## Disabling
+
+Set `CF_ACCESS_TRUST_ENABLED=false` (or remove the variable) and restart `breeze-api`. The middleware short-circuits to `next()` before reading any other env var, so disabling is instant.

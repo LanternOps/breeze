@@ -17,6 +17,22 @@ vi.mock('../../lib/navigation', () => ({
   navigateTo: vi.fn(),
 }));
 
+// LoginPage now fetches /api/v1/config at mount to decide whether to redirect
+// the browser to the Cloudflare Access login endpoint. The default mock here
+// answers "feature disabled" so the existing happy-path tests render the
+// password form unchanged.
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(JSON.stringify({ cfAccessLogin: { enabled: false } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+  );
+});
+
 import LoginPage from './LoginPage';
 import { apiLogin, apiVerifyMFA } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
@@ -29,6 +45,9 @@ const baseLoginSuccess = {
 };
 
 async function fillAndSubmit(email = 'jane@example.com', password = 'Sup3rSecure!') {
+  // The config-check effect resolves on a microtask after mount; wait for the
+  // form to appear before driving it.
+  await waitFor(() => screen.getByLabelText(/email/i));
   fireEvent.change(screen.getByLabelText(/email/i), { target: { value: email } });
   fireEvent.change(screen.getByLabelText(/password/i), { target: { value: password } });
   fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
