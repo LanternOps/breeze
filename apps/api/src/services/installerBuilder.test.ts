@@ -71,11 +71,10 @@ describe('fetchRegularMsi', () => {
 });
 
 describe('buildMacosInstallerZip', () => {
-  it('produces a zip with pkg, enrollment.json, and install.sh', async () => {
-    const fakePkg = Buffer.from('fake-pkg-contents');
+  it('produces a zip with enrollment.json and install.sh (no bundled pkg)', async () => {
     const validKey = realEnrollmentKey();
 
-    const zipBuffer = await buildMacosInstallerZip(fakePkg, {
+    const zipBuffer = await buildMacosInstallerZip({
       serverUrl: 'https://breeze.example.com',
       enrollmentKey: validKey,
       enrollmentSecret: 'secret456',
@@ -85,9 +84,11 @@ describe('buildMacosInstallerZip', () => {
     const zip = await JSZip.loadAsync(zipBuffer);
     const entries = Object.keys(zip.files);
 
-    expect(entries).toContain('breeze-agent.pkg');
     expect(entries).toContain('enrollment.json');
     expect(entries).toContain('install.sh');
+    // The pkg is downloaded per-architecture at install time, not bundled —
+    // this is what lets one zip work on both Intel and Apple Silicon.
+    expect(entries).not.toContain('breeze-agent.pkg');
 
     const jsonStr = await zip.files['enrollment.json']!.async('string');
     const config = JSON.parse(jsonStr);
@@ -95,13 +96,10 @@ describe('buildMacosInstallerZip', () => {
     expect(config.enrollmentKey).toBe(validKey);
     expect(config.enrollmentSecret).toBe('secret456');
     expect(config.siteId).toBe('550e8400-e29b-41d4-a716-446655440000');
-
-    const pkgData = await zip.files['breeze-agent.pkg']!.async('nodebuffer');
-    expect(pkgData.equals(fakePkg)).toBe(true);
   });
 
   it('sets enrollmentSecret to empty string when not provided', async () => {
-    const zipBuffer = await buildMacosInstallerZip(Buffer.from('pkg'), {
+    const zipBuffer = await buildMacosInstallerZip({
       serverUrl: 'https://x.com',
       enrollmentKey: realEnrollmentKey(),
       enrollmentSecret: '',
@@ -115,7 +113,7 @@ describe('buildMacosInstallerZip', () => {
 
   it('rejects a key with the legacy brz_ prefix (drift guard)', async () => {
     await expect(
-      buildMacosInstallerZip(Buffer.from('pkg'), {
+      buildMacosInstallerZip({
         serverUrl: 'https://x.com',
         enrollmentKey: 'brz_' + realEnrollmentKey(),
         enrollmentSecret: '',
@@ -127,7 +125,7 @@ describe('buildMacosInstallerZip', () => {
 
 describe('buildMacosInstallerZip — install.sh content', () => {
   it('install.sh contains shebang and enrollment command', async () => {
-    const zipBuffer = await buildMacosInstallerZip(Buffer.from('pkg'), {
+    const zipBuffer = await buildMacosInstallerZip({
       serverUrl: 'https://x.com',
       enrollmentKey: realEnrollmentKey(),
       enrollmentSecret: '',
@@ -139,6 +137,31 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     expect(script).toContain('#!/bin/bash');
     expect(script).toContain('breeze-agent enroll');
     expect(script).toContain('enrollment.json');
+  });
+
+  it('install.sh detects CPU arch and downloads the matching pkg', async () => {
+    const zipBuffer = await buildMacosInstallerZip({
+      serverUrl: 'https://x.com',
+      enrollmentKey: realEnrollmentKey(),
+      enrollmentSecret: '',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const script = await zip.files['install.sh']!.async('string');
+
+    // Architecture detection — both Intel and Apple Silicon must be handled.
+    expect(script).toContain('uname -m');
+    expect(script).toMatch(/x86_64\|amd64/);
+    expect(script).toMatch(/arm64\|aarch64/);
+
+    // Per-arch download from the server's pkg endpoint (literal ${ARCH}, not
+    // a JS-interpolated value — the bash variable must survive into the script).
+    expect(script).toContain('/api/v1/agents/download/darwin/${ARCH}/pkg');
+    expect(script).not.toContain('undefined');
+
+    // Service restart so newly-enrolled config is picked up.
+    expect(script).toContain('launchctl kickstart');
   });
 });
 

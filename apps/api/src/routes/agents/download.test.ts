@@ -62,4 +62,23 @@ describe('public agent binary downloads', () => {
       { filename: 'breeze-desktop-helper-linux-amd64' },
     );
   });
+
+  it('serves the architecture-matched pkg from local disk in non-github mode', async () => {
+    // Intel Macs hitting the per-arch pkg endpoint must resolve to the amd64
+    // package, not a hardcoded arm64 one (the "Bad CPU type" regression).
+    const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
+    const body = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
+    expect(console.warn).toHaveBeenCalledWith(
+      '[pkg-download] Local package missing',
+      { filename: 'breeze-agent-darwin-amd64.pkg' },
+    );
+  });
+
+  it('rejects non-darwin pkg requests', async () => {
+    const res = await downloadRoutes.request('/download/linux/amd64/pkg');
+    expect(res.status).toBe(400);
+  });
 });

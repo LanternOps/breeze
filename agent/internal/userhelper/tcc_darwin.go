@@ -188,7 +188,10 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext stri
 	var seq uint64
 	var consecutiveFailures int
 	allGranted := false
+	wasAllGranted := false
+	firstCheck := true
 	var lastRemoteDesktop *bool
+	promptFile := tccPromptFilePath()
 
 	check := func() {
 		allowProbe := true
@@ -208,11 +211,22 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext stri
 		} else {
 			consecutiveFailures = 0
 		}
-		// User guidance via osascript dialogs removed — the web UI banner
-		// handles admin-facing permission messaging. The system-level TCC
-		// prompts (CGRequestScreenCaptureAccess, AXIsProcessTrustedWithOptions)
-		// still trigger on first run via RequestScreenRecording() and
-		// CheckTCCPermissions().
+
+		// General osascript nagging was removed in favor of the web UI banner.
+		// But Full Disk Access is special: macOS provides NO API to prompt for it
+		// (unlike Screen Recording / Accessibility, whose system dialogs fire via
+		// RequestScreenRecording() and CheckTCCPermissions()). Without an
+		// on-machine dialog the user gets no signal that the one required manual
+		// grant is missing — exactly the "no third popup" report. Surface it here.
+		handleFullDiskAccessGuidance(status, promptFile)
+
+		// Tell the user when setup finishes. Skip the first check so a machine
+		// that was already fully granted doesn't get a spurious notification.
+		if allGranted && !wasAllGranted && !firstCheck {
+			showTCCCompleteNotification()
+		}
+		wasAllGranted = allGranted
+		firstCheck = false
 	}
 
 	// On first run, trigger the Screen Recording system prompt via
@@ -271,12 +285,19 @@ func sendTCCStatus(conn *ipc.Conn, status *ipc.TCCStatus, seq *uint64) error {
 	return nil
 }
 
-// handleUserGuidance shows a dialog or notification if permissions are missing.
-func handleUserGuidance(status *ipc.TCCStatus, promptFile string) {
-	missing := missingPermissions(status)
-	if len(missing) == 0 {
+// handleFullDiskAccessGuidance surfaces an on-machine dialog/notification when
+// Full Disk Access is missing. FDA is the only required permission macOS gives
+// no API to prompt for, so this is the sole on-machine signal the user gets that
+// a manual grant is needed. We deliberately do NOT nag for Screen Recording or
+// Accessibility here — those raise their own system prompts and are auto-granted
+// by the root daemon once FDA is available. Shows an actionable dialog with
+// "Open Settings" on first detection (guarded by a marker file), then quieter
+// notifications on later checks.
+func handleFullDiskAccessGuidance(status *ipc.TCCStatus, promptFile string) {
+	if status.FullDiskAccess {
 		return
 	}
+	missing := []string{"Full Disk Access"}
 
 	if _, err := os.Stat(promptFile); os.IsNotExist(err) {
 		// First detection — show dialog and create marker file
@@ -289,6 +310,15 @@ func handleUserGuidance(status *ipc.TCCStatus, promptFile string) {
 		// Subsequent checks — notification only
 		showTCCNotification(missing)
 	}
+}
+
+// showTCCCompleteNotification tells the user that all required permissions are
+// now granted, shown once on the transition to fully-granted.
+func showTCCCompleteNotification() {
+	showNotificationOS(ipc.NotifyRequest{
+		Title: "Breeze: Setup Complete",
+		Body:  "All required permissions are granted — Breeze Agent is ready.",
+	})
 }
 
 func missingPermissions(status *ipc.TCCStatus) []string {

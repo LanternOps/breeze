@@ -126,16 +126,43 @@ if [ ! -f "$ENROLLMENT_JSON" ]; then
   exit 1
 fi
 
-# Install the PKG
-echo "Installing Breeze Agent..."
-sudo installer -pkg "$SCRIPT_DIR/breeze-agent.pkg" -target /
-
 # Read enrollment config via plutil (ships with macOS, no Xcode CLT required).
 # /usr/bin/python3 is only a stub on fresh Macs and triggers the "requires developer tools" popup.
 SERVER_URL=$(plutil -extract serverUrl raw -o - "$ENROLLMENT_JSON")
 ENROLLMENT_KEY=$(plutil -extract enrollmentKey raw -o - "$ENROLLMENT_JSON")
 ENROLLMENT_SECRET=$(plutil -extract enrollmentSecret raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
 SITE_ID=$(plutil -extract siteId raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
+SERVER_URL="\${SERVER_URL%/}"
+
+# Detect CPU architecture so Intel and Apple Silicon Macs each receive a
+# compatible binary. A single-arch bundle cannot serve both, and shipping the
+# wrong one causes "Bad CPU type in executable" on enroll (the bug this fixes).
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) echo "Error: unsupported CPU architecture: $(uname -m)"; exit 1 ;;
+esac
+
+# Download the architecture-matched installer package from the server.
+PKG_URL="\${SERVER_URL}/api/v1/agents/download/darwin/\${ARCH}/pkg"
+TMPPKG_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMPPKG_DIR"' EXIT
+TMPPKG="$TMPPKG_DIR/breeze-agent.pkg"
+
+echo "Downloading Breeze Agent installer (\${ARCH})..."
+HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "$TMPPKG" "$PKG_URL" 2>/dev/null)" || true
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "Error: failed to download installer package (HTTP $HTTP_CODE) from $PKG_URL"
+  exit 1
+fi
+if [ ! -s "$TMPPKG" ]; then
+  echo "Error: downloaded installer package is empty (architecture \${ARCH} may be unavailable)"
+  exit 1
+fi
+
+# Install the PKG
+echo "Installing Breeze Agent..."
+sudo installer -pkg "$TMPPKG" -target /
 
 # Build enrollment command
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
@@ -143,7 +170,10 @@ ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$SITE_ID" ] && ENROLL_ARGS+=(--site-id "$SITE_ID")
 
 echo "Enrolling agent..."
-sudo /usr/local/bin/breeze-agent enroll "${'$'}{ENROLL_ARGS[@]}"
+sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
+
+# Restart the service so it picks up the new enrollment config.
+sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null || true
 
 # Clean up credentials
 rm -f "$ENROLLMENT_JSON"
@@ -158,8 +188,9 @@ interface MacosZipValues {
   siteId: string;
 }
 
+// The pkg is no longer bundled — install.sh downloads the architecture-matched
+// package at install time, so one zip works on both Intel and Apple Silicon.
 export async function buildMacosInstallerZip(
-  pkgBuffer: Buffer,
   values: MacosZipValues
 ): Promise<Buffer> {
   assertValidEnrollmentKey(values.enrollmentKey);
@@ -177,8 +208,6 @@ export async function buildMacosInstallerZip(
         console.error('[installer] Archiver warning during macOS zip build:', err);
       }
     });
-
-    archive.append(pkgBuffer, { name: 'breeze-agent.pkg' });
 
     const enrollmentJson = JSON.stringify(
       {
