@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
 import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
@@ -227,7 +228,12 @@ export default function DeviceList({
   // kebab sits <300px from the viewport bottom would otherwise render
   // its dropdown into the area below the table and get clipped.
   const [rowMenuFlipUp, setRowMenuFlipUp] = useState(false);
+  // Viewport-relative anchor for the portaled row menu. The menu is rendered into
+  // document.body (not inside the overflow-x-auto table wrapper, which would clip it),
+  // so it positions itself with `fixed` coordinates derived from the kebab button.
+  const [rowMenuAnchor, setRowMenuAnchor] = useState<{ top: number; bottom: number; right: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
+  const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
   const [serverFilterLoading, setServerFilterLoading] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
@@ -238,12 +244,21 @@ export default function DeviceList({
   useEffect(() => {
     if (!rowMenuOpenId) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) {
-        setRowMenuOpenId(null);
-      }
+      const target = e.target as Node;
+      // The menu is portaled outside the trigger, so check both the menu and the button.
+      if (rowMenuRef.current?.contains(target) || rowMenuButtonRef.current?.contains(target)) return;
+      setRowMenuOpenId(null);
     };
+    // The menu is fixed-positioned from a captured anchor; scrolling would detach it, so close instead.
+    const handleScroll = () => setRowMenuOpenId(null);
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleScroll);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleScroll);
+    };
   }, [rowMenuOpenId]);
 
   // Close group dropdown on outside click
@@ -629,7 +644,7 @@ export default function DeviceList({
               <span
                 data-testid={`device-${device.id}-agent-silent-badge`}
                 title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
-                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
               >
                 Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
               </span>
@@ -1220,15 +1235,18 @@ export default function DeviceList({
                         desktopAccess={device.desktopAccess}
                         remoteAccessPolicy={device.remoteAccessPolicy}
                       />
-                      <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
+                      <div className="relative">
                         <button
                           type="button"
+                          aria-label="Device actions"
+                          ref={rowMenuOpenId === device.id ? rowMenuButtonRef : undefined}
                           onClick={(e) => {
                             if (rowMenuOpenId !== device.id) {
                               const rect = e.currentTarget.getBoundingClientRect();
                               // ~280px dropdown height (7 items × ~36px + padding/divider).
                               // Flip up when the space below the button is less than that.
                               setRowMenuFlipUp(window.innerHeight - rect.bottom < 300);
+                              setRowMenuAnchor({ top: rect.top, bottom: rect.bottom, right: rect.right });
                             }
                             setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id);
                           }}
@@ -1236,8 +1254,18 @@ export default function DeviceList({
                         >
                           <MoreVertical className="h-4 w-4" />
                         </button>
-                        {rowMenuOpenId === device.id && (
-                          <div className={`absolute right-0 z-50 w-48 rounded-md border bg-card shadow-lg ${rowMenuFlipUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
+                        {rowMenuOpenId === device.id && rowMenuAnchor && createPortal(
+                          <div
+                            ref={rowMenuRef}
+                            style={{
+                              position: 'fixed',
+                              right: window.innerWidth - rowMenuAnchor.right,
+                              ...(rowMenuFlipUp
+                                ? { bottom: window.innerHeight - rowMenuAnchor.top + 4 }
+                                : { top: rowMenuAnchor.bottom + 4 }),
+                            }}
+                            className="z-50 w-48 rounded-md border bg-card shadow-lg"
+                          >
                             <button
                               type="button"
                               disabled={device.status !== 'online'}
@@ -1324,7 +1352,8 @@ export default function DeviceList({
                                 Decommission
                               </button>
                             )}
-                          </div>
+                          </div>,
+                          document.body
                         )}
                       </div>
                     </div>
