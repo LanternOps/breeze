@@ -1,3 +1,6 @@
+// Canonicalize NODE_ENV first — seed gates the bootstrap admin on it and runs
+// as a standalone CLI (db:seed) as well as from autoMigrate. See #917 (L-6).
+import '../config/normalizeNodeEnv';
 import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { eq, and } from 'drizzle-orm';

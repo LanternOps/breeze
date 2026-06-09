@@ -48,21 +48,23 @@ describe('normalizeNodeEnv', () => {
     const env: NodeJS.ProcessEnv = {};
     const result = normalizeNodeEnv(env);
     expect('NODE_ENV' in env).toBe(false);
-    expect(result.changed).toBe(false);
+    expect(result).toEqual({ from: undefined, to: undefined, changed: false });
   });
 
   it('leaves an unrecognized value untouched so zod can fail-fast on it', () => {
     const env: NodeJS.ProcessEnv = { NODE_ENV: 'staging' };
     const result = normalizeNodeEnv(env);
     expect(env.NODE_ENV).toBe('staging');
-    expect(result.changed).toBe(false);
+    expect(result).toEqual({ from: 'staging', to: 'staging', changed: false });
   });
 });
 
 describe('import side effect', () => {
   const original = process.env.NODE_ENV;
   afterEach(() => {
-    process.env.NODE_ENV = original;
+    if (original === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = original;
+    vi.restoreAllMocks();
     vi.resetModules();
   });
 
@@ -73,5 +75,21 @@ describe('import side effect', () => {
     process.env.NODE_ENV = 'Production';
     await import('./normalizeNodeEnv');
     expect(process.env.NODE_ENV).toBe('production');
+  });
+
+  it('logs the resolved mode only when it actually rewrites the value', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    vi.resetModules();
+    process.env.NODE_ENV = 'Production';
+    await import('./normalizeNodeEnv');
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]?.[0]).toContain('"Production" -> production');
+
+    log.mockClear();
+    vi.resetModules();
+    process.env.NODE_ENV = 'production';
+    await import('./normalizeNodeEnv');
+    expect(log).not.toHaveBeenCalled();
   });
 });
