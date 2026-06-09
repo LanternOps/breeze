@@ -102,13 +102,34 @@ type AgentConfig struct {
 	EnabledCollectors                []string `json:"enabledCollectors,omitempty"`
 }
 
+// stripCredentialsOnCrossHostRedirect drops any header carrying the agent's
+// credentials when an HTTP redirect leaves the host the request was originally
+// sent to. Go's http.Client already strips Authorization/Cookie on a cross-host
+// redirect, but it forwards arbitrary custom headers, so the agent's existing
+// device token (sent as x-agent-reenrollment-token during a forced re-enroll)
+// would otherwise leak to a host a compromised or MITM'd server redirects to.
+// Same-host redirects (e.g. path or scheme-upgrade redirects from the legitimate
+// server) are trusted and keep the headers. See #1043.
+func stripCredentialsOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if req.URL.Host != via[len(via)-1].URL.Host {
+		req.Header.Del("x-agent-reenrollment-token")
+		req.Header.Del("Authorization")
+		req.Header.Del("Cookie")
+	}
+	return nil
+}
+
 func NewClient(baseURL, authToken, agentID string) *Client {
 	return &Client{
 		baseURL:   baseURL,
 		authToken: authToken,
 		agentID:   agentID,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: stripCredentialsOnCrossHostRedirect,
 		},
 	}
 }
@@ -124,8 +145,9 @@ func NewClientWithTLS(baseURL, authToken, agentID string, tlsCfg *tls.Config) *C
 		authToken: authToken,
 		agentID:   agentID,
 		httpClient: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: transport,
+			Timeout:       30 * time.Second,
+			Transport:     transport,
+			CheckRedirect: stripCredentialsOnCrossHostRedirect,
 		},
 	}
 }
