@@ -1,5 +1,12 @@
 version: 2
 
+# Ecosystems are deliberately staggered across weekdays (npm Monday, Go
+# Tuesday, Actions Wednesday, Cargo Thursday) so the weekly batch doesn't
+# land as one Monday merge storm — on 2026-06-09 the storm churned the
+# lockfile 2,400+ lines mid-day, cancelled most main CI runs, and caused
+# PR-vs-main merge skew. Spreading the load keeps each day's batch small
+# enough to review and merge calmly.
+
 updates:
   # Node.js / pnpm dependencies for the root and all workspaces
   - package-ecosystem: "npm"
@@ -11,6 +18,19 @@ updates:
       timezone: "America/New_York"
     open-pull-requests-limit: 10
     groups:
+      # The whole mobile toolchain moves together — a solo expo major bump
+      # (55→56 on 2026-06-09) rewrote ~2,400 lockfile lines on its own and
+      # broke unrelated API test resolution. One PR per week for all of it.
+      mobile:
+        patterns:
+          - "expo"
+          - "expo-*"
+          - "@expo/*"
+          - "react-native"
+          - "react-native-*"
+          - "@react-native*"
+          - "metro"
+          - "metro-*"
       # Group minor and patch updates together
       typescript-tooling:
         patterns:
@@ -114,11 +134,18 @@ updates:
     directory: "/agent"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "tuesday"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
     groups:
+      # The AWS SDK ships several modules per release that must move
+      # together (credentials, s3/manager, etc. all landed as separate
+      # PRs on 2026-06-09).
+      aws-sdk:
+        patterns:
+          - "github.com/aws/aws-sdk-go-v2*"
+          - "github.com/aws/smithy-go"
       # Group related Go dependencies
       cobra-viper:
         patterns:
@@ -152,7 +179,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "wednesday"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
@@ -176,10 +203,24 @@ updates:
     directory: "/apps/helper/src-tauri"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "thursday"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
+    groups:
+      # RustCrypto crates share the `digest` core and break when bumped
+      # individually — sha2 0.11 + hmac 0.13 were an inseparable pair
+      # (#1082/#1083 each broke the build alone; merged together in #1146).
+      rustcrypto:
+        patterns:
+          - "sha2"
+          - "sha1"
+          - "hmac"
+          - "digest"
+          - "md-5"
+          - "cipher"
+          - "aes*"
+          - "crypto-common"
     labels:
       - "dependencies"
       - "rust"
@@ -194,10 +235,22 @@ updates:
     directory: "/apps/viewer/src-tauri"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "thursday"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
+    groups:
+      # Same coupling as the helper: RustCrypto crates move together.
+      rustcrypto:
+        patterns:
+          - "sha2"
+          - "sha1"
+          - "hmac"
+          - "digest"
+          - "md-5"
+          - "cipher"
+          - "aes*"
+          - "crypto-common"
     labels:
       - "dependencies"
       - "rust"
