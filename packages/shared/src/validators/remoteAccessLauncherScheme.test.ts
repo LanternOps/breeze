@@ -1,7 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { ALLOWED_LAUNCHER_SCHEMES, isAllowedLauncherScheme } from './remoteAccessLauncherScheme';
+import {
+  ALLOWED_LAUNCHER_SCHEMES,
+  DISALLOWED_LAUNCHER_SCHEMES,
+  isAllowedLauncherScheme,
+} from './remoteAccessLauncherScheme';
 
 describe('isAllowedLauncherScheme', () => {
+  it('keeps the allowlist and the dangerous denylist disjoint', () => {
+    // Load-bearing invariant: the allowlist short-circuits before the denylist,
+    // so a scheme on BOTH lists would be silently un-blocked — reintroducing the
+    // exact XSS vector this guard exists to prevent. The denylist is the floor.
+    for (const scheme of ALLOWED_LAUNCHER_SCHEMES) {
+      expect(DISALLOWED_LAUNCHER_SCHEMES.has(scheme)).toBe(false);
+    }
+  });
+
   it('exposes the known-good scheme allowlist', () => {
     // The guard is allowlist-first: these well-known remote-access (and web)
     // schemes are explicitly permitted. The set is exported so the client can

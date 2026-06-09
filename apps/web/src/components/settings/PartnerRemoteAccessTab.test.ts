@@ -21,7 +21,14 @@ describe('urlTemplateError', () => {
     expect(urlTemplateError('file:///etc/passwd')).toMatch(/not permitted|blocked|allowed/i);
   });
 
-  it('accepts allowlisted and custom non-dangerous schemes', () => {
+  it('mirrors the server {id}-placeholder requirement inline', () => {
+    // The server rejects a template without {id}; surface that inline too so the
+    // user does not only find out on save.
+    expect(urlTemplateError('https://acme.example.com/static')).toMatch(/\{id\}/i);
+    expect(urlTemplateError('rustdesk://host?password={password}')).toMatch(/\{id\}/i);
+  });
+
+  it('accepts allowlisted and custom non-dangerous schemes with {id}', () => {
     expect(urlTemplateError('rustdesk://{id}?password={password}')).toBeNull();
     expect(urlTemplateError('https://acme.example.com/Host#Access///{id}/Join')).toBeNull();
     expect(urlTemplateError('bdunn-rustremote://{id}')).toBeNull();

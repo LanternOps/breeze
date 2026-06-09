@@ -19,7 +19,11 @@ export const ALLOWED_LAUNCHER_SCHEMES: ReadonlySet<string> = new Set([
   'https', 'http', 'rustdesk', 'teamviewer', 'anydesk', 'splashtop', 'screenconnect',
 ]);
 
-const DISALLOWED_SCHEMES: ReadonlySet<string> = new Set([
+// The hard floor: no scheme — allowlisted or custom — may ever cross this set.
+// Exported so callers/tests can assert it stays disjoint from the allowlist (a
+// scheme on both lists would be silently un-blocked by the allowlist short
+// circuit below).
+export const DISALLOWED_LAUNCHER_SCHEMES: ReadonlySet<string> = new Set([
   'javascript', 'data', 'vbscript', 'file', 'about', 'chrome', 'jar', 'blob',
   'view-source', 'filesystem',
 ]);
@@ -32,5 +36,5 @@ export function isAllowedLauncherScheme(urlOrTemplate: string): boolean {
   const scheme = m[1]?.toLowerCase();
   if (!scheme) return false;
   if (ALLOWED_LAUNCHER_SCHEMES.has(scheme)) return true;
-  return !DISALLOWED_SCHEMES.has(scheme);
+  return !DISALLOWED_LAUNCHER_SCHEMES.has(scheme);
 }

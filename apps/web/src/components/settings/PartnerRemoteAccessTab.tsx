@@ -7,8 +7,8 @@ import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@bre
 const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
 
 // Inline validation for a provider's URL template. Mirrors the server guard
-// (orgs.ts uses isAllowedLauncherScheme) so a partner admin sees a blocked
-// scheme immediately instead of only on save. See #714/#680.
+// (orgs.ts: allowed scheme + the {id} placeholder) so a partner admin sees a
+// problem immediately instead of only on save. See #714/#680.
 export function urlTemplateError(template: string): string | null {
   if (template.length === 0) return null;
   if (!SCHEME_PREFIX.test(template)) {
@@ -16,6 +16,9 @@ export function urlTemplateError(template: string): string | null {
   }
   if (!isAllowedLauncherScheme(template)) {
     return 'That URL scheme is not permitted — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: and filesystem: are blocked.';
+  }
+  if (!template.includes('{id}')) {
+    return 'URL template must include the {id} placeholder for the per-device value.';
   }
   return null;
 }
