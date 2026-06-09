@@ -15,7 +15,9 @@
 //! The Go `Envelope` JSON keys are: `id`, `seq`, `type`, `payload`, `error`
 //! (omitempty), `hmac`.
 
-use hmac::{Hmac, Mac};
+// digest 0.11 (via hmac 0.13 / sha2 0.11) moved `new_from_slice` to the
+// `KeyInit` trait, so it must be in scope alongside `Mac`.
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sha2::Sha256;
