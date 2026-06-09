@@ -14,14 +14,16 @@
 // would pull the wrapper back into its eager chunk.
 //
 // Must resolve before the Monaco editor first initialises the loader; callers
-// await it ahead of importing the editor component. Idempotent: the underlying
-// loader only honours the first config() call, and re-invoking it after init
-// would log a warning, so we guard against repeat calls ourselves.
+// await it ahead of importing the editor component. Idempotent: once the editor
+// has called loader.init(), the loader reads its config a single time, so a
+// later config() is a no-op — we keep the guard so the intent is explicit and
+// callers can await it freely. The flag is only set after config() succeeds, so
+// a failed dynamic import doesn't latch the guard and block a later retry.
 let configured = false;
 
 export async function configureMonacoLoader(): Promise<void> {
   if (configured) return;
-  configured = true;
   const { loader } = await import('@monaco-editor/react');
   loader.config({ paths: { vs: '/monaco/vs' } });
+  configured = true;
 }

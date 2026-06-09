@@ -48,4 +48,18 @@ describe('configureMonacoLoader', () => {
 
     expect(config).toHaveBeenCalledTimes(1);
   });
+
+  it('retries configuration after a failed attempt (guard does not latch on error)', async () => {
+    config.mockImplementationOnce(() => {
+      throw new Error('transient loader failure');
+    });
+    const { configureMonacoLoader } = await import('./monacoLoader');
+
+    await expect(configureMonacoLoader()).rejects.toThrow('transient loader failure');
+    // A later call must still configure the loader rather than silently
+    // returning early — otherwise Monaco could init against the CDN default.
+    await configureMonacoLoader();
+
+    expect(config).toHaveBeenCalledTimes(2);
+  });
 });
