@@ -18,7 +18,7 @@ vi.mock('../db', () => {
       select: () => ({ from: () => ({ where: () => ({ limit }) }) }),
       __limit: limit,
     },
-    hasDbAccessContext: vi.fn(() => true),
+    runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
 });
@@ -180,6 +180,28 @@ describe('enforceIpAllowlist', () => {
         result: 'success',
       }),
     );
+  });
+
+  it('reads the allowlist outside the request RLS context (system scope)', async () => {
+    // Regression: org-scoped requests have an empty accessible_partner_ids,
+    // so reading partners under the request context throws "partner not
+    // found" and locks every customer-org user out. The read must exit the
+    // request context and run under the system context instead.
+    const mod = await import('../db');
+    vi.mocked(mod.runOutsideDbContext).mockClear();
+    vi.mocked(mod.withSystemDbAccessContext).mockClear();
+    clearPartnerAllowlistCache('partner-ctx');
+    limit.mockResolvedValueOnce([{ settings: { security: { ipAllowlist: ['10.0.0.0/8'] } } }]);
+    serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('10.1.2.3');
+
+    const decision = await enforceIpAllowlist(c, {
+      partnerId: 'partner-ctx',
+      isPlatformAdmin: false,
+    });
+
+    expect(decision).toEqual({ decision: 'allow' });
+    expect(vi.mocked(mod.runOutsideDbContext)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(mod.withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
   });
 
   it('skips without reading the allowlist when partnerId is null', async () => {

@@ -14,6 +14,9 @@ export default defineConfig({
       'astro:transitions/client': fileURLToPath(
         new URL('./src/__mocks__/astro-transitions-client.ts', import.meta.url)
       ),
+      'astro:middleware': fileURLToPath(
+        new URL('./src/__mocks__/astro-middleware.ts', import.meta.url)
+      ),
     }
   },
   test: {

@@ -17,8 +17,11 @@ import {
   organizations,
   sites,
   partnerUsers,
-  organizationUsers
+  organizationUsers,
+  permissions,
+  rolePermissions
 } from '../../db/schema';
+import { and, eq } from 'drizzle-orm';
 
 // Use any for database to avoid complex type inference issues in tests
 // Runtime errors will be caught by actual integration test execution
@@ -190,6 +193,44 @@ export async function createRole(options: CreateRoleOptions) {
   return role;
 }
 
+/**
+ * Grant resource/action permissions to a role through the real
+ * permissions catalog + role_permissions join (the same tables
+ * getUserPermissions resolves at request time). Rows in the global
+ * `permissions` catalog are found-or-created so repeated runs stay
+ * idempotent regardless of whether cleanup truncates the catalog.
+ */
+export async function grantRolePermissions(
+  roleId: string,
+  perms: Array<{ resource: string; action: string }>
+) {
+  const database = db();
+
+  for (const perm of perms) {
+    let [permissionRow] = await database
+      .select({ id: permissions.id })
+      .from(permissions)
+      .where(and(eq(permissions.resource, perm.resource), eq(permissions.action, perm.action)))
+      .limit(1);
+
+    if (!permissionRow) {
+      [permissionRow] = await database
+        .insert(permissions)
+        .values({
+          resource: perm.resource,
+          action: perm.action,
+          description: 'integration test grant'
+        })
+        .returning({ id: permissions.id });
+    }
+
+    await database.insert(rolePermissions).values({
+      roleId,
+      permissionId: permissionRow.id
+    });
+  }
+}
+
 // ============================================
 // User Assignment Utilities
 // ============================================
@@ -254,6 +295,14 @@ export interface SetupTestEnvironmentOptions {
   userOptions?: Partial<Omit<CreateUserOptions, 'partnerId' | 'orgId'>>;
   partnerOptions?: CreatePartnerOptions;
   scope?: 'system' | 'partner' | 'organization';
+  /**
+   * Permissions granted to the created role. Defaults to a `*`/`*` wildcard
+   * so the client passes `requirePermission` gates the way a real admin role
+   * would (production seeds grant every device-viewing role DEVICES_READ
+   * etc. — a role with zero permission rows only exists in tests). Pass an
+   * explicit array (or `[]` for a permissionless role) to test RBAC denials.
+   */
+  rolePermissions?: Array<{ resource: string; action: string }>;
 }
 
 /**
@@ -290,6 +339,13 @@ export async function setupTestEnvironment(
     partnerId: scope === 'partner' ? partner.id : undefined,
     orgId: scope === 'organization' ? organization.id : undefined
   });
+
+  // Grant permissions so requirePermission-gated routes behave as they do
+  // for a real seeded role (wildcard by default; see option docs).
+  await grantRolePermissions(
+    role.id,
+    options.rolePermissions ?? [{ resource: '*', action: '*' }]
+  );
 
   // Assign user based on scope
   if (scope === 'partner') {

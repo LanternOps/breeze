@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema/orgs';
 import { ipMatchesAny } from './ipMatch';
 import { getTrustedClientIpOrUndefined } from './clientIp';
@@ -107,10 +107,16 @@ export async function enforceIpAllowlist(
   if (!params.partnerId) return { decision: 'skip', reason: 'no_partner' };
 
   const mode = ipAllowlistMode();
-  const readList = () => readPartnerAllowlist(params.partnerId as string);
-  const allowlist = mode === 'off'
-    ? []
-    : (hasDbAccessContext() ? await readList() : await withSystemDbAccessContext(readList));
+  // The partner-settings read must NOT run under the request's RLS context:
+  // org-scoped callers have an empty accessible_partner_ids, so the partners
+  // row is invisible to them and the read throws "partner not found" (which
+  // the guard converts to a 503 — locking every customer-org user out).
+  // `withSystemDbAccessContext` alone is not enough: inside an active request
+  // context it is a no-op that inherits the caller's RLS scope, so the
+  // AsyncLocalStorage context has to be exited first.
+  const readList = () =>
+    runOutsideDbContext(() => withSystemDbAccessContext(() => readPartnerAllowlist(params.partnerId as string)));
+  const allowlist = mode === 'off' ? [] : await readList();
   const clientIp = getTrustedClientIpOrUndefined(c);
 
   const decision = evaluateIpAllowlist({

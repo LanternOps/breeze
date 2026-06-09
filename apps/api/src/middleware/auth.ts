@@ -425,7 +425,11 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
   const canAccessSite = siteAccessCheck(allowedSiteIds);
 
-  await withDbAccessContext(
+  // The return value matters: ipAllowlistGuard returns its deny/error
+  // Response as a value (it does not throw). Dropping it leaves the Hono
+  // context unfinalized — every gated request then 500s with "Context is
+  // not finalized" instead of the intended 403/503.
+  return withDbAccessContext(
     {
       scope: payload.scope,
       orgId: payload.orgId,
