@@ -14,12 +14,12 @@
     "doc-verify:run": "tsx doc-verify/cli.ts run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.100.1",
+    "@anthropic-ai/sdk": "^0.102.0",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "@types/pg": "^8.20.0",
     "pg": "^8.21.0",
     "playwright": "^1.58.2",
