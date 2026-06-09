@@ -21,6 +21,9 @@ on:
 env:
   PNPM_VERSION: '10.33.4'
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
     name: BINARY_SOURCE=local download path
