@@ -19,7 +19,7 @@
     "lucide-react": "^1.14.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "zustand": "^5.0.12"
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
