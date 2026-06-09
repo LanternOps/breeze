@@ -1,4 +1,8 @@
 import 'dotenv/config';
+// Canonicalize NODE_ENV before any module reads it (some routes/services gate
+// on `NODE_ENV === 'production'` at import time). Must stay directly after
+// dotenv so .env is loaded first. See #917 (L-6).
+import './config/normalizeNodeEnv';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
