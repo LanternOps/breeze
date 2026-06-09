@@ -25,7 +25,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/y9o/go-openh264 v0.2.0
 	golang.org/x/net v0.55.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/sys v0.46.0
 	golang.org/x/text v0.37.0
 	google.golang.org/api v0.283.0
 	gopkg.in/yaml.v3 v3.0.1
