@@ -1,7 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { isAllowedLauncherScheme } from './remoteAccessLauncherScheme';
+import { ALLOWED_LAUNCHER_SCHEMES, isAllowedLauncherScheme } from './remoteAccessLauncherScheme';
 
 describe('isAllowedLauncherScheme', () => {
+  it('exposes the known-good scheme allowlist', () => {
+    // The guard is allowlist-first: these well-known remote-access (and web)
+    // schemes are explicitly permitted. The set is exported so the client can
+    // reuse it for inline hints.
+    expect(ALLOWED_LAUNCHER_SCHEMES).toEqual(
+      new Set(['https', 'http', 'rustdesk', 'teamviewer', 'anydesk', 'splashtop', 'screenconnect']),
+    );
+  });
+
+  it('accepts every scheme on the known-good allowlist', () => {
+    for (const scheme of ALLOWED_LAUNCHER_SCHEMES) {
+      expect(isAllowedLauncherScheme(`${scheme}://host/{id}`)).toBe(true);
+    }
+  });
+
   it('accepts known-safe remote-access schemes', () => {
     expect(isAllowedLauncherScheme('rustdesk://{id}?password={password}')).toBe(true);
     expect(isAllowedLauncherScheme('teamviewer://{id}')).toBe(true);
@@ -11,6 +26,14 @@ describe('isAllowedLauncherScheme', () => {
     expect(isAllowedLauncherScheme('http://127.0.0.1:42/{id}')).toBe(true);
     expect(isAllowedLauncherScheme('breeze://connect?id={id}')).toBe(true);
     expect(isAllowedLauncherScheme('bdunn-rustremote://{id}')).toBe(true);
+  });
+
+  it('still accepts custom (off-allowlist) schemes that are not dangerous', () => {
+    // Non-breaking: partner-configured custom protocols outside the allowlist
+    // remain allowed as long as they are not on the dangerous denylist.
+    expect(isAllowedLauncherScheme('breeze://connect?id={id}')).toBe(true);
+    expect(isAllowedLauncherScheme('bdunn-rustremote://{id}')).toBe(true);
+    expect(isAllowedLauncherScheme('my-custom-tool://{id}')).toBe(true);
   });
 
   it('rejects javascript: in any case (stored XSS via partner-admin)', () => {

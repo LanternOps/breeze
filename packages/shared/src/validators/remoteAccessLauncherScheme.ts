@@ -7,6 +7,17 @@
 // crafted urlTemplate. We block those at validation time AND on the client
 // before firing, since one source of truth on a sensitive guard like this
 // is brittle.
+//
+// The guard is allowlist-first (#714/#680): the well-known remote-access and
+// web schemes below are explicitly permitted. Anything off the allowlist is
+// still accepted as long as it is not on the dangerous denylist — partners
+// configure their own custom protocol handlers (e.g. niche remote tools), so a
+// strict allowlist would break legitimate setups. The denylist remains the
+// hard floor that no scheme, listed or custom, may cross.
+
+export const ALLOWED_LAUNCHER_SCHEMES: ReadonlySet<string> = new Set([
+  'https', 'http', 'rustdesk', 'teamviewer', 'anydesk', 'splashtop', 'screenconnect',
+]);
 
 const DISALLOWED_SCHEMES: ReadonlySet<string> = new Set([
   'javascript', 'data', 'vbscript', 'file', 'about', 'chrome', 'jar', 'blob',
@@ -20,5 +31,6 @@ export function isAllowedLauncherScheme(urlOrTemplate: string): boolean {
   if (!m) return false;
   const scheme = m[1]?.toLowerCase();
   if (!scheme) return false;
+  if (ALLOWED_LAUNCHER_SCHEMES.has(scheme)) return true;
   return !DISALLOWED_SCHEMES.has(scheme);
 }

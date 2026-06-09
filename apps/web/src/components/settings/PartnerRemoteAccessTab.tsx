@@ -1,7 +1,24 @@
 import { useCallback } from 'react';
 import { Plus, Trash2, MonitorPlay, Eye, EyeOff } from 'lucide-react';
 import { useState } from 'react';
+import { isAllowedLauncherScheme } from '@breeze/shared';
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
+
+const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
+
+// Inline validation for a provider's URL template. Mirrors the server guard
+// (orgs.ts uses isAllowedLauncherScheme) so a partner admin sees a blocked
+// scheme immediately instead of only on save. See #714/#680.
+export function urlTemplateError(template: string): string | null {
+  if (template.length === 0) return null;
+  if (!SCHEME_PREFIX.test(template)) {
+    return 'URL template must start with a scheme followed by a colon (e.g. rustdesk:, https:)';
+  }
+  if (!isAllowedLauncherScheme(template)) {
+    return 'That URL scheme is not permitted — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: and filesystem: are blocked.';
+  }
+  return null;
+}
 
 type Props = {
   data: InheritableRemoteAccessSettings;
@@ -118,10 +135,7 @@ export default function PartnerRemoteAccessTab({ data, onChange }: Props) {
       ) : (
         <div className="space-y-3">
           {providers.map((p, idx) => {
-            const templateError =
-              p.urlTemplate.length > 0 && !/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(p.urlTemplate)
-                ? 'URL template must start with a scheme followed by a colon (e.g. rustdesk:, https:)'
-                : null;
+            const templateError = urlTemplateError(p.urlTemplate);
             const isDefault = p.id === defaultProviderId;
             return (
               <div
