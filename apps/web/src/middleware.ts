@@ -6,7 +6,7 @@ function readFlag(name: string): boolean {
   return raw === '1' || raw === 'true';
 }
 
-function buildFallbackCspDirectives(options: {
+export function buildFallbackCspDirectives(options: {
   allowInlineScript: boolean;
   allowInlineStyle: boolean;
   isDev: boolean;
@@ -18,11 +18,11 @@ function buildFallbackCspDirectives(options: {
     "frame-ancestors 'self'",
     "object-src 'none'",
     options.allowInlineScript
-      ? "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com"
-      : "script-src 'self' https://cdn.jsdelivr.net https://static.cloudflareinsights.com",
+      ? "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com"
+      : "script-src 'self' https://static.cloudflareinsights.com",
     options.allowInlineStyle
-      ? "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
-      : "style-src 'self' https://cdn.jsdelivr.net",
+      ? "style-src 'self' 'unsafe-inline'"
+      : "style-src 'self'",
     "worker-src 'self' blob:",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
@@ -37,7 +37,7 @@ function buildFallbackCspDirectives(options: {
   // style-src to be silently ignored.  The granular style-src-elem and
   // style-src-attr directives are evaluated independently and don't inherit the
   // hashes from style-src, so 'unsafe-inline' works in both.
-  directives.push("style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net");
+  directives.push("style-src-elem 'self' 'unsafe-inline'");
   directives.push("style-src-attr 'unsafe-inline'");
 
   if (!options.allowInlineScript) {
@@ -53,7 +53,7 @@ const strictFallbackCspDirectives = buildFallbackCspDirectives({
   isDev: import.meta.env.DEV
 });
 
-function relaxExistingCsp(
+export function relaxExistingCsp(
   csp: string,
   options: { allowInlineScript: boolean; allowInlineStyle: boolean }
 ): string {
@@ -101,7 +101,7 @@ function relaxExistingCsp(
   );
   directives.length = 0;
   directives.push(...filteredStyleGranular);
-  directives.push("style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net");
+  directives.push("style-src-elem 'self' 'unsafe-inline'");
   directives.push("style-src-attr 'unsafe-inline'");
 
   return directives.join('; ');
@@ -186,7 +186,7 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     // attributes at runtime.  Astro's hashes in style-src nullify 'unsafe-inline'
     // there, but these granular directives are evaluated independently.
     if (!/\bstyle-src-elem\b/i.test(patchedCsp)) {
-      patchedCsp = `${patchedCsp}; style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net`;
+      patchedCsp = `${patchedCsp}; style-src-elem 'self' 'unsafe-inline'`;
     }
     if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
       patchedCsp = `${patchedCsp}; style-src-attr 'unsafe-inline'`;

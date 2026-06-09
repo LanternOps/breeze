@@ -74,7 +74,6 @@ export default defineConfig({
         // longer-term we should migrate to a nonce-based CSP.
         resources: [
           "'self'",
-          'https://cdn.jsdelivr.net',
           'https://static.cloudflareinsights.com',
           "'sha256-dr7co1YqmJP1+caEJBfXkM/oHRwOVAknT+gDygo8nD0='",
           "'sha256-6wgjuQN80bYuvy8C2/v+mFX1HAEgrfvSs+beElRyx+8='"
@@ -84,7 +83,7 @@ export default defineConfig({
         // 'unsafe-inline' required because xterm.js injects dynamic inline
         // styles at runtime for terminal colors, cursor, and cell rendering.
         // These cannot be pre-hashed at build time.
-        resources: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net']
+        resources: ["'self'", "'unsafe-inline'"]
       }
     }
   },

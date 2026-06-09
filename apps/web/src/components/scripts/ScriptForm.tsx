@@ -7,6 +7,7 @@ import type { EditorProps } from '@monaco-editor/react';
 import ScriptAiPanel from './ScriptAiPanel';
 import CollapsibleSection from './CollapsibleSection';
 import { cn } from '@/lib/utils';
+import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
 import type { OSType } from './ScriptList';
@@ -50,7 +51,12 @@ export default function ScriptForm({
     const loadEditor = () => {
       editorInstanceRef.current = null;
       setEditorLoadError(null);
-      import('@monaco-editor/react')
+      // Point Monaco's loader at our self-hosted /monaco/vs assets before the
+      // editor module initialises it, so it never reaches cdn.jsdelivr.net
+      // (which the CSP no longer allows). Chained so config() always lands
+      // before the editor first inits the loader. See #1023.
+      configureMonacoLoader()
+        .then(() => import('@monaco-editor/react'))
         .then((mod) => {
           if (!cancelled) setMonacoEditor(() => mod.default);
         })
