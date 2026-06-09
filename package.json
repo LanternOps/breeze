@@ -29,6 +29,7 @@
   "pnpm": {
     "overrides": {
       "axios@>=1.0.0 <1.15.2": ">=1.15.2",
+      "shell-quote@<1.8.4": ">=1.8.4",
       "fast-xml-parser@<5.5.7": ">=5.5.7",
       "fast-xml-parser@<5.7.0": ">=5.7.0",
       "brace-expansion@<1.1.13": ">=1.1.13",
