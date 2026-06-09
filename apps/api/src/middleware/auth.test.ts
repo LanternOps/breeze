@@ -31,6 +31,18 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
 
+// Default to pass-through; the propagation test below overrides it to
+// return a deny Response the way the real guard does.
+const ipGuardMocks = vi.hoisted(() => ({
+  ipAllowlistGuard: vi.fn(async (_c: unknown, next: () => Promise<void>) => {
+    await next();
+  })
+}));
+
+vi.mock('./ipAllowlistGuard', () => ({
+  ipAllowlistGuard: ipGuardMocks.ipAllowlistGuard
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
@@ -255,6 +267,27 @@ describe('authMiddleware', () => {
       }),
       expect.any(Function)
     );
+  });
+
+  it('propagates the ipAllowlistGuard deny Response instead of swallowing it', async () => {
+    // Regression: the guard returns its 403 as a value (it does not throw).
+    // authMiddleware must return the withDbAccessContext result, otherwise
+    // the Response is dropped, the Hono context is never finalized, and the
+    // request 500s with "Context is not finalized" instead of the 403.
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    mockUserSelect([activeUser]);
+    ipGuardMocks.ipAllowlistGuard.mockImplementationOnce(async (c: any) =>
+      c.json({ code: 'ip_not_allowed', error: 'Access denied from this IP address' }, 403)
+    );
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('ip_not_allowed');
   });
 
   it('rejects active users when their tenant context is inactive or deleted', async () => {
