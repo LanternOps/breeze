@@ -36,51 +36,58 @@ func TestIsDowngrade(t *testing.T) {
 
 func TestHelperUpgradeAllowed(t *testing.T) {
 	cases := []struct {
-		name        string
-		target      string
-		installed   string
-		wantAllowed bool
-		wantReason  bool // expect a non-empty refusal reason
+		name            string
+		target          string
+		installed       string
+		installedOnDisk bool
+		wantAllowed     bool
+		wantReason      bool // expect a non-empty refusal reason
 	}{
 		// Downgrades refused (the MUST-FIX: replayed older signed release).
-		{"downgrade patch refused", "0.68.1", "0.68.2", false, true},
-		{"downgrade minor refused", "0.67.9", "0.68.0", false, true},
-		{"downgrade major refused", "0.99.9", "1.0.0", false, true},
-		{"v-prefix downgrade refused", "v0.68.1", "0.68.2", false, true},
+		{name: "downgrade patch refused", target: "0.68.1", installed: "0.68.2", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "downgrade minor refused", target: "0.67.9", installed: "0.68.0", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "downgrade major refused", target: "0.99.9", installed: "1.0.0", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "v-prefix downgrade refused", target: "v0.68.1", installed: "0.68.2", installedOnDisk: true, wantAllowed: false, wantReason: true},
 
 		// Upgrades allowed.
-		{"upgrade patch allowed", "0.68.3", "0.68.2", true, false},
-		{"upgrade minor allowed", "0.69.0", "0.68.9", true, false},
-		{"upgrade major allowed", "1.0.0", "0.99.9", true, false},
-		{"v-prefix upgrade allowed", "v0.69.0", "v0.68.2", true, false},
+		{name: "upgrade patch allowed", target: "0.68.3", installed: "0.68.2", installedOnDisk: true, wantAllowed: true, wantReason: false},
+		{name: "upgrade minor allowed", target: "0.69.0", installed: "0.68.9", installedOnDisk: true, wantAllowed: true, wantReason: false},
+		{name: "upgrade major allowed", target: "1.0.0", installed: "0.99.9", installedOnDisk: true, wantAllowed: true, wantReason: false},
+		{name: "v-prefix upgrade allowed", target: "v0.69.0", installed: "v0.68.2", installedOnDisk: true, wantAllowed: true, wantReason: false},
 
 		// Equal version allowed through (CheckUpdate/applyPendingUpdate
 		// already no-op when installed == target).
-		{"same version allowed", "0.68.2", "0.68.2", true, false},
+		{name: "same version allowed", target: "0.68.2", installed: "0.68.2", installedOnDisk: true, wantAllowed: true, wantReason: false},
 
-		// Fresh install: no helper installed yet — not a downgrade.
-		{"fresh install empty installed allowed", "0.68.2", "", true, false},
-		{"fresh install whitespace installed allowed", "0.68.2", "   ", true, false},
+		// Fresh install: no helper installed yet (not on disk) — not a downgrade.
+		{name: "fresh install empty installed allowed", target: "0.68.2", installed: "", installedOnDisk: false, wantAllowed: true, wantReason: false},
+		{name: "fresh install whitespace installed allowed", target: "0.68.2", installed: "   ", installedOnDisk: false, wantAllowed: true, wantReason: false},
+
+		// SECURITY (the fix): helper present on disk but version unreadable.
+		// Empty version + on-disk must FAIL CLOSED — we cannot prove the
+		// directive isn't a downgrade replay.
+		{name: "on-disk but version unreadable refused", target: "0.68.2", installed: "", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "on-disk but version whitespace refused", target: "0.68.2", installed: "   ", installedOnDisk: true, wantAllowed: false, wantReason: true},
 
 		// Malformed versions fail closed (unlike agent-path isDowngrade).
-		{"malformed target refused", "dev", "0.68.2", false, true},
-		{"empty target refused", "", "0.68.2", false, true},
-		{"two-part target refused", "0.68", "0.68.2", false, true},
-		{"malformed installed refused", "0.68.3", "dev", false, true},
-		{"both malformed refused", "dev", "dev", false, true},
+		{name: "malformed target refused", target: "dev", installed: "0.68.2", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "empty target refused", target: "", installed: "0.68.2", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "two-part target refused", target: "0.68", installed: "0.68.2", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "malformed installed refused", target: "0.68.3", installed: "dev", installedOnDisk: true, wantAllowed: false, wantReason: true},
+		{name: "both malformed refused", target: "dev", installed: "dev", installedOnDisk: true, wantAllowed: false, wantReason: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			allowed, reason := helperUpgradeAllowed(tc.target, tc.installed)
+			allowed, reason := helperUpgradeAllowed(tc.target, tc.installed, tc.installedOnDisk)
 			if allowed != tc.wantAllowed {
-				t.Fatalf("helperUpgradeAllowed(%q, %q) allowed = %v, want %v (reason=%q)",
-					tc.target, tc.installed, allowed, tc.wantAllowed, reason)
+				t.Fatalf("helperUpgradeAllowed(%q, %q, %v) allowed = %v, want %v (reason=%q)",
+					tc.target, tc.installed, tc.installedOnDisk, allowed, tc.wantAllowed, reason)
 			}
 			if tc.wantReason && reason == "" {
-				t.Fatalf("helperUpgradeAllowed(%q, %q) refused without a reason", tc.target, tc.installed)
+				t.Fatalf("helperUpgradeAllowed(%q, %q, %v) refused without a reason", tc.target, tc.installed, tc.installedOnDisk)
 			}
 			if !tc.wantReason && reason != "" {
-				t.Fatalf("helperUpgradeAllowed(%q, %q) allowed but returned reason %q", tc.target, tc.installed, reason)
+				t.Fatalf("helperUpgradeAllowed(%q, %q, %v) allowed but returned reason %q", tc.target, tc.installed, tc.installedOnDisk, reason)
 			}
 		})
 	}
