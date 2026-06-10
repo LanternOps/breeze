@@ -17,6 +17,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  smallint,
   text,
   timestamp,
   uuid,
@@ -69,6 +70,11 @@ export const pamRules = pgTable(
     matchParentImage: text('match_parent_image'),
     matchUser: varchar('match_user', { length: 255 }),
     matchAdGroup: varchar('match_ad_group', { length: 255 }),
+    // Tool-action criteria (Phase 1 Helper governance). A rule is either
+    // executable-shaped (signer/hash/path/parent) or tool-action-shaped
+    // (tool name / risk tier) — the API layer rejects mixing the two.
+    matchToolName: varchar('match_tool_name', { length: 100 }),
+    matchRiskTier: smallint('match_risk_tier'),
     timeWindow: jsonb('time_window').$type<PamRuleTimeWindow | null>(),
 
     verdict: pamRuleVerdictEnum('verdict').notNull(),
