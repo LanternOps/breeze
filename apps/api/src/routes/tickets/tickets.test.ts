@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, dbSelectMock } = vi.hoisted(() => ({
+const { serviceMocks, dbSelectMock, dbGroupByMock } = vi.hoisted(() => ({
   serviceMocks: {
     createTicket: vi.fn(),
     changeTicketStatus: vi.fn(),
@@ -11,7 +11,8 @@ const { serviceMocks, dbSelectMock } = vi.hoisted(() => ({
     unlinkAlertFromTicket: vi.fn(),
     createTicketFromAlert: vi.fn()
   },
-  dbSelectMock: vi.fn()
+  dbSelectMock: vi.fn(),
+  dbGroupByMock: vi.fn()
 }));
 
 vi.mock('../../services/ticketService', async () => {
@@ -57,6 +58,7 @@ vi.mock('../../db', () => ({
         })),
         where: vi.fn(() => ({
           orderBy: vi.fn(() => Promise.resolve([])),
+          groupBy: vi.fn(() => dbGroupByMock()),
           limit: vi.fn(() => dbSelectMock())
         }))
       }))
@@ -146,5 +148,32 @@ describe('POST /tickets', () => {
       body: JSON.stringify({ orgId: '3f2f1d8e-1111-4222-8333-444455556666', subject: 'x' })
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /tickets/stats', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('aggregates open / unassigned / mine / breached counts via groupBy', async () => {
+    // auth user id is 'u-1' (set in requireScope mock above)
+    // Rows: open+assigned-to-u1+not-breached(3), new+unassigned+breached(2)
+    const mockRows = [
+      { status: 'open', assignedTo: 'u-1', breached: false, count: 3 },
+      { status: 'new',  assignedTo: null,   breached: true,  count: 2 }
+    ];
+    dbGroupByMock.mockResolvedValue(mockRows);
+
+    const res = await makeApp().request('/tickets/stats');
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    // open: both rows have open-statuses ('open','new') → 3+2 = 5
+    // unassigned: row 2 has no assignedTo → 2
+    // mine: row 1 has assignedTo === 'u-1' → 3
+    // breached: row 2 has breached=true → 2
+    expect(body.data).toEqual({ open: 5, unassigned: 2, mine: 3, breached: 2 });
+
+    // Ensure groupBy was used (not orderBy) — the mock resolves via dbGroupByMock
+    expect(dbGroupByMock).toHaveBeenCalledTimes(1);
   });
 });

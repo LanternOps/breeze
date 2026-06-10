@@ -61,7 +61,7 @@ ticketsRoutes.get(
       })
       .from(tickets)
       .where(whereCondition)
-      .orderBy(tickets.status, tickets.assignedTo, sql`(${tickets.slaBreachedAt} IS NOT NULL)`);
+      .groupBy(tickets.status, tickets.assignedTo, sql`(${tickets.slaBreachedAt} IS NOT NULL)`);
 
     let open = 0, unassigned = 0, mine = 0, breached = 0;
     for (const r of rows) {
