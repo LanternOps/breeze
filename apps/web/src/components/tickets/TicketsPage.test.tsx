@@ -78,10 +78,13 @@ const ORGS = { data: [{ id: 'org-1', name: 'Acme Corp' }, { id: 'org-2', name: '
 const CATEGORIES = { data: [{ id: 'cat-1', name: 'Hardware', isActive: true }, { id: 'cat-2', name: 'Retired', isActive: false }] };
 const USERS = { data: [{ id: 'user-1', name: 'Todd', email: 'todd@example.com', status: 'active' }] };
 
+const BULK_RESULT = { data: { updated: 2, skipped: 0, failed: 0, total: 2 } };
+
 function mockListApi(tickets: TicketSummary[] | ((url: string) => TicketSummary[]), opts: { usersFail?: boolean } = {}) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
     if (url === '/tickets/stats') return makeJsonResponse(STATS);
+    if (url === '/tickets/bulk') return makeJsonResponse(BULK_RESULT);
     if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
     if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
@@ -233,6 +236,107 @@ describe('TicketsPage', () => {
     fireEvent.click(screen.getByTestId('tickets-tab-mine'));
     expect(screen.getByTestId('tickets-filter-assignee')).toBeDisabled();
     expect(screen.getByTestId('tickets-filter-assignee')).toHaveAttribute('title', 'Tab already filters by assignee');
+  });
+
+  describe('bulk selection', () => {
+    it('selecting two rows shows the bulk bar with "2 selected" without changing the workbench selection', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Auto-select picks the first row for the workbench.
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      });
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+
+      expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('2 selected');
+      // Checkbox clicks must NOT drive row selection (stopPropagation / sibling layout).
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('applying a status POSTs /tickets/bulk with both ids, toasts the aggregate, and clears the bar', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        const bulkCall = fetchMock.mock.calls.find((call) => String(call[0]) === '/tickets/bulk');
+        expect(bulkCall).toBeTruthy();
+        const body = JSON.parse(String((bulkCall![1] as RequestInit).body));
+        expect(body).toEqual({
+          ticketIds: expect.arrayContaining(['tk-healthy', 'tk-risk']),
+          action: 'status',
+          status: 'closed'
+        });
+        expect(body.ticketIds).toHaveLength(2);
+      });
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '2 updated' });
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull();
+      });
+    });
+
+    it('applying an assignee POSTs action=assign; "Unassign" maps to assigneeId null', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+
+      fireEvent.change(screen.getByTestId('tickets-bulk-assignee'), { target: { value: 'unassign' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        const bulkCall = fetchMock.mock.calls.find((call) => String(call[0]) === '/tickets/bulk');
+        expect(bulkCall).toBeTruthy();
+        const body = JSON.parse(String((bulkCall![1] as RequestInit).body));
+        expect(body).toEqual({ ticketIds: ['tk-healthy'], action: 'assign', assigneeId: null });
+      });
+    });
+
+    it('switching tabs clears the selection and hides the bulk bar', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      expect(screen.getByTestId('tickets-bulk-bar')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('tickets-tab-unassigned'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull();
+      });
+    });
+
+    it('Clear empties the selection; Select all selects every visible row', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+
+      fireEvent.click(screen.getByTestId('tickets-bulk-select-all'));
+      expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('3 selected');
+
+      fireEvent.click(screen.getByTestId('tickets-bulk-clear'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull();
+      });
+    });
   });
 
   it('active filter with empty results shows clear-filters; clicking resets and refetches', async () => {

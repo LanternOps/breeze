@@ -40,6 +40,24 @@ export const assignTicketSchema = z.object({
   assigneeId: z.string().uuid().nullable()
 });
 
+// Bulk queue actions (assign / status). Resolving is intentionally excluded:
+// it requires a per-ticket resolution note, so it stays a per-ticket action.
+export const bulkTicketActionSchema = z.object({
+  ticketIds: z.array(z.string().uuid()).min(1).max(100),
+  action: z.enum(['assign', 'status']),
+  assigneeId: z.string().uuid().nullable().optional(),
+  status: ticketStatusSchema.optional()
+}).refine(
+  (v) => v.action !== 'assign' || v.assigneeId !== undefined,
+  { message: 'assigneeId is required when action is assign (null to unassign)', path: ['assigneeId'] }
+).refine(
+  (v) => v.action !== 'status' || v.status !== undefined,
+  { message: 'status is required when action is status', path: ['status'] }
+).refine(
+  (v) => v.action !== 'status' || v.status !== 'resolved',
+  { message: 'Resolving requires a per-ticket resolution note; resolve tickets individually', path: ['status'] }
+);
+
 export const addTicketCommentSchema = z.object({
   content: z.string().min(1).max(50_000),
   isPublic: z.boolean().default(true)

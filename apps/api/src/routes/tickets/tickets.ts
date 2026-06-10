@@ -30,7 +30,7 @@ const CLOSED_STATUSES = ['resolved', 'closed'] as const;
 const PRIORITY_ORDER = sql`CASE ${tickets.priority}
   WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END`;
 
-function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
+export function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
   const auth = c.get('auth');
   return { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
 }
@@ -55,7 +55,7 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
  * - partner scope: adds eq(partnerId, auth.partnerId); null partnerId as not-found
  * - system scope: no extra condition (unrestricted)
  */
-async function getScopedTicketOr404(
+export async function getScopedTicketOr404(
   auth: AuthContext,
   id: string
 ): Promise<(typeof tickets.$inferSelect) | null> {

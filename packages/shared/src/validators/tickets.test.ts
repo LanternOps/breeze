@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
-  ticketCategoryInputSchema
+  ticketCategoryInputSchema, bulkTicketActionSchema
 } from './tickets';
 
 describe('ticket validators', () => {
@@ -59,5 +59,45 @@ describe('ticket validators', () => {
   it('category validates hex color', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: '#1c8a9e' }).success).toBe(true);
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
+  });
+
+  describe('bulkTicketActionSchema', () => {
+    const ID = '3f2f1d8e-1111-4222-8333-444455556666';
+    const ASSIGNEE = '5a6b7c8d-1234-4321-abcd-000011112222';
+
+    it('accepts assign with a uuid assignee and with null (unassign)', () => {
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'assign', assigneeId: ASSIGNEE }).success).toBe(true);
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'assign', assigneeId: null }).success).toBe(true);
+    });
+
+    it('rejects assign without an assigneeId (refine branch)', () => {
+      const r = bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'assign' });
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues[0]?.path).toEqual(['assigneeId']);
+    });
+
+    it('accepts status for non-resolved statuses', () => {
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'status', status: 'closed' }).success).toBe(true);
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'status', status: 'on_hold' }).success).toBe(true);
+    });
+
+    it('rejects status action without a status (refine branch)', () => {
+      const r = bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'status' });
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues[0]?.path).toEqual(['status']);
+    });
+
+    it('rejects resolved — resolving requires a per-ticket resolution note (refine branch)', () => {
+      const r = bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'status', status: 'resolved' });
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues[0]?.path).toEqual(['status']);
+    });
+
+    it('enforces ticketIds bounds: 1-100 uuids', () => {
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [], action: 'status', status: 'closed' }).success).toBe(false);
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: ['not-a-uuid'], action: 'status', status: 'closed' }).success).toBe(false);
+      const tooMany = Array.from({ length: 101 }, () => ID);
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: tooMany, action: 'status', status: 'closed' }).success).toBe(false);
+    });
   });
 });

@@ -9,6 +9,9 @@ interface Props {
   loading: boolean;
   /** When set, the empty state offers a "Clear filters" action (UI brief: "View empty (filters)"). */
   onClearFilters?: () => void;
+  /** Bulk selection (UI brief §6). Checkboxes render only when onToggleSelect is provided. */
+  bulkSelectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
 }
 
 function timeAgo(iso: string): string {
@@ -18,7 +21,9 @@ function timeAgo(iso: string): string {
   return `${Math.floor(mins / (60 * 24))}d ago`;
 }
 
-export default function TicketQueueList({ tickets, selectedId, onSelect, loading, onClearFilters }: Props) {
+export default function TicketQueueList({ tickets, selectedId, onSelect, loading, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {
+  const anyBulkSelected = (bulkSelectedIds?.size ?? 0) > 0;
+
   if (loading) {
     return (
       <div className="divide-y" data-testid="tickets-queue-loading">
@@ -53,7 +58,25 @@ export default function TicketQueueList({ tickets, selectedId, onSelect, loading
   return (
     <ul className="divide-y" role="listbox" aria-label="Ticket queue" data-testid="tickets-queue">
       {tickets.map((t) => (
-        <li key={t.id}>
+        <li key={t.id} className="group relative">
+          {/* Sibling of the row button (not nested) so checkbox clicks never trigger
+              row selection. Hidden until row hover or an active selection (brief §6). */}
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={bulkSelectedIds?.has(t.id) ?? false}
+              onChange={() => onToggleSelect(t.id)}
+              onClick={(e) => e.stopPropagation()}
+              aria-label={`Select ${t.internalNumber ?? t.subject}`}
+              data-testid={`ticket-select-${t.id}`}
+              className={cn(
+                'absolute left-2 top-3 z-10 h-4 w-4 cursor-pointer accent-primary transition-opacity',
+                anyBulkSelected || bulkSelectedIds?.has(t.id)
+                  ? 'opacity-100'
+                  : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+              )}
+            />
+          )}
           <button
             type="button"
             role="option"
@@ -62,6 +85,7 @@ export default function TicketQueueList({ tickets, selectedId, onSelect, loading
             data-testid={`ticket-row-${t.id}`}
             className={cn(
               'w-full px-3 py-2.5 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              onToggleSelect && 'pl-8', // reserve the checkbox gutter
               t.id === selectedId && 'bg-primary/5 border-l-0' // selection tint; brand color reserved for selection
             )}
           >
