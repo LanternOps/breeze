@@ -59,6 +59,7 @@ vi.mock('../db/schema', () => ({
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   alerts: { id: 'id', orgId: 'orgId' },
+  devices: { id: 'id', orgId: 'orgId' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
@@ -112,6 +113,51 @@ describe('createTicket', () => {
 
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ status: 'open', assignedTo: 'u-99' });
+  });
+
+  it('rejects a deviceId belonging to a different org with a 400 TicketServiceError', async () => {
+    // selects in order: org, device (cross-org)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-OTHER' }]);
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Cross-org device', source: 'manual', deviceId: 'd-1' }, actor
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/same organization/i);
+    // Rejected before number allocation and before any insert
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown deviceId with a 404 TicketServiceError', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([]); // device lookup: no row
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Ghost device', source: 'manual', deviceId: 'd-missing' }, actor
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(err.message).toMatch(/device not found/i);
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a deviceId belonging to the same org and passes it to the insert payload', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-4', orgId: 'o-1', internalNumber: 'T-2026-0045', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Same-org device', source: 'manual', deviceId: 'd-1' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ deviceId: 'd-1' });
   });
 
   it('passes through portal submitter fields to the insert payload', async () => {
@@ -519,10 +565,12 @@ describe('createTicketFromAlert', () => {
   });
 
   it('creates a pre-filled ticket linked created_from', async () => {
-    // selects in order: alert, org (inside createTicket), ticket (inside linkAlertToTicket), alert (inside linkAlertToTicket)
+    // selects in order: alert, org (inside createTicket), device (inside createTicket),
+    // ticket (inside linkAlertToTicket), alert (inside linkAlertToTicket)
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 'a-1', orgId: 'o-1', deviceId: 'd-1', title: 'Disk 90%', message: 'C: at 92%', severity: 'high' }])
       .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-1' }])
       .mockResolvedValueOnce([{ id: 't-9', orgId: 'o-1', partnerId: 'p-1', status: 'new' }])
       .mockResolvedValueOnce([{ id: 'a-1', orgId: 'o-1', title: 'Disk 90%' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-9', orgId: 'o-1', internalNumber: 'T-2026-0042' }]);

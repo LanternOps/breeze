@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -77,6 +77,22 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     .limit(1);
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
+
+  // Cross-org guard: a deviceId must reference a device in the ticket's org.
+  // Mirrors the same-org check in linkAlertToTicket. Validated before number
+  // allocation so a rejected create doesn't burn a counter value.
+  if (input.deviceId) {
+    const deviceRows = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, input.deviceId))
+      .limit(1);
+    const device = deviceRows[0];
+    if (!device) throw new TicketServiceError('Device not found', 404);
+    if (device.orgId !== input.orgId) {
+      throw new TicketServiceError('Device must belong to the same organization as the ticket', 400);
+    }
+  }
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 

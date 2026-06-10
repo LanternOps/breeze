@@ -96,7 +96,7 @@ vi.mock('../../db/schema', () => ({
   ticketCategories: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId', id: 'id', linkType: 'linkType' },
   alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status' },
-  devices: { id: 'id', hostname: 'hostname' },
+  devices: { id: 'id', hostname: 'hostname', orgId: 'orgId' },
   organizations: { id: 'id', name: 'name' },
   users: { id: 'id', name: 'name' }
 }));
@@ -506,5 +506,94 @@ describe('PATCH /tickets/:id — scoped update', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toMatchObject({ subject: 'Updated subject' });
+  });
+
+  describe('deviceId reassignment cross-org guard', () => {
+    const DEVICE_ID = '9a8b7c6d-1111-4222-8333-444455556666';
+
+    it('400s when the new deviceId belongs to a different org', async () => {
+      // selects in order: scoped ticket lookup, device lookup
+      dbSelectMock
+        .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1' }])
+        .mockResolvedValueOnce([{ id: DEVICE_ID, orgId: 'org-OTHER' }]);
+
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID })
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/same organization/i);
+    });
+
+    it('404s when the new deviceId does not exist', async () => {
+      dbSelectMock
+        .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1' }])
+        .mockResolvedValueOnce([]); // device lookup: no row
+
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID })
+      });
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body).toHaveProperty('error', 'Device not found');
+    });
+
+    it('404s when the scoped ticket lookup finds no row (out of scope)', async () => {
+      dbSelectMock.mockResolvedValueOnce([]);
+
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID })
+      });
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body).toHaveProperty('error', 'Ticket not found');
+    });
+
+    it('updates when the new deviceId belongs to the ticket org', async () => {
+      dbSelectMock
+        .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1' }])
+        .mockResolvedValueOnce([{ id: DEVICE_ID, orgId: 'org-1' }]);
+      const updatedTicket = { ...STUB_TICKET, deviceId: DEVICE_ID };
+      const { db } = await import('../../db');
+      (db.update as any).mockReturnValue({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([updatedTicket])) }))
+        }))
+      });
+
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID })
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toMatchObject({ deviceId: DEVICE_ID });
+    });
+
+    it('clearing deviceId (null) skips the device lookup and updates directly', async () => {
+      const updatedTicket = { ...STUB_TICKET, deviceId: null };
+      const { db } = await import('../../db');
+      (db.update as any).mockReturnValue({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([updatedTicket])) }))
+        }))
+      });
+
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: null })
+      });
+      expect(res.status).toBe(200);
+      // No scoped-ticket/device selects were consumed
+      expect(dbSelectMock).not.toHaveBeenCalled();
+    });
   });
 });

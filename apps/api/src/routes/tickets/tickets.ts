@@ -305,6 +305,23 @@ ticketsRoutes.patch(
       return c.json({ error: 'Organization context required' }, 403);
     }
 
+    // Cross-org guard: a deviceId reassignment must reference a device in the
+    // ticket's org (mirrors the same-org device check in createTicket).
+    if (typeof body.deviceId === 'string') {
+      const ticket = await getScopedTicketOr404(auth, id);
+      if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+      const deviceRows = await db
+        .select({ id: devices.id, orgId: devices.orgId })
+        .from(devices)
+        .where(eq(devices.id, body.deviceId))
+        .limit(1);
+      const device = deviceRows[0];
+      if (!device) return c.json({ error: 'Device not found' }, 404);
+      if (device.orgId !== ticket.orgId) {
+        return c.json({ error: 'Device must belong to the same organization as the ticket' }, 400);
+      }
+    }
+
     // Build the scoped WHERE for the UPDATE itself so the DB also sees the constraint.
     const updateConditions: SQL[] = [eq(tickets.id, id)];
     if (auth.scope === 'organization' && auth.orgId) {
