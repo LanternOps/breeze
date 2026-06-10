@@ -12,7 +12,7 @@ import {
 } from '@breeze/shared';
 import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
-  linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
+  linkAlertToTicket, unlinkAlertFromTicket,
   TicketServiceError
 } from '../../services/ticketService';
 import type { AuthContext } from '../../middleware/auth';
@@ -75,17 +75,22 @@ async function getScopedTicketOr404(
   return rows[0] ?? null;
 }
 
+/** Sentinel returned by buildScopeConditions when the caller context is broken. */
+const SCOPE_MISSING = Symbol('SCOPE_MISSING');
+
 /**
  * Build the scope conditions for bulk queries (stats, list).
- * Returns an array of SQL conditions to splice into a caller's conditions array.
+ * Returns an array of SQL conditions to splice into a caller's conditions array,
+ * or the SCOPE_MISSING sentinel when partner scope lacks a partnerId (broken context).
  * Caller is responsible for checking auth.orgId and returning 403 before calling
  * this when scope === 'organization' and orgId is missing.
  */
-function buildScopeConditions(auth: AuthContext): SQL[] {
+function buildScopeConditions(auth: AuthContext): SQL[] | typeof SCOPE_MISSING {
   const conditions: SQL[] = [];
   if (auth.scope === 'organization' && auth.orgId) {
     conditions.push(eq(tickets.orgId, auth.orgId));
-  } else if (auth.scope === 'partner' && auth.partnerId) {
+  } else if (auth.scope === 'partner') {
+    if (!auth.partnerId) return SCOPE_MISSING;
     conditions.push(eq(tickets.partnerId, auth.partnerId));
   }
   return conditions;
@@ -102,7 +107,11 @@ ticketsRoutes.get(
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
-    const conditions: SQL[] = buildScopeConditions(auth);
+    const scopeResult = buildScopeConditions(auth);
+    if (scopeResult === SCOPE_MISSING) {
+      return c.json({ error: 'Partner context required' }, 403);
+    }
+    const conditions: SQL[] = scopeResult;
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -146,7 +155,8 @@ ticketsRoutes.get(
     if (auth.scope === 'organization') {
       if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
       conditions.push(eq(tickets.orgId, auth.orgId));
-    } else if (auth.scope === 'partner' && auth.partnerId) {
+    } else if (auth.scope === 'partner') {
+      if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
       conditions.push(eq(tickets.partnerId, auth.partnerId));
     }
     if (q.orgId) conditions.push(eq(tickets.orgId, q.orgId));
@@ -159,17 +169,19 @@ ticketsRoutes.get(
     if (q.categoryId) conditions.push(eq(tickets.categoryId, q.categoryId));
     if (q.priority) conditions.push(eq(tickets.priority, q.priority));
     if (q.search) {
-      const term = `%${q.search}%`;
+      // Escape ILIKE special chars so literal % and _ in the query aren't wildcards.
+      const escaped = q.search.replace(/[%_]/g, '\\$&');
+      const term = `%${escaped}%`;
       const searchCond = or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term));
       if (searchCond) conditions.push(searchCond);
     }
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const orderBy =
-      q.sort === 'newest' ? [desc(tickets.createdAt)]
-      : q.sort === 'oldest' ? [asc(tickets.createdAt)]
-      : q.sort === 'due' ? [asc(tickets.dueDate)]
-      : [PRIORITY_ORDER, asc(tickets.createdAt)]; // triage
+      q.sort === 'newest' ? [desc(tickets.createdAt), desc(tickets.id)]
+      : q.sort === 'oldest' ? [asc(tickets.createdAt), asc(tickets.id)]
+      : q.sort === 'due' ? [asc(tickets.dueDate), asc(tickets.id)]
+      : [PRIORITY_ORDER, asc(tickets.createdAt), asc(tickets.id)]; // triage
 
     const data = await db
       .select({
@@ -218,7 +230,14 @@ ticketsRoutes.post(
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
   zValidator('json', createTicketSchema),
   async (c) => {
+    const auth = c.get('auth');
     const body = c.req.valid('json');
+
+    // Mirror the alerts/rules convention: verify the caller can reach the target org.
+    if (!auth.canAccessOrg(body.orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
     try {
       const ticket = await createTicket({ ...body, source: 'manual' }, actorFrom(c));
       return c.json({ data: ticket }, 201);

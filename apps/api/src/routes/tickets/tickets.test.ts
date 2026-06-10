@@ -1,19 +1,34 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, dbSelectMock, dbGroupByMock } = vi.hoisted(() => ({
-  serviceMocks: {
-    createTicket: vi.fn(),
-    changeTicketStatus: vi.fn(),
-    assignTicket: vi.fn(),
-    addTicketComment: vi.fn(),
-    linkAlertToTicket: vi.fn(),
-    unlinkAlertFromTicket: vi.fn(),
-    createTicketFromAlert: vi.fn()
-  },
-  dbSelectMock: vi.fn(),
-  dbGroupByMock: vi.fn()
-}));
+const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs } = vi.hoisted(() => {
+  const lastWhereArgs: { conditions: unknown[] }[] = [];
+  return {
+    serviceMocks: {
+      createTicket: vi.fn(),
+      changeTicketStatus: vi.fn(),
+      assignTicket: vi.fn(),
+      addTicketComment: vi.fn(),
+      linkAlertToTicket: vi.fn(),
+      unlinkAlertFromTicket: vi.fn(),
+    },
+    dbSelectMock: vi.fn(),
+    dbGroupByMock: vi.fn(),
+    lastWhereArgs,
+    /** Mutable ref so individual tests can override the injected auth context. */
+    authRef: {
+      current: {
+        scope: 'partner' as string,
+        user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
+        partnerId: 'p-1' as string | null,
+        orgId: null as string | null,
+        accessibleOrgIds: null as string[] | null,
+        orgCondition: () => undefined,
+        canAccessOrg: (_id: string) => true as boolean
+      }
+    }
+  };
+});
 
 vi.mock('../../services/ticketService', async () => {
   const actual = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
@@ -22,15 +37,7 @@ vi.mock('../../services/ticketService', async () => {
 
 vi.mock('../../middleware/auth', () => ({
   requireScope: () => async (c: any, next: any) => {
-    c.set('auth', {
-      scope: 'partner',
-      user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
-      partnerId: 'p-1',
-      orgId: null,
-      accessibleOrgIds: null,
-      orgCondition: () => undefined,
-      canAccessOrg: () => true
-    });
+    c.set('auth', authRef.current);
     await next();
   },
   requirePermission: () => async (_c: any, next: any) => next()
@@ -43,11 +50,15 @@ vi.mock('../../db', () => ({
         leftJoin: vi.fn(() => ({
           leftJoin: vi.fn(() => ({
             leftJoin: vi.fn(() => ({
-              where: vi.fn(() => ({
-                orderBy: vi.fn(() => ({
-                  limit: vi.fn(() => ({ offset: vi.fn(() => dbSelectMock()) }))
-                }))
-              }))
+              // 3 leftJoins: list endpoint (tickets + orgs + devices + users)
+              where: vi.fn((...args: unknown[]) => {
+                lastWhereArgs.push({ conditions: args });
+                return {
+                  orderBy: vi.fn(() => ({
+                    limit: vi.fn(() => ({ offset: vi.fn(() => dbSelectMock()) }))
+                  }))
+                };
+              })
             })),
             where: vi.fn(() => ({
               orderBy: vi.fn(() => ({
@@ -93,7 +104,18 @@ vi.mock('../../db/schema', () => ({
 import { ticketsRoutes } from './tickets';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+const ORG_ID    = '3f2f1d8e-1111-4222-8333-444455556666';
 const STUB_TICKET = { id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1', subject: 'Printer' };
+
+const DEFAULT_AUTH = {
+  scope: 'partner' as string,
+  user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
+  partnerId: 'p-1' as string | null,
+  orgId: null as string | null,
+  accessibleOrgIds: null as string[] | null,
+  orgCondition: () => undefined,
+  canAccessOrg: (_id: string) => true as boolean
+};
 
 function makeApp() {
   const app = new Hono();
@@ -101,8 +123,13 @@ function makeApp() {
   return app;
 }
 
+function resetAuth() {
+  authRef.current = { ...DEFAULT_AUTH, canAccessOrg: () => true };
+  lastWhereArgs.length = 0;
+}
+
 describe('GET /tickets', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
   it('returns paginated data', async () => {
     dbSelectMock.mockResolvedValue([{ id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer' }]);
@@ -117,17 +144,49 @@ describe('GET /tickets', () => {
     const res = await makeApp().request('/tickets?statusGroup=weird');
     expect(res.status).toBe(400);
   });
+
+  it('403 when partner scope has null partnerId (broken context)', async () => {
+    authRef.current = { ...DEFAULT_AUTH, scope: 'partner', partnerId: null };
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Partner context required');
+  });
+
+  it('scoped org query includes a WHERE arg (org scope adds condition)', async () => {
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'organization',
+      orgId: ORG_ID,
+      partnerId: null,
+      canAccessOrg: () => true
+    };
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    // At least one where call was recorded with a defined condition arg
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    expect(lastWhereArgs[0]!.conditions.length).toBeGreaterThan(0);
+  });
+
+  it('403 when organization scope has no orgId', async () => {
+    authRef.current = { ...DEFAULT_AUTH, scope: 'organization', orgId: null, partnerId: null };
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Organization context required');
+  });
 });
 
 describe('POST /tickets', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
   it('creates via ticketService and returns 201', async () => {
     serviceMocks.createTicket.mockResolvedValue({ id: 't-1', internalNumber: 'T-2026-0001' });
     const res = await makeApp().request('/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: '3f2f1d8e-1111-4222-8333-444455556666', subject: 'Printer offline' })
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'Printer offline' })
     });
     expect(res.status).toBe(201);
     expect(serviceMocks.createTicket).toHaveBeenCalledWith(
@@ -140,7 +199,7 @@ describe('POST /tickets', () => {
     const res = await makeApp().request('/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: '3f2f1d8e-1111-4222-8333-444455556666' })
+      body: JSON.stringify({ orgId: ORG_ID })
     });
     expect(res.status).toBe(400);
   });
@@ -151,14 +210,27 @@ describe('POST /tickets', () => {
     const res = await makeApp().request('/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: '3f2f1d8e-1111-4222-8333-444455556666', subject: 'x' })
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x' })
     });
     expect(res.status).toBe(404);
+  });
+
+  it('403 when canAccessOrg returns false for the body orgId', async () => {
+    authRef.current = { ...DEFAULT_AUTH, canAccessOrg: () => false };
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'Unauthorized ticket' })
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Access to this organization denied');
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
   });
 });
 
 describe('GET /tickets/stats', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
   it('aggregates open / unassigned / mine / breached counts via groupBy', async () => {
     // auth user id is 'u-1' (set in requireScope mock above)
@@ -182,10 +254,18 @@ describe('GET /tickets/stats', () => {
     // Ensure groupBy was used (not orderBy) — the mock resolves via dbGroupByMock
     expect(dbGroupByMock).toHaveBeenCalledTimes(1);
   });
+
+  it('403 when partner scope has null partnerId (broken context)', async () => {
+    authRef.current = { ...DEFAULT_AUTH, scope: 'partner', partnerId: null };
+    const res = await makeApp().request('/tickets/stats');
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Partner context required');
+  });
 });
 
 describe('GET /tickets/:id — scoped pre-check', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
   it('returns 404 when getScopedTicketOr404 finds no row even if service would succeed', async () => {
     // The scoped SELECT returns nothing (out-of-scope or missing ticket)
@@ -212,7 +292,7 @@ describe('GET /tickets/:id — scoped pre-check', () => {
 });
 
 describe('PATCH /tickets/:id — scoped update', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
   it('returns 404 when the scoped UPDATE returns no rows (ticket out of scope)', async () => {
     // PATCH goes directly to db.update(); returning empty array = out-of-scope / missing
