@@ -52,8 +52,9 @@ var serviceCmd = &cobra.Command{
 var withUserHelper bool
 var noWatchdog bool
 
-// healLaunchdPlistsIfNeeded is a no-op on Linux.
-func healLaunchdPlistsIfNeeded() {}
+// reconcileServiceUnitIfNeeded rewrites an outdated systemd unit on startup.
+// Real implementation added in the next change.
+func reconcileServiceUnitIfNeeded() {}
 
 func init() {
 	rootCmd.AddCommand(serviceCmd)
