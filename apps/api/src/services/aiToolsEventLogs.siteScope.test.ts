@@ -7,12 +7,31 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 
+// Wrap drizzle's `inArray` with a spy that still delegates to the real impl, so
+// the non-empty narrowing tests can prove the site filter targets the correct
+// column (deviceEventLogs.deviceId) with the correct in-scope ids. The
+// empty-set short-circuit tests above never exercise this — a mis-wired column
+// or id list would otherwise pass green.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, inArray: vi.fn(actual.inArray) };
+});
+
 import { db } from '../db';
+import { inArray } from 'drizzle-orm';
+import { deviceEventLogs } from '../db/schema';
 import { registerEventLogTools } from './aiToolsEventLogs';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
 const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
+const inArraySpy = vi.mocked(inArray);
+
+/** The inArray call (if any) that constrains deviceEventLogs.deviceId. */
+function deviceIdNarrowingArg(): unknown[] | undefined {
+  const call = inArraySpy.mock.calls.find(([col]) => col === deviceEventLogs.deviceId);
+  return call?.[1] as unknown[] | undefined;
+}
 
 function handlerFor(name: string): AiTool['handler'] {
   const reg = new Map<string, AiTool>();
@@ -167,6 +186,49 @@ describe('search_logs — site narrowing (cross-site enumeration)', () => {
     expect(parsed.error).toBeUndefined();
     expect(parsed.showing).toBe(1);
   });
+
+  it('constrains the query to the in-scope device id(s) (non-empty narrowing wired correctly)', async () => {
+    // Org has d-A (site-A, allowed) and d-B (site-B, forbidden) → allowed = [d-A].
+    // The query must carry inArray(deviceEventLogs.deviceId, ['d-A']) — not d-B,
+    // not the wrong column. (Empty-set tests can't catch a mis-wired inArray.)
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return {
+          from: () => ({
+            where: () =>
+              Promise.resolve([
+                { id: 'd-A', siteId: 'site-A' },
+                { id: 'd-B', siteId: 'site-B' },
+              ]),
+          }),
+        };
+      }
+      if (cols && typeof cols === 'object' && 'count' in (cols as object)) {
+        return { from: () => ({ leftJoin: () => ({ where: () => Promise.resolve([{ count: 0 }]) }) }) };
+      }
+      const limitResult: any = Promise.resolve([]);
+      limitResult.offset = () => Promise.resolve([]);
+      return {
+        from: () => ({
+          leftJoin: () => ({
+            leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => limitResult }) }) }),
+          }),
+        }),
+      };
+    });
+
+    const r = await handlerFor('search_logs')(
+      { timeRange: { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z' }, countMode: 'none' },
+      makeAuth(['site-A']),
+    );
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toBeUndefined();
+
+    const narrowed = deviceIdNarrowingArg();
+    expect(narrowed, 'expected inArray(deviceEventLogs.deviceId, [...]) to be applied').toBeTruthy();
+    expect(narrowed).toEqual(['d-A']);
+    expect(narrowed).not.toContain('d-B');
+  });
 });
 
 describe('get_log_trends — site narrowing', () => {
@@ -236,6 +298,49 @@ describe('get_log_trends — site narrowing', () => {
     const parsed = JSON.parse(r);
     expect(parsed.error).toBeUndefined();
     expect(parsed.trends).toBeDefined();
+  });
+
+  it('constrains trend queries to the in-scope device id(s) (non-empty narrowing wired correctly)', async () => {
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return {
+          from: () => ({
+            where: () =>
+              Promise.resolve([
+                { id: 'd-A', siteId: 'site-A' },
+                { id: 'd-B', siteId: 'site-B' },
+              ]),
+          }),
+        };
+      }
+      return {
+        from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              groupBy: () => ({
+                orderBy: () => {
+                  const r: any = Promise.resolve([]);
+                  r.limit = () => Promise.resolve([]);
+                  return r;
+                },
+              }),
+            }),
+          }),
+        }),
+      };
+    });
+
+    const r = await handlerFor('get_log_trends')(
+      { timeRange: { start: '2026-01-01T00:00:00Z', end: '2026-01-02T00:00:00Z' } },
+      makeAuth(['site-A']),
+    );
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toBeUndefined();
+
+    const narrowed = deviceIdNarrowingArg();
+    expect(narrowed, 'expected inArray(deviceEventLogs.deviceId, [...]) to be applied').toBeTruthy();
+    expect(narrowed).toEqual(['d-A']);
+    expect(narrowed).not.toContain('d-B');
   });
 });
 
