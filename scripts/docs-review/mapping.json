@@ -767,6 +767,24 @@
         "deploy/cloudflare-tunnel.mdx",
         "deploy/production.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/**",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/ticketCategories.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/tickets/**",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
     }
   ]
 }

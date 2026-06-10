@@ -1,0 +1,106 @@
+---
+title: Ticketing
+description: Built-in ticketing for MSP workflows -- a triage queue, public replies and internal notes, SLA chips, and tickets linked to alerts and devices.
+sidebar:
+  label: "Ticketing"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Breeze includes a built-in ticketing system designed for MSP technician workflows. Tickets arrive from the customer portal, from alerts, from technicians creating them by hand, and through the API -- and they all land in one queue. Open **Tickets** from the left sidebar to start working.
+
+Every ticket gets a number in the form `T-YYYY-NNNN` (for example `T-2026-0042`), which appears throughout the dashboard and is the easiest way to reference a ticket with your team or a customer.
+
+## The Queue
+
+The Tickets page is a split-pane workspace: the ticket list on the left, and a workbench for the selected ticket on the right. Selecting a ticket in the list opens it instantly in the workbench -- no page reloads. On narrower screens, selecting a ticket opens its full page instead.
+
+Across the top, view tabs slice the queue:
+
+| Tab | Shows |
+|---|---|
+| **My tickets** | Open tickets assigned to you |
+| **Unassigned** | Open tickets nobody owns yet |
+| **All open** | Every open ticket you can see |
+| **Breaching soon** | Open tickets whose SLA is at risk or already breached |
+| **Closed** | Resolved and closed tickets, newest first |
+
+Below the tabs, a filter bar narrows any view by **organization**, **priority**, **category**, and **assignee**, and a search box matches against ticket subjects. Each row shows the ticket number, subject, status, priority, and an SLA chip when the clock is running low.
+
+## Working a Ticket
+
+The workbench shows everything you need to resolve a ticket without leaving the queue:
+
+- **Status** -- move the ticket between New, Open, Pending, On hold, Resolved, and Closed. Resolving always asks for a **resolution note**, which is visible to the requester, so the customer sees what was done.
+- **Priority** -- change between Low, Normal, High, and Urgent.
+- **Assignee** -- assign or unassign the ticket. Press `a` to grab the selected ticket for yourself.
+- **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, and any **linked alerts** with one-click navigation to the alert itself.
+
+Click the expand icon (or press `Enter`) to open the ticket as a full page when you need more room.
+
+## Replies and Internal Notes
+
+The composer at the bottom of every ticket has two modes:
+
+- **Reply** (the default) -- a public response. If the ticket came from the customer portal, your reply appears in the requester's portal conversation.
+- **Internal note** -- visible only to your team. The composer switches to a clearly marked highlighted style with an "Internal: not visible to requester" banner, so there is no ambiguity about who will see what you are typing.
+
+Portal users only ever see public replies. Internal notes, status changes, and assignment history stay inside the dashboard.
+
+Press `Cmd+Enter` (or `Ctrl+Enter`) to send without leaving the keyboard.
+
+## Keyboard Shortcuts
+
+The queue is built to be worked without a mouse:
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Move down / up the list |
+| `Enter` or `o` | Open the selected ticket as a full page |
+| `a` | Assign the selected ticket to me |
+| `r` | Focus the reply composer |
+| `n` | Focus the internal note composer |
+| `e` | Open the resolve form (resolution note) |
+| `Esc` | Leave the composer / go back |
+
+## Bulk Actions
+
+Select tickets with the checkboxes in the list and an action bar slides up from the bottom of the pane. From there you can:
+
+- **Bulk assign** -- hand a batch of tickets to a technician, or unassign them.
+- **Bulk status** -- move a batch to New, Open, Pending, On hold, or Closed.
+
+You can act on up to 100 tickets at once. Resolving is intentionally excluded from bulk actions: every resolution needs a per-ticket resolution note, so tickets are resolved individually from the workbench.
+
+## Creating Tickets
+
+Tickets enter the queue from four directions:
+
+- **By a technician.** Click **Create ticket** on the Tickets page, pick the organization, enter a subject and description, and optionally attach a device, category, and priority.
+- **From an alert.** Open any alert and click its **Create ticket** button. The ticket is pre-filled from the alert and linked to it, so the alert shows up in the ticket's properties rail.
+- **From the customer portal.** End-users submit tickets through their [Customer Portal](/features/portal/), and those tickets land directly in the queue for triage.
+- **Through the API**, for integrations and automation.
+
+## Categories and SLAs
+
+Go to **Settings > Ticketing** to manage ticket categories.
+
+<Steps>
+
+1. Enter a category name, pick a color, and click **Add**.
+
+2. Use the categories to organize the queue -- they appear in the category filter and on the create-ticket form.
+
+3. Deactivate a category to retire it without losing the tickets already filed under it.
+
+</Steps>
+
+Categories also carry SLA targets (response and resolution times) and billing defaults. When a ticket's resolution target is running out, an **at-risk** chip appears in the queue, turning to **breached** once the target has passed -- and the **Breaching soon** tab collects all of them in one place.
+
+<Aside>
+  Today the SLA targets drive the at-risk and breached chips in the queue. The full automated SLA engine -- enforcement, escalations, and business-hours schedules -- arrives in a later release.
+</Aside>
+
+## Tickets on a Device
+
+Every device page has a **Tickets** tab listing the tickets attached to that device, with status, priority, and SLA chips. It is the fastest way to check whether the machine you are about to work on already has open issues.
