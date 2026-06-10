@@ -33,7 +33,11 @@ export async function emitTicketEvent(event: TicketEvent): Promise<void> {
   try {
     await getTicketEventsQueue().add(event.type, event, {
       removeOnComplete: { count: 100 },
-      removeOnFail: { count: 500 }
+      removeOnFail: { count: 500 },
+      // Retry with back-off: the service emits events while the request transaction
+      // is still open, so the worker may dequeue before the ticket row is visible.
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 2000 }
     });
   } catch (err) {
     console.error('[TicketEvents] failed to enqueue', event.type, err instanceof Error ? err.message : err);

@@ -182,6 +182,7 @@ import {
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -1041,6 +1042,7 @@ async function initializeWorkers(): Promise<void> {
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['ticketNotifyWorker', initializeTicketNotifyWorker],
   ];
 
   await Promise.allSettled(
@@ -1192,6 +1194,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
     shutdownApprovalExpiryReaper,
+    shutdownTicketNotifyWorker,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,
