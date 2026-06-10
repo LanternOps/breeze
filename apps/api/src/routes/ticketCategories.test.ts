@@ -20,9 +20,22 @@ const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult } = vi.hoi
   };
 });
 
+// Mirror the REAL middleware contract: authMiddleware is the ONLY thing that
+// populates c.get('auth'); requireScope 401s when it is missing (exactly the
+// production failure mode when authMiddleware isn't wired into the router —
+// regression for the Phase 1a routes shipping without it).
 vi.mock('../middleware/auth', () => ({
-  requireScope: () => async (c: any, next: any) => {
+  authMiddleware: vi.fn(async (c: any, next: any) => {
+    if (!authRef.current) {
+      return c.json({ error: 'Not authenticated' }, 401);
+    }
     c.set('auth', authRef.current);
+    await next();
+  }),
+  requireScope: () => async (c: any, next: any) => {
+    if (!c.get('auth')) {
+      return c.json({ error: 'Not authenticated' }, 401);
+    }
     await next();
   },
   requirePermission: () => async (_c: any, next: any) => next()
@@ -291,5 +304,35 @@ describe('DELETE /ticket-categories/:id', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).toHaveProperty('error', 'Partner context required');
+  });
+});
+
+// Regression: Phase 1a shipped these routes WITHOUT authMiddleware in the chain,
+// so over real HTTP every request 401'd ("Not authenticated") — requireScope
+// found no c.get('auth'). The old test mock had requireScope inject the auth
+// context itself, masking the missing middleware. This block proves the
+// middleware is actually wired: it must run (call count) and must be the thing
+// that rejects unauthenticated requests.
+describe('authMiddleware wiring', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('GET /ticket-categories returns 401 Not authenticated when unauthenticated, via authMiddleware', async () => {
+    authRef.current = null as unknown as typeof authRef.current;
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Not authenticated');
+
+    // The middleware itself must be in the chain (not some other 401 source)
+    const { authMiddleware } = await import('../middleware/auth');
+    expect(authMiddleware).toHaveBeenCalledTimes(1);
+  });
+
+  it('authMiddleware runs on authenticated requests too', async () => {
+    dbSelectResult.mockResolvedValue([]);
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+    const { authMiddleware } = await import('../middleware/auth');
+    expect(authMiddleware).toHaveBeenCalledTimes(1);
   });
 });

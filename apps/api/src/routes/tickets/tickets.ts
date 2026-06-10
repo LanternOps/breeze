@@ -17,6 +17,8 @@ import {
 } from '../../services/ticketService';
 import type { AuthContext } from '../../middleware/auth';
 
+// NOTE: authMiddleware is applied by the hub router in ./index.ts (alerts pattern) —
+// requireScope/requirePermission below depend on c.get('auth') being populated there.
 export const ticketsRoutes = new Hono();
 
 const idParam = z.object({ id: z.string().uuid() });

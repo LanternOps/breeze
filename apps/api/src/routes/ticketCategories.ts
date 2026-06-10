@@ -4,12 +4,16 @@ import { z } from 'zod';
 import { and, asc, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { ticketCategories, organizations } from '../db/schema';
-import { requireScope, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { ticketCategoryInputSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 
 export const ticketCategoriesRoutes = new Hono();
+
+// Apply auth middleware to all routes — requireScope/requirePermission below
+// depend on c.get('auth') being populated (same pattern as alerts/index.ts)
+ticketCategoriesRoutes.use('*', authMiddleware);
 
 const idParam = z.object({ id: z.string().uuid() });
 
