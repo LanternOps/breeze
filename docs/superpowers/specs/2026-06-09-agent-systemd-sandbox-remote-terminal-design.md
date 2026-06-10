@@ -209,11 +209,21 @@ write somehow fails).
 
 If `systemd-run` is absent (minimal images), or the transient service cannot be started
 (no D-Bus, container without a system manager), the agent does **not** loop or crash. It:
-- emits a one-time WARNING **diagnostic log** (ships to the API, visible as a device log)
-  instructing the operator to run `sudo breeze-agent service install`, and
+- emits a one-time WARNING to stderr → **journald** under `breeze-agent`, instructing the
+  operator to run `sudo breeze-agent service install`, and
 - continues running on the old sandbox.
 
-Worst case degrades to "documented manual remediation + fleet visibility," never to breakage.
+Worst case degrades to "documented manual remediation + a local journald warning," never
+to breakage.
+
+> **Known limitation (follow-up candidate):** these warnings reach journald only, not the
+> fleet/API. `reconcileServiceUnitIfNeeded` runs at startup *before* the remote log shipper
+> is initialized, and the `reconcile-unit` subcommand's own failures are emitted under the
+> garbage-collected transient unit's journal. So a host whose auto-heal *fails* stays on the
+> old sandboxed unit with no fleet-visible signal — the operator only learns of it if a user
+> re-reports the symptom (e.g. `apt` failing in the terminal). Surfacing heal-failure as a
+> heartbeat/telemetry flag (so affected hosts are visible in the console without an SSH
+> session) is a worthwhile follow-up but is out of scope for this change.
 
 ### 5.6 Startup wiring
 
