@@ -23,6 +23,23 @@ function actorFrom(auth: AuthContext) {
   return { userId: auth.user.id, name: auth.user.name };
 }
 
+/**
+ * Defense-in-depth app-layer scope check for by-id ticket actions.
+ * RLS is the primary isolation layer; this mirrors the house pattern from
+ * aiToolsAlerts.ts (findAlertWithAccess) and the tickets route
+ * (getScopedTicketOr404) — build orgCondition-scoped conditions so neither
+ * a cross-org nor a cross-partner ticket ID resolves.
+ *
+ * Returns the ticket row, or null when not found in the caller's scope.
+ */
+async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
+  const conditions: SQL[] = [eq(tickets.id, ticketId)];
+  const orgCond = auth.orgCondition(tickets.orgId);
+  if (orgCond) conditions.push(orgCond);
+  const [ticket] = await db.select().from(tickets).where(and(...conditions)).limit(1);
+  return ticket ?? null;
+}
+
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_tickets', {
     tier: 2 as AiToolTier,
@@ -126,17 +143,23 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for get action' });
 
-        const conditions: SQL[] = [eq(tickets.id, String(input.ticketId))];
-        const orgCond = auth.orgCondition(tickets.orgId);
-        if (orgCond) conditions.push(orgCond);
-
-        const rows = await db.select().from(tickets).where(and(...conditions)).limit(1);
-        if (!rows[0]) return JSON.stringify({ error: 'Ticket not found' });
-        return JSON.stringify({ ticket: rows[0] });
+        // Org-scoped select — orgCondition adds the scope WHERE clause so RLS
+        // defense-in-depth is folded into the single query (no extra round-trip).
+        const ticket = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!ticket) return JSON.stringify({ error: 'Ticket not found' });
+        return JSON.stringify({ ticket });
       }
 
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
+        // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
+        // org → own org only, partner → partner's orgs). Mirror the tickets route's
+        // POST / handler which calls auth.canAccessOrg(body.orgId).
+        if (!auth.canAccessOrg(String(input.orgId))) {
+          return JSON.stringify({ error: 'Access to this organization denied' });
+        }
+        // deviceId is centrally gated via the deviceArgs field on the tool
+        // registration (aiTools.ts device gate) — no additional check needed here.
         const ticket = await createTicket(
           {
             orgId: String(input.orgId),
@@ -154,6 +177,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── comment ───────────────────────────────────────────────────────────
       if (action === 'comment') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for comment action' });
+        // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const result = await addTicketComment(
           String(input.ticketId),
           {
@@ -168,6 +194,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── assign ────────────────────────────────────────────────────────────
       if (action === 'assign') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for assign action' });
+        // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const ticket = await assignTicket(
           String(input.ticketId),
           input.assigneeId ? String(input.assigneeId) : null,
@@ -179,6 +208,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
+        // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const ticket = await changeTicketStatus(
           String(input.ticketId),
           input.status as TicketStatus,

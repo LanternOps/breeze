@@ -14,13 +14,17 @@ vi.mock('./ticketService', async () => {
   return { ...actual, ...serviceMocks };
 });
 
+// Mutable handle so individual tests can override the limit() return value.
+// Typed as returning unknown[] so mockResolvedValue(TICKET_ROW) compiles.
+const mockLimit = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
-          limit: vi.fn(() => Promise.resolve([]))
+          limit: mockLimit
         }))
       }))
     }))
@@ -45,6 +49,7 @@ import { registerTicketingTools } from './aiToolsTicketing';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
+// Default auth: partner scope with access to 'o-1'.
 const auth: AuthContext = {
   user: { id: 'u-1', email: 'tech@example.com', name: 'Tech User', isPlatformAdmin: false },
   token: {} as never,
@@ -56,6 +61,14 @@ const auth: AuthContext = {
   canAccessOrg: vi.fn(() => true),
 };
 
+// Auth with canAccessOrg returning false (simulates a caller without access to a given org).
+const authNoOrg: AuthContext = {
+  ...auth,
+  canAccessOrg: vi.fn(() => false),
+};
+
+const TICKET_ROW = [{ id: 't-1', orgId: 'o-1', subject: 'Disk full', status: 'open', priority: 'normal' }];
+
 function getTool(): AiTool {
   const tools = new Map<string, AiTool>();
   registerTicketingTools(tools);
@@ -65,13 +78,19 @@ function getTool(): AiTool {
 }
 
 describe('manage_tickets tool', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: ticket not found (empty rows).
+    mockLimit.mockResolvedValue([]);
+  });
 
   it('registers with deviceArgs gating and tier 2', () => {
     const tool = getTool();
     expect(tool.tier).toBe(2);
     expect(tool.deviceArgs).toContain('deviceId');
   });
+
+  // ── create ────────────────────────────────────────────────────────────────
 
   it('create delegates to ticketService with source ai', async () => {
     serviceMocks.createTicket.mockResolvedValue({ id: 't-1', internalNumber: 'T-2026-0042' });
@@ -86,6 +105,19 @@ describe('manage_tickets tool', () => {
     expect(JSON.parse(out)).toHaveProperty('ticket');
   });
 
+  it('create returns error when caller cannot access the target org', async () => {
+    const out = await getTool().handler(
+      { action: 'create', orgId: 'other-org', subject: 'Sneaky ticket' },
+      authNoOrg
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/access.*organization denied/i);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  // ── list ──────────────────────────────────────────────────────────────────
+
   it('list returns tickets array', async () => {
     const out = await getTool().handler({ action: 'list' }, auth);
     const parsed = JSON.parse(out);
@@ -93,14 +125,28 @@ describe('manage_tickets tool', () => {
     expect(Array.isArray(parsed.tickets)).toBe(true);
   });
 
-  it('get returns error for missing ticket', async () => {
+  // ── get ───────────────────────────────────────────────────────────────────
+
+  it('get returns ticket when found in scope', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    const out = await getTool().handler({ action: 'get', ticketId: 't-1' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('ticket');
+    expect(parsed.ticket.id).toBe('t-1');
+  });
+
+  it('get returns error for missing ticket (empty scoped select)', async () => {
+    // mockLimit already returns [] by default from beforeEach.
     const out = await getTool().handler({ action: 'get', ticketId: '3f2f1d8e-0000-0000-0000-000000000001' }, auth);
     const parsed = JSON.parse(out);
     expect(parsed).toHaveProperty('error');
     expect(parsed.error).toMatch(/not found/i);
   });
 
-  it('comment delegates to addTicketComment', async () => {
+  // ── comment ───────────────────────────────────────────────────────────────
+
+  it('comment delegates to addTicketComment when ticket is in scope', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
     serviceMocks.addTicketComment.mockResolvedValue({ comment: { id: 'c-1', content: 'on it' }, firstResponseStamped: false });
     const out = await getTool().handler(
       { action: 'comment', ticketId: 't-1', content: 'On it', isPublic: true },
@@ -114,7 +160,22 @@ describe('manage_tickets tool', () => {
     expect(JSON.parse(out)).toHaveProperty('comment');
   });
 
-  it('assign delegates to assignTicket', async () => {
+  it('comment returns error without calling service when ticket is outside scope', async () => {
+    // mockLimit returns [] (default) — scoped select finds nothing.
+    const out = await getTool().handler(
+      { action: 'comment', ticketId: 'other-ticket', content: 'sneaky note' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/not found/i);
+    expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
+  });
+
+  // ── assign ────────────────────────────────────────────────────────────────
+
+  it('assign delegates to assignTicket when ticket is in scope', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
     serviceMocks.assignTicket.mockResolvedValue({ id: 't-1', assignedTo: 'u-2' });
     const out = await getTool().handler(
       { action: 'assign', ticketId: 't-1', assigneeId: 'u-2' },
@@ -124,7 +185,21 @@ describe('manage_tickets tool', () => {
     expect(JSON.parse(out)).toHaveProperty('ticket');
   });
 
-  it('update_status delegates to changeTicketStatus', async () => {
+  it('assign returns error without calling service when ticket is outside scope', async () => {
+    const out = await getTool().handler(
+      { action: 'assign', ticketId: 'other-ticket', assigneeId: 'u-2' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/not found/i);
+    expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+
+  // ── update_status ─────────────────────────────────────────────────────────
+
+  it('update_status delegates to changeTicketStatus when ticket is in scope', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
     serviceMocks.changeTicketStatus.mockResolvedValue({ id: 't-1', status: 'resolved' });
     const out = await getTool().handler(
       { action: 'update_status', ticketId: 't-1', status: 'resolved', resolutionNote: 'Done' },
@@ -138,6 +213,19 @@ describe('manage_tickets tool', () => {
     );
     expect(JSON.parse(out)).toHaveProperty('ticket');
   });
+
+  it('update_status returns error without calling service when ticket is outside scope', async () => {
+    const out = await getTool().handler(
+      { action: 'update_status', ticketId: 'other-ticket', status: 'resolved' },
+      auth
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/not found/i);
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+
+  // ── unknown action ────────────────────────────────────────────────────────
 
   it('rejects an unknown action', async () => {
     await expect(getTool().handler({ action: 'explode' }, auth)).rejects.toThrow(/unknown action/i);
