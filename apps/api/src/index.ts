@@ -22,6 +22,7 @@ import { configRoutes } from './routes/config';
 import { externalServicesRoutes } from './routes/externalServices';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
+import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
 import { automationRoutes, automationWebhookRoutes } from './routes/automations';
@@ -182,6 +183,7 @@ import {
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -701,6 +703,7 @@ api.route('/config', configRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
+api.route('/pam', pamRoutes);
 api.route('/scripts', scriptRoutes);
 api.route('/script-library', scriptLibraryRoutes);
 api.route('/automations/webhooks', automationWebhookRoutes);
@@ -1041,6 +1044,7 @@ async function initializeWorkers(): Promise<void> {
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['pamJobs', initializePamJobs],
   ];
 
   await Promise.allSettled(
@@ -1192,6 +1196,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
     shutdownApprovalExpiryReaper,
+    shutdownPamJobs,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

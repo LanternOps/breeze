@@ -1,6 +1,7 @@
 export * from './accountDeletion';
 export * from './approvals';
 export * from './elevations';
+export * from './pam';
 export * from './orgs';
 export * from './oauth';
 export * from './users';

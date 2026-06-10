@@ -91,7 +91,16 @@ export type EventType =
   | 'session.logout'
   // Service & process monitoring events
   | 'monitoring.check_failed'
-  | 'monitoring.check_recovered';
+  | 'monitoring.check_recovered'
+  // PAM elevation lifecycle events (#1163). Consumed by the /pam admin UI
+  // (#1159) via the events WS and by the Brain context feed (#1160).
+  | 'elevation.requested'
+  | 'elevation.auto_approved'
+  | 'elevation.approved'
+  | 'elevation.denied'
+  | 'elevation.activated'
+  | 'elevation.expired'
+  | 'elevation.revoked';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 
