@@ -169,6 +169,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'organization_users',
+  'pam_rules',
   'patch_approvals',
   'patch_compliance_reports',
   'patch_compliance_snapshots',
