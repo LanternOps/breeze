@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../../db';
 import { tickets, ticketComments } from '../../db/schema';
@@ -185,7 +185,11 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       createdAt: ticketComments.createdAt
     })
     .from(ticketComments)
-    .where(and(eq(ticketComments.ticketId, ticket.id), eq(ticketComments.isPublic, true)))
+    .where(and(
+      eq(ticketComments.ticketId, ticket.id),
+      eq(ticketComments.isPublic, true),
+      isNull(ticketComments.deletedAt)
+    ))
     .orderBy(desc(ticketComments.createdAt));
 
   const payload = { ticket: { ...ticket, comments } };
