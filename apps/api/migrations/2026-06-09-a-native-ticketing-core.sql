@@ -42,6 +42,12 @@ UPDATE tickets t SET partner_id = o.partner_id
 FROM organizations o
 WHERE t.org_id = o.id AND t.partner_id IS NULL;
 
+-- NULL-partner numbering guard: internal_number requires partner_id to be set.
+DO $$ BEGIN
+  ALTER TABLE tickets ADD CONSTRAINT tickets_internal_number_requires_partner
+    CHECK (internal_number IS NULL OR partner_id IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- 3. ticket_comments extensions -----------------------------------------
 ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS comment_type ticket_comment_type NOT NULL DEFAULT 'comment';
 ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS old_value TEXT;

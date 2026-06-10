@@ -1,6 +1,9 @@
+// Note: the `tickets` table itself lives in portal.ts; this file defines the
+// Phase-1 ticketing extension tables (ticket_categories, ticket_alert_links,
+// partner_ticket_sequences).
 import {
   pgTable, uuid, varchar, text, integer, boolean, timestamp, numeric,
-  pgEnum, primaryKey, uniqueIndex, index
+  pgEnum, primaryKey, uniqueIndex, index, type AnyPgColumn
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
@@ -14,7 +17,7 @@ export const ticketCategories = pgTable('ticket_categories', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   name: varchar('name', { length: 100 }).notNull(),
   color: varchar('color', { length: 7 }).notNull().default('#6b7d83'),
-  parentId: uuid('parent_id'),
+  parentId: uuid('parent_id').references((): AnyPgColumn => ticketCategories.id, { onDelete: 'set null' }),
   defaultPriority: ticketPriorityEnum('default_priority'),
   responseSlaMinutes: integer('response_sla_minutes'),
   resolutionSlaMinutes: integer('resolution_sla_minutes'),
