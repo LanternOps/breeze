@@ -156,6 +156,7 @@ async function helperAuth(c: import('hono').Context, next: import('hono').Next) 
     accessibleOrgIds: [device.orgId],
     orgCondition: (orgIdColumn) => eq(orgIdColumn, device.orgId),
     canAccessOrg: (orgId) => orgId === device.orgId,
+    helperDeviceId: device.id,
   };
 
   c.set('auth', syntheticAuth);
