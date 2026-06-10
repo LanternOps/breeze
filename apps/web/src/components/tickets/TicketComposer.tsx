@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 
 interface Props {
   requesterName: string | null;
+  /** Must surface its own failures (runAction). Rejection here only preserves the draft. */
   onSend: (content: string, isPublic: boolean) => Promise<void>;
   disabled?: boolean;
 }

@@ -3,6 +3,8 @@ import { z } from 'zod';
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 export const ticketSourceSchema = z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+export type TicketStatus = z.infer<typeof ticketStatusSchema>;
+export type TicketPriority = z.infer<typeof ticketPrioritySchema>;
 
 export const createTicketSchema = z.object({
   orgId: z.string().uuid(),

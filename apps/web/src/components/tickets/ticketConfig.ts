@@ -1,5 +1,6 @@
-export type TicketStatus = 'new' | 'open' | 'pending' | 'on_hold' | 'resolved' | 'closed';
-export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
+// Sourced from the shared Zod enums so the UI can't drift from the validators.
+import type { TicketStatus, TicketPriority } from '@breeze/shared';
+export type { TicketStatus, TicketPriority };
 
 export interface TicketSummary {
   id: string;
@@ -79,7 +80,7 @@ export type SlaState =
   | { kind: 'at-risk'; minutesLeft: number }
   | { kind: 'breached'; minutesAgo: number };
 
-// "Quiet until it matters": ok renders muted text, at-risk amber chip, breached red chip.
+// "Quiet until it matters" — see SlaChip for per-state rendering. At-risk begins at 80% of resolutionSlaMinutes elapsed.
 export function slaState(
   t: Pick<TicketSummary, 'slaBreachedAt' | 'createdAt' | 'status'> & { resolutionSlaMinutes?: number | null },
   now: Date = new Date()

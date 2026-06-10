@@ -225,6 +225,7 @@ describe('GET /tickets', () => {
     // must mention both the column and the bound uuid value.
     expect(lastWhereArgs.length).toBeGreaterThan(0);
     const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('deviceId');
     expect(serialized).toContain(DEVICE_ID);
   });
 

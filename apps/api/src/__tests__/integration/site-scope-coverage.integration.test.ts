@@ -183,7 +183,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
   // ---- Org-scoped ticket list + detail: join devices only to decorate
-  // deviceHostname on ticket rows; take no device-id input. Site-axis ticket scoping is a
+  // deviceHostname on ticket rows. The list endpoint accepts an optional
+  // ?deviceId filter (org/partner-tenant-scoped, NOT site-gated); the detail
+  // endpoint takes no device-id input. Site-axis ticket scoping is a
   // deferred product decision (PR #1196 follow-up, Phase 1b).
   'routes/tickets/tickets.ts:GET /',
   'routes/tickets/tickets.ts:GET /:id',
@@ -219,7 +221,9 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
   // Org-scoped ticket list + detail reached via user auth: devices joins
-  // decorate deviceHostname only, no device-id input; site-axis ticket scoping deferred
+  // decorate deviceHostname only. The list endpoint accepts an optional
+  // ?deviceId filter (org/partner-tenant-scoped, NOT site-gated); the detail
+  // endpoint takes no device-id input. Site-axis ticket scoping deferred
   // (PR #1196 follow-up, Phase 1b).
   'routes/tickets/tickets.ts:GET /',
   'routes/tickets/tickets.ts:GET /:id',

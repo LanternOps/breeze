@@ -17,20 +17,30 @@ export default function CreateTicketPage() {
   const [categoryId, setCategoryId] = useState('');
   const [priority, setPriority] = useState<TicketPriority>('normal');
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
-  useEffect(() => {
-    void (async () => {
+  const loadOptions = useCallback(async () => {
+    setLoadError(false);
+    try {
       const [orgRes, catRes] = await Promise.all([fetchWithAuth('/orgs/organizations?limit=100'), fetchWithAuth('/ticket-categories')]);
-      if (orgRes.ok) {
-        const b = await orgRes.json();
-        setOrgs((b.data ?? b.organizations ?? []).map((o: { id: string; name: string }) => ({ id: o.id, name: o.name })));
+      if (!orgRes.ok) {
+        // No orgs means the org select stays empty and submit stays disabled — surface it.
+        setLoadError(true);
+        return;
       }
+      const b = await orgRes.json();
+      setOrgs((b.data ?? b.organizations ?? []).map((o: { id: string; name: string }) => ({ id: o.id, name: o.name })));
       if (catRes.ok) {
-        const b = await catRes.json();
-        setCategories((b.data ?? []).filter((c: { isActive: boolean }) => c.isActive).map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })));
+        const cb = await catRes.json();
+        setCategories((cb.data ?? []).filter((c: { isActive: boolean }) => c.isActive).map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })));
       }
-    })();
+      // else: category is an optional field — degrade to "None" rather than blocking the form.
+    } catch {
+      setLoadError(true);
+    }
   }, []);
+
+  useEffect(() => { void loadOptions(); }, [loadOptions]);
 
   useEffect(() => {
     if (!orgId) { setDevices([]); setDeviceId(''); return; }
@@ -75,6 +85,18 @@ export default function CreateTicketPage() {
   }, [orgId, subject, description, deviceId, categoryId, priority]);
 
   const selectCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
+
+  if (loadError) {
+    return (
+      <div className="mx-auto max-w-2xl space-y-4">
+        <h1 className="text-xl font-semibold" data-testid="create-ticket-heading">Create ticket</h1>
+        <div className="py-12 text-center" data-testid="create-ticket-load-error">
+          <p className="text-sm text-muted-foreground">Organizations failed to load.</p>
+          <button type="button" onClick={() => void loadOptions()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-load-retry">Retry</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={submit} className="mx-auto max-w-2xl space-y-4" data-testid="create-ticket-form">

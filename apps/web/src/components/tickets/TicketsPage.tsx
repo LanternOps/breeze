@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import TicketQueueList from './TicketQueueList';
 import TicketWorkbench from './TicketWorkbench';
@@ -70,10 +71,14 @@ export default function TicketsPage() {
   }, [tab, search]);
 
   const fetchStats = useCallback(async () => {
-    const res = await fetchWithAuth('/tickets/stats');
-    if (res.ok) {
+    try {
+      const res = await fetchWithAuth('/tickets/stats');
+      if (!res.ok) { setStats(null); return; }
       const body = await res.json();
       setStats(body.data ?? null);
+    } catch {
+      // Stats are decorative tab badges — intentionally swallowed; null hides stale counts.
+      setStats(null);
     }
   }, []);
 
@@ -126,12 +131,14 @@ export default function TicketsPage() {
 
   const assignMe = useCallback(async () => {
     if (!selected) return;
+    const userId = useAuthStore.getState().user?.id;
+    if (!userId) {
+      showToast({ type: 'error', message: 'Assign failed. Retry.' });
+      return;
+    }
     try {
-      const meRes = await fetchWithAuth('/users/me');
-      if (!meRes.ok) return;
-      const me = await meRes.json();
       await runAction({
-        request: () => fetchWithAuth(`/tickets/${selected.id}/assign`, { method: 'POST', body: JSON.stringify({ assigneeId: me.id ?? me.data?.id }) }),
+        request: () => fetchWithAuth(`/tickets/${selected.id}/assign`, { method: 'POST', body: JSON.stringify({ assigneeId: userId }) }),
         errorFallback: 'Assign failed. Retry.',
         successMessage: 'Assigned to you',
         onUnauthorized: () => void navigateTo('/login', { replace: true })
@@ -139,7 +146,8 @@ export default function TicketsPage() {
       void fetchTickets();
       void fetchStats();
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      // ActionError is already toasted by runAction; surface anything else too.
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Assign failed. Retry.' });
     }
   }, [selected, fetchTickets, fetchStats]);
 
@@ -166,7 +174,7 @@ export default function TicketsPage() {
     if (id === 'mine') return stats.mine;
     if (id === 'unassigned') return stats.unassigned;
     if (id === 'open') return stats.open;
-    if (id === 'breaching') return stats.breached;
+    // No badge for 'breaching': the server stat counts only breached, but the tab also shows at-risk — no honest count available cheaply.
     return null;
   };
 

@@ -23,6 +23,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<'not-found' | 'load' | undefined>();
   const [resolveOpen, setResolveOpen] = useState(false);
   const [resolutionNote, setResolutionNote] = useState('');
   const [railOpen] = useState(true);
@@ -30,19 +31,34 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
+    setErrorKind(undefined);
     try {
       const res = await fetchWithAuth(`/tickets/${ticketId}`);
+      if (res.status === 404 || res.status === 403) {
+        setTicket(null);
+        setError('Ticket not found. It may have been deleted.');
+        setErrorKind('not-found');
+        return;
+      }
       if (!res.ok) throw new Error('Ticket failed to load.');
       const body = await res.json();
       setTicket(body.data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ticket failed to load.');
+      setErrorKind('load');
     } finally {
       setLoading(false);
     }
   }, [ticketId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Reset the inline resolve form when switching tickets — otherwise ticket B
+  // could be resolved with ticket A's note (`e` on A, then `j` to B).
+  useEffect(() => {
+    setResolveOpen(false);
+    setResolutionNote('');
+  }, [ticketId]);
 
   // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
   useEffect(() => {
@@ -95,7 +111,11 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     return (
       <div className="p-6 text-center" data-testid="ticket-workbench-error">
         <p className="text-sm text-muted-foreground">{error ?? 'Ticket failed to load.'}</p>
-        <button type="button" onClick={() => void load()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Retry</button>
+        {errorKind === 'not-found' ? (
+          <a href="/tickets" className="mt-2 inline-block rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="ticket-workbench-back">Back to queue</a>
+        ) : (
+          <button type="button" onClick={() => void load()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Retry</button>
+        )}
       </div>
     );
   }
@@ -141,7 +161,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
                 request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ priority: e.target.value }) }),
                 errorFallback: 'Priority update failed. Retry.',
                 onUnauthorized: () => void navigateTo('/login', { replace: true })
-              }).then(() => { void load(); onChanged?.(); }).catch(() => undefined);
+              }).then(() => { void load(); onChanged?.(); }).catch((err) => { if (!(err instanceof ActionError)) throw err; });
             }}
             className={cn('rounded-md border px-2 py-1 text-xs font-medium', priorityConfig[ticket.priority].color)}
             data-testid="ticket-workbench-priority"

@@ -25,8 +25,9 @@ export function clearRefreshState() {
       '0'
     );
     execFileSync('docker', args, { stdio: 'ignore' });
-  } catch {
+  } catch (err) {
     // Non-fatal — if redis is unreachable, the test will surface a clearer
     // 401 / login-redirect error.
+    console.warn('[test-helpers] clearRefreshState failed (is breeze-redis running?):', err);
   }
 }
