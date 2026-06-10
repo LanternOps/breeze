@@ -1,4 +1,5 @@
 import { randomBytes, createHash } from 'crypto';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 
 // ============================================
@@ -205,6 +206,7 @@ export interface IDTokenClaims {
   iat: number;
   nonce?: string;
   email?: string;
+  email_verified?: boolean | string;
   name?: string;
   [key: string]: unknown;
 }
@@ -240,6 +242,87 @@ export function verifyIdTokenClaims(claims: IDTokenClaims, config: OIDCConfig, n
   // Verify nonce
   if (claims.nonce !== nonce) {
     throw new Error('Invalid nonce');
+  }
+}
+
+// ============================================
+// ID Token Signature Verification (JWKS)
+// ============================================
+
+// Cache one remote JWKS set per jwks_uri. jose refreshes on `kid` miss and
+// caches keys internally, so this avoids re-fetching the JWKS on every login.
+const idTokenJwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+function getIdTokenJwks(jwksUri: string): ReturnType<typeof createRemoteJWKSet> {
+  let jwks = idTokenJwksCache.get(jwksUri);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(jwksUri), {
+      cacheMaxAge: 10 * 60 * 1000, // 10 minutes
+      cooldownDuration: 30 * 1000,
+    });
+    idTokenJwksCache.set(jwksUri, jwks);
+  }
+  return jwks;
+}
+
+/** Test-only: clear the JWKS cache so a subsequent call rebuilds it. */
+export function _resetIdTokenJwksCacheForTests(): void {
+  idTokenJwksCache.clear();
+}
+
+/**
+ * Cryptographically verify an OIDC id_token: signature against the provider's
+ * JWKS plus issuer/audience/expiry/nonce. This is the hardened path — the IdP's
+ * signature is checked, so a forged or tampered id_token is rejected. Requires
+ * the provider's `jwksUrl` to be configured (populated from OIDC discovery).
+ *
+ * Identity for provisioning/linking still primarily flows from the
+ * server-to-server userinfo call; verifying the id_token signature closes the
+ * gap where `decodeIdToken` previously trusted an unverified token.
+ */
+export async function verifyIdTokenSignature(
+  idToken: string,
+  config: OIDCConfig,
+  nonce: string
+): Promise<IDTokenClaims> {
+  if (!config.jwksUrl) {
+    throw new Error('Cannot verify ID token signature: provider has no JWKS URL configured');
+  }
+
+  const jwks = getIdTokenJwks(config.jwksUrl);
+
+  let payload: IDTokenClaims;
+  try {
+    const result = await jwtVerify(idToken, jwks, {
+      issuer: config.issuer,
+      audience: config.clientId,
+      // Restrict to asymmetric algorithms; never accept `none` or HMAC, which
+      // would let a token forged with a known/empty key pass verification.
+      algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'PS256'],
+    });
+    payload = result.payload as unknown as IDTokenClaims;
+  } catch (err) {
+    throw new Error(`ID token signature verification failed: ${(err as Error).message}`);
+  }
+
+  // jose already enforced iss/aud/exp; nonce is OIDC-specific and checked here.
+  if (payload.nonce !== nonce) {
+    throw new Error('Invalid nonce');
+  }
+
+  return payload;
+}
+
+/**
+ * Enforce that an id_token's email claim is verified before it is trusted for
+ * user provisioning or account linking. OIDC `email_verified` may arrive as a
+ * boolean or the string "true" depending on the provider.
+ */
+export function assertEmailVerified(claims: Pick<IDTokenClaims, 'email_verified'>): void {
+  const ev = (claims as { email_verified?: unknown }).email_verified;
+  const verified = ev === true || ev === 'true';
+  if (!verified) {
+    throw new Error('ID token email is not verified (email_verified !== true)');
   }
 }
 

@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   decodeIdToken,
   verifyIdTokenClaims,
+  verifyIdTokenSignature,
+  assertEmailVerified,
   discoverOIDCConfig,
   type OIDCConfig,
   PROVIDER_PRESETS,
@@ -122,6 +124,52 @@ describe('sso service', () => {
       };
 
       expect(() => verifyIdTokenClaims(claims, baseConfig, 'nonce-other')).toThrow('Invalid nonce');
+    });
+  });
+
+  describe('id_token signature verification', () => {
+    it('refuses to verify when the provider has no JWKS URL', async () => {
+      await expect(
+        verifyIdTokenSignature('a.b.c', baseConfig, 'nonce-abc')
+      ).rejects.toThrow('no JWKS URL configured');
+    });
+
+    it('rejects an unsigned/forged token (alg=none) against a JWKS', async () => {
+      const config: OIDCConfig = { ...baseConfig, jwksUrl: 'https://issuer.example.com/jwks' };
+      const now = Math.floor(Date.now() / 1000);
+      // An alg=none token cannot satisfy the asymmetric-only JWKS verification.
+      const forged = createIdToken({
+        iss: config.issuer,
+        sub: 'user-1',
+        aud: config.clientId,
+        exp: now + 3600,
+        iat: now,
+        nonce: 'nonce-abc'
+      });
+
+      await expect(
+        verifyIdTokenSignature(forged, config, 'nonce-abc')
+      ).rejects.toThrow('ID token signature verification failed');
+    });
+  });
+
+  describe('assertEmailVerified', () => {
+    it('passes when email_verified is the boolean true', () => {
+      expect(() => assertEmailVerified({ email_verified: true })).not.toThrow();
+    });
+
+    it('passes when email_verified is the string "true"', () => {
+      expect(() => assertEmailVerified({ email_verified: 'true' })).not.toThrow();
+    });
+
+    it('rejects when email_verified is false', () => {
+      expect(() => assertEmailVerified({ email_verified: false }))
+        .toThrow('email is not verified');
+    });
+
+    it('rejects when email_verified is absent', () => {
+      expect(() => assertEmailVerified({}))
+        .toThrow('email is not verified');
     });
   });
 
