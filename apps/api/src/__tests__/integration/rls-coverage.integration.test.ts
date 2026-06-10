@@ -90,6 +90,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['oauth_clients', 'partner_id'],
   ['oauth_client_partner_grants', 'partner_id'],
   ['email_verification_tokens', 'partner_id'],
+  ['ticket_categories', 'partner_id'],
+  ['partner_ticket_sequences', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
