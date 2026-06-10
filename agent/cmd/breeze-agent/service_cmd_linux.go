@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/spf13/cobra"
@@ -52,9 +53,51 @@ var serviceCmd = &cobra.Command{
 var withUserHelper bool
 var noWatchdog bool
 
-// reconcileServiceUnitIfNeeded rewrites an outdated systemd unit on startup.
-// Real implementation added in the next change.
-func reconcileServiceUnitIfNeeded() {}
+var reconcileOnce sync.Once
+
+// reconcileServiceUnitIfNeeded runs at startup. If the installed unit predates
+// currentUnitVersion, it rewrites it. The running agent is itself sandboxed and
+// cannot write /etc/systemd/system (ProtectSystem=strict on old units), so it
+// escapes via a systemd-run TRANSIENT SERVICE: PID 1 spawns the reconcile in a
+// fresh execution environment, outside this unit's mount namespace and
+// capability bounding set. Best-effort: on failure it logs and continues.
+func reconcileServiceUnitIfNeeded() {
+	reconcileOnce.Do(func() {
+		// Only act as the installed systemd service running as root.
+		if os.Geteuid() != 0 || os.Getenv("INVOCATION_ID") == "" {
+			return
+		}
+		data, err := os.ReadFile(linuxUnitDst)
+		if err != nil {
+			return // not installed via systemd / unreadable — nothing to heal
+		}
+		if !unitNeedsReconcile(string(data), currentUnitVersion) {
+			return
+		}
+		if _, err := exec.LookPath("systemd-run"); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: breeze-agent systemd unit is outdated (pre-v%d) and systemd-run is "+
+					"unavailable to auto-heal it. The remote terminal/scripts may hit privilege "+
+					"errors (e.g. apt). Fix: sudo breeze-agent service install\n", currentUnitVersion)
+			return
+		}
+		// TRANSIENT SERVICE, deliberately NOT --scope: a scope child is forked
+		// from this (sandboxed) process and only its cgroup moves — it would
+		// inherit our read-only /etc (ProtectSystem) and restricted CapBnd and
+		// fail with the same Permission denied. Without --scope, PID 1 spawns
+		// the command in a fresh execution environment with full root caps and
+		// an unrestricted namespace; being a child of PID 1 it also survives
+		// the agent restart it triggers. --collect garbage-collects the
+		// transient unit on failure so a later retry is never blocked.
+		out, err := exec.Command("systemd-run", "--quiet", "--collect",
+			"--unit=breeze-unit-reconcile", linuxBinaryPath, "service", "reconcile-unit").CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: failed to auto-heal outdated systemd unit via systemd-run: %s. "+
+					"Fix: sudo breeze-agent service install\n", strings.TrimSpace(string(out)))
+		}
+	})
+}
 
 func init() {
 	rootCmd.AddCommand(serviceCmd)
@@ -63,6 +106,7 @@ func init() {
 	serviceCmd.AddCommand(serviceStartCmd)
 	serviceCmd.AddCommand(serviceStopCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
+	serviceCmd.AddCommand(serviceReconcileUnitCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper systemd unit")
 	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
 }
@@ -350,6 +394,31 @@ var serviceStatusCmd = &cobra.Command{
 			}
 		}
 		fmt.Println(strings.TrimSpace(string(out)))
+		return nil
+	},
+}
+
+var serviceReconcileUnitCmd = &cobra.Command{
+	Use:    "reconcile-unit",
+	Short:  "Rewrite the systemd unit to the current version and restart (internal)",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("must run as root")
+		}
+		if err := os.WriteFile(linuxUnitDst, []byte(linuxUnit), 0644); err != nil {
+			return fmt.Errorf("write unit: %w", err)
+		}
+		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+			return fmt.Errorf("daemon-reload: %s", strings.TrimSpace(string(out)))
+		}
+		fmt.Printf("Reconciled %s to unit version %d; restarting service.\n", linuxUnitDst, currentUnitVersion)
+		// Restart so the relaxed sandbox applies to the live process. This kills
+		// the old agent; we run as a systemd-run transient service whose parent
+		// is PID 1 (not the agent), so this child survives to finish the restart.
+		if out, err := exec.Command("systemctl", "restart", linuxServiceName).CombinedOutput(); err != nil {
+			return fmt.Errorf("restart: %s", strings.TrimSpace(string(out)))
+		}
 		return nil
 	},
 }
