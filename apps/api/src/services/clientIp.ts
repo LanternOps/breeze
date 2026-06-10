@@ -1,5 +1,6 @@
 import type { RequestLike } from './auditEvents';
 import { isIP } from 'net';
+import { ipMatchesAny } from './ipMatch';
 
 const TRUST_PROXY_AUTO = 'auto';
 
@@ -77,27 +78,11 @@ function firstValidIpFromCsv(value: string | undefined): string | null {
   return null;
 }
 
-function ipv4ToInt(ip: string): number | null {
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  let result = 0;
-  for (const part of parts) {
-    const parsed = Number.parseInt(part, 10);
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 255) return null;
-    result = (result << 8) | parsed;
-  }
-  return result >>> 0;
-}
-
-function ipv4InCidr(ip: string, cidr: string): boolean {
-  const [network, bitsRaw] = cidr.split('/');
-  const bits = Number.parseInt(bitsRaw ?? '', 10);
-  if (!network || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  const ipNum = ipv4ToInt(ip);
-  const netNum = ipv4ToInt(network);
-  if (ipNum === null || netNum === null) return false;
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  return (ipNum & mask) === (netNum & mask);
+// ::ffff:a.b.c.d -> a.b.c.d (IPv4-mapped IPv6); null when not in mapped form.
+function ipv4MappedToV4(ip: string): string | null {
+  const match = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (!match || !match[1]) return null;
+  return isIP(match[1]) === 4 ? match[1] : null;
 }
 
 export function isTrustedProxySource(sourceIp: string | undefined): boolean {
@@ -111,21 +96,20 @@ export function isTrustedProxySource(sourceIp: string | undefined): boolean {
     return false;
   }
 
-  for (const cidr of cidrs) {
-    if (!cidr.includes('/')) {
-      if (normalizeIpCandidate(cidr) === normalizedSource) return true;
-      continue;
-    }
+  // IPv4-mapped IPv6 peers (::ffff:a.b.c.d — common on dual-stack listeners)
+  // should match whether the operator wrote the trusted-proxy entry in IPv4
+  // form (127.0.0.1/32) or IPv6 form (::ffff:0:0/96), so check both shapes.
+  const candidates = [normalizedSource];
+  const mapped = ipv4MappedToV4(normalizedSource);
+  if (mapped) candidates.push(mapped);
 
-    if (isIP(normalizedSource) === 4 && ipv4InCidr(normalizedSource, cidr)) {
-      return true;
-    }
-    if (isIP(normalizedSource) === 6) {
-      const [network, bitsRaw] = cidr.split('/');
-      if (bitsRaw === '128' && normalizeIpCandidate(network ?? '') === normalizedSource) {
-        return true;
-      }
-    }
+  for (const cidr of cidrs) {
+    // Bare-IP entries may use bracketed/port forms; normalize them first.
+    // CIDR math for both families is delegated to the shared BigInt matcher
+    // (services/ipMatch.ts) — malformed entries never match and never throw.
+    const entry = cidr.includes('/') ? cidr : normalizeIpCandidate(cidr);
+    if (!entry) continue;
+    if (candidates.some((ip) => ipMatchesAny(ip, [entry]))) return true;
   }
 
   return false;

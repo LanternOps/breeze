@@ -392,6 +392,102 @@ describe('org routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    describe('settings.security.ipAllowlist (system scope)', () => {
+      function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              }),
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', settings }])
+            })
+          })
+        } as any);
+      }
+
+      function mockUpdateCapture() {
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', settings: data.settings }])
+              })
+            };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      function patchPartner(body: unknown) {
+        return app.request('/orgs/partners/partner-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      }
+
+      it('rejects a malformed ipAllowlist entry with 400 (same validation as /partners/me)', async () => {
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['not-an-ip'] } } });
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('accepts valid entries and clears the partner allowlist cache', async () => {
+        mockCurrentPartnerSelect({});
+        mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: ['203.0.113.0/24', '2001:db8::/32'] } } });
+
+        expect(res.status).toBe(200);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
+      });
+
+      it('does not clear the allowlist cache when settings are untouched', async () => {
+        mockUpdateCapture();
+
+        const res = await patchPartner({ name: 'Renamed' });
+
+        expect(res.status).toBe(200);
+        expect(clearPartnerAllowlistCache).not.toHaveBeenCalled();
+      });
+
+      it('preserves an active allowlist when the incoming security object omits the key', async () => {
+        mockCurrentPartnerSelect({ security: { ipAllowlist: ['203.0.113.0/24'], requireMfa: true } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { requireMfa: false } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual(['203.0.113.0/24']);
+        expect(getCaptured().settings.security.requireMfa).toBe(false);
+      });
+
+      it('preserves an active allowlist when the incoming settings omit security entirely', async () => {
+        mockCurrentPartnerSelect({ security: { ipAllowlist: ['203.0.113.0/24'] } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual(['203.0.113.0/24']);
+        expect(getCaptured().settings.branding).toEqual({ primaryColor: '#ff0000' });
+      });
+
+      it('clears the allowlist when the caller sends an explicit empty array', async () => {
+        mockCurrentPartnerSelect({ security: { ipAllowlist: ['203.0.113.0/24'] } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: [] } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
+      });
+    });
   });
 
   describe('DELETE /orgs/partners/:id', () => {
@@ -1847,6 +1943,74 @@ describe('org routes', () => {
         const res = await patchPartner({ settings: { security: { ipAllowlist: ['203.0.113.0/24'] } } });
 
         expect(res.status).toBe(200);
+        expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
+      });
+
+      function mockPartnerUpdateCapture(currentSettings: Record<string, unknown>) {
+        const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: currentSettings };
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              }),
+              limit: vi.fn().mockResolvedValue([currentPartner])
+            })
+          })
+        } as any);
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: data.settings }])
+              })
+            };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      it('deep-merges security: a PATCH omitting ipAllowlist preserves the active allowlist and siblings', async () => {
+        const getCaptured = mockPartnerUpdateCapture({
+          security: { ipAllowlist: ['203.0.113.0/24'], sessionTimeout: 30 }
+        });
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { security: { requireMfa: true } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security).toEqual({
+          ipAllowlist: ['203.0.113.0/24'],
+          sessionTimeout: 30,
+          requireMfa: true
+        });
+      });
+
+      it('a PATCH whose settings omit security entirely preserves the active allowlist', async () => {
+        const getCaptured = mockPartnerUpdateCapture({
+          security: { ipAllowlist: ['203.0.113.0/24'] }
+        });
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security).toEqual({ ipAllowlist: ['203.0.113.0/24'] });
+      });
+
+      it('an explicit empty ipAllowlist still clears the list deliberately', async () => {
+        const getCaptured = mockPartnerUpdateCapture({
+          security: { ipAllowlist: ['203.0.113.0/24'], requireMfa: true }
+        });
+        vi.mocked(getTrustedClientIpOrUndefined).mockReturnValue('203.0.113.10');
+
+        const res = await patchPartner({ settings: { security: { ipAllowlist: [] } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
+        expect(getCaptured().settings.security.requireMfa).toBe(true);
         expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
       });
     });

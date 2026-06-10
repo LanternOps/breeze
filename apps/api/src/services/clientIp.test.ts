@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { getTrustedClientIp, getTrustedClientIpOrUndefined } from './clientIp';
+import { getTrustedClientIp, getTrustedClientIpOrUndefined, isTrustedProxySource } from './clientIp';
 import type { RequestLike } from './auditEvents';
 
 function makeContext(headers: Record<string, string | undefined>, remoteAddress?: string): RequestLike {
@@ -166,6 +166,50 @@ describe('clientIp', () => {
         makeContext({ 'cf-connecting-ip': '203.0.113.10' }),
       );
       expect(ip).toBe('unknown');
+    });
+  });
+
+  describe('isTrustedProxySource — IPv6 + IPv4-mapped CIDR matching', () => {
+    const cases: Array<{ name: string; cidrs: string; peer: string; expected: boolean }> = [
+      // IPv6 prefixes shorter than /128 (previously never matched — fail-open
+      // for the partner IP allowlist via getTrustedClientIpOrUndefined).
+      { name: 'IPv6 peer inside a /64', cidrs: '2001:db8:1:2::/64', peer: '2001:db8:1:2::5', expected: true },
+      { name: 'IPv6 peer inside a /32', cidrs: '2001:db8::/32', peer: '2001:db8:ffff::1', expected: true },
+      { name: 'IPv6 peer outside the /32', cidrs: '2001:db8::/32', peer: '2001:db9::1', expected: false },
+      { name: 'exact /128 still matches', cidrs: '2001:db8::1/128', peer: '2001:db8::1', expected: true },
+      { name: 'compressed-form /128 matches expanded peer', cidrs: '2001:db8:0:0:0:0:0:1/128', peer: '2001:db8::1', expected: true },
+      // IPv4-mapped IPv6 peers (dual-stack listeners) match both list forms.
+      { name: 'IPv4-mapped peer vs IPv4 CIDR form', cidrs: '127.0.0.1/32', peer: '::ffff:127.0.0.1', expected: true },
+      { name: 'IPv4-mapped peer vs IPv6 CIDR form', cidrs: '::ffff:0:0/96', peer: '::ffff:127.0.0.1', expected: true },
+      { name: 'IPv4-mapped peer vs bare IPv4 entry', cidrs: '127.0.0.1', peer: '::ffff:127.0.0.1', expected: true },
+      { name: 'IPv4-mapped peer outside the IPv4 CIDR', cidrs: '10.0.0.0/8', peer: '::ffff:127.0.0.1', expected: false },
+      // Malformed entries must not throw and must not match.
+      { name: 'malformed IPv6 network never matches', cidrs: 'zzzz::/64', peer: '2001:db8::1', expected: false },
+      { name: 'out-of-range IPv6 prefix never matches', cidrs: '2001:db8::/200', peer: '2001:db8::1', expected: false },
+      { name: 'non-numeric prefix never matches', cidrs: '2001:db8::/abc', peer: '2001:db8::1', expected: false },
+      // IPv4 behavior is unchanged.
+      { name: 'IPv4 peer inside an IPv4 CIDR', cidrs: '172.30.0.0/16', peer: '172.30.0.44', expected: true },
+      { name: 'IPv4 peer outside an IPv4 CIDR', cidrs: '172.30.0.0/16', peer: '172.31.0.44', expected: false },
+      // Mixed lists: any entry matching is enough.
+      { name: 'IPv6 peer matches the v6 entry in a mixed list', cidrs: '10.0.0.0/8, 2001:db8::/32', peer: '2001:db8::9', expected: true },
+    ];
+
+    it.each(cases)('$name', ({ cidrs, peer, expected }) => {
+      process.env.TRUSTED_PROXY_CIDRS = cidrs;
+      expect(isTrustedProxySource(peer)).toBe(expected);
+    });
+
+    it('does not throw on malformed CIDR entries', () => {
+      process.env.TRUSTED_PROXY_CIDRS = 'zzzz::/64, 2001:db8::/200, /, garbage';
+      expect(() => isTrustedProxySource('2001:db8::1')).not.toThrow();
+      expect(isTrustedProxySource('2001:db8::1')).toBe(false);
+    });
+
+    it('end-to-end: an IPv6 peer inside a /32 unlocks proxy headers (allowlist enforceable)', () => {
+      process.env.TRUSTED_PROXY_CIDRS = '2001:db8::/32';
+      const ctx = makeContext({ 'cf-connecting-ip': '203.0.113.10' }, '2001:db8::5');
+      expect(getTrustedClientIp(ctx, '2001:db8::5')).toBe('203.0.113.10');
+      expect(getTrustedClientIpOrUndefined(ctx)).toBe('203.0.113.10');
     });
   });
 
