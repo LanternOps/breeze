@@ -47,9 +47,50 @@ const createPartnerSchema = z.object({
   billingEmail: z.string().email().optional()
 });
 
+// The system-scoped partner routes accept free-form settings (z.any()), but
+// security.ipAllowlist entries must still be valid IPs/CIDRs — otherwise a
+// platform-admin write would bypass the validation /partners/me enforces and
+// store entries the matcher can never satisfy (silent fail-open).
+function settingsAllowlistEntriesValid(settings: unknown): boolean {
+  if (settings === null || typeof settings !== 'object') return true;
+  const security = (settings as Record<string, unknown>).security;
+  if (security === null || typeof security !== 'object') return true;
+  const list = (security as Record<string, unknown>).ipAllowlist;
+  if (list === undefined) return true;
+  return Array.isArray(list) && list.every((entry) => typeof entry === 'string' && isValidIpOrCidr(entry));
+}
+
 const updatePartnerSchema = createPartnerSchema.partial().extend({
-  status: z.enum(['pending', 'active', 'suspended', 'churned']).optional()
+  status: z.enum(['pending', 'active', 'suspended', 'churned']).optional(),
+  settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
+    message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
+  }),
 });
+
+// PATCH /partners/:id writes the settings column wholesale. A write whose
+// settings (or security object) simply omits `ipAllowlist` must not silently
+// delete an active allowlist (fail-open); an explicit `ipAllowlist: []` still
+// clears it deliberately. (/partners/me instead deep-merges `security`, which
+// gives the same guarantee there.)
+function preserveIpAllowlistOnOmit(
+  currentSettings: unknown,
+  incomingSettings: Record<string, unknown>,
+): Record<string, unknown> {
+  const currentSecurity = (currentSettings as Record<string, unknown> | null | undefined)?.security;
+  const currentList = (currentSecurity as Record<string, unknown> | null | undefined)?.ipAllowlist;
+  if (!Array.isArray(currentList) || currentList.length === 0) return incomingSettings;
+
+  const incomingSecurity = incomingSettings.security;
+  if (
+    incomingSecurity !== undefined
+    && (incomingSecurity === null || typeof incomingSecurity !== 'object' || Array.isArray(incomingSecurity))
+  ) {
+    return incomingSettings; // malformed security value — leave the write as-is
+  }
+  const security = (incomingSecurity ?? {}) as Record<string, unknown>;
+  if ('ipAllowlist' in security) return incomingSettings; // explicit value (incl. []) wins
+  return { ...incomingSettings, security: { ...security, ipAllowlist: currentList } };
+}
 
 const createOrganizationSchema = z.object({
   partnerId: z.string().uuid().optional(),
@@ -439,11 +480,23 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  // Merge settings
+  // Merge settings (top-level shallow merge, except `security` below)
   const currentSettings = (current.settings as Record<string, unknown>) || {};
-  const newSettings = body.settings
+  const newSettings: Record<string, unknown> = body.settings
     ? { ...currentSettings, ...body.settings }
-    : currentSettings;
+    : { ...currentSettings };
+
+  // Deep-merge the `security` sub-object: it carries many sibling fields (MFA
+  // policy, session limits, ipAllowlist, ...), so a wholesale replace would let
+  // a PATCH that merely omits `ipAllowlist` silently delete an active allowlist
+  // (fail-open). Incoming security fields still override individually, and an
+  // explicit `ipAllowlist: []` still clears the list deliberately.
+  if (body.settings?.security) {
+    newSettings.security = {
+      ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.security,
+    };
+  }
 
   // Enable-gate: turning the allowlist on (empty -> non-empty) requires that
   // the API can actually see real client IPs, otherwise enforcement would
@@ -531,8 +584,23 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     return c.json({ error: 'No updates provided' }, 400);
   }
 
-  // Encrypt secret-bearing fields in partners.settings before writing.
   if (updates.settings !== undefined) {
+    // Wholesale settings write: keep an active security.ipAllowlist unless the
+    // caller explicitly clears it (see preserveIpAllowlistOnOmit).
+    if (updates.settings && typeof updates.settings === 'object' && !Array.isArray(updates.settings)) {
+      const [currentPartner] = await db
+        .select()
+        .from(partners)
+        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+        .limit(1);
+      if (currentPartner) {
+        updates.settings = preserveIpAllowlistOnOmit(
+          currentPartner.settings,
+          updates.settings as Record<string, unknown>,
+        );
+      }
+    }
+    // Encrypt secret-bearing fields in partners.settings before writing.
     updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
@@ -548,6 +616,11 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
 
   // Invalidate the OAuth scope-policy cache (settings may have changed).
   clearPartnerScopePolicyCache(partner.id);
+  // Settings writes can change security.ipAllowlist — drop the 30s cache so
+  // enforcement picks up the new list immediately (mirrors /partners/me).
+  if (data.settings !== undefined) {
+    clearPartnerAllowlistCache(partner.id);
+  }
   // Only the terminal-ish states sever the fleet. `pending` is reversible
   // (signup/billing limbo) and is already blocked for agents by the live
   // tenant cascade (getActivePartner is strict) — severing here would expire

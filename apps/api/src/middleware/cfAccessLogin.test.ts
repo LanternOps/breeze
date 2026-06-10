@@ -78,12 +78,30 @@ vi.mock('../db', () => {
 
 const tokenState = vi.hoisted(() => ({
   lastPayload: null as Record<string, unknown> | null,
+  lastOptions: null as Record<string, unknown> | null,
+  mintCalls: [] as string[],
+  bindCalls: [] as Array<{ jti: string; familyId: string }>,
 }));
 
 vi.mock('../services', () => ({
-  createTokenPair: vi.fn(async (payload: Record<string, unknown>) => {
-    tokenState.lastPayload = payload;
-    return { accessToken: 'access-tok', refreshToken: 'refresh-tok', expiresInSeconds: 900 };
+  createTokenPair: vi.fn(
+    async (payload: Record<string, unknown>, options?: Record<string, unknown>) => {
+      tokenState.lastPayload = payload;
+      tokenState.lastOptions = options ?? null;
+      return {
+        accessToken: 'access-tok',
+        refreshToken: 'refresh-tok',
+        refreshJti: 'jti-new',
+        expiresInSeconds: 900,
+      };
+    }
+  ),
+  mintRefreshTokenFamily: vi.fn(async (userId: string) => {
+    tokenState.mintCalls.push(userId);
+    return 'fam-1';
+  }),
+  bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
+    tokenState.bindCalls.push({ jti, familyId });
   }),
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
@@ -212,6 +230,9 @@ describe('cfAccessLoginMiddleware', () => {
     dbState.userRow = null;
     dbState.lastUpdateId = null;
     tokenState.lastPayload = null;
+    tokenState.lastOptions = null;
+    tokenState.mintCalls = [];
+    tokenState.bindCalls = [];
     auditState.audits = [];
     auditState.loginFailures = [];
     contextState.value = {
@@ -345,6 +366,41 @@ describe('cfAccessLoginMiddleware', () => {
       action: 'user.login',
       details: expect.objectContaining({ method: 'cf_access_jwt' }),
     });
+  });
+
+  it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser };
+    const { next } = createNext();
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next
+    );
+    expect(res).toBeInstanceOf(Response);
+    // 1. A fresh family was minted for this user.
+    expect(tokenState.mintCalls).toEqual([activeUser.id]);
+    // 2. createTokenPair received the family id via refreshFam.
+    expect(tokenState.lastOptions).toMatchObject({ refreshFam: 'fam-1' });
+    // 3. The minted refresh jti was bound to the family in Redis.
+    expect(tokenState.bindCalls).toEqual([{ jti: 'jti-new', familyId: 'fam-1' }]);
+  });
+
+  it('does not mint a family when the MFA temp-token path short-circuits', async () => {
+    envState.enabled = true;
+    envState.trustsMfa = false;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, mfaEnabled: true, mfaSecret: 'encrypted', mfaMethod: 'totp' };
+    const { next } = createNext();
+    await cfAccessLoginMiddleware(createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }), next);
+    expect(tokenState.mintCalls).toEqual([]);
+    expect(tokenState.bindCalls).toEqual([]);
   });
 
   it('issues an MFA temp token when user has MFA and TRUSTS_MFA is false', async () => {

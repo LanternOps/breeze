@@ -70,12 +70,44 @@ vi.mock('../../db', () => {
   };
 });
 
+const servicesState = vi.hoisted(() => ({
+  lastTokenPayload: null as Record<string, unknown> | null,
+  lastTokenOptions: null as Record<string, unknown> | null,
+  verifyResult: null as Record<string, unknown> | null,
+  mintCalls: [] as string[],
+  bindCalls: [] as Array<{ jti: string; familyId: string }>,
+  revokeAllCalls: [] as string[],
+  revokeJtiCalls: [] as string[],
+}));
+
 vi.mock('../../services', () => ({
-  createTokenPair: vi.fn(async () => ({
-    accessToken: 'access-tok',
-    refreshToken: 'refresh-tok',
-    expiresInSeconds: 900,
-  })),
+  createTokenPair: vi.fn(
+    async (payload: Record<string, unknown>, options?: Record<string, unknown>) => {
+      servicesState.lastTokenPayload = payload;
+      servicesState.lastTokenOptions = options ?? null;
+      return {
+        accessToken: 'access-tok',
+        refreshToken: 'refresh-tok',
+        refreshJti: 'jti-new',
+        expiresInSeconds: 900,
+      };
+    }
+  ),
+  mintRefreshTokenFamily: vi.fn(async (userId: string) => {
+    servicesState.mintCalls.push(userId);
+    return 'fam-1';
+  }),
+  bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
+    servicesState.bindCalls.push({ jti, familyId });
+  }),
+  revokeAllUserTokens: vi.fn(async (userId: string) => {
+    servicesState.revokeAllCalls.push(userId);
+  }),
+  revokeRefreshTokenJti: vi.fn(async (jti: string) => {
+    servicesState.revokeJtiCalls.push(jti);
+    return true;
+  }),
+  verifyToken: vi.fn(async () => servicesState.verifyResult),
 }));
 
 const auditState = vi.hoisted(() => ({
@@ -157,6 +189,15 @@ describe('GET /cf-access-login', () => {
     auditState.loginFailures = [];
     cookieState.set = null;
     cookieState.cleared = false;
+    servicesState.lastTokenPayload = null;
+    servicesState.lastTokenOptions = null;
+    servicesState.verifyResult = null;
+    servicesState.mintCalls = [];
+    servicesState.bindCalls = [];
+    servicesState.revokeAllCalls = [];
+    servicesState.revokeJtiCalls = [];
+    delete process.env.DASHBOARD_URL;
+    delete process.env.PUBLIC_APP_URL;
   });
 
   it('redirects to /login with error=disabled when trust is off', async () => {
@@ -263,6 +304,30 @@ describe('GET /cf-access-login', () => {
     });
   });
 
+  it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: {
+        email: activeUser.email,
+        sub: 'cf-1',
+        aud: envState.audience,
+        iss: `https://${envState.teamDomain}`,
+        exp: 999,
+        iat: 1,
+      },
+    };
+    dbState.userRow = { ...activeUser };
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+    expect(res.status).toBe(302);
+    // 1. A fresh family was minted for this user.
+    expect(servicesState.mintCalls).toEqual([activeUser.id]);
+    // 2. createTokenPair received the family id via refreshFam.
+    expect(servicesState.lastTokenOptions).toMatchObject({ refreshFam: 'fam-1' });
+    // 3. The minted refresh jti was bound to the family in Redis.
+    expect(servicesState.bindCalls).toEqual([{ jti: 'jti-new', familyId: 'fam-1' }]);
+  });
+
   it('preserves a safe next param and appends cf-access-login=success', async () => {
     envState.enabled = true;
     verifyState.next = {
@@ -308,6 +373,108 @@ describe('GET /cf-access-login', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('Location')).toBe('/login?signedOut=1');
     expect(cookieState.cleared).toBe(true);
+  });
+
+  it('logout revokes all user tokens + the refresh jti when a valid refresh cookie is present', async () => {
+    envState.enabled = true;
+    servicesState.verifyResult = { type: 'refresh', sub: 'user-1', jti: 'jti-current' };
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: {
+        host: 'breeze.example.com',
+        cookie: 'breeze_refresh_token=refresh-cookie-tok',
+      },
+    });
+    expect(res.status).toBe(302);
+    expect(servicesState.revokeAllCalls).toEqual(['user-1']);
+    expect(servicesState.revokeJtiCalls).toEqual(['jti-current']);
+    expect(cookieState.cleared).toBe(true);
+  });
+
+  it('logout with no refresh cookie still clears + 302s without calling revocation', async () => {
+    envState.enabled = true;
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'breeze.example.com' },
+    });
+    expect(res.status).toBe(302);
+    expect(servicesState.revokeAllCalls).toEqual([]);
+    expect(servicesState.revokeJtiCalls).toEqual([]);
+    expect(cookieState.cleared).toBe(true);
+  });
+
+  it('logout with an invalid refresh cookie still clears + 302s (no 500)', async () => {
+    envState.enabled = true;
+    servicesState.verifyResult = null; // verifyToken rejects the cookie
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: {
+        host: 'breeze.example.com',
+        cookie: 'breeze_refresh_token=garbage',
+      },
+    });
+    expect(res.status).toBe(302);
+    expect(servicesState.revokeAllCalls).toEqual([]);
+    expect(servicesState.revokeJtiCalls).toEqual([]);
+    expect(cookieState.cleared).toBe(true);
+  });
+
+  it('logout still clears + 302s when revocation throws (e.g. Redis down)', async () => {
+    envState.enabled = true;
+    servicesState.verifyResult = { type: 'refresh', sub: 'user-1', jti: 'jti-current' };
+    const services = await import('../../services');
+    vi.mocked(services.revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: {
+        host: 'breeze.example.com',
+        cookie: 'breeze_refresh_token=refresh-cookie-tok',
+      },
+    });
+    expect(res.status).toBe(302);
+    expect(cookieState.cleared).toBe(true);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('logout builds the redirect origin from DASHBOARD_URL, ignoring a spoofed Host header', async () => {
+    envState.enabled = true;
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'evil.attacker.example' },
+    });
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('Location') ?? '';
+    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
+    expect(loc).not.toContain('evil.attacker.example');
+    const inner = decodeURIComponent(loc.split('returnTo=')[1] ?? '');
+    const finalReturn = decodeURIComponent(inner.split('returnTo=')[1] ?? '');
+    expect(finalReturn).toBe('https://breeze.example.com/login?signedOut=1');
+  });
+
+  it('logout falls back to PUBLIC_APP_URL when DASHBOARD_URL is unset', async () => {
+    envState.enabled = true;
+    process.env.PUBLIC_APP_URL = 'https://app.example.net/';
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'evil.attacker.example' },
+    });
+    const loc = res.headers.get('Location') ?? '';
+    expect(loc.startsWith('https://app.example.net/cdn-cgi/access/logout?returnTo=')).toBe(true);
+    expect(loc).not.toContain('evil.attacker.example');
+  });
+
+  it('logout falls back to https + Host only when neither env is set', async () => {
+    envState.enabled = true;
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'breeze.example.com', 'x-forwarded-proto': 'http' },
+    });
+    const loc = res.headers.get('Location') ?? '';
+    // Scheme is pinned to https even when the request claims otherwise.
+    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
   });
 
   it('rejects an unsafe next param and falls back to /', async () => {

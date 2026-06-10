@@ -5,7 +5,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { savedFilters } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilterWithPreview, validateFilter, FilterConditionGroup } from '../services/filterEngine';
+import { evaluateFilter, evaluateFilterWithPreview, validateFilter, FilterConditionGroup } from '../services/filterEngine';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -116,11 +116,16 @@ filterRoutes.post(
   requireFilterRead,
   zValidator('json', z.object({
     conditions: filterConditionGroupSchema,
-    limit: z.number().int().positive().max(100).optional()
+    limit: z.number().int().positive().max(100).optional(),
+    // idsOnly mode returns ALL matching device ids (uncapped, ids only — no
+    // per-device objects). Used by the device list/grid so an advanced filter
+    // matching >100 devices doesn't silently hide rows (the preview cap is a
+    // UI nicety for the filter builder footer, not a result-set bound).
+    idsOnly: z.boolean().optional()
   })),
   async (c) => {
     const auth = c.get('auth');
-    const { conditions, limit } = c.req.valid('json');
+    const { conditions, limit, idsOnly } = c.req.valid('json');
 
     // Validate field/operator names (and regex length) up front so an unknown
     // field or over-long `matches` pattern returns a clean 400 instead of a 500
@@ -145,7 +150,43 @@ filterRoutes.post(
       orgIds = await getOrgIdsForAuth(auth);
     }
     if (!orgIds || orgIds.length === 0) {
+      if (idsOnly) {
+        return c.json({ data: { totalCount: 0, deviceIds: [], evaluatedAt: new Date().toISOString() } });
+      }
       return c.json({ data: { totalCount: 0, devices: [], evaluatedAt: new Date().toISOString() } });
+    }
+
+    // idsOnly: skip the preview/enrichment path entirely and return the full
+    // matching id set. evaluateFilter applies no row limit, so the per-org
+    // previewLimit cap never truncates this path.
+    if (idsOnly) {
+      const deviceIds: string[] = [];
+      for (const orgId of orgIds) {
+        const result = await evaluateFilter(
+          conditions as unknown as FilterConditionGroup,
+          { orgId }
+        );
+        deviceIds.push(...result.deviceIds);
+      }
+
+      writeRouteAudit(c, {
+        orgId: auth.orgId ?? (orgIds.length === 1 ? orgIds[0] : null),
+        action: 'filter.preview',
+        resourceType: 'saved_filter',
+        details: {
+          orgCount: orgIds.length,
+          totalCount: deviceIds.length,
+          idsOnly: true
+        }
+      });
+
+      return c.json({
+        data: {
+          totalCount: deviceIds.length,
+          deviceIds,
+          evaluatedAt: new Date().toISOString()
+        }
+      });
     }
 
     // Evaluate filter across all orgs the user has access to

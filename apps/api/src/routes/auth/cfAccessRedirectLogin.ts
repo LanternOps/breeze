@@ -13,7 +13,14 @@ import {
   CfAccessJwksUnavailableError,
   verifyCfAccessJwt,
 } from '../../services/cfAccessJwt';
-import { createTokenPair } from '../../services';
+import {
+  bindRefreshJtiToFamily,
+  createTokenPair,
+  mintRefreshTokenFamily,
+  revokeAllUserTokens,
+  revokeRefreshTokenJti,
+  verifyToken,
+} from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { ENABLE_2FA } from './schemas';
@@ -22,6 +29,7 @@ import {
   clearRefreshTokenCookie,
   getClientIP,
   resolveCurrentUserTokenContext,
+  resolveRefreshToken,
   setRefreshTokenCookie,
 } from './helpers';
 
@@ -157,15 +165,26 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
 
   const mfaSatisfied = trustsMfa || !(ENABLE_2FA && user.mfaEnabled);
 
-  const tokens = await createTokenPair({
-    sub: user.id,
-    email: user.email,
-    roleId: context.roleId,
-    orgId: context.orgId,
-    partnerId: context.partnerId,
-    scope: context.scope,
-    mfa: mfaSatisfied,
-  });
+  // Mint a fresh refresh-token family for this login so the rotation chain
+  // participates in OAuth 2.1 reuse-detection — same invariant as every
+  // other authenticated mint path (see services/refreshTokenFamily.ts and
+  // the /login handler).
+  const familyId = await mintRefreshTokenFamily(user.id);
+
+  const tokens = await createTokenPair(
+    {
+      sub: user.id,
+      email: user.email,
+      roleId: context.roleId,
+      orgId: context.orgId,
+      partnerId: context.partnerId,
+      scope: context.scope,
+      mfa: mfaSatisfied,
+    },
+    { refreshFam: familyId }
+  );
+
+  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
 
   await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
 
@@ -227,7 +246,31 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
  * Bearer token. The refresh cookie is enough to identify the session and
  * the cookie is cleared regardless.
  */
-cfAccessRedirectLoginRoutes.get('/cf-access-logout', (c) => {
+cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
+  // Server-side revocation, mirroring POST /logout (login.ts): identify the
+  // session from the refresh cookie (no Bearer token on a top-level GET),
+  // then revoke ALL of the user's tokens plus the specific refresh jti.
+  // Without this, "Sign out" via CF Access only cleared the cookie — the
+  // access + refresh tokens stayed live until natural expiry. Best-effort:
+  // a missing/invalid cookie or a Redis error still clears + redirects.
+  try {
+    const refreshToken = resolveRefreshToken(c);
+    if (refreshToken) {
+      const payload = await verifyToken(refreshToken);
+      if (payload && payload.type === 'refresh' && payload.sub) {
+        await revokeAllUserTokens(payload.sub);
+        if (payload.jti) {
+          await revokeRefreshTokenJti(payload.jti);
+        }
+      }
+    }
+  } catch (error) {
+    console.error(
+      '[cf-access-logout] Failed to revoke tokens during logout — clearing cookie anyway:',
+      error
+    );
+  }
+
   clearRefreshTokenCookie(c);
 
   if (!cfAccessTrustEnabled()) {
@@ -239,15 +282,30 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', (c) => {
     return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
   }
 
-  // Reconstruct the public origin. The api sits behind a TLS-terminating
-  // proxy so `c.req.url` shows `http://`. Honour X-Forwarded-Proto when
-  // the proxy is trusted, otherwise default to `https://`.
-  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
-  const trustProxy = (process.env.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase();
-  const trustProxyOn = ['true', '1', 'yes', 'on'].includes(trustProxy);
-  const scheme = trustProxyOn && forwardedProto ? forwardedProto : 'https';
-  const host = c.req.header('host') ?? '';
-  const origin = host ? `${scheme}://${host}` : '';
+  // Resolve the public origin from configuration, NOT the request. The Host
+  // header is attacker-controllable, and the origin ends up in a Location
+  // header — deriving it from the request is an open redirect (a crafted
+  // Host would bounce the user's browser to an attacker domain after CF
+  // logout). DASHBOARD_URL / PUBLIC_APP_URL is the established pattern for
+  // building user-facing absolute URLs (see login.ts, password.ts).
+  const configuredBase = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || '')
+    .trim()
+    .replace(/\/$/, '');
+  let origin = '';
+  if (configuredBase) {
+    try {
+      origin = new URL(configuredBase).origin;
+    } catch {
+      origin = '';
+    }
+  }
+  if (!origin) {
+    // Last-resort fallback for deployments without DASHBOARD_URL /
+    // PUBLIC_APP_URL. Scheme is pinned to https — never trust the request
+    // to pick the scheme either.
+    const host = c.req.header('host') ?? '';
+    origin = host ? `https://${host}` : '';
+  }
 
   // CF Access stores TWO `CF_Authorization` cookies per session:
   // 1. Per-application cookie at the app domain (app.example.com)

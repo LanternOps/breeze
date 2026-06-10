@@ -59,7 +59,7 @@ The config validator refuses to boot if `CF_ACCESS_TRUST_ENABLED=true` but `CF_A
 
 ## Recommended Cloudflare Access setup
 
-- Application path: cover the SPA root and `/api/v1/auth/login` only. Leave bypass rules on `/api/*` agent paths, `/health`, `/installers/*`, and any installer short-links (the agent fleet does not have a CF Access session).
+- Application path: cover the SPA root, `/api/v1/auth/login`, `/api/v1/auth/cf-access-login`, and `/api/v1/auth/cf-access-logout`. Leave bypass rules on `/api/*` agent paths, `/health`, `/installers/*`, and any installer short-links (the agent fleet does not have a CF Access session). If you use a blanket bypass rule on `/api/*`, make sure it does **not** swallow `/api/v1/auth/cf-access-login` or `/api/v1/auth/cf-access-logout` — those two endpoints must be enforced by the Access application (more-specific paths win), otherwise the JWT never reaches the redirect login handler and sign-out cannot clear the CF Access session.
 - Identity provider: pick the same IdP whose `email` claim is the same one your Breeze users are provisioned with. If a Breeze user's email is `alice@acme.com` and your IdP issues the JWT with `email=alice@acme.com`, you're set.
 - Session duration: anything you like. Breeze mints its own refresh token independently of the CF Access cookie.
 - Application AUD: copy from the dashboard once the application is created. This is stable for the life of the application.

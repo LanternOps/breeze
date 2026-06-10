@@ -30,6 +30,28 @@ import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
 
+/**
+ * #1121 — pure collapse detector for the watchdogState tolerance gap.
+ * Returns the structured-warn payload when the RAW heartbeat body carried a
+ * `watchdogState` key but schema validation collapsed it to undefined (the
+ * `.catch(undefined)` firing on a corrupted value), else null. Exported for
+ * unit tests; the route handler owns the actual console.warn.
+ */
+export function detectWatchdogStateCollapse(
+  rawBody: unknown,
+  validatedWatchdogState: string | undefined,
+): { field: 'watchdogState'; rawValue: string | undefined } | null {
+  if (validatedWatchdogState !== undefined) return null;
+  if (!rawBody || typeof rawBody !== 'object') return null;
+  const rawState = (rawBody as Record<string, unknown>).watchdogState;
+  if (rawState === undefined) return null;
+  const rawValue =
+    typeof rawState === 'string'
+      ? rawState.slice(0, 100)
+      : JSON.stringify(rawState)?.slice(0, 100);
+  return { field: 'watchdogState', rawValue };
+}
+
 export const heartbeatRoutes = new Hono();
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
@@ -39,6 +61,32 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   if (!agent?.deviceId) {
     return c.json({ error: 'Agent context not found' }, 401);
+  }
+
+  // #1121 — observability for the #1065 tolerance trade-off. watchdogState is
+  // an optional informational field guarded by .catch(undefined) in
+  // heartbeatSchema; if a corrupted value collapses to undefined, the
+  // `data.watchdogState === 'FAILOVER'` mapping below silently records
+  // watchdogStatus='connected', masking a genuine failover as healthy
+  // (pre-#1065 the same corruption produced a loud 400). Detect the collapse
+  // — raw body carried the key but the validated payload lost it — and emit
+  // a structured warn so it lands in logs/Sentry breadcrumbs instead of
+  // being indistinguishable from a healthy heartbeat. Hono caches the parsed
+  // JSON body (zValidator already consumed it), so the re-read is free; the
+  // check is gated to watchdog-role heartbeats, the only senders of the field.
+  if (agent.role === 'watchdog' && data.watchdogState === undefined) {
+    try {
+      const raw: unknown = await c.req.json();
+      const collapse = detectWatchdogStateCollapse(raw, data.watchdogState);
+      if (collapse) {
+        console.warn(
+          '[heartbeat] watchdogState collapsed by schema .catch — possible masked failover (#1121)',
+          { deviceId: agent.deviceId, agentId, ...collapse },
+        );
+      }
+    } catch {
+      // Raw body unavailable — nothing to report.
+    }
   }
 
   // #1105 — run the RLS-scoped DB work in a SHORT-LIVED context that is

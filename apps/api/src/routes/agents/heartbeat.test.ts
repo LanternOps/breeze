@@ -747,3 +747,40 @@ describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeT
     expect(body.upgradeTo).toBeUndefined();
   });
 });
+
+
+describe('detectWatchdogStateCollapse (#1121)', () => {
+  it('reports a collapse when raw body carried watchdogState but validation dropped it', async () => {
+    const { detectWatchdogStateCollapse } = await import('./heartbeat');
+    expect(
+      detectWatchdogStateCollapse({ agentVersion: '1', watchdogState: 42 }, undefined),
+    ).toEqual({ field: 'watchdogState', rawValue: '42' });
+    expect(
+      detectWatchdogStateCollapse({ watchdogState: { nested: true } }, undefined),
+    ).toEqual({ field: 'watchdogState', rawValue: '{"nested":true}' });
+  });
+
+  it('truncates oversized raw values to 100 chars', async () => {
+    const { detectWatchdogStateCollapse } = await import('./heartbeat');
+    const big = 'x'.repeat(5000);
+    // An oversized STRING would actually pass z.string(); simulate a
+    // corrupted huge non-string payload via an array of strings.
+    const res = detectWatchdogStateCollapse({ watchdogState: [big] }, undefined);
+    expect(res).not.toBeNull();
+    expect(res!.rawValue!.length).toBeLessThanOrEqual(100);
+  });
+
+  it('returns null when validation kept a value (no collapse)', async () => {
+    const { detectWatchdogStateCollapse } = await import('./heartbeat');
+    expect(
+      detectWatchdogStateCollapse({ watchdogState: 'FAILOVER' }, 'FAILOVER'),
+    ).toBeNull();
+  });
+
+  it('returns null when the raw body never had the key (normal main-agent heartbeat)', async () => {
+    const { detectWatchdogStateCollapse } = await import('./heartbeat');
+    expect(detectWatchdogStateCollapse({ agentVersion: '1' }, undefined)).toBeNull();
+    expect(detectWatchdogStateCollapse(null, undefined)).toBeNull();
+    expect(detectWatchdogStateCollapse('not-an-object', undefined)).toBeNull();
+  });
+});
