@@ -27,7 +27,7 @@ KillMode=mixed
 
 # INTENTIONALLY UNSANDBOXED. The remote terminal and remote script execution
 # features spawn child processes that must behave like a root SSH session:
-#   - package managers drop privileges to unprivileged users (needs CAP_SETUID/SETGID)
+#   - package managers drop privileges to unprivileged users (needs CAP_SETUID/SETGID/CHOWN)
 #   - admins write under /home, /usr, /etc, and expect a shared /tmp
 # systemd sandbox restrictions are INHERITED by those children and silently break
 # these operations. Do not re-add them.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -46,7 +47,7 @@ KillMode=mixed
 
 # INTENTIONALLY UNSANDBOXED. The remote terminal and remote script execution
 # features spawn child processes that must behave like a root SSH session:
-#   - package managers drop privileges to unprivileged users (needs CAP_SETUID/SETGID)
+#   - package managers drop privileges to unprivileged users (needs CAP_SETUID/SETGID/CHOWN)
 #   - admins write under /home, /usr, /etc, and expect a shared /tmp
 # systemd sandbox restrictions are INHERITED by those children and silently break
 # these operations. Do not re-add them.
@@ -87,4 +88,23 @@ func unitNeedsReconcile(existing string, want int) bool {
 		return true
 	}
 	return v < want
+}
+
+// reconcileTransientArgs builds the systemd-run argv for the sandbox-escape that
+// rewrites the unit. The invariants below are safety-critical and guarded by
+// TestReconcileTransientArgs:
+//   - --collect: a failed transient unit is garbage-collected so a later retry
+//     is never blocked by a leftover dead unit.
+//   - NEVER --scope: a scope child is forked from the (sandboxed) agent and
+//     inherits its mount namespace + capability bounding set, so it would fail
+//     to write /etc/systemd/system exactly like the agent — defeating the escape.
+//   - PID-suffixed unit name: if the restart the child triggers races a freshly
+//     started agent into reconcile again, the two transient units can't collide
+//     (--collect only reaps dead units, not a still-running one).
+func reconcileTransientArgs(pid int, binPath string) []string {
+	return []string{
+		"--quiet", "--collect",
+		fmt.Sprintf("--unit=breeze-unit-reconcile-%d", pid),
+		binPath, "service", "reconcile-unit",
+	}
 }

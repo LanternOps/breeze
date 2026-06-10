@@ -69,7 +69,16 @@ func reconcileServiceUnitIfNeeded() {
 		}
 		data, err := os.ReadFile(linuxUnitDst)
 		if err != nil {
-			return // not installed via systemd / unreadable — nothing to heal
+			// ErrNotExist = not installed via systemd: genuinely nothing to heal.
+			// Any other read error on a host that may be running the old sandboxed
+			// unit means we couldn't even evaluate the heal — don't fail silently.
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr,
+					"Warning: could not read %s to check for an outdated systemd unit: %v. "+
+						"If the remote terminal/scripts hit privilege errors, run: "+
+						"sudo breeze-agent service install\n", linuxUnitDst, err)
+			}
+			return
 		}
 		if !unitNeedsReconcile(string(data), currentUnitVersion) {
 			return
@@ -84,19 +93,13 @@ func reconcileServiceUnitIfNeeded() {
 		// TRANSIENT SERVICE, deliberately NOT --scope: a scope child is forked
 		// from this (sandboxed) process and only its cgroup moves — it would
 		// inherit our read-only /etc (ProtectSystem) and restricted CapBnd and
-		// fail with the same Permission denied. Without --scope, PID 1 spawns
-		// the command in a fresh execution environment with full root caps and
-		// an unrestricted namespace; being a child of PID 1 it also survives
-		// the agent restart it triggers. --collect garbage-collects the
-		// transient unit on failure so a later retry is never blocked.
-		//
-		// The unit name is suffixed with our PID so that if the restart the
-		// child triggers races a freshly-started agent into reconcile again, the
-		// second systemd-run can't collide with a still-running first transient
-		// unit (--collect only reaps dead units, not running ones).
-		unitFlag := fmt.Sprintf("--unit=breeze-unit-reconcile-%d", os.Getpid())
-		out, err := exec.Command("systemd-run", "--quiet", "--collect",
-			unitFlag, linuxBinaryPath, "service", "reconcile-unit").CombinedOutput()
+		// fail with the same Permission denied. Without --scope, PID 1 spawns the
+		// command in systemd's default execution environment — NOT inheriting this
+		// unit's ProtectSystem or CapabilityBoundingSet — so it can write
+		// /etc/systemd/system; being a child of PID 1 it also survives the agent
+		// restart it triggers. See reconcileTransientArgs for the flag invariants.
+		out, err := exec.Command(
+			"systemd-run", reconcileTransientArgs(os.Getpid(), linuxBinaryPath)...).CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"Warning: failed to auto-heal outdated systemd unit via systemd-run: %s. "+
@@ -419,14 +422,14 @@ var serviceReconcileUnitCmd = &cobra.Command{
 			return fmt.Errorf("write unit: %w", err)
 		}
 		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
-			return fmt.Errorf("daemon-reload: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("daemon-reload: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 		fmt.Printf("Reconciled %s to unit version %d; restarting service.\n", linuxUnitDst, currentUnitVersion)
 		// Restart so the relaxed sandbox applies to the live process. This kills
 		// the old agent; we run as a systemd-run transient service whose parent
 		// is PID 1 (not the agent), so this child survives to finish the restart.
 		if out, err := exec.Command("systemctl", "restart", linuxServiceName).CombinedOutput(); err != nil {
-			return fmt.Errorf("restart: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("restart: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	},

@@ -18,6 +18,15 @@ func TestParseUnitVersion(t *testing.T) {
 		{"missing", "[Service]\nType=simple\n", 0, false},
 		{"garbage value", "# breeze-unit-version: abc\n", 0, false},
 		{"empty", "", 0, false},
+		// CRLF must stay tolerated: a unit copied through Windows-touched tooling
+		// must NOT read as version-less (which would trigger needless reconcile loops).
+		{"crlf tolerated", "# breeze-unit-version: 2\r\n", 2, true},
+		// Overflow and non-numeric both fail to (0,false) => unitNeedsReconcile true (fail safe).
+		{"overflow not ok", "# breeze-unit-version: 99999999999999999999\n", 0, false},
+		{"negative parses", "# breeze-unit-version: -1\n", -1, true},
+		// First marker wins, and a garbage first marker short-circuits the scan
+		// (a real concern only if a second marker is ever appended).
+		{"garbage first marker short-circuits", "# breeze-unit-version: x\n# breeze-unit-version: 3\n", 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,6 +57,31 @@ func TestUnitNeedsReconcile(t *testing.T) {
 				t.Fatalf("unitNeedsReconcile(%q,%d) = %v, want %v", tc.existing, tc.want, got, tc.expect)
 			}
 		})
+	}
+}
+
+func TestReconcileTransientArgs(t *testing.T) {
+	args := reconcileTransientArgs(4242, "/usr/local/bin/breeze-agent")
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--collect") {
+		t.Error("must pass --collect so a failed transient unit doesn't block a later retry")
+	}
+	for _, a := range args {
+		if a == "--scope" || strings.HasPrefix(a, "--scope=") {
+			t.Error("must NOT use --scope: a scope child inherits the sandbox and defeats the escape")
+		}
+	}
+	if !strings.Contains(joined, "--unit=breeze-unit-reconcile-4242") {
+		t.Errorf("transient unit name must be PID-suffixed; got %q", joined)
+	}
+	// The trailing argv must invoke the hidden subcommand on the given binary.
+	if len(args) < 3 {
+		t.Fatalf("argv too short: %v", args)
+	}
+	tail := args[len(args)-3:]
+	if tail[0] != "/usr/local/bin/breeze-agent" || tail[1] != "service" || tail[2] != "reconcile-unit" {
+		t.Errorf("must invoke `<bin> service reconcile-unit`; got trailing %v", tail)
 	}
 }
 
