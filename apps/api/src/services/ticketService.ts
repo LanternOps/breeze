@@ -18,8 +18,10 @@ export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStat
   closed: ['open']
 };
 
+export type TicketServiceErrorStatus = 400 | 404 | 409 | 500;
+
 export class TicketServiceError extends Error {
-  constructor(message: string, public status: number = 400) {
+  constructor(message: string, public status: TicketServiceErrorStatus = 400) {
     super(message);
     this.name = 'TicketServiceError';
   }
@@ -46,7 +48,7 @@ async function getTicketOrThrow(ticketId: string) {
   return ticket;
 }
 
-export interface CreateTicketInput {
+interface BaseCreateTicketInput {
   orgId: string;
   subject: string;
   description?: string;
@@ -55,13 +57,12 @@ export interface CreateTicketInput {
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   dueDate?: Date;
   assigneeId?: string;
-  source: TicketSource;
-  // Portal-only fields — ignored when source is not 'portal' but harmless otherwise.
-  submittedBy?: string;
-  submitterEmail?: string;
-  submitterName?: string;
-  category?: string;
 }
+
+// portal source carries the requester; the worker emails submitterEmail on public replies/resolution.
+export type CreateTicketInput =
+  | (BaseCreateTicketInput & { source: 'portal'; submittedBy: string; submitterEmail: string; submitterName?: string })
+  | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal'> });
 
 // NOTE: emitTicketEvent and createAuditLogAsync below are called while the
 // surrounding request transaction is still open. If the transaction later rolls
@@ -79,6 +80,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
+  const isPortal = input.source === 'portal';
   const insertValues = {
     orgId: input.orgId,
     partnerId: org.partnerId,
@@ -93,10 +95,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     assignedTo: input.assigneeId ?? null,
     status: (input.assigneeId ? 'open' : 'new') as typeof tickets.$inferInsert['status'],
     source: input.source,
-    submittedBy: input.submittedBy ?? null,
-    submitterEmail: input.submitterEmail ?? null,
-    submitterName: input.submitterName ?? null,
-    category: input.category ?? null
+    submittedBy: isPortal ? input.submittedBy : null,
+    submitterEmail: isPortal ? input.submitterEmail : null,
+    submitterName: isPortal ? (input.submitterName ?? null) : null,
+    category: null
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db

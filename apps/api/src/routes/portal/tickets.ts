@@ -100,7 +100,7 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
     );
   } catch (err) {
     if (err instanceof TicketServiceError) {
-      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 500);
+      return c.json({ error: err.message }, err.status);
     }
     throw err;
   }

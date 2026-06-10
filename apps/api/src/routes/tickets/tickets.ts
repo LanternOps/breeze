@@ -35,7 +35,7 @@ function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TicketServiceError) {
-    return c.json({ error: err.message }, err.status as 400);
+    return c.json({ error: err.message }, err.status);
   }
   throw err;
 }

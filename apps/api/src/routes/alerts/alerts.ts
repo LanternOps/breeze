@@ -689,7 +689,7 @@ alertsRoutes.post(
       );
       return c.json({ data: ticket }, 201);
     } catch (err) {
-      if (err instanceof TicketServiceError) return c.json({ error: err.message }, err.status as 400);
+      if (err instanceof TicketServiceError) return c.json({ error: err.message }, err.status);
       throw err;
     }
   }

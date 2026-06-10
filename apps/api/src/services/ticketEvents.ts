@@ -1,23 +1,29 @@
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
 import { captureException } from './sentry';
+import { ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+
+// Derived locally to avoid an import cycle (ticketService imports ticketEvents).
+type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
+type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
 
 export const TICKET_EVENTS_QUEUE = 'ticket-events';
 
-export type TicketEventType =
-  | 'ticket.created'
-  | 'ticket.status_changed'
-  | 'ticket.assigned'
-  | 'ticket.commented';
-
-export interface TicketEvent {
-  type: TicketEventType;
+interface TicketEventEnvelope {
   ticketId: string;
   orgId: string;
   partnerId: string | null;
   actorUserId?: string | null;
-  payload: Record<string, unknown>;
 }
+
+export type TicketEvent = TicketEventEnvelope & (
+  | { type: 'ticket.created'; payload: { internalNumber: string; subject: string; assigneeId: string | null; source: TicketSource } }
+  | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus; resolutionNote: string | null } }
+  | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
+  | { type: 'ticket.commented'; payload: { commentId: string; isPublic: boolean } }
+);
+
+export type TicketEventType = TicketEvent['type'];
 
 let queue: Queue | null = null;
 

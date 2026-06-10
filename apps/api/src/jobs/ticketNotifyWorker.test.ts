@@ -31,7 +31,9 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   tickets: { id: 'id' },
   userNotifications: {},
-  users: { id: 'id' }
+  users: { id: 'id' },
+  ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
+  ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
 
 import { handleTicketEvent } from './ticketNotifyWorker';
@@ -168,7 +170,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { to: 'resolved', resolutionNote: xssNote }
+      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved', resolutionNote: xssNote }
     });
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
@@ -188,7 +190,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { to: 'pending' }
+      actorUserId: 'u-1', payload: { from: 'open', to: 'pending', resolutionNote: null }
     });
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -202,7 +204,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { to: 'resolved', resolutionNote: 'All done' }
+      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved', resolutionNote: 'All done' }
     })).resolves.toBeUndefined();
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -215,7 +217,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.created', ticketId: 't-2', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-3' }
+      actorUserId: 'u-1', payload: { internalNumber: 'T-2026-0100', subject: 'New ticket', assigneeId: 'u-3', source: 'manual' }
     });
 
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({

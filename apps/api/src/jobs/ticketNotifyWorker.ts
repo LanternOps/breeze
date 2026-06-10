@@ -146,14 +146,14 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
     switch (event.type) {
       case 'ticket.created':
       case 'ticket.assigned': {
-        const assigneeId = event.payload.assigneeId as string | null;
+        const assigneeId = event.payload.assigneeId;
         if (assigneeId) {
           emailPayloads = await collectAssigneeNotification(event, assigneeId);
         }
         return;
       }
       case 'ticket.commented': {
-        if (event.payload.isPublic === true) {
+        if (event.payload.isPublic) {
           emailPayloads = await collectRequesterEmail(
             event,
             '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
@@ -164,7 +164,7 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
       }
       case 'ticket.status_changed': {
         if (event.payload.to === 'resolved') {
-          const note = String(event.payload.resolutionNote ?? '');
+          const note = event.payload.resolutionNote ?? '';
           emailPayloads = await collectRequesterEmail(
             event,
             `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`,
@@ -174,8 +174,8 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         return;
       }
       default: {
-        const _exhaustive: never = event.type;
-        console.warn('[TicketNotify] Unhandled event type:', _exhaustive);
+        const _exhaustive: never = event as never;
+        console.warn('[TicketNotify] Unhandled event type:', (_exhaustive as TicketEvent).type);
       }
     }
   });
