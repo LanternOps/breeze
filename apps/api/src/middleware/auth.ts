@@ -61,6 +61,14 @@ export interface AuthContext {
    * denied for a null/undefined siteId (e.g. a device with no site assignment).
    */
   canAccessSite?: (siteId: string | null | undefined) => boolean;
+
+  /**
+   * Set ONLY for Breeze Helper sessions (helperAuth). When present, the
+   * AI-tools executeTool gate forces every tool's device input to this device
+   * id and denies org-wide tools — the Helper can act only on its own device.
+   * Undefined for all normal (user/agent) contexts.
+   */
+  helperDeviceId?: string;
 }
 
 declare module 'hono' {
