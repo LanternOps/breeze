@@ -9,84 +9,55 @@
 
 export type HelperPermissionLevel = 'basic' | 'standard' | 'extended';
 
+// Every tool at every level MUST be single-device: it needs a
+// HELPER_TOOL_SCOPING entry in services/aiTools.ts (the executeTool gate
+// pins the declared device field to the Helper's own device and DENIES any
+// unscoped tool — security finding A, Phase 0). Org-wide enumeration tools
+// (query_devices, get_fleet_health, …) and tools keyed on non-device
+// resources (s1_threat_action takes threatIds) therefore cannot appear here.
+//
+// Mutating tools (tier>=2) are governed by PAM (Phase 1): each invocation
+// becomes an elevation_request(ai_tool_action) decided by pam_rules —
+// default posture require_approval via POST /pam/elevation-requests/:id/respond.
+const BASIC_TOOLS = [
+  'get_device_details',
+  'analyze_metrics',
+  'analyze_disk_usage',
+  'get_cis_device_report',
+  'get_security_posture',
+  'take_screenshot',
+  'analyze_screen',
+  'search_logs',
+] as const;
+
+// basic + device-pinned safe actions. The mutating ones are PAM-governed.
+const STANDARD_TOOLS = [
+  ...BASIC_TOOLS,
+  'get_active_users',
+  'get_user_experience_metrics',
+  'manage_alerts',
+  'manage_services',
+  'disk_cleanup',
+  'file_operations',
+] as const;
+
+// standard + device-pinned destructive tools — always PAM-governed.
+// (run_backup_verification is deliberately absent: it is declared on the SDK
+// MCP server but has no executeTool registration, so it cannot run anywhere.)
+const EXTENDED_TOOLS = [
+  ...STANDARD_TOOLS,
+  'computer_control',
+  'execute_command',
+  'security_scan',
+  's1_isolate_device',
+  'network_discovery',
+  'apply_cis_remediation',
+] as const;
+
 const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
-  // Read-only single-device allowlist (security finding A, Phase 0). Kept in
-  // sync with HELPER_TOOL_SCOPING in services/aiTools.ts — every tool here is
-  // device-scoped by the executeTool gate. Org-wide enumeration and mutating
-  // tools are deliberately excluded; full capability returns under PAM
-  // governance in Phase 1.
-  basic: [
-    'get_device_details',
-    'analyze_metrics',
-    'analyze_disk_usage',
-    'get_cis_device_report',
-    'get_security_posture',
-    'take_screenshot',
-    'analyze_screen',
-    'search_logs',
-  ],
-  standard: [
-    'take_screenshot',
-    'analyze_screen',
-    'query_devices',
-    'get_device_details',
-    'analyze_metrics',
-    'get_active_users',
-    'get_user_experience_metrics',
-    'get_security_posture',
-    'get_cis_compliance',
-    'get_cis_device_report',
-    'get_fleet_health',
-    'get_s1_status',
-    'get_s1_threats',
-    'get_backup_health',
-    'get_recovery_readiness',
-    'analyze_disk_usage',
-    'query_audit_log',
-    'search_logs',
-    'get_log_trends',
-    'detect_log_correlations',
-    'query_change_log',
-    'manage_alerts',
-    'manage_services',
-    'disk_cleanup',
-    'file_operations',
-  ],
-  extended: [
-    'take_screenshot',
-    'analyze_screen',
-    'query_devices',
-    'get_device_details',
-    'analyze_metrics',
-    'get_active_users',
-    'get_user_experience_metrics',
-    'get_security_posture',
-    'get_cis_compliance',
-    'get_cis_device_report',
-    'get_fleet_health',
-    'get_s1_status',
-    'get_s1_threats',
-    'get_backup_health',
-    'get_recovery_readiness',
-    'analyze_disk_usage',
-    'query_audit_log',
-    'search_logs',
-    'get_log_trends',
-    'detect_log_correlations',
-    'query_change_log',
-    'manage_alerts',
-    'manage_services',
-    'disk_cleanup',
-    'file_operations',
-    'computer_control',
-    'execute_command',
-    'security_scan',
-    's1_isolate_device',
-    's1_threat_action',
-    'network_discovery',
-    'apply_cis_remediation',
-    'run_backup_verification',
-  ],
+  basic: BASIC_TOOLS,
+  standard: STANDARD_TOOLS,
+  extended: EXTENDED_TOOLS,
 };
 
 const MCP_PREFIX = 'mcp__breeze__';

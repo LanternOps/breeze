@@ -255,10 +255,12 @@ export function getToolTier(toolName: string): AiToolTier | undefined {
  * Helper device-scoping (security finding A, Phase 0).
  * Maps each tool the Breeze Helper may run to the input field naming its
  * target device. A tool absent from this map is org-wide and is DENIED under
- * a Helper context. The Helper's default tool set (helperToolFilter `basic`)
- * is kept in sync with these keys.
+ * a Helper context. Every tool in helperToolFilter's whitelists must have an
+ * entry here (pinned by helperToolFilter.test.ts); mutating tools (tier>=2)
+ * are additionally PAM-governed at the preToolUse gate (Phase 1).
  */
 export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
+  // Read-only (Phase 0 `basic` set).
   get_device_details: 'deviceId',
   analyze_metrics: 'deviceId',
   analyze_disk_usage: 'deviceId',
@@ -267,6 +269,20 @@ export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
   take_screenshot: 'deviceId',
   analyze_screen: 'deviceId',
   search_logs: 'deviceIds',
+  // Device-pinned safe actions (`standard`, Phase 1 governed).
+  get_active_users: 'deviceId',
+  get_user_experience_metrics: 'deviceId',
+  manage_alerts: 'deviceId',
+  manage_services: 'deviceId',
+  disk_cleanup: 'deviceId',
+  file_operations: 'deviceId',
+  // Device-pinned destructive tools (`extended`, Phase 1 governed).
+  computer_control: 'deviceId',
+  execute_command: 'deviceId',
+  security_scan: 'deviceId',
+  s1_isolate_device: 'deviceId',
+  network_discovery: 'deviceId',
+  apply_cis_remediation: 'deviceId',
 };
 
 /**
