@@ -1,4 +1,7 @@
 FROM node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 AS base
+# CVE-2026-45447: base digest ships openssl 3.5.6-r0; pull the fixed 3.5.7-r0
+# from the alpine 3.23 repo until the node:24-alpine digest is refreshed.
+RUN apk upgrade --no-cache libcrypto3 libssl3
 RUN npm install -g pnpm@10.33.4
 
 FROM base AS deps
