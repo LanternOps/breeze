@@ -19,6 +19,8 @@ export default function TicketComposer({ requesterName, onSend, disabled }: Prop
     try {
       await onSend(content.trim(), isPublic);
       setContent('');
+    } catch {
+      // failure already surfaced via runAction toast; keep the draft
     } finally {
       setSending(false);
     }
