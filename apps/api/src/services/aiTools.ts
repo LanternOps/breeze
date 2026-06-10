@@ -246,6 +246,42 @@ export function getToolTier(toolName: string): AiToolTier | undefined {
   return aiTools.get(toolName)?.tier ?? m365ToolTiers[toolName];
 }
 
+/**
+ * Helper device-scoping (security finding A, Phase 0).
+ * Maps each tool the Breeze Helper may run to the input field naming its
+ * target device. A tool absent from this map is org-wide and is DENIED under
+ * a Helper context. The Helper's default tool set (helperToolFilter `basic`)
+ * is kept in sync with these keys.
+ */
+export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
+  get_device_details: 'deviceId',
+  analyze_metrics: 'deviceId',
+  analyze_disk_usage: 'deviceId',
+  get_cis_device_report: 'deviceId',
+  get_s1_status: 'deviceId',
+  get_security_posture: 'deviceId',
+  take_screenshot: 'deviceId',
+  analyze_screen: 'deviceId',
+  search_logs: 'deviceIds',
+};
+
+/**
+ * Force a Helper tool call onto the Helper's own device, or deny it.
+ * Pure — the caller (executeTool) applies the result.
+ */
+export function applyHelperDeviceScope(
+  toolName: string,
+  input: Record<string, unknown>,
+  helperDeviceId: string
+): { input: Record<string, unknown> } | { error: string } {
+  const field = HELPER_TOOL_SCOPING[toolName];
+  if (!field) {
+    return { error: `Tool '${toolName}' is not available in the Helper context` };
+  }
+  const value = field === 'deviceIds' ? [helperDeviceId] : helperDeviceId;
+  return { input: { ...input, [field]: value } };
+}
+
 export async function executeTool(
   toolName: string,
   input: Record<string, unknown>,
@@ -254,8 +290,17 @@ export async function executeTool(
   const tool = aiTools.get(toolName);
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
 
+  // Helper device-scope gate (finding A): force the tool onto the Helper's own
+  // device, or deny org-wide tools, before anything else runs.
+  let effectiveInput = input;
+  if (auth.helperDeviceId) {
+    const scoped = applyHelperDeviceScope(toolName, input, auth.helperDeviceId);
+    if ('error' in scoped) return JSON.stringify({ error: scoped.error });
+    effectiveInput = scoped.input;
+  }
+
   // Validate input against Zod schema before execution
-  const validation = validateToolInput(toolName, input);
+  const validation = validateToolInput(toolName, effectiveInput);
   if (!validation.success) {
     return JSON.stringify({ error: validation.error });
   }
@@ -263,8 +308,8 @@ export async function executeTool(
   // Structural device-tenant gate: any id named in `tool.deviceArgs` is
   // org+site-checked before the handler runs, so a tool can't reach a device
   // outside the caller's scope even if its handler forgets to check.
-  const gate = await enforceDeviceArgs(tool, input, auth);
+  const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
   if (!gate.ok) return JSON.stringify({ error: gate.error });
 
-  return tool.handler(input, auth);
+  return tool.handler(effectiveInput, auth);
 }
