@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import TicketComposer from './TicketComposer';
 
 describe('TicketComposer', () => {
@@ -40,5 +40,21 @@ describe('TicketComposer', () => {
     fireEvent.change(input, { target: { value: 'hi' } });
     fireEvent.keyDown(input, { key: 'Enter', metaKey: true });
     expect(onSend).toHaveBeenCalledWith('hi', true);
+  });
+
+  it('keeps the draft and re-enables send when onSend rejects', async () => {
+    onSend.mockRejectedValueOnce(new Error('network down'));
+    render(<TicketComposer requesterName="Pat" onSend={onSend} />);
+
+    const input = screen.getByTestId('ticket-composer-input');
+    fireEvent.change(input, { target: { value: 'important draft' } });
+    fireEvent.click(screen.getByTestId('ticket-composer-send'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-composer-send')).toHaveTextContent('Send reply');
+    });
+    expect(input).toHaveValue('important draft');
+    expect(screen.getByTestId('ticket-composer-send')).not.toBeDisabled();
+    expect(input).not.toBeDisabled();
   });
 });
