@@ -15,6 +15,7 @@ import {
   scripts,
 } from '../db/schema';
 import { resolveDeploymentTargets } from './deploymentEngine';
+import { canAccessSite, type UserPermissions } from './permissions';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { publishEvent } from './eventBus';
 import {
@@ -501,6 +502,84 @@ export async function resolveAutomationTargetDeviceIds(automation: AutomationRow
     .where(eq(devices.orgId, automation.orgId));
 
   return orgDevices.map((device) => device.id);
+}
+
+/**
+ * Returns true when the automation's target set is NOT statically bounded to an
+ * explicit device list, i.e. it resolves to "every device in the org" (empty
+ * conditions, legacy fallback, or a deployment config of type `all`/`filter`).
+ *
+ * Site-restricted callers must never own such an automation: even if the org
+ * has zero out-of-scope devices today, a device added to a forbidden site
+ * tomorrow would silently become a target of a schedule/event trigger that
+ * runs with no caller context. We therefore reject these at create/update time.
+ */
+function isUnboundedOrgWideTarget(automation: Pick<AutomationRow, 'conditions' | 'trigger'>): boolean {
+  if (isDeploymentTargetConfig(automation.conditions)) {
+    const type = automation.conditions.type;
+    // `devices` / `groups` enumerate a concrete set; `all` / `filter` do not.
+    return type === 'all' || type === 'filter';
+  }
+
+  if (Array.isArray(automation.conditions)) {
+    // Legacy condition arrays are evaluated against the full org device set.
+    return true;
+  }
+
+  const trigger = isPlainRecord(automation.trigger) ? automation.trigger : null;
+  const triggerDeviceIds = trigger ? asStringArray(trigger.deviceIds) : [];
+  // No explicit deviceIds means the resolver falls back to all org devices.
+  return triggerDeviceIds.length === 0;
+}
+
+export interface AutomationSiteScopeCheck {
+  ok: boolean;
+  /** Device IDs in the resolved target set that fall outside the allowlist. */
+  outOfScopeDeviceIds: string[];
+  /** True when the target set is org-wide/unbounded (rejected for restricted callers). */
+  unbounded: boolean;
+}
+
+/**
+ * Validates that every device an automation would target is within the caller's
+ * site allowlist. Unrestricted callers (`allowedSiteIds` unset) always pass.
+ *
+ * Used at two seams:
+ *  - create/update time: a site-restricted creator must not own an automation
+ *    whose resolvable target set escapes their sites (this is the only gate for
+ *    scheduled/event triggers, which run later with no caller context).
+ *  - manual trigger/run time: re-validate against the *current* resolved set in
+ *    case devices/sites drifted since creation.
+ */
+export async function checkAutomationTargetsWithinSiteScope(
+  automation: AutomationRow,
+  perms: Pick<UserPermissions, 'allowedSiteIds'> | undefined,
+): Promise<AutomationSiteScopeCheck> {
+  // Unrestricted (partner/system/org-admin without a site allowlist): unaffected.
+  if (!perms?.allowedSiteIds) {
+    return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
+  }
+
+  const unbounded = isUnboundedOrgWideTarget(automation);
+  if (unbounded) {
+    return { ok: false, outOfScopeDeviceIds: [], unbounded: true };
+  }
+
+  const targetDeviceIds = await resolveAutomationTargetDeviceIds(automation);
+  if (targetDeviceIds.length === 0) {
+    return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
+  }
+
+  const targetDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.orgId, automation.orgId), inArray(devices.id, targetDeviceIds)));
+
+  const outOfScopeDeviceIds = targetDevices
+    .filter((device) => !(typeof device.siteId === 'string' && canAccessSite(perms as UserPermissions, device.siteId)))
+    .map((device) => device.id);
+
+  return { ok: outOfScopeDeviceIds.length === 0, outOfScopeDeviceIds, unbounded: false };
 }
 
 function getExistingLogs(logs: unknown): AutomationLogEntry[] {
