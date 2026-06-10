@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/watchdog"
 )
 
@@ -61,4 +62,59 @@ func TestExecuteFailoverCommands_HeartbeatBeforePollPreservingOrder(t *testing.T
 	if !reflect.DeepEqual(ran, want) {
 		t.Fatalf("expected %v, got %v", want, ran)
 	}
+}
+
+func TestProcessInitialFailoverHeartbeatResponse_ExecutesCommandsAndProcessesUpgrades(t *testing.T) {
+	journal, err := watchdog.NewJournal(t.TempDir(), 1, 1)
+	if err != nil {
+		t.Fatalf("new journal: %v", err)
+	}
+	defer journal.Close()
+
+	cfg := &config.Config{
+		AgentID:   "agent-1",
+		ServerURL: "https://example.invalid",
+	}
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	tokens := &tokenHolder{}
+	recovery := watchdog.NewRecoveryManager(3, 0)
+
+	resp := &watchdog.HeartbeatResponse{
+		Commands: []watchdog.FailoverCommand{
+			{ID: "cmd-initial", Type: "collect_diagnostics"},
+		},
+		UpgradeTo:         "2.0.0",
+		WatchdogUpgradeTo: "2.1.0",
+	}
+
+	var ran []string
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+		ran = append(ran, cmd.ID)
+	})
+
+	if !reflect.DeepEqual(ran, []string{"cmd-initial"}) {
+		t.Fatalf("expected initial heartbeat command to execute, got %v", ran)
+	}
+
+	events := journal.Recent(0)
+	for _, tc := range []struct {
+		name  string
+		event string
+	}{
+		{name: "agent upgrade", event: "failover.upgrade_agent"},
+		{name: "watchdog upgrade", event: "failover.upgrade_watchdog"},
+	} {
+		if !hasJournalEvent(events, tc.event) {
+			t.Fatalf("expected %s event %q in journal, got %#v", tc.name, tc.event, events)
+		}
+	}
+}
+
+func hasJournalEvent(entries []watchdog.JournalEntry, event string) bool {
+	for _, entry := range entries {
+		if entry.Event == event {
+			return true
+		}
+	}
+	return false
 }
