@@ -14,7 +14,7 @@
     "prod:docker": "pnpm run build:prod && pnpm run preview:docker",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint --ext .ts,.tsx src",
+    "lint": "eslint src",
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {
