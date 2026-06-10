@@ -22,7 +22,7 @@ Both the dashboard and agent traffic arrive on the same hostname (port 443) and 
 
 | Path | Backend |
 |---|---|
-| `/api/v1/agents/*`, `/api/v1/agent-ws/*` | API (agent REST + WebSocket) |
+| `/api/v1/agents/*`, `/api/v1/agent-ws/*`, `/api/v1/agent-versions/*` | API (agent REST + WebSocket + self-update) |
 | `/api/v1/desktop-ws`, `/api/v1/tunnel-ws`, `/api/v1/remote/sessions` | API (remote desktop / terminal) |
 | `/api/*`, `/health`, `/metrics/*` | API |
 | `/` (catch-all) | Web dashboard |
@@ -186,8 +186,9 @@ The key constraint: agents connect from wherever your managed machines live (roa
 
    Agents and remote sessions must reach these paths without an Access login. Add an **Access policy** with action **Bypass** (source: *Everyone*) scoped to the agent paths, or define the Access application path so it excludes them:
 
-   - `/api/v1/agents/*` — agent REST (enroll, heartbeat, logs)
+   - `/api/v1/agents/*` — agent REST (enroll, heartbeat, logs, binary download)
    - `/api/v1/agent-ws/*` — agent WebSocket (the live connection)
+   - `/api/v1/agent-versions/*` — agent self-update (fetches the signed update manifest; required for auto-update regardless of `BINARY_SOURCE`)
    - `/api/v1/desktop-ws`, `/api/v1/tunnel-ws`, `/api/v1/remote/sessions` — remote desktop / terminal
 
 3. **Require identity for everything else**
@@ -216,3 +217,6 @@ The key constraint: agents connect from wherever your managed machines live (roa
 
 **Agents can't connect after adding Cloudflare Access**
 - The Access bypass for `/api/v1/agents/*` and `/api/v1/agent-ws/*` is missing or too narrow. Agents have no browser session and will be blocked by an identity policy.
+
+**Agents connect but never auto-update behind Cloudflare Access**
+- The Access bypass is missing `/api/v1/agent-versions/*`. The agent fetches its signed update manifest from this path before downloading a new binary; if Access challenges it, the update fails while the live connection keeps working. This applies to both `BINARY_SOURCE=github` and `BINARY_SOURCE=local`.
