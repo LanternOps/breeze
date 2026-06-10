@@ -12,6 +12,11 @@ var (
 	stopHelperLegacyFunc  = stopHelperLegacy
 	migrationTargetsFunc  = migrationTargets
 	prepareSessionDirFunc = prepareSessionDir
+	// installPackageFunc is the seam for the privileged installer exec
+	// (msiexec /i as SYSTEM, hdiutil + cp -R to /Applications as root). It is
+	// a var so security tests can assert it does NOT run when integrity
+	// verification of the downloaded package fails.
+	installPackageFunc = installPackage
 )
 
 // legacyBinaryPath returns the old "Breeze Helper" binary path.

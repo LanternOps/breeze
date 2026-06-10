@@ -360,6 +360,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -384,6 +386,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
 					return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
@@ -394,6 +398,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	} else {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 		)
 	}
 
