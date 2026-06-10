@@ -16,11 +16,12 @@ import {
   peripheralPolicyTargetTypeEnum,
   type PeripheralExceptionRule
 } from '../db/schema';
-import { eq, and, desc, sql, gte, lte, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -137,6 +138,26 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.policy_id === 'string') conditions.push(eq(peripheralEvents.policyId, input.policy_id));
       if (typeof input.event_type === 'string') {
         conditions.push(eq(peripheralEvents.eventType, input.event_type as typeof peripheralEvents.eventType.enumValues[number]));
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it). peripheralEvents has
+      // no site_id column, so narrow by the in-scope device-id set. A restricted
+      // caller with zero in-scope devices short-circuits to empty results. This
+      // intersects with the optional caller-supplied device_id filter above
+      // (most-restrictive wins).
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const queryOrgId = orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        if (!queryOrgId) {
+          return JSON.stringify({ error: 'Organization context required' });
+        }
+        const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({
+            events: [],
+            summary: { count: 0, byType: {}, start: start.toISOString(), end: end.toISOString() },
+          });
+        }
+        conditions.push(inArray(peripheralEvents.deviceId, allowed));
       }
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);

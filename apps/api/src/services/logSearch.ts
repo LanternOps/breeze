@@ -42,6 +42,13 @@ export interface LogSearchInput {
   source?: string;
   deviceIds?: string[];
   siteIds?: string[];
+  /**
+   * Site-axis app-layer authz narrowing: when non-null, results are constrained
+   * to this device-id set (intersected with any caller-supplied deviceIds). An
+   * empty array means the caller has zero in-scope devices. `null`/undefined =
+   * unrestricted caller, no narrowing. RLS does NOT enforce the site axis.
+   */
+  allowedDeviceIds?: string[] | null;
   limit?: number;
   offset?: number;
   cursor?: string;
@@ -60,6 +67,8 @@ export interface LogAggregationInput {
   source?: string;
   deviceIds?: string[];
   siteIds?: string[];
+  /** Site-axis app-layer authz narrowing (see LogSearchInput.allowedDeviceIds). */
+  allowedDeviceIds?: string[] | null;
   limit?: number;
 }
 
@@ -70,6 +79,8 @@ export interface LogTrendsInput {
   source?: string;
   deviceIds?: string[];
   siteIds?: string[];
+  /** Site-axis app-layer authz narrowing (see LogSearchInput.allowedDeviceIds). */
+  allowedDeviceIds?: string[] | null;
   limit?: number;
 }
 
@@ -81,6 +92,13 @@ export interface PatternDetectionInput {
   minDevices?: number;
   minOccurrences?: number;
   sampleLimit?: number;
+  /**
+   * Site-axis app-layer authz narrowing: when non-null, the correlation scan is
+   * constrained to this device-id set. An empty array means the caller has zero
+   * in-scope devices (no correlation possible). `null`/undefined = unrestricted.
+   * RLS does NOT enforce the site axis.
+   */
+  allowedDeviceIds?: string[] | null;
 }
 
 export interface PatternDetectionResult {
@@ -224,6 +242,17 @@ function buildSearchConditions(
 
   if (filters.siteIds && filters.siteIds.length > 0) {
     conditions.push(inArray(devices.siteId, filters.siteIds));
+  }
+
+  // Site-axis app-layer authz narrowing (most-restrictive wins; intersects with
+  // any caller-supplied deviceIds above). A restricted caller with zero in-scope
+  // devices yields an impossible condition so the query returns no rows.
+  if (filters.allowedDeviceIds != null) {
+    conditions.push(
+      filters.allowedDeviceIds.length > 0
+        ? inArray(deviceEventLogs.deviceId, filters.allowedDeviceIds)
+        : sql`false`,
+    );
   }
 
   return conditions;
@@ -467,6 +496,15 @@ export async function getLogAggregation(auth: AuthContext, input: LogAggregation
   if (input.siteIds && input.siteIds.length > 0) {
     conditions.push(inArray(devices.siteId, input.siteIds));
   }
+  // Site-axis app-layer authz narrowing (most-restrictive wins). RLS does NOT
+  // enforce the site axis. Empty set ⇒ no rows.
+  if (input.allowedDeviceIds != null) {
+    conditions.push(
+      input.allowedDeviceIds.length > 0
+        ? inArray(deviceEventLogs.deviceId, input.allowedDeviceIds)
+        : sql`false`,
+    );
+  }
 
   const bucketExpr = bucket === 'day'
     ? sql`date_trunc('day', ${deviceEventLogs.timestamp})`
@@ -566,6 +604,16 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
 
   if (input.siteIds && input.siteIds.length > 0) {
     conditions.push(inArray(devices.siteId, input.siteIds));
+  }
+
+  // Site-axis app-layer authz narrowing (most-restrictive wins). RLS does NOT
+  // enforce the site axis. Empty set ⇒ no rows.
+  if (input.allowedDeviceIds != null) {
+    conditions.push(
+      input.allowedDeviceIds.length > 0
+        ? inArray(deviceEventLogs.deviceId, input.allowedDeviceIds)
+        : sql`false`,
+    );
   }
 
   const whereCondition = and(...conditions);
@@ -744,6 +792,7 @@ async function runPatternDetection(
   since: Date,
   sampleLimit: number,
   forceLike = false,
+  allowedDeviceIds?: string[] | null,
 ): Promise<{
   summary: { firstSeen: Date | null; lastSeen: Date | null; occurrences: number };
   affectedDevices: LogCorrelationAffectedDevice[];
@@ -754,10 +803,20 @@ async function runPatternDetection(
     ? ilike(deviceEventLogs.message, `%${escapeLike(pattern)}%`)
     : detected.condition;
 
+  // Site-axis app-layer authz narrowing (RLS does NOT enforce the site axis).
+  // A restricted caller with zero in-scope devices ⇒ impossible condition.
+  const siteScopeCondition =
+    allowedDeviceIds == null
+      ? undefined
+      : allowedDeviceIds.length > 0
+        ? inArray(deviceEventLogs.deviceId, allowedDeviceIds)
+        : sql`false`;
+
   const whereCondition = and(
     eq(deviceEventLogs.orgId, orgId),
     gte(deviceEventLogs.timestamp, since),
     condition,
+    ...(siteScopeCondition ? [siteScopeCondition] : []),
   );
 
   const [summaryRows, affectedDeviceRows, sampleRows] = await Promise.all([
@@ -827,16 +886,24 @@ export async function detectPatternCorrelation(input: PatternDetectionInput): Pr
   const sampleLimit = Math.min(Math.max(1, Number(input.sampleLimit) || 20), 100);
   const since = new Date(Date.now() - (timeWindowSeconds * 1000));
 
+  const allowedDeviceIds = input.allowedDeviceIds;
+
+  // Short-circuit: a site-restricted caller with zero in-scope devices can have
+  // no correlation. Avoid scanning event logs entirely.
+  if (allowedDeviceIds != null && allowedDeviceIds.length === 0) {
+    return null;
+  }
+
   let detected;
   try {
-    detected = await runPatternDetection(input.orgId, pattern, isRegex, since, sampleLimit);
+    detected = await runPatternDetection(input.orgId, pattern, isRegex, since, sampleLimit, false, allowedDeviceIds);
   } catch (error) {
     // PostgreSQL regex engine errors should gracefully fall back to plain ILIKE.
     if (!isRegex || !(error instanceof Error) || !error.message.toLowerCase().includes('regular expression')) {
       throw error;
     }
     console.warn('[logSearch] Regex pattern detection failed, falling back to ILIKE:', error.message);
-    detected = await runPatternDetection(input.orgId, pattern, false, since, sampleLimit, true);
+    detected = await runPatternDetection(input.orgId, pattern, false, since, sampleLimit, true, allowedDeviceIds);
   }
 
   if (detected.summary.occurrences === 0) {

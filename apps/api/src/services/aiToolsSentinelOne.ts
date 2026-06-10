@@ -16,11 +16,12 @@ import {
   s1Threats,
   s1Actions,
 } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess, resolveWritableToolOrgId } from './aiTools';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -202,6 +203,23 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
             or ${s1Threats.filePath} ilike ${pattern}
           )`
         );
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it). s1Threats has no
+      // per-row site_id (it left-joins devices), so narrow by the in-scope
+      // device-id set. A restricted caller with zero in-scope devices gets empty
+      // results. Intersects with the optional deviceId filter above.
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({
+            configured: true,
+            integrationId: integration.id,
+            total: 0,
+            threats: []
+          });
+        }
+        conditions.push(inArray(s1Threats.deviceId, allowed));
       }
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
