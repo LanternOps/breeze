@@ -589,6 +589,12 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().u
 export * from './ai';
 
 // ============================================
+// Ticket Validators
+// ============================================
+
+export * from './tickets';
+
+// ============================================
 // Backup Target Validators
 // ============================================
 

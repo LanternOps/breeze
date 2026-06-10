@@ -20,6 +20,7 @@ vi.mock('../../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
@@ -48,8 +49,11 @@ vi.mock('../../middleware/auth', () => ({
       return c.json({ error: 'Permission denied' }, 403);
     }
     // Mark permissions so getDeviceWithOrgAndSiteCheck can read them; if the
-    // request opts into site restrictions, narrow to a specific siteId.
-    const allowedSiteIds = c.req.header('x-restrict-site')
+    // request opts into site restrictions, narrow to a specific siteId. A
+    // comma-separated `x-restrict-site-list` allows multi-site allowlists.
+    const allowedSiteIds = c.req.header('x-restrict-site-list')
+      ? (c.req.header('x-restrict-site-list') as string).split(',')
+      : c.req.header('x-restrict-site')
       ? [c.req.header('x-restrict-site') as string]
       : undefined;
     c.set('permissions', {
@@ -105,7 +109,7 @@ vi.mock('../agents/enrollment', () => ({
   getGlobalEnrollmentSecret: vi.fn().mockReturnValue(null),
 }));
 
-import { coreRoutes } from './core';
+import { coreRoutes, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 import { hardwareRoutes } from './hardware';
 import { softwareRoutes } from './software';
 import { metricsRoutes } from './metrics';
@@ -125,6 +129,78 @@ function rigDeviceLookup(device: unknown) {
   const where = vi.fn().mockReturnValue({ limit });
   const from = vi.fn().mockReturnValue({ where });
   vi.mocked(db.select).mockReturnValue({ from } as never);
+}
+
+function rigDeviceThenSiteLookup(device: unknown, targetSite: unknown) {
+  // PATCH /devices/:id issues TWO sequential `db.select()...limit(1)` calls:
+  //   1. getDeviceWithOrgAndSiteCheck → fixture device
+  //   2. target-site same-org validation → target site row
+  // Return the device on the first call, the site on the second.
+  const deviceLimit = vi.fn().mockResolvedValue(device ? [device] : []);
+  const deviceWhere = vi.fn().mockReturnValue({ limit: deviceLimit });
+  const deviceFrom = vi.fn().mockReturnValue({ where: deviceWhere });
+
+  const siteLimit = vi.fn().mockResolvedValue(targetSite ? [targetSite] : []);
+  const siteWhere = vi.fn().mockReturnValue({ limit: siteLimit });
+  const siteFrom = vi.fn().mockReturnValue({ where: siteWhere });
+
+  const updateReturning = vi.fn().mockResolvedValue([{ ...(device as object), siteId: undefined }]);
+  const updateWhere = vi.fn().mockReturnValue({ returning: updateReturning });
+  const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+
+  vi.mocked(db.select)
+    .mockReturnValueOnce({ from: deviceFrom } as never)
+    .mockReturnValueOnce({ from: siteFrom } as never);
+  vi.mocked(db.update).mockReturnValue({ set: updateSet } as never);
+}
+
+function rigPlainUpdate(updatedRow: unknown) {
+  // Non-site-changing PATCHes run a plain db.update (no transaction).
+  const returning = vi.fn().mockResolvedValue([updatedRow]);
+  const where = vi.fn().mockReturnValue({ returning });
+  const set = vi.fn().mockReturnValue({ where });
+  vi.mocked(db.update).mockReturnValue({ set } as never);
+  return { set };
+}
+
+function rigPatchTransaction(updatedRow: unknown) {
+  // A siteId-changing PATCH runs the devices UPDATE plus the
+  // DEVICE_SITE_DENORMALIZED_TABLES propagation loop inside db.transaction.
+  // Each tx.execute() call is `UPDATE ${sql.identifier(table)} SET site_id =
+  // ${siteId}::uuid WHERE device_id = ...` — Drizzle exposes the identifier
+  // as queryChunks[1].value and the bound siteId Param as queryChunks[3].value
+  // (same extraction as moveOrg.test.ts).
+  const txExecuted: Array<{ table: unknown; siteId: unknown }> = [];
+  const txUpdateSets: Array<Record<string, unknown>> = [];
+
+  vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+          txUpdateSets.push(vals);
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([updatedRow]),
+            }),
+          };
+        }),
+      }),
+      execute: vi.fn().mockImplementation(async (sqlVal: any) => {
+        const chunks = sqlVal?.queryChunks ?? [];
+        // chunks[3] is the bound siteId — pushed raw by the sql template
+        // (only wrapped into a Param at query-build time), so unwrap both shapes.
+        const rawSite = chunks[3];
+        const boundSiteId =
+          rawSite !== null && typeof rawSite === 'object' && 'value' in rawSite
+            ? (rawSite as { value: unknown }).value
+            : rawSite;
+        txExecuted.push({ table: chunks[1]?.value, siteId: boundSiteId });
+        return [];
+      }),
+    };
+    await cb(tx);
+  });
+  return { txExecuted, txUpdateSets };
 }
 
 function rigDeviceListRows(rows: unknown[]) {
@@ -563,6 +639,157 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.map((device: { siteId: string }) => device.siteId)).toEqual([allowedListSiteId, deniedListSiteId]);
+    });
+  });
+
+  describe('PATCH /devices/:id — TARGET site-scope enforcement on move', () => {
+    // SR: a site-restricted caller could move a device they legitimately own
+    // (source site in their allowlist) into a TARGET site outside their
+    // allowlist. The source is gated by getDeviceWithOrgAndSiteCheck; the
+    // target must also be gated via canAccessSite, mirroring provision.ts.
+    // updateDeviceSchema validates siteId as a UUID, so use real UUIDs. The
+    // device's current site is also a UUID; the caller's allowlist contains it.
+    const siteAllowed = '77777777-7777-4777-8777-777777777777';
+    const siteB = '88888888-8888-4888-8888-888888888888'; // outside allowlist
+    const deviceInSiteAllowed = { ...ACCESSIBLE_DEVICE, siteId: siteAllowed };
+    const targetSiteRow = { id: siteB, orgId: 'org-123' };
+
+    it('returns 403 when a site-restricted caller moves a device to a TARGET site outside their allowlist', async () => {
+      rigDeviceThenSiteLookup(deviceInSiteAllowed, targetSiteRow);
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          // Caller is restricted to site-1 (the device's current site) only.
+          'x-restrict-site': siteAllowed,
+        },
+        body: JSON.stringify({ siteId: siteB }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site denied/i);
+      // The 403 must fire BEFORE any write runs (plain or transactional).
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('allows an UNRESTRICTED caller to set the siteId (no regression)', async () => {
+      rigDeviceThenSiteLookup(deviceInSiteAllowed, targetSiteRow);
+      rigPatchTransaction({ ...deviceInSiteAllowed, siteId: siteB });
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          // No x-restrict-site → allowedSiteIds undefined → unrestricted.
+        },
+        body: JSON.stringify({ siteId: siteB }),
+      });
+      expect(res.status).toBe(200);
+      // Site changes run inside db.transaction (device flip + site_id propagation).
+      expect(db.transaction).toHaveBeenCalled();
+    });
+
+    it('allows a site-restricted caller to move WITHIN their allowlist (siteA → siteA2 both allowed)', async () => {
+      const siteA2 = '99999999-9999-4999-8999-999999999999';
+      const siteA2Row = { id: siteA2, orgId: 'org-123' };
+      // Caller's allowlist includes both the device's current site (siteAllowed)
+      // and the destination (siteA2). The mock middleware narrows to a single
+      // site per `x-restrict-site`, so widen it here for this case.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([deviceInSiteAllowed]) }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([siteA2Row]) }),
+          }),
+        } as never);
+      rigPatchTransaction({ ...deviceInSiteAllowed, siteId: siteA2 });
+
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          'x-restrict-site-list': `${siteAllowed},${siteA2}`,
+        },
+        body: JSON.stringify({ siteId: siteA2 }),
+      });
+      expect(res.status).toBe(200);
+      expect(db.transaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /devices/:id — denormalized site_id propagation', () => {
+    // elevation_requests (and any future DEVICE_SITE_DENORMALIZED_TABLES
+    // entry) denormalizes site_id off the parent device. A PATCH that moves
+    // the device to another site MUST rewrite those rows in the same
+    // transaction — otherwise they strand under the OLD site_id and drift
+    // out of site-visibility scoping (the same hazard moveOrg.ts guards).
+    const siteAllowed = '77777777-7777-4777-8777-777777777777';
+    const siteB = '88888888-8888-4888-8888-888888888888';
+    const deviceInSiteAllowed = { ...ACCESSIBLE_DEVICE, siteId: siteAllowed };
+    const targetSiteRow = { id: siteB, orgId: 'org-123' };
+
+    it('rewrites site_id on every DEVICE_SITE_DENORMALIZED_TABLES table when the PATCH changes siteId', async () => {
+      rigDeviceThenSiteLookup(deviceInSiteAllowed, targetSiteRow);
+      const { txExecuted, txUpdateSets } = rigPatchTransaction({ ...deviceInSiteAllowed, siteId: siteB });
+
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: siteB }),
+      });
+
+      expect(res.status).toBe(200);
+      // Sanity: the list this test guards is non-empty (elevation_requests).
+      expect(DEVICE_SITE_DENORMALIZED_TABLES.length).toBeGreaterThan(0);
+      // The devices row flip carries the new siteId…
+      expect(txUpdateSets[0]).toMatchObject({ siteId: siteB });
+      // …and every denormalized table got an UPDATE with the NEW siteId
+      // inside the same transaction.
+      expect(txExecuted.map((e) => e.table)).toEqual([...DEVICE_SITE_DENORMALIZED_TABLES]);
+      for (const e of txExecuted) {
+        expect(e.siteId).toBe(siteB);
+      }
+      // The plain (non-transactional) update path must NOT have been used.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT propagate when the PATCH siteId equals the current site', async () => {
+      rigDeviceLookup(deviceInSiteAllowed);
+      rigPlainUpdate(deviceInSiteAllowed);
+
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: siteAllowed }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(db.execute).not.toHaveBeenCalled();
+    });
+
+    it('does NOT propagate on a PATCH that does not touch siteId', async () => {
+      rigDeviceLookup(deviceInSiteAllowed);
+      rigPlainUpdate({ ...deviceInSiteAllowed, displayName: 'renamed' });
+
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: 'renamed' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(db.execute).not.toHaveBeenCalled();
     });
   });
 });

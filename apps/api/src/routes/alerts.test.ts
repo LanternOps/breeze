@@ -6,6 +6,20 @@ import { alertRoutes } from './alerts';
 const { sendSmsNotificationMock } = vi.hoisted(() => ({
   sendSmsNotificationMock: vi.fn()
 }));
+
+const { createTicketFromAlertMock } = vi.hoisted(() => ({
+  createTicketFromAlertMock: vi.fn()
+}));
+
+vi.mock('../services/ticketService', () => ({
+  createTicketFromAlert: createTicketFromAlertMock,
+  TicketServiceError: class TicketServiceError extends Error {
+    constructor(message: string, public status: number = 400) {
+      super(message);
+      this.name = 'TicketServiceError';
+    }
+  }
+}));
 const { publishEventMock } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1')
 }));
@@ -1087,6 +1101,124 @@ describe('alert routes', () => {
       const ch = body.data[0];
       expect(ch.lastTestedAt).toBe(testedAt.toISOString());
       expect(ch.lastTestStatus).toBe('success');
+    });
+  });
+
+  describe('POST /alerts/:id/create-ticket', () => {
+    const ALERT_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('creates a linked ticket via ticketService', async () => {
+      // Alert visibility check (getAlertWithOrgCheck) returns a visible alert
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              status: 'active',
+              title: 'High CPU',
+              severity: 'high'
+            }])
+          })
+        })
+      } as any);
+      createTicketFromAlertMock.mockResolvedValue({ id: 't-9', internalNumber: 'T-2026-0042' });
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.internalNumber).toBe('T-2026-0042');
+      expect(createTicketFromAlertMock).toHaveBeenCalledWith(
+        ALERT_ID,
+        expect.objectContaining({ userId: 'user-123' }),
+        expect.any(Object)
+      );
+    });
+
+    it('returns 404 when the alert is not visible to the caller', async () => {
+      // Alert visibility check returns nothing (out of scope)
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Alert not found');
+      expect(createTicketFromAlertMock).not.toHaveBeenCalled();
+    });
+
+    it('passes optional overrides through to the service', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+      createTicketFromAlertMock.mockResolvedValue({ id: 't-10', internalNumber: 'T-2026-0043' });
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: 'Custom subject', priority: 'urgent' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(createTicketFromAlertMock).toHaveBeenCalledWith(
+        ALERT_ID,
+        expect.objectContaining({ userId: 'user-123' }),
+        expect.objectContaining({ subject: 'Custom subject', priority: 'urgent' })
+      );
+    });
+
+    it('maps TicketServiceError status through (e.g. 404 alert not found in service)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+
+      const { TicketServiceError } = await import('../services/ticketService');
+      createTicketFromAlertMock.mockRejectedValue(new TicketServiceError('Organization not found', 404));
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Organization not found');
     });
   });
 });

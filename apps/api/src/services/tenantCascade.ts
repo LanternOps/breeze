@@ -228,6 +228,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sql_instances',
   'sso_providers',
   'storage_encryption_keys',
+  'ticket_alert_links',
   'tickets',
   'time_series_metrics',
   'tunnel_allowlists',

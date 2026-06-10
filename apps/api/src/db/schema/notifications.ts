@@ -19,7 +19,8 @@ export const notificationTypeEnum = pgEnum('notification_type', [
   'automation',
   'system',
   'user',
-  'security'
+  'security',
+  'ticket'
 ]);
 
 export const notificationPriorityEnum = pgEnum('notification_priority', [

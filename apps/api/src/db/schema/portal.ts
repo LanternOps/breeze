@@ -1,10 +1,12 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
 export const ticketStatusEnum = pgEnum('ticket_status', ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
+export const ticketSourceEnum = pgEnum('ticket_source', ['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+export const ticketCommentTypeEnum = pgEnum('ticket_comment_type', ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system']);
 
 export const portalBranding = pgTable('portal_branding', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -65,6 +67,22 @@ export const tickets = pgTable('tickets', {
   firstResponseAt: timestamp('first_response_at'),
   resolvedAt: timestamp('resolved_at'),
   closedAt: timestamp('closed_at'),
+  partnerId: uuid('partner_id').references(() => partners.id),
+  categoryId: uuid('category_id'), // FK created in SQL; no .references() here to avoid an import cycle with schema/tickets.ts
+  pendingReason: text('pending_reason'),
+  dueDate: timestamp('due_date'),
+  responseSlaMinutes: integer('response_sla_minutes'),
+  resolutionSlaMinutes: integer('resolution_sla_minutes'),
+  slaBreachedAt: timestamp('sla_breached_at'),
+  slaBreachReason: text('sla_breach_reason'),
+  slaPausedAt: timestamp('sla_paused_at'),
+  slaPausedMinutes: integer('sla_paused_minutes').default(0),
+  source: ticketSourceEnum('source').notNull().default('portal'),
+  internalNumber: varchar('internal_number', { length: 20 }),
+  emailMessageId: text('email_message_id'),
+  emailThreadKey: text('email_thread_key'),
+  closedBy: uuid('closed_by').references(() => users.id),
+  resolutionNote: text('resolution_note'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -79,6 +97,10 @@ export const ticketComments = pgTable('ticket_comments', {
   content: text('content').notNull(),
   isPublic: boolean('is_public').notNull().default(true),
   attachments: jsonb('attachments').default([]),
+  commentType: ticketCommentTypeEnum('comment_type').notNull().default('comment'),
+  oldValue: text('old_value'),
+  newValue: text('new_value'),
+  deletedAt: timestamp('deleted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 
