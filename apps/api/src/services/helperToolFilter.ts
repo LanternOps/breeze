@@ -10,27 +10,21 @@
 export type HelperPermissionLevel = 'basic' | 'standard' | 'extended';
 
 const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
+  // Read-only single-device allowlist (security finding A, Phase 0). Kept in
+  // sync with HELPER_TOOL_SCOPING in services/aiTools.ts — every tool here is
+  // device-scoped by the executeTool gate. Org-wide enumeration and mutating
+  // tools are deliberately excluded; full capability returns under PAM
+  // governance in Phase 1.
   basic: [
-    'take_screenshot',
-    'analyze_screen',
-    'query_devices',
     'get_device_details',
     'analyze_metrics',
-    'get_active_users',
-    'get_user_experience_metrics',
-    'get_security_posture',
-    'get_cis_compliance',
-    'get_cis_device_report',
-    'get_fleet_health',
-    'get_s1_status',
-    'get_s1_threats',
-    'get_backup_health',
-    'get_recovery_readiness',
     'analyze_disk_usage',
-    'query_audit_log',
+    'get_cis_device_report',
+    'get_s1_status',
+    'get_security_posture',
+    'take_screenshot',
+    'analyze_screen',
     'search_logs',
-    'get_log_trends',
-    'query_change_log',
   ],
   standard: [
     'take_screenshot',

@@ -30,7 +30,7 @@ import type { ActiveSession } from '../../services/streamingSessionManager';
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const HELPER_RATE_LIMIT = 30;
 const HELPER_RATE_WINDOW_SECONDS = 60;
-const DEFAULT_PERMISSION_LEVEL: HelperPermissionLevel = 'standard';
+const DEFAULT_PERMISSION_LEVEL: HelperPermissionLevel = 'basic';
 
 export const helperRoutes = new Hono();
 
