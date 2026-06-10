@@ -58,18 +58,31 @@ func TestStaticUnitMatchesEmbedded(t *testing.T) {
 		t.Fatalf("read static unit: %v", err)
 	}
 	if string(data) != linuxUnit {
-		t.Fatalf("static breeze-agent.service is not byte-identical to embedded linuxUnit.\n" +
-			"Keep them in sync (the auto-heal writes the embedded copy).")
+		got, want := string(data), linuxUnit
+		i := 0
+		for i < len(got) && i < len(want) && got[i] == want[i] {
+			i++
+		}
+		t.Fatalf("static breeze-agent.service is not byte-identical to embedded linuxUnit "+
+			"(first divergence at byte %d: file has %q, const has %q). "+
+			"Keep them in sync (the auto-heal writes the embedded copy).",
+			i, snippetAt(got, i), snippetAt(want, i))
 	}
 }
 
 func TestUnitIsNotReHardened(t *testing.T) {
 	forbidden := []string{
-		"ProtectSystem=strict",
-		"ProtectHome=read-only",
+		// Directive-NAME prefixes, not specific values: ProtectSystem=full,
+		// ProtectHome=tmpfs, PrivateTmp=yes etc. break children just the same.
+		"ProtectSystem=",
+		"ProtectHome=",
+		"PrivateTmp=",
 		"CapabilityBoundingSet",
 		"AmbientCapabilities",
-		"PrivateTmp=true",
+		// NoNewPrivileges=false is harmless (and was the old explicit value);
+		// only forbid turning it ON, which breaks sudo/su in the terminal.
+		"NoNewPrivileges=true",
+		"NoNewPrivileges=yes",
 	}
 	for _, f := range forbidden {
 		if strings.Contains(linuxUnit, f) {
@@ -83,4 +96,13 @@ func TestUnitIsNotReHardened(t *testing.T) {
 	if v, _ := parseUnitVersion(linuxUnit); v != currentUnitVersion {
 		t.Errorf("linuxUnit marker version != currentUnitVersion (%d)", currentUnitVersion)
 	}
+}
+
+// snippetAt returns a short window of s around byte offset i for error messages.
+func snippetAt(s string, i int) string {
+	end := i + 20
+	if end > len(s) {
+		end = len(s)
+	}
+	return s[i:end]
 }
