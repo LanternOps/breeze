@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { applyHelperDeviceScope, HELPER_TOOL_SCOPING } from './aiTools';
+import { applyHelperDeviceScope, HELPER_TOOL_SCOPING, verifyDeviceAccess } from './aiTools';
+import type { AuthContext } from '../middleware/auth';
 
 const HELPER_DEVICE = '11111111-1111-1111-1111-111111111111';
 const OTHER_DEVICE = '22222222-2222-2222-2222-222222222222';
@@ -29,5 +30,26 @@ describe('applyHelperDeviceScope', () => {
     for (const field of Object.values(HELPER_TOOL_SCOPING)) {
       expect(['deviceId', 'deviceIds']).toContain(field);
     }
+  });
+});
+
+function helperAuth(deviceId: string): AuthContext {
+  return {
+    user: { id: deviceId, email: 'h', name: 'h', isPlatformAdmin: false },
+    token: {} as AuthContext['token'],
+    partnerId: null,
+    orgId: 'org-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
+    helperDeviceId: deviceId,
+  };
+}
+
+describe('verifyDeviceAccess helper lock', () => {
+  it('denies a device other than helperDeviceId without touching the DB', async () => {
+    const res = await verifyDeviceAccess(OTHER_DEVICE, helperAuth(HELPER_DEVICE));
+    expect('error' in res).toBe(true);
   });
 });

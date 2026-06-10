@@ -93,6 +93,11 @@ export async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  // Helper device lock (finding A, defense-in-depth): a Helper context may only
+  // ever resolve its own device. Return before any DB access.
+  if (auth.helperDeviceId && deviceId !== auth.helperDeviceId) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
