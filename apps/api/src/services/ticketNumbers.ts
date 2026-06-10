@@ -17,8 +17,8 @@ export async function allocateInternalTicketNumber(partnerId: string, now: Date 
   //      failed ticket insert leaves a counter gap (harmless — gaps in ticket
   //      numbers are acceptable) rather than aborting the caller's whole tx.
   //   3. Lock scope. The per-partner row lock acquired by the upsert is held
-  //      only for this single statement rather than for the duration of the
-  //      entire request transaction, reducing contention under concurrent creates.
+  //      only for the short system transaction wrapping this statement, not the
+  //      caller's request transaction, reducing contention under concurrent creates.
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db.execute(sql`

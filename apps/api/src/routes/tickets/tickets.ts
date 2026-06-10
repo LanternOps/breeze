@@ -45,11 +45,13 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
  * RLS is the primary tenant-isolation layer; this adds an explicit WHERE
  * clause matching the house convention from alerts/helpers.ts.
  *
- * - organization scope: requires auth.orgId (403 if missing), adds eq(orgId)
- * - partner scope: adds eq(partnerId, auth.partnerId)
- * - system scope: no extra condition (unrestricted)
+ * Callers must return 403 for a missing context BEFORE calling this function
+ * (e.g. organization scope with no orgId). This function returns null → 404
+ * as the fallback when the ticket is not visible in the caller's scope.
  *
- * Returns the ticket row, or null when not visible in the caller's scope.
+ * - organization scope: adds eq(orgId); null orgId treated as not-found
+ * - partner scope: adds eq(partnerId, auth.partnerId); null partnerId as not-found
+ * - system scope: no extra condition (unrestricted)
  */
 async function getScopedTicketOr404(
   auth: AuthContext,
@@ -257,7 +259,6 @@ ticketsRoutes.get(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
@@ -300,7 +301,6 @@ ticketsRoutes.patch(
     const body = c.req.valid('json');
     if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
@@ -335,7 +335,6 @@ ticketsRoutes.post(
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
@@ -366,7 +365,6 @@ ticketsRoutes.post(
     const { id } = c.req.valid('param');
     const { assigneeId } = c.req.valid('json');
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
@@ -394,7 +392,6 @@ ticketsRoutes.post(
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
@@ -422,7 +419,6 @@ ticketsRoutes.post(
     const { id } = c.req.valid('param');
     const { alertId } = c.req.valid('json');
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
@@ -448,7 +444,6 @@ ticketsRoutes.delete(
     const auth = c.get('auth');
     const { id, alertId } = c.req.valid('param');
 
-    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }

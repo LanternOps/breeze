@@ -373,6 +373,143 @@ describe('unlinkAlertFromTicket', () => {
   });
 });
 
+describe('changeTicketStatus — additional lifecycle cases', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('reopen: resolved ticket → open clears resolvedAt, closedAt, closedBy, and pendingReason', async () => {
+    const resolvedDate = new Date('2026-01-10T12:00:00Z');
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      status: 'resolved',
+      resolvedAt: resolvedDate,
+      closedAt: resolvedDate,
+      closedBy: 'u-9',
+      pendingReason: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'open', {}, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({
+      status: 'open',
+      resolvedAt: null,
+      closedAt: null,
+      closedBy: null,
+      pendingReason: null
+    });
+  });
+
+  it('close an already-resolved ticket: preserves resolvedAt, stamps closedAt/closedBy', async () => {
+    const resolvedDate = new Date('2026-01-10T12:00:00Z');
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      status: 'resolved',
+      resolvedAt: resolvedDate,
+      closedAt: null,
+      closedBy: null,
+      pendingReason: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'closed' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'closed', {}, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    // resolvedAt must be the original date, NOT re-stamped
+    expect(updatePayload.resolvedAt).toEqual(resolvedDate);
+    expect(updatePayload.closedAt).toBeInstanceOf(Date);
+    expect(updatePayload.closedBy).toBe(actor.userId);
+  });
+
+  it('pending with pendingReason carries it; pending → open clears it', async () => {
+    // Step 1: open → pending with reason
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'pending' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'pending', { pendingReason: 'waiting on customer' }, actor);
+
+    const pendingPayload = setMock.mock.calls[0]![0];
+    expect(pendingPayload).toMatchObject({ status: 'pending', pendingReason: 'waiting on customer' });
+
+    // Step 2: pending → open clears pendingReason
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'pending', resolvedAt: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'open', {}, actor);
+
+    const openPayload = setMock.mock.calls[0]![0];
+    expect(openPayload).toMatchObject({ status: 'open', pendingReason: null });
+  });
+
+  it('firstResponseAt already set + public comment → no update, firstResponseStamped false', async () => {
+    // Use addTicketComment directly for this case
+    const existingDate = new Date('2026-01-05T08:00:00Z');
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open',
+      firstResponseAt: existingDate
+    }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-5', isPublic: true }]);
+
+    const result = await (await import('./ticketService')).addTicketComment(
+      't-1', { content: 'Another public reply', isPublic: true }, actor
+    );
+
+    expect(result.firstResponseStamped).toBe(false);
+    // No update() call touching firstResponseAt
+    expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('assignTicket — additional status cases', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('assigns on new ticket: set payload includes status open', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({ assignedTo: 'u-2', status: 'open' });
+  });
+
+  it('assigns on open ticket: set payload does NOT include status', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({ assignedTo: 'u-2' });
+    expect(updatePayload).not.toHaveProperty('status');
+  });
+});
+
 describe('createTicketFromAlert', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -402,5 +539,22 @@ describe('createTicketFromAlert', () => {
   it('404s on a missing alert', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([]);
     await expect(createTicketFromAlert('missing', actor)).rejects.toThrow(/alert not found/i);
+  });
+
+  it('link failure after create → rejects with plain Error (not TicketServiceError), making create+link atomic', async () => {
+    // Selects: alert, org (createTicket), ticket (linkAlertToTicket), alert (linkAlertToTicket)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'a-2', orgId: 'o-1', deviceId: null, title: 'CPU high', message: null, severity: 'critical' }])
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 't-10', orgId: 'o-1', partnerId: 'p-1', status: 'new', internalNumber: 'T-2026-0042' }])
+      .mockResolvedValueOnce([{ id: 'a-2', orgId: 'o-2', title: 'CPU high' }]); // different org → link throws 400
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-10', orgId: 'o-1', internalNumber: 'T-2026-0042' }]);
+
+    const err = await createTicketFromAlert('a-2', actor).catch(e => e);
+    // Must NOT be TicketServiceError — must be a plain Error so it bubbles past
+    // the route's handleServiceError catch and triggers a transaction rollback.
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TicketServiceError);
+    expect(err.message).toMatch(/created but alert link failed/i);
   });
 });

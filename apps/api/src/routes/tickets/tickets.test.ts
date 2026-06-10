@@ -291,6 +291,182 @@ describe('GET /tickets/:id — scoped pre-check', () => {
   });
 });
 
+describe('POST /tickets/:id/status', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('calls changeTicketStatus with id, status, opts, actor and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
+    serviceMocks.changeTicketStatus.mockResolvedValue({ ...STUB_TICKET, status: 'resolved' });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'resolved', resolutionNote: 'Fixed it' })
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.changeTicketStatus).toHaveBeenCalledWith(
+      TICKET_ID,
+      'resolved',
+      expect.objectContaining({ resolutionNote: 'Fixed it' }),
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('returns 404 when scoped pre-check finds no ticket', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // getScopedTicketOr404 → not found
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'open' })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+
+  it('maps 409 TicketServiceError through from service', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    const { TicketServiceError } = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
+    serviceMocks.changeTicketStatus.mockRejectedValue(new TicketServiceError('Cannot transition', 409));
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'pending' })
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /tickets/:id/assign', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  const ASSIGNEE_ID = '5a6b7c8d-1234-4321-abcd-000011112222';
+
+  it('calls assignTicket with id, assigneeId, actor and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.assignTicket.mockResolvedValue({ ...STUB_TICKET, assignedTo: ASSIGNEE_ID });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigneeId: ASSIGNEE_ID })
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.assignTicket).toHaveBeenCalledWith(
+      TICKET_ID,
+      ASSIGNEE_ID,
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('returns 404 when scoped pre-check finds no ticket', async () => {
+    dbSelectMock.mockResolvedValueOnce([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigneeId: ASSIGNEE_ID })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /tickets/:id/comments', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('calls addTicketComment and returns 201', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.addTicketComment.mockResolvedValue({
+      comment: { id: 'c-1', content: 'On it', isPublic: true },
+      firstResponseStamped: true
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'On it', isPublic: true })
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ id: 'c-1', content: 'On it' });
+  });
+
+  it('returns 404 when scoped pre-check finds no ticket', async () => {
+    dbSelectMock.mockResolvedValueOnce([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hi', isPublic: false })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /tickets/:id/alerts', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('calls linkAlertToTicket and returns 201', async () => {
+    const ALERT_ID = '4f3f2e9f-2222-4333-9444-555566667777';
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.linkAlertToTicket.mockResolvedValue({ id: 'link-1', ticketId: TICKET_ID, alertId: ALERT_ID });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertId: ALERT_ID })
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.linkAlertToTicket).toHaveBeenCalledWith(
+      TICKET_ID,
+      ALERT_ID,
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('returns 404 when scoped pre-check finds no ticket', async () => {
+    const ALERT_ID = '4f3f2e9f-2222-4333-9444-555566667777';
+    dbSelectMock.mockResolvedValueOnce([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertId: ALERT_ID })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.linkAlertToTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /tickets/:id/alerts/:alertId', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  const ALERT_ID = '4f3f2e9f-2222-4333-9444-555566667777';
+
+  it('calls unlinkAlertFromTicket and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.unlinkAlertFromTicket.mockResolvedValue({ ticketId: TICKET_ID, alertId: ALERT_ID });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts/${ALERT_ID}`, {
+      method: 'DELETE'
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.unlinkAlertFromTicket).toHaveBeenCalledWith(
+      TICKET_ID,
+      ALERT_ID,
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('returns 404 when scoped pre-check finds no ticket', async () => {
+    dbSelectMock.mockResolvedValueOnce([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts/${ALERT_ID}`, {
+      method: 'DELETE'
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.unlinkAlertFromTicket).not.toHaveBeenCalled();
+  });
+});
+
 describe('PATCH /tickets/:id — scoped update', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 

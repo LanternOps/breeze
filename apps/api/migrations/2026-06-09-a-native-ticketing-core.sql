@@ -42,6 +42,7 @@ UPDATE tickets t SET partner_id = o.partner_id
 FROM organizations o
 WHERE t.org_id = o.id AND t.partner_id IS NULL;
 
+-- partner_id stays nullable: old API code may still insert tickets without it during a rolling deploy; the CHECK below guards the invariant that matters (numbered tickets always have a partner).
 -- NULL-partner numbering guard: internal_number requires partner_id to be set.
 DO $$ BEGIN
   ALTER TABLE tickets ADD CONSTRAINT tickets_internal_number_requires_partner

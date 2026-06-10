@@ -254,6 +254,23 @@ describe('manage_tickets tool', () => {
     expect(parsed.error).toMatch(/content is required/i);
     expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
   });
+
+  it('update_status returns error when status is missing', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    const out = await getTool().handler({ action: 'update_status', ticketId: 't-1' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/status is required/i);
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+
+  it('create returns error when orgId is missing', async () => {
+    const out = await getTool().handler({ action: 'create', subject: 'No org ticket' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/orgId is required/i);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
 });
 
 // ── Zod schema registry coverage ──────────────────────────────────────────

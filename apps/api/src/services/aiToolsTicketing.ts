@@ -157,6 +157,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
         if (!input.subject) return JSON.stringify({ error: 'subject is required for create action' });
+        if (!input.orgId) return JSON.stringify({ error: 'orgId is required for create action' });
         // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
         // org → own org only, partner → partner's orgs). Mirror the tickets route's
         // POST / handler which calls auth.canAccessOrg(body.orgId).
@@ -214,6 +215,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
+        if (!input.status) return JSON.stringify({ error: 'status is required for update_status action' });
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });

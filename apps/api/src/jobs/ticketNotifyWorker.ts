@@ -11,8 +11,8 @@
  * transaction is still open (see emitTicketEvent usage in ticketService.ts).
  * A fast worker may dequeue an event before the ticket row is visible — when
  * the ticket lookup returns no row, we THROW so BullMQ retries the job
- * (attempts: 3, exponential back-off). The retry window gives the committing
- * transaction time to become visible.
+ * (retries per the job options set in emitTicketEvent (ticketEvents.ts)).
+ * The retry window gives the committing transaction time to become visible.
  *
  * EXCEPTION: a missing ASSIGNEE user row is terminal (the user was deleted),
  * not retryable — silently return for that case only. The assignee lookup

@@ -9,6 +9,7 @@ import { createAuditLogAsync } from './auditService';
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
 
+// Lifecycle per spec §2 (docs/superpowers/specs/2026-06-09-native-ticketing-design.md). Closed/resolved reopen only to 'open'; any active status can short-circuit to resolved/closed.
 export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {
   new: ['open', 'pending', 'on_hold', 'resolved', 'closed'],
   open: ['pending', 'on_hold', 'resolved', 'closed'],
@@ -33,10 +34,9 @@ export interface TicketActor {
   email?: string;
 }
 
-// Same format as the portal route (portal/tickets.ts generateTicketNumber):
-// nanoid(10).toUpperCase() with a retry loop for uniqueness. The service uses
-// a best-effort approach (no retry loop) since internalNumber is the canonical
-// ticket identifier going forward; ticketNumber is a legacy display field.
+// Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
+// moved into the service — internalNumber is canonical; a nanoid(10) collision
+// surfaces as a unique-violation insert error.
 function generateLegacyTicketNumber(): string {
   return nanoid(10).toUpperCase();
 }
@@ -398,6 +398,12 @@ export async function createTicketFromAlert(
     source: 'alert'
   }, actor);
 
-  await linkAlertToTicket(ticket.id, alertId, actor, 'created_from');
+  try {
+    await linkAlertToTicket(ticket.id, alertId, actor, 'created_from');
+  } catch (err) {
+    throw new Error(
+      `Ticket ${ticket.internalNumber} created but alert link failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
   return ticket;
 }
