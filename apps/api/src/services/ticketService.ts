@@ -1,13 +1,13 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 
-export type TicketStatus = 'new' | 'open' | 'pending' | 'on_hold' | 'resolved' | 'closed';
-export type TicketSource = 'portal' | 'email' | 'alert' | 'manual' | 'api' | 'ai';
+export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
+export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
 
 export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {
   new: ['open', 'pending', 'on_hold', 'resolved', 'closed'],
@@ -58,6 +58,11 @@ export interface CreateTicketInput {
   source: TicketSource;
 }
 
+// NOTE: emitTicketEvent and createAuditLogAsync below are called while the
+// surrounding request transaction is still open. If the transaction later rolls
+// back, a phantom event/audit row survives — this is an accepted codebase pattern
+// (see auditService.ts). Ticket-event consumers MUST therefore treat
+// ticket-not-found as retryable, not terminal.
 export async function createTicket(input: CreateTicketInput, actor: TicketActor) {
   const orgRows = await db
     .select({ id: organizations.id, partnerId: organizations.partnerId })
@@ -67,25 +72,27 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
 
-  const internalNumber = await allocateInternalTicketNumber(org.partnerId!);
+  const internalNumber = await allocateInternalTicketNumber(org.partnerId);
+
+  const insertValues = {
+    orgId: input.orgId,
+    partnerId: org.partnerId,
+    ticketNumber: generateLegacyTicketNumber(),
+    internalNumber,
+    subject: input.subject,
+    description: input.description ?? null,
+    deviceId: input.deviceId ?? null,
+    categoryId: input.categoryId ?? null,
+    priority: input.priority ?? 'normal',
+    dueDate: input.dueDate ?? null,
+    assignedTo: input.assigneeId ?? null,
+    status: (input.assigneeId ? 'open' : 'new') as typeof tickets.$inferInsert['status'],
+    source: input.source
+  } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db
     .insert(tickets)
-    .values({
-      orgId: input.orgId,
-      partnerId: org.partnerId,
-      ticketNumber: generateLegacyTicketNumber(),
-      internalNumber,
-      subject: input.subject,
-      description: input.description ?? null,
-      deviceId: input.deviceId ?? null,
-      categoryId: input.categoryId ?? null,
-      priority: input.priority ?? 'normal',
-      dueDate: input.dueDate ?? null,
-      assignedTo: input.assigneeId ?? null,
-      status: input.assigneeId ? 'open' : 'new',
-      source: input.source
-    })
+    .values(insertValues)
     .returning();
   const ticket = inserted[0];
   if (!ticket) throw new TicketServiceError('Failed to create ticket', 500);
@@ -126,23 +133,23 @@ export async function changeTicketStatus(
 
   if (fromStatus === toStatus) return ticket;
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
-    throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 422);
+    throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409);
   }
   if (toStatus === 'resolved' && !opts.resolutionNote) {
-    throw new TicketServiceError('A resolution note is required to resolve a ticket', 422);
+    throw new TicketServiceError('A resolution note is required to resolve a ticket', 400);
   }
 
   const now = new Date();
-  const patch: Record<string, unknown> = { status: toStatus, updatedAt: now };
+  const patch: Partial<typeof tickets.$inferInsert> = { status: toStatus, updatedAt: now };
 
   if (toStatus === 'resolved') {
-    patch.resolvedAt = (ticket as { resolvedAt?: Date | null }).resolvedAt ?? now;
+    patch.resolvedAt = ticket.resolvedAt ?? now;
     patch.resolutionNote = opts.resolutionNote;
     patch.pendingReason = null;
   } else if (toStatus === 'closed') {
     patch.closedAt = now;
     patch.closedBy = actor.userId;
-    patch.resolvedAt = (ticket as { resolvedAt?: Date | null }).resolvedAt ?? now;
+    patch.resolvedAt = ticket.resolvedAt ?? now;
     patch.pendingReason = null;
   } else if (toStatus === 'open' && (fromStatus === 'resolved' || fromStatus === 'closed')) {
     // Reopen: clear resolution/close stamps
@@ -156,7 +163,16 @@ export async function changeTicketStatus(
     patch.pendingReason = null;
   }
 
-  const updated = await db.update(tickets).set(patch).where(eq(tickets.id, ticketId)).returning();
+  // Compare-and-swap: include fromStatus in the WHERE so a concurrent update is detected.
+  const updated = await db
+    .update(tickets)
+    .set(patch)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.status, fromStatus)))
+    .returning();
+
+  if (updated.length === 0) {
+    throw new TicketServiceError('Ticket was modified concurrently', 409);
+  }
 
   await db.insert(ticketComments).values({
     ticketId,
@@ -168,13 +184,13 @@ export async function changeTicketStatus(
     isPublic: false,
     oldValue: fromStatus,
     newValue: toStatus
-  }).returning();
+  });
 
   await emitTicketEvent({
     type: 'ticket.status_changed',
     ticketId,
     orgId: ticket.orgId,
-    partnerId: (ticket as { partnerId?: string | null }).partnerId ?? null,
+    partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
     payload: { from: fromStatus, to: toStatus, resolutionNote: opts.resolutionNote ?? null }
   });
@@ -192,11 +208,24 @@ export async function changeTicketStatus(
 
 export async function assignTicket(ticketId: string, assigneeId: string | null, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
+  const prevAssignedTo = ticket.assignedTo;
 
-  const patch: Record<string, unknown> = { assignedTo: assigneeId, updatedAt: new Date() };
+  const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
   if (assigneeId && ticket.status === 'new') patch.status = 'open';
 
-  const updated = await db.update(tickets).set(patch).where(eq(tickets.id, ticketId)).returning();
+  // Compare-and-swap: include the previously-read assignedTo in the WHERE.
+  const updated = await db
+    .update(tickets)
+    .set(patch)
+    .where(and(
+      eq(tickets.id, ticketId),
+      prevAssignedTo === null ? isNull(tickets.assignedTo) : eq(tickets.assignedTo, prevAssignedTo)
+    ))
+    .returning();
+
+  if (updated.length === 0) {
+    throw new TicketServiceError('Ticket was modified concurrently', 409);
+  }
 
   await db.insert(ticketComments).values({
     ticketId,
@@ -206,15 +235,15 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     commentType: 'assignment',
     content: '',
     isPublic: false,
-    oldValue: (ticket as { assignedTo?: string | null }).assignedTo ?? null,
+    oldValue: prevAssignedTo ?? null,
     newValue: assigneeId
-  }).returning();
+  });
 
   await emitTicketEvent({
     type: 'ticket.assigned',
     ticketId,
     orgId: ticket.orgId,
-    partnerId: (ticket as { partnerId?: string | null }).partnerId ?? null,
+    partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
     payload: { assigneeId }
   });
@@ -244,11 +273,10 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
   // First PUBLIC technician response stamps firstResponseAt (spec §2).
   // Internal notes do NOT stamp it.
   let firstResponseStamped = false;
-  if (input.isPublic && !(ticket as { firstResponseAt?: Date | null }).firstResponseAt) {
+  if (input.isPublic && !ticket.firstResponseAt) {
     await db.update(tickets)
       .set({ firstResponseAt: new Date(), updatedAt: new Date() })
-      .where(eq(tickets.id, ticketId))
-      .returning();
+      .where(eq(tickets.id, ticketId));
     firstResponseStamped = true;
   }
 
@@ -256,7 +284,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     type: 'ticket.commented',
     ticketId,
     orgId: ticket.orgId,
-    partnerId: (ticket as { partnerId?: string | null }).partnerId ?? null,
+    partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: input.isPublic }
   });
@@ -286,16 +314,21 @@ export async function linkAlertToTicket(
   const alert = alertRows[0];
   if (!alert) throw new TicketServiceError('Alert not found', 404);
   if (alert.orgId !== ticket.orgId) {
-    throw new TicketServiceError('Alert and ticket must belong to the same organization', 422);
+    throw new TicketServiceError('Alert and ticket must belong to the same organization', 400);
   }
 
+  // Idempotent insert: if the link already exists, onConflictDoNothing returns an empty array.
   const inserted = await db.insert(ticketAlertLinks).values({
     ticketId,
     orgId: ticket.orgId,
     alertId,
     linkType,
     createdBy: actor.userId
-  }).returning();
+  }).onConflictDoNothing().returning();
+
+  if (inserted.length === 0) {
+    throw new TicketServiceError('Alert is already linked to this ticket', 409);
+  }
 
   await db.insert(ticketComments).values({
     ticketId,
@@ -303,19 +336,24 @@ export async function linkAlertToTicket(
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'system',
-    content: `Linked alert: ${(alert as { title?: string }).title ?? alertId}`,
+    content: `Linked alert: ${alert.title ?? alertId}`,
     isPublic: false,
     newValue: alertId
-  }).returning();
+  });
 
   return inserted[0];
 }
 
 export async function unlinkAlertFromTicket(ticketId: string, alertId: string, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
-  await db.delete(ticketAlertLinks).where(
+  const deleted = await db.delete(ticketAlertLinks).where(
     and(eq(ticketAlertLinks.ticketId, ticketId), eq(ticketAlertLinks.alertId, alertId))
   ).returning();
+
+  if (deleted.length === 0) {
+    throw new TicketServiceError('Alert link not found', 404);
+  }
+
   await db.insert(ticketComments).values({
     ticketId,
     userId: actor.userId,
@@ -325,7 +363,7 @@ export async function unlinkAlertFromTicket(ticketId: string, alertId: string, a
     content: 'Unlinked alert',
     isPublic: false,
     oldValue: alertId
-  }).returning();
+  });
   return { ticketId, alertId, orgId: ticket.orgId };
 }
 
@@ -340,11 +378,11 @@ export async function createTicketFromAlert(
 
   const ticket = await createTicket({
     orgId: alert.orgId,
-    subject: overrides.subject ?? (alert as { title?: string }).title ?? `Alert ${alertId}`,
-    description: overrides.description ?? (alert as { message?: string | null }).message ?? undefined,
-    deviceId: (alert as { deviceId?: string | null }).deviceId ?? undefined,
+    subject: overrides.subject ?? alert.title ?? `Alert ${alertId}`,
+    description: overrides.description ?? alert.message ?? undefined,
+    deviceId: alert.deviceId ?? undefined,
     categoryId: overrides.categoryId,
-    priority: overrides.priority ?? SEVERITY_TO_PRIORITY[(alert as { severity?: string }).severity ?? ''] ?? 'normal',
+    priority: overrides.priority ?? SEVERITY_TO_PRIORITY[alert.severity ?? ''] ?? 'normal',
     assigneeId: overrides.assigneeId,
     source: 'alert'
   }, actor);
