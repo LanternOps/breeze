@@ -260,6 +260,10 @@ export const PERMISSIONS = {
   ALERTS_WRITE: { resource: 'alerts', action: 'write' },
   ALERTS_ACKNOWLEDGE: { resource: 'alerts', action: 'acknowledge' },
 
+  // Tickets
+  TICKETS_READ: { resource: 'tickets', action: 'read' },
+  TICKETS_WRITE: { resource: 'tickets', action: 'write' },
+
   // Users
   USERS_READ: { resource: 'users', action: 'read' },
   USERS_WRITE: { resource: 'users', action: 'write' },
