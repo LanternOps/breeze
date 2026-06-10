@@ -82,6 +82,7 @@ services:
       # Mount source code for hot-reloading
       - ./apps/web/src:/app/apps/web/src:cached
       - ./apps/web/public:/app/apps/web/public:cached
+      - ./apps/web/scripts:/app/apps/web/scripts:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       # Mount config files
       - ./apps/web/package.json:/app/apps/web/package.json:ro
