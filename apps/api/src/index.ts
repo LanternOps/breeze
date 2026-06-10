@@ -28,6 +28,7 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
+import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { orgRoutes } from './routes/orgs';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -710,6 +711,7 @@ api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 api.route('/tickets', ticketsRoutes);
+api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
