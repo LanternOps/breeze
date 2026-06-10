@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyHelperDeviceScope, HELPER_TOOL_SCOPING, verifyDeviceAccess } from './aiTools';
+import { applyHelperDeviceScope, HELPER_TOOL_SCOPING, verifyDeviceAccess, getToolDefinitions } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
 const HELPER_DEVICE = '11111111-1111-1111-1111-111111111111';
@@ -29,6 +29,28 @@ describe('applyHelperDeviceScope', () => {
   it('every scoped tool maps to a known device field name', () => {
     for (const field of Object.values(HELPER_TOOL_SCOPING)) {
       expect(['deviceId', 'deviceIds']).toContain(field);
+    }
+  });
+});
+
+describe('HELPER_TOOL_SCOPING <-> tool schema consistency (finding A regression guard)', () => {
+  const byName = new Map(getToolDefinitions().map((d) => [d.name, d]));
+
+  // A scoped tool whose handler does NOT take the mapped field is an org-wide
+  // tool in disguise: the gate would force a field the handler ignores, leaking
+  // org-wide data (this is exactly what get_s1_status did). Require the field
+  // to exist in the tool's input schema so a future mismatch fails CI here.
+  it('every scoped tool actually declares its mapped device field in its input schema', () => {
+    for (const [tool, field] of Object.entries(HELPER_TOOL_SCOPING)) {
+      const def = byName.get(tool);
+      expect(def, `tool '${tool}' is in HELPER_TOOL_SCOPING but is not a registered tool`).toBeTruthy();
+      const props =
+        (def!.input_schema as { properties?: Record<string, unknown> }).properties ?? {};
+      expect(
+        props[field],
+        `tool '${tool}' maps to '${field}' but its input schema has no such property — ` +
+          `the helper gate would force a field the handler ignores (org-wide data leak)`,
+      ).toBeTruthy();
     }
   });
 });

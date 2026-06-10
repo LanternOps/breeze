@@ -263,7 +263,6 @@ export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
   analyze_metrics: 'deviceId',
   analyze_disk_usage: 'deviceId',
   get_cis_device_report: 'deviceId',
-  get_s1_status: 'deviceId',
   get_security_posture: 'deviceId',
   take_screenshot: 'deviceId',
   analyze_screen: 'deviceId',

@@ -85,4 +85,16 @@ describe('executeTool runs the declarative device gate before the handler', () =
     expect(JSON.parse(out).ranHandler).toBe(true);
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  // Regression (finding A): the helper device-scope gate must ONLY engage when
+  // auth.helperDeviceId is set. A normal (non-helper) caller's input must reach
+  // the handler untouched — no forced/injected device field.
+  it('passes input through untouched for a normal (non-helper) caller', async () => {
+    vi.mocked(db.select).mockImplementation(
+      () => deviceLookup([{ id: OWN_DEVICE, hostname: 'h', siteId: 's', status: 'online' }]) as any,
+    );
+    const input = { deviceId: OWN_DEVICE, foo: 'bar' };
+    await executeTool(PROBE, input, makeAuth()); // makeAuth() has no helperDeviceId
+    expect(handler).toHaveBeenCalledWith(input, expect.anything());
+  });
 });

@@ -20,7 +20,6 @@ const TOOL_WHITELIST: Record<HelperPermissionLevel, readonly string[]> = {
     'analyze_metrics',
     'analyze_disk_usage',
     'get_cis_device_report',
-    'get_s1_status',
     'get_security_posture',
     'take_screenshot',
     'analyze_screen',
