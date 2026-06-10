@@ -131,3 +131,40 @@ describe('DeviceList — row action menu (#1013 clipping fix)', () => {
     expect(scrollWrapper?.contains(menuItem)).toBe(false);
   });
 });
+
+describe('DeviceList — advanced filter via serverFilterIds prop (uncapped id set)', () => {
+  it('renders only devices in the id set and shows the active-filter pill', () => {
+    const inFilter: Device = {
+      ...baseDevice,
+      id: '88888888-8888-8888-8888-888888888888',
+      hostname: 'host-in-filter',
+    };
+    const outOfFilter: Device = {
+      ...baseDevice,
+      id: '99999999-9999-9999-9999-999999999999',
+      hostname: 'host-not-in-filter',
+    };
+
+    render(
+      <DeviceList
+        devices={[inFilter, outOfFilter]}
+        serverFilterIds={new Set([inFilter.id])}
+      />
+    );
+
+    expect(screen.getByText('host-in-filter')).toBeTruthy();
+    expect(screen.queryByText('host-not-in-filter')).toBeNull();
+    expect(screen.getByText(/Advanced filter active/i)).toBeTruthy();
+  });
+
+  it('shows every device (no pill) when serverFilterIds is null — no advanced filter active', () => {
+    const a: Device = { ...baseDevice, id: 'aaaaaaa1-0000-0000-0000-000000000000', hostname: 'host-aa' };
+    const b: Device = { ...baseDevice, id: 'aaaaaaa2-0000-0000-0000-000000000000', hostname: 'host-bb' };
+
+    render(<DeviceList devices={[a, b]} serverFilterIds={null} />);
+
+    expect(screen.getByText('host-aa')).toBeTruthy();
+    expect(screen.getByText('host-bb')).toBeTruthy();
+    expect(screen.queryByText(/Advanced filter active/i)).toBeNull();
+  });
+});

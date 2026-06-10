@@ -16,7 +16,8 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/devices/DeviceBootPerformanceTab.tsx',
   'apps/web/src/components/devices/DeviceFilesystemTab.tsx',
   'apps/web/src/components/devices/DeviceGroupsPage.tsx',
-  'apps/web/src/components/devices/DeviceList.tsx',
+  // DeviceList.tsx removed: its only fetchWithAuth call (POST /filters/preview,
+  // a read) moved to hooks/useAdvancedFilterIds.ts — no mutating calls remain.
   'apps/web/src/components/devices/DevicePatchStatusTab.tsx',
   'apps/web/src/components/devices/DeviceSecurityTab.tsx',
   'apps/web/src/components/devices/DeviceSettingsModal.tsx',

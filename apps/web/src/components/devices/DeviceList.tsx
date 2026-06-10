@@ -1,8 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
-import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
@@ -100,7 +99,11 @@ type DeviceListProps = {
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
   pageSize?: number;
-  serverFilter?: FilterConditionGroup | null;
+  // Pre-resolved advanced-filter id set (null = no advanced filter active).
+  // Resolution lives in DevicesPage via useAdvancedFilterIds so the list and
+  // grid views filter against the same complete, uncapped id set.
+  serverFilterIds?: Set<string> | null;
+  serverFilterLoading?: boolean;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -183,7 +186,8 @@ export default function DeviceList({
   onAction,
   onBulkAction,
   pageSize = 10,
-  serverFilter = null
+  serverFilterIds = null,
+  serverFilterLoading = false
 }: DeviceListProps) {
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -234,8 +238,6 @@ export default function DeviceList({
   const [rowMenuAnchor, setRowMenuAnchor] = useState<{ top: number; bottom: number; right: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
-  const [serverFilterLoading, setServerFilterLoading] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -325,50 +327,6 @@ export default function DeviceList({
       onAutoSelectConsumed?.();
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
-
-  // Fetch matching device IDs from server when advanced filter changes
-  useEffect(() => {
-    if (!serverFilter) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    const hasValidConditions = serverFilter.conditions.some(c => {
-      if ('conditions' in c) return true;
-      return c.value !== '' && c.value !== null && c.value !== undefined;
-    });
-
-    if (!hasValidConditions) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    setServerFilterLoading(true);
-    const controller = new AbortController();
-
-    fetchWithAuth('/filters/preview', {
-      method: 'POST',
-      body: JSON.stringify({ conditions: serverFilter, limit: 100 }),
-      signal: controller.signal
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const result = data.data ?? data;
-          const ids = new Set<string>((result.devices ?? []).map((d: { id: string }) => d.id));
-          setServerFilterIds(ids);
-        }
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.error('Filter preview failed:', err);
-          setServerFilterIds(null);
-        }
-      })
-      .finally(() => setServerFilterLoading(false));
-
-    return () => controller.abort();
-  }, [serverFilter]);
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
