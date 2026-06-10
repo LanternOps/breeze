@@ -18,19 +18,30 @@ updates:
       timezone: "America/New_York"
     open-pull-requests-limit: 10
     groups:
-      # The whole mobile toolchain moves together — a solo expo major bump
-      # (55→56 on 2026-06-09) rewrote ~2,400 lockfile lines on its own and
-      # broke unrelated API test resolution. One PR per week for all of it.
-      mobile:
+      # Expo SDK packages must move together: a solo expo major bump
+      # (55→56 on 2026-06-09) left expo-* native modules behind on SDK 55.
+      expo-sdk:
         patterns:
           - "expo"
           - "expo-*"
           - "@expo/*"
+      # Reanimated and Worklets have tight peer/ABI coupling; bump them together.
+      react-native-animation:
+        patterns:
+          - "react-native-reanimated"
+          - "react-native-worklets"
+      # The rest of the mobile toolchain still moves together so related
+      # native/runtime dependency churn lands in one reviewable PR.
+      mobile:
+        patterns:
           - "react-native"
           - "react-native-*"
           - "@react-native*"
           - "metro"
           - "metro-*"
+        exclude-patterns:
+          - "react-native-reanimated"
+          - "react-native-worklets"
       # Group minor and patch updates together
       typescript-tooling:
         patterns:

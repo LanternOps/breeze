@@ -493,6 +493,9 @@ jobs:
     name: Rust Check (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
 
     steps:
       - name: Checkout
@@ -839,7 +842,7 @@ jobs:
     name: CI Success
     runs-on: ubuntu-latest
     needs: [lint, typecheck, test-api, test-web, security-audit, build-api, build-web, build-agent, test-agent, integration-test, rust-check, smoke-test]
-    if: always()
+    if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
         env:
@@ -904,7 +907,7 @@ jobs:
           gh label create ci-red --repo "$GITHUB_REPOSITORY" \
             --color B60205 --description "CI is failing on main" 2>/dev/null || true
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci-red --state open \
-            --json number --jq '.[0].number // empty')
+            --json number --jq ".[0].number // empty")
           short_sha="${SHA:0:8}"
           case "$RESULT" in
             success)
@@ -918,9 +921,10 @@ jobs:
                 gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
                   --body "Still red at \`$short_sha\`: $RUN_URL"
               else
+                body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
                 gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
                   --title "CI is red on main" \
-                  --body "$(printf 'CI failed on a main push at `%s`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run.' "$short_sha" "$RUN_URL")"
+                  --body "$body"
               fi
               ;;
             *)
