@@ -314,15 +314,20 @@ export async function verifyIdTokenSignature(
 }
 
 /**
- * Enforce that an id_token's email claim is verified before it is trusted for
- * user provisioning or account linking. OIDC `email_verified` may arrive as a
- * boolean or the string "true" depending on the provider.
+ * Reject an id_token whose email is EXPLICITLY marked unverified before it is
+ * trusted for user provisioning or account linking. `email_verified` may arrive
+ * as a boolean or string.
+ *
+ * Only an explicit false/"false" blocks: many IdPs (notably Azure AD / Entra)
+ * omit `email_verified` entirely even for verified mailboxes, so treating an
+ * ABSENT claim as unverified would lock those tenants out. Identity ultimately
+ * flows from the server-to-server userinfo call, not the id_token email, so an
+ * absent claim is acceptable here.
  */
 export function assertEmailVerified(claims: Pick<IDTokenClaims, 'email_verified'>): void {
   const ev = (claims as { email_verified?: unknown }).email_verified;
-  const verified = ev === true || ev === 'true';
-  if (!verified) {
-    throw new Error('ID token email is not verified (email_verified !== true)');
+  if (ev === false || ev === 'false') {
+    throw new Error('ID token email is explicitly not verified (email_verified === false)');
   }
 }
 

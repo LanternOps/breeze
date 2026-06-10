@@ -162,14 +162,21 @@ describe('sso service', () => {
       expect(() => assertEmailVerified({ email_verified: 'true' })).not.toThrow();
     });
 
-    it('rejects when email_verified is false', () => {
+    it('rejects when email_verified is explicitly false', () => {
       expect(() => assertEmailVerified({ email_verified: false }))
-        .toThrow('email is not verified');
+        .toThrow(/not verified/);
     });
 
-    it('rejects when email_verified is absent', () => {
-      expect(() => assertEmailVerified({}))
-        .toThrow('email is not verified');
+    it('rejects when email_verified is the string "false"', () => {
+      expect(() => assertEmailVerified({ email_verified: 'false' as unknown as boolean }))
+        .toThrow(/not verified/);
+    });
+
+    // Azure AD / Entra (and others) omit email_verified even for verified
+    // mailboxes; absent must NOT block login. Identity comes from the
+    // server-to-server userinfo call, not the id_token email, anyway.
+    it('passes when email_verified is absent (does not lock out Azure AD)', () => {
+      expect(() => assertEmailVerified({})).not.toThrow();
     });
   });
 
