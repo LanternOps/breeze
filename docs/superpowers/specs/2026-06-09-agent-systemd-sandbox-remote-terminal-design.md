@@ -223,7 +223,7 @@ to breakage.
 > old sandboxed unit with no fleet-visible signal — the operator only learns of it if a user
 > re-reports the symptom (e.g. `apt` failing in the terminal). Surfacing heal-failure as a
 > heartbeat/telemetry flag (so affected hosts are visible in the console without an SSH
-> session) is a worthwhile follow-up but is out of scope for this change.
+> session) is a worthwhile follow-up but is out of scope for this change. Tracked in #1201.
 
 ### 5.6 Startup wiring
 
