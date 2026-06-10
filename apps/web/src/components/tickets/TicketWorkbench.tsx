@@ -13,12 +13,13 @@ interface Props {
   ticketId: string;
   onChanged?: () => void;       // queue refresh hook
   expanded?: boolean;            // full-page mode
+  resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
 }
 
 const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
 const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
 
-export default function TicketWorkbench({ ticketId, onChanged, expanded }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, expanded, resolveRequestToken }: Props) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -42,6 +43,11 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded }: Props
   }, [ticketId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
+  useEffect(() => {
+    if (resolveRequestToken) setResolveOpen(true);
+  }, [resolveRequestToken]);
 
   const mutate = useCallback(async (path: string, body: unknown, success: string) => {
     try {

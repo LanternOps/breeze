@@ -36,6 +36,7 @@ function selectionFromHash(): string | null {
 
 export default function TicketsPage() {
   const [tab, setTab] = useState<Tab>('open');
+  const [resolveToken, setResolveToken] = useState(0);
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -156,10 +157,7 @@ export default function TicketsPage() {
     onAssignMe: () => void assignMe(),
     onFocusReply: () => focusComposer(false),
     onFocusInternal: () => focusComposer(true),
-    onResolve: () => {
-      const statusSel = document.querySelector<HTMLSelectElement>('[data-testid="ticket-workbench-status"]');
-      if (statusSel) { statusSel.value = 'resolved'; statusSel.dispatchEvent(new Event('change', { bubbles: true })); }
-    },
+    onResolve: () => { if (selected) setResolveToken((t) => t + 1); },
     onEscape: () => (document.activeElement as HTMLElement | null)?.blur()
   });
 
@@ -238,7 +236,7 @@ export default function TicketsPage() {
           </div>
           <div className="hidden min-w-0 flex-1 min-[1100px]:block">
             {selected ? (
-              <TicketWorkbench ticketId={selected.id} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
+              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
                 <p>Select a ticket. Use j/k to move, Enter to expand.</p>
