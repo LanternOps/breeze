@@ -25,18 +25,27 @@
  *   rules simply never match that flow until the agent ships groups).
  * - time_window: "HH:MM"–"HH:MM" with optional days[0-6] in the window's
  *   timezone (default UTC). Overnight windows (start > end) wrap midnight.
+ * - tool_name / risk_tier (Phase 1 helper governance): exact tool-name
+ *   (case-insensitive) and exact tier match for ai_tool_action candidates;
+ *   evaluated via evaluatePamToolActionRules, which only considers rules
+ *   carrying a tool-action criterion.
  */
 import type { PamRule, PamRuleTimeWindow } from '../db/schema/pam';
 import { matchPathGlob } from './pamBridge';
 
 export interface PamRuleCandidate {
-  targetExecutablePath: string;
+  /** Absent for ai_tool_action candidates. */
+  targetExecutablePath?: string;
   targetExecutableHash?: string;
   targetExecutableSigner?: string;
   subjectUsername: string;
   parentImage?: string;
   /** AD/local group names of the subject, when known. */
   subjectAdGroups?: string[];
+  /** ai_tool_action candidates: bare tool name (no mcp__ prefix). */
+  toolName?: string;
+  /** ai_tool_action candidates: guardrail tier (2–3 today). */
+  riskTier?: number;
   /** Evaluation instant; injectable for tests. Defaults to now. */
   at?: Date;
 }
@@ -61,8 +70,21 @@ function hasAnyCriteria(rule: PamRule): boolean {
       rule.matchPathGlob ||
       rule.matchParentImage ||
       rule.matchUser ||
-      rule.matchAdGroup,
+      rule.matchAdGroup ||
+      rule.matchToolName ||
+      rule.matchRiskTier != null,
   );
+}
+
+/**
+ * A rule is tool-action-shaped when it carries a tool-action criterion
+ * (Phase 1 helper governance). Tool-action evaluation only considers these
+ * rules; the API layer rejects mixing them with executable criteria.
+ */
+export function hasToolActionCriterion(
+  rule: Pick<PamRule, 'matchToolName' | 'matchRiskTier'>,
+): boolean {
+  return Boolean(rule.matchToolName) || rule.matchRiskTier != null;
 }
 
 /** Exported for tests. */
@@ -122,6 +144,7 @@ function ruleMatches(rule: PamRule, candidate: PamRuleCandidate): boolean {
     if (!eqCi(rule.matchSigner, candidate.targetExecutableSigner)) return false;
   }
   if (rule.matchPathGlob) {
+    if (!candidate.targetExecutablePath) return false;
     if (!matchPathGlob(rule.matchPathGlob, candidate.targetExecutablePath)) return false;
   }
   if (rule.matchParentImage) {
@@ -134,6 +157,14 @@ function ruleMatches(rule: PamRule, candidate: PamRuleCandidate): boolean {
   if (rule.matchAdGroup) {
     const groups = candidate.subjectAdGroups ?? [];
     if (!groups.some((g) => eqCi(g, rule.matchAdGroup!))) return false;
+  }
+  if (rule.matchToolName) {
+    if (!candidate.toolName) return false;
+    if (!eqCi(rule.matchToolName, candidate.toolName)) return false;
+  }
+  if (rule.matchRiskTier != null) {
+    if (candidate.riskTier == null) return false;
+    if (rule.matchRiskTier !== candidate.riskTier) return false;
   }
   if (rule.timeWindow) {
     if (!isWithinTimeWindow(rule.timeWindow, candidate.at ?? new Date())) return false;
@@ -170,4 +201,17 @@ export function evaluatePamRules(
     }
   }
   return null;
+}
+
+/**
+ * Evaluate an ai_tool_action candidate (Phase 1 helper governance). Only
+ * rules carrying at least one tool-action criterion participate — a
+ * pre-existing user-only or executable rule must never govern Helper tool
+ * actions (e.g. a matchUser-only UAC rule with verdict=auto_approve).
+ */
+export function evaluatePamToolActionRules(
+  rules: PamRule[],
+  candidate: PamRuleCandidate,
+): PamRuleMatch | null {
+  return evaluatePamRules(rules.filter(hasToolActionCriterion), candidate);
 }

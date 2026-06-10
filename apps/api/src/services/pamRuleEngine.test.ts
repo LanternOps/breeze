@@ -3,7 +3,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { PamRule } from '../db/schema/pam';
-import { evaluatePamRules, isWithinTimeWindow, type PamRuleCandidate } from './pamRuleEngine';
+import {
+  evaluatePamRules,
+  evaluatePamToolActionRules,
+  isWithinTimeWindow,
+  type PamRuleCandidate,
+} from './pamRuleEngine';
 
 let seq = 0;
 function rule(overrides: Partial<PamRule>): PamRule {
@@ -22,6 +27,8 @@ function rule(overrides: Partial<PamRule>): PamRule {
     matchParentImage: null,
     matchUser: null,
     matchAdGroup: null,
+    matchToolName: null,
+    matchRiskTier: null,
     timeWindow: null,
     verdict: 'require_approval',
     approvalDurationMinutes: null,
@@ -222,5 +229,89 @@ describe('isWithinTimeWindow', () => {
   it('time-window-only rules still never match (no executable criterion)', () => {
     const r = rule({ timeWindow: { start: '00:00', end: '23:59' }, verdict: 'auto_approve' });
     expect(evaluatePamRules([r], candidate)).toBeNull();
+  });
+});
+
+describe('tool-action rules (Phase 1 helper governance)', () => {
+  const toolCandidate: PamRuleCandidate = {
+    toolName: 'manage_services',
+    riskTier: 2,
+    subjectUsername: 'HOST-01',
+  };
+
+  it('matches on tool name, case-insensitive', () => {
+    const r = rule({ matchToolName: 'Manage_Services', verdict: 'auto_approve' });
+    expect(evaluatePamToolActionRules([r], toolCandidate)?.verdict).toBe('auto_approve');
+  });
+
+  it('does not match a different tool name', () => {
+    const r = rule({ matchToolName: 'execute_command', verdict: 'auto_approve' });
+    expect(evaluatePamToolActionRules([r], toolCandidate)).toBeNull();
+  });
+
+  it('matches risk tier exactly', () => {
+    expect(
+      evaluatePamToolActionRules([rule({ matchRiskTier: 2, verdict: 'auto_deny' })], toolCandidate)
+        ?.verdict,
+    ).toBe('auto_deny');
+    expect(
+      evaluatePamToolActionRules([rule({ matchRiskTier: 3, verdict: 'auto_deny' })], toolCandidate),
+    ).toBeNull();
+  });
+
+  it('ANDs tool criteria with user and time window', () => {
+    const r = rule({
+      matchToolName: 'manage_services',
+      matchUser: 'host-01',
+      timeWindow: { start: '00:00', end: '23:59' },
+      verdict: 'auto_approve',
+    });
+    expect(
+      evaluatePamToolActionRules([r], { ...toolCandidate, at: new Date() })?.verdict,
+    ).toBe('auto_approve');
+    expect(
+      evaluatePamToolActionRules([r], {
+        ...toolCandidate,
+        subjectUsername: 'other',
+        at: new Date(),
+      }),
+    ).toBeNull();
+  });
+
+  it('a matchUser-only rule never matches tool actions (no tool-action criterion)', () => {
+    const r = rule({ matchUser: 'host-01', verdict: 'auto_approve' });
+    expect(evaluatePamToolActionRules([r], toolCandidate)).toBeNull();
+  });
+
+  it('an executable rule never matches tool actions', () => {
+    const r = rule({ matchHash: 'a'.repeat(64), verdict: 'auto_approve' });
+    expect(evaluatePamToolActionRules([r], toolCandidate)).toBeNull();
+  });
+
+  it('a tool-action rule never matches an executable candidate via evaluatePamRules', () => {
+    const r = rule({ matchToolName: 'manage_services', verdict: 'auto_approve' });
+    expect(
+      evaluatePamRules([r], {
+        targetExecutablePath: 'C:\\x.exe',
+        subjectUsername: 'alice',
+      }),
+    ).toBeNull();
+  });
+
+  it('criteria-less rules still match nothing', () => {
+    expect(evaluatePamToolActionRules([rule({ verdict: 'auto_approve' })], toolCandidate)).toBeNull();
+  });
+
+  it('matchPathGlob fails closed when candidate has no executable path', () => {
+    const r = rule({ matchPathGlob: '**', verdict: 'auto_approve' });
+    expect(
+      evaluatePamRules([r], { subjectUsername: 'a', toolName: 't' }),
+    ).toBeNull();
+  });
+
+  it('priority ordering applies across tool-action rules', () => {
+    const deny = rule({ matchToolName: 'manage_services', verdict: 'auto_deny', priority: 10 });
+    const approve = rule({ matchToolName: 'manage_services', verdict: 'auto_approve', priority: 20 });
+    expect(evaluatePamToolActionRules([approve, deny], toolCandidate)?.verdict).toBe('auto_deny');
   });
 });
