@@ -29,6 +29,7 @@ const BLOCKED_TOOLS = new Set<string>([
 //   manage_services: list is a read downgraded from the tool's base Tier 3
 const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
+  manage_tickets: ['create', 'comment', 'assign', 'update_status'],
   manage_services: ['list'],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
@@ -97,6 +98,14 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     acknowledge: { resource: 'alerts', action: 'acknowledge' },
     resolve: { resource: 'alerts', action: 'write' },
     suppress: { resource: 'alerts', action: 'write' },
+  },
+  manage_tickets: {
+    list: { resource: 'tickets', action: 'read' },
+    get: { resource: 'tickets', action: 'read' },
+    create: { resource: 'tickets', action: 'write' },
+    comment: { resource: 'tickets', action: 'write' },
+    assign: { resource: 'tickets', action: 'write' },
+    update_status: { resource: 'tickets', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {

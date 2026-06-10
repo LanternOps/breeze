@@ -142,6 +142,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(500).optional(),
   }),
 
+  manage_tickets: z.object({
+    action: z.enum(['list', 'get', 'create', 'comment', 'assign', 'update_status']),
+    ticketId: uuid.optional(),
+    orgId: uuid.optional(),
+    deviceId: uuid.optional(),
+    assigneeId: uuid.optional(),
+    subject: z.string().min(1).max(255).optional(),
+    description: z.string().optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+    status: z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']).optional(),
+    resolutionNote: z.string().max(10000).optional(),
+    content: z.string().optional(),
+    isPublic: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    pendingReason: z.string().max(2000).optional(),
+  }),
+
   manage_alerts: z.object({
     action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
     alertId: uuid.optional(),

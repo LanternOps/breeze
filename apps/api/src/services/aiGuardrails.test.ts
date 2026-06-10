@@ -24,6 +24,9 @@ vi.mock('./aiTools', () => ({
       query_change_log: 1,
       execute_command: 3,
       run_backup_verification: 2,
+      // Ticketing tools
+      manage_tickets: 1,
+      manage_alerts: 1,
     };
     return tiers[toolName];
   }),
@@ -295,6 +298,77 @@ describe('checkToolPermission — backup restore tools', () => {
     const result = await checkToolPermission('restore_mssql_database', {}, auth);
 
     expect(result).toBeNull();
+  });
+});
+
+// ─── manage_tickets: tier escalation + RBAC map ─────────────────────────
+
+describe('checkGuardrails — manage_tickets tier escalation', () => {
+  it('list and get resolve at Tier 1 (base, auto-execute)', () => {
+    for (const action of ['list', 'get']) {
+      const result = checkGuardrails('manage_tickets', { action });
+      expect(result.tier).toBe(1);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+    }
+  });
+
+  it('create/comment/assign/update_status escalate to Tier 2 via TIER2_ACTIONS', () => {
+    for (const action of ['create', 'comment', 'assign', 'update_status']) {
+      const result = checkGuardrails('manage_tickets', { action });
+      expect(result.tier).toBe(2);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+    }
+  });
+});
+
+describe('checkToolPermission — manage_tickets RBAC map', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'operator', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  beforeEach(() => {
+    vi.mocked(hasPermission).mockClear();
+    vi.mocked(getUserPermissions).mockClear();
+  });
+
+  it('requires tickets.read for list action', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    const result = await checkToolPermission('manage_tickets', { action: 'list' }, auth);
+    expect(result).toContain('requires tickets.read');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'tickets', 'read');
+  });
+
+  it('requires tickets.write for create action', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    const result = await checkToolPermission('manage_tickets', { action: 'create' }, auth);
+    expect(result).toContain('requires tickets.write');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'tickets', 'write');
+  });
+
+  it('allows list when tickets.read is present', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('manage_tickets', { action: 'list' }, auth);
+    expect(result).toBeNull();
+  });
+
+  it('denies when action arg is missing (fail-closed)', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const result = await checkToolPermission('manage_tickets', {}, auth);
+    expect(result).toBe('Missing required "action" argument for tool "manage_tickets"');
+    expect(hasPermission).not.toHaveBeenCalled();
   });
 });
 

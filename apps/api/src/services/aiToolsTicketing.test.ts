@@ -31,23 +31,28 @@ vi.mock('../db', () => ({
   }
 }));
 
-vi.mock('../db/schema', () => ({
-  tickets: {
-    id: 'id',
-    orgId: 'orgId',
-    status: 'status',
-    priority: 'priority',
-    assignedTo: 'assignedTo',
-    createdAt: 'createdAt',
-    internalNumber: 'internalNumber',
-    subject: 'subject',
-    deviceId: 'deviceId'
-  }
-}));
+vi.mock('../db/schema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/schema')>();
+  return {
+    ...actual,
+    tickets: {
+      id: 'id',
+      orgId: 'orgId',
+      status: 'status',
+      priority: 'priority',
+      assignedTo: 'assignedTo',
+      createdAt: 'createdAt',
+      internalNumber: 'internalNumber',
+      subject: 'subject',
+      deviceId: 'deviceId'
+    }
+  };
+});
 
 import { registerTicketingTools } from './aiToolsTicketing';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
+import { validateToolInput } from './aiToolSchemas';
 
 // Default auth: partner scope with access to 'o-1'.
 const auth: AuthContext = {
@@ -84,9 +89,9 @@ describe('manage_tickets tool', () => {
     mockLimit.mockResolvedValue([]);
   });
 
-  it('registers with deviceArgs gating and tier 2', () => {
+  it('registers with deviceArgs gating and tier 1 (mutations escalated via TIER2_ACTIONS)', () => {
     const tool = getTool();
-    expect(tool.tier).toBe(2);
+    expect(tool.tier).toBe(1);
     expect(tool.deviceArgs).toContain('deviceId');
   });
 
@@ -229,5 +234,81 @@ describe('manage_tickets tool', () => {
 
   it('rejects an unknown action', async () => {
     await expect(getTool().handler({ action: 'explode' }, auth)).rejects.toThrow(/unknown action/i);
+  });
+
+  // ── input guards (defense-in-depth for missing required fields) ───────────
+
+  it('create returns error when subject is missing', async () => {
+    const out = await getTool().handler({ action: 'create', orgId: 'o-1' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/subject is required/i);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('comment returns error when content is missing', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    const out = await getTool().handler({ action: 'comment', ticketId: 't-1' }, auth);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error');
+    expect(parsed.error).toMatch(/content is required/i);
+    expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
+  });
+});
+
+// ── Zod schema registry coverage ──────────────────────────────────────────
+
+describe('manage_tickets — validateToolInput schema registry', () => {
+  it('passes for a valid list invocation', () => {
+    const result = validateToolInput('manage_tickets', { action: 'list' });
+    expect(result.success).toBe(true);
+  });
+
+  it('passes for a valid create invocation', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'create',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      subject: 'Printer offline',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('passes for a valid update_status with pendingReason', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'update_status',
+      ticketId: '00000000-0000-0000-0000-000000000002',
+      status: 'pending',
+      pendingReason: 'Waiting on vendor',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unknown action value', () => {
+    const result = validateToolInput('manage_tickets', { action: 'explode' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-UUID ticketId', () => {
+    const result = validateToolInput('manage_tickets', { action: 'get', ticketId: 'not-a-uuid' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects subject exceeding 255 characters', () => {
+    const result = validateToolInput('manage_tickets', {
+      action: 'create',
+      orgId: '00000000-0000-0000-0000-000000000001',
+      subject: 'x'.repeat(256),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown priority value', () => {
+    const result = validateToolInput('manage_tickets', { action: 'create', priority: 'extreme' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown status value', () => {
+    const result = validateToolInput('manage_tickets', { action: 'update_status', status: 'unknown_status' });
+    expect(result.success).toBe(false);
   });
 });

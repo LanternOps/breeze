@@ -42,7 +42,7 @@ async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
 
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_tickets', {
-    tier: 2 as AiToolTier,
+    tier: 1 as AiToolTier,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_tickets',
@@ -98,6 +98,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           limit: {
             type: 'number',
             description: 'Max results for list (default 25, max 100)'
+          },
+          pendingReason: {
+            type: 'string',
+            description: 'Optional reason when setting status to pending (update_status)'
           }
         },
         required: ['action']
@@ -152,6 +156,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
+        if (!input.subject) return JSON.stringify({ error: 'subject is required for create action' });
         // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
         // org → own org only, partner → partner's orgs). Mirror the tickets route's
         // POST / handler which calls auth.canAccessOrg(body.orgId).
@@ -177,6 +182,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // ── comment ───────────────────────────────────────────────────────────
       if (action === 'comment') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for comment action' });
+        if (!input.content) return JSON.stringify({ error: 'content is required for comment action' });
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
