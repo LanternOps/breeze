@@ -55,6 +55,7 @@ import { registerDocsTools } from './aiToolsDocs';
 import { registerRemoteTools } from './aiToolsRemote';
 import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 import { registerUITools } from './aiToolsUI';
+import { registerTicketingTools } from './aiToolsTicketing';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -220,6 +221,7 @@ registerCisBenchmarkTools(aiTools);
 registerComplianceTools(aiTools);
 registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
+registerTicketingTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);
