@@ -9,9 +9,13 @@ import {
   User,
   Mail,
   MessageSquare,
-  Loader2
+  Loader2,
+  Ticket
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { runAction } from '../../lib/runAction';
+import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
 import {
   severityConfig,
   statusConfig,
@@ -367,6 +371,25 @@ export default function AlertDetails({
             className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
           >
             Close
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void runAction<{ data: { id: string; internalNumber: string | null } }>({
+                request: () => fetchWithAuth(`/alerts/${alert.id}/create-ticket`, { method: 'POST', body: JSON.stringify({}) }),
+                errorFallback: 'Ticket creation failed. Retry.',
+                successMessage: (r) => `Ticket ${r.data.internalNumber ?? ''} created`,
+                onUnauthorized: () => void navigateTo('/login', { replace: true })
+              })
+                .then((r) => void navigateTo(`/tickets#${r.data.internalNumber ?? r.data.id}`))
+                .catch(() => undefined); // runAction already surfaced the failure via toast
+            }}
+            title="Create a linked ticket pre-filled from this alert"
+            className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+            data-testid="alert-create-ticket-button"
+          >
+            <Ticket className="mr-1.5 inline-block h-4 w-4" />
+            Create ticket
           </button>
           {alert.status !== 'suppressed' && alert.status !== 'resolved' && (
             <button

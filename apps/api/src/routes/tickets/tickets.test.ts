@@ -199,6 +199,24 @@ describe('GET /tickets', () => {
     const body = await res.json();
     expect(body).toHaveProperty('error', 'Organization context required');
   });
+
+  it('applies a deviceId filter condition when ?deviceId= is provided', async () => {
+    const DEVICE_ID = '9a8b7c6d-1111-4222-8333-444455556666';
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request(`/tickets?deviceId=${DEVICE_ID}`);
+    expect(res.status).toBe(200);
+    // The where condition is and(partnerCond, eq(tickets.deviceId, DEVICE_ID));
+    // the mocked schema column is the string 'deviceId', so the serialized SQL
+    // must mention both the column and the bound uuid value.
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain(DEVICE_ID);
+  });
+
+  it('rejects a non-uuid deviceId', async () => {
+    const res = await makeApp().request('/tickets?deviceId=not-a-uuid');
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('POST /tickets', () => {

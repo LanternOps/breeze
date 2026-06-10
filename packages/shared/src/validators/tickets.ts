@@ -49,6 +49,7 @@ export const listTicketsQuerySchema = z.object({
   status: ticketStatusSchema.optional(),
   statusGroup: z.enum(['open', 'closed']).optional(),
   orgId: z.string().uuid().optional(),
+  deviceId: z.string().uuid().optional(),
   assignee: z.union([z.literal('me'), z.literal('unassigned'), z.string().uuid()]).optional(),
   categoryId: z.string().uuid().optional(),
   priority: ticketPrioritySchema.optional(),

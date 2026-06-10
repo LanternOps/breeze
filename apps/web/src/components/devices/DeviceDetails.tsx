@@ -21,6 +21,7 @@ import {
   Layers,
   Timer,
   Usb,
+  Ticket,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
@@ -48,6 +49,7 @@ import MacOSPermissionsBanner from './MacOSPermissionsBanner';
 import { navigateTo } from '@/lib/navigation';
 import { OverflowTabs } from '../shared/OverflowTabs';
 import DeviceBackupTab from '../backup/DeviceBackupTab';
+import DeviceTicketsTab from '../tickets/DeviceTicketsTab';
 
 type Tab =
   | 'overview'
@@ -69,7 +71,8 @@ type Tab =
   | 'boot-performance'
   | 'playbooks'
   | 'peripherals'
-  | 'backup';
+  | 'backup'
+  | 'tickets';
 
 type DeviceDetailsProps = {
   device: Device;
@@ -137,7 +140,7 @@ const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
   'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
-  'boot-performance', 'playbooks', 'peripherals', 'backup',
+  'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
 ];
 
 function getTabFromHash(): Tab {
@@ -171,6 +174,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     // --- Monitoring ---
     { id: 'performance', label: 'Performance', icon: <Activity className="h-4 w-4" />, separator: true, title: 'CPU, RAM, and disk usage over time' },
     { id: 'alerts', label: 'Alerts', icon: <AlertTriangle className="h-4 w-4" />, title: 'Alert history for this device' },
+    { id: 'tickets', label: 'Tickets', icon: <Ticket className="h-4 w-4" />, title: 'Tickets linked to this device' },
     { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" />, title: 'Windows/macOS system event logs' },
     // --- Inventory ---
     { id: 'hardware', label: 'Hardware', icon: <Cpu className="h-4 w-4" />, separator: true },
@@ -320,6 +324,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'alerts' && (
         <DeviceAlertHistory deviceId={device.id} timezone={effectiveTimezone} />
+      )}
+
+      {activeTab === 'tickets' && (
+        <DeviceTicketsTab deviceId={device.id} />
       )}
 
       {activeTab === 'scripts' && (

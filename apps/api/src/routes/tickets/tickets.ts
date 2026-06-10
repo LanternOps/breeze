@@ -162,6 +162,7 @@ ticketsRoutes.get(
       conditions.push(eq(tickets.partnerId, auth.partnerId));
     }
     if (q.orgId) conditions.push(eq(tickets.orgId, q.orgId));
+    if (q.deviceId) conditions.push(eq(tickets.deviceId, q.deviceId));
     if (q.status) conditions.push(eq(tickets.status, q.status));
     else if (q.statusGroup === 'open') conditions.push(inArray(tickets.status, [...OPEN_STATUSES]));
     else if (q.statusGroup === 'closed') conditions.push(inArray(tickets.status, [...CLOSED_STATUSES]));

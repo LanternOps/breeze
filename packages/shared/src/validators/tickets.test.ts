@@ -49,6 +49,13 @@ describe('ticket validators', () => {
     expect(listTicketsQuerySchema.safeParse({ statusGroup: 'weird' }).success).toBe(false);
   });
 
+  it('list query accepts an optional deviceId uuid filter', () => {
+    const ok = listTicketsQuerySchema.safeParse({ deviceId: '3f2f1d8e-1111-4222-8333-444455556666' });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.deviceId).toBe('3f2f1d8e-1111-4222-8333-444455556666');
+    expect(listTicketsQuerySchema.safeParse({ deviceId: 'not-a-uuid' }).success).toBe(false);
+  });
+
   it('category validates hex color', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: '#1c8a9e' }).success).toBe(true);
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
