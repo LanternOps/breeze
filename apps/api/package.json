@@ -12,7 +12,7 @@
     "check:migrations": "tsx scripts/check-migrations.ts",
     "db:studio": "drizzle-kit studio",
     "dev": "tsx watch src/index.ts",
-    "lint": "eslint --ext .ts src",
+    "lint": "eslint src",
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
