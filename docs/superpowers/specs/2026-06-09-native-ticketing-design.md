@@ -54,7 +54,7 @@ All created with RLS enabled+forced+policies **in the same migration**; allowlis
 | Table | Tenancy shape | Key columns |
 |---|---|---|
 | `ticket_categories` | 3 (partner-axis) | partner_id, name, color, parent_id (self-FK), default_priority, response_sla_minutes, resolution_sla_minutes, default_billable, default_hourly_rate, sort_order, is_active |
-| `ticket_time_entries` | 1 (org_id, denormalized from ticket) | ticket_id, org_id, user_id, started_at, ended_at, duration_minutes, description, is_billable, hourly_rate, billing_status enum (`not_billed/billed/no_charge/contract`), is_approved, approved_by, approved_at |
+| `time_entries` | 3 (partner-axis; org_id and ticket_id **nullable**) | partner_id, org_id nullable, ticket_id nullable, user_id, started_at, ended_at nullable (`NULL` = running timer), duration_minutes, description, is_billable, hourly_rate, billing_status enum (`not_billed/billed/no_charge/contract`), is_approved, approved_by, approved_at. Partial unique index: one running timer per user (`WHERE ended_at IS NULL`). Standalone by design — supports technician timesheets and non-ticket work, not just ticket time |
 | `ticket_parts` | 1 | ticket_id, org_id, description, part_number, vendor, quantity numeric, unit_price numeric, cost_basis numeric, is_billable, billing_status, added_by, notes |
 | `ticket_alert_links` | 1 | ticket_id, org_id, alert_id, link_type enum (`created_from/attached/auto`), unique (ticket_id, alert_id) |
 | `ticket_email_inbound` | 3 (partner-axis) | partner_id, provider_message_id, from_address, to_address, subject, parse_status (`matched/created/failed/ignored`), ticket_id nullable, error text, raw metadata jsonb. Audit trail + dead-letter view |
@@ -62,9 +62,13 @@ All created with RLS enabled+forced+policies **in the same migration**; allowlis
 
 Margin on parts is computed (`quantity*unit_price - quantity*cost_basis`), not stored.
 
-## 2. API Surface
+## 2. Service Layer & API Surface
 
-New technician-facing routes in `apps/api/src/routes/tickets.ts` (split per File Size Guideline as needed: `tickets.ts`, `ticketTimeEntries.ts`, `ticketCategories.ts`, `ticketEmailWebhook.ts`). Portal routes (`routes/portal/tickets.ts`) unchanged.
+**Service layer first (AI-agent/MCP-first structure):** core mutations and queries live in `apps/api/src/services/ticketService.ts` (+ `timeEntryService.ts`), NOT in route handlers. REST routes, AI tools, the MCP server, and future workflow actions all call the same service functions. Route handlers stay thin (auth + validation + call service). This is a hard requirement, not a style preference — logic embedded in Hono handlers is unreachable from AI/automation surfaces.
+
+**Lifecycle events:** the service layer emits ticket events (`ticket.created`, `ticket.status_changed`, `ticket.assigned`, `ticket.commented`, `ticket.sla_breached`) through a single dispatch point (BullMQ + event log), so native workflows/automations can subscribe later without modifying ticket code. Phase 1 consumers: notification fan-out. Future consumers: workflow engine, integration syncs.
+
+New technician-facing routes in `apps/api/src/routes/tickets.ts` (split per File Size Guideline as needed: `tickets.ts`, `timeEntries.ts`, `ticketCategories.ts`, `ticketEmailWebhook.ts`). Portal routes (`routes/portal/tickets.ts`) unchanged.
 
 - `GET /tickets` — partner-wide queue. Filters: status group (open/closed), individual status, org, site, assignee (incl. me/unassigned), category, priority, SLA state (ok/at-risk/breached), text search. Sorts: triage order (priority + SLA urgency), newest, oldest, due date. Paginated.
 - `POST /tickets` — manual creation (org required, device optional)
@@ -73,7 +77,7 @@ New technician-facing routes in `apps/api/src/routes/tickets.ts` (split per File
 - `POST /tickets/:id/assign` — assignee (writes assignment feed entry)
 - `POST /tickets/:id/status` — enforced transitions; `resolved` requires resolution note and stamps `resolvedAt`; `closed` stamps `closedAt`+`closedBy`; first public technician comment stamps `firstResponseAt`
 - `POST /tickets/:id/comments` (`isPublic` flag), `PATCH`/`DELETE /tickets/comments/:id` (soft-delete)
-- `GET/POST /tickets/:id/time-entries`, `PATCH/DELETE /tickets/time-entries/:id`, `POST /tickets/time-entries/bulk-approve`
+- `GET/POST /time-entries` (filter: user, ticket, org, date range, running), `PATCH/DELETE /time-entries/:id`, `POST /time-entries/:id/stop` (timer stop), `POST /time-entries/bulk-approve`, `GET /time-entries/timesheet` (per-tech week aggregation)
 - `GET/POST /tickets/:id/parts`, `PATCH/DELETE /tickets/parts/:id`
 - `POST /tickets/:id/alerts` + `DELETE /tickets/:id/alerts/:alertId`; `POST /alerts/:id/create-ticket` (pre-filled, linked `created_from`)
 - `GET/POST/PATCH/DELETE /ticket-categories`
@@ -115,18 +119,19 @@ Follows the Alerts pattern (Astro page + React island, `window.location.hash` fo
 - **`/tickets` queue page**: saved-filter tabs (My tickets / Unassigned / All open / Breaching soon / Closed), table with internal number, title, org, priority badge, SLA countdown, assignee, updated-at; bulk assign + bulk status.
 - **Ticket detail** (island on same page, hash-selected): header (number, title, org/site/device links, status dropdown, assignee picker), activity feed (public/internal toggle on composer, status/assignment changes inline), right rail (properties, SLA timers, linked alerts, time summary, parts list, billable total). Time-entry quick-add + start/stop timer.
 - **Settings → Ticketing**: categories CRUD (with SLA/billing defaults), email-to-ticket address + default triage org, billables export. Alert-rule `createTicket` action added to the existing alert rule form.
+- **Time tracking (Phase 3)**: persistent start/stop timer widget in the app header (survives navigation; one running timer per user), `/timesheet` page (per-tech week view, entry edit, approval for admins), time-entry quick-add on ticket detail.
 - **Integration points**: Device detail gets a Tickets tab; Alert detail gets Create Ticket; dashboard gets open/breaching widget.
 - **Cleanup**: delete orphaned `apps/web/src/components/portal/{TicketList,TicketDetail,CreateTicketForm}.tsx`.
 - **apps/portal**: keeps working unchanged; categories surface read-only on submitted tickets. Fix its priority drift (`medium` → `normal`) opportunistically.
 
 ## 6. AI Tools
 
-New `services/aiToolsTicketing.ts` registered in the `aiTools.ts` hub: `search_tickets`, `get_ticket`, `create_ticket`, `update_ticket_status`, `assign_ticket`, `add_ticket_comment`, `log_time_entry`. `deviceArgs` gating where a deviceId is accepted. Tier 2 for reads, tier 3 for writes.
+New `services/aiToolsTicketing.ts` registered in the `aiTools.ts` hub: `search_tickets`, `get_ticket`, `create_ticket`, `update_ticket_status`, `assign_ticket`, `add_ticket_comment`, `log_time_entry`, `start_timer`/`stop_timer`. `deviceArgs` gating where a deviceId is accepted. Tier 2 for reads, tier 3 for writes. All tools are thin wrappers over `ticketService`/`timeEntryService` — no tool-only logic. The existing MCP server exposes these automatically via the registry, so external AI agents get full ticketing capability the day Phase 1 ships.
 
 ## 7. Security & Tenancy
 
 - New tables ship RLS in the creating migration; same-PR allowlist updates; verified as `breeze_app` with forged cross-tenant inserts.
-- `ticket_time_entries` / `ticket_parts` / `ticket_alert_links` denormalize `org_id` from the parent ticket (avoids the nested-EXISTS bound-param RLS bug).
+- `ticket_parts` / `ticket_alert_links` denormalize `org_id` from the parent ticket (avoids the nested-EXISTS bound-param RLS bug). `time_entries` is partner-axis (shape 3) because entries may have no org/ticket; when ticket-linked, `org_id` is denormalized at write time for filtering.
 - Email webhook: signature-verified, partner resolved strictly from recipient address, sender data untrusted.
 - Internal notes (`isPublic=false` / `comment_type=internal`) must never reach portal responses or outbound email — enforced in queries plus a dedicated leak-regression test on the portal route.
 - Site-scoped org users see only tickets whose device/site falls in their `siteIds` (app-layer filter on top of RLS, matching existing patterns).
@@ -137,10 +142,22 @@ Each phase is an independently shippable PR chain:
 
 1. **Core** — migration (tickets/comments extensions, categories, alert links, sequences), admin API, queue + detail UI, comments/activity, assignment, manual alert linking + create-from-alert, notifications, AI tools, internal numbering, orphaned-component cleanup.
 2. **SLA** — SLA resolution chain, monitor job, pause logic, queue countdown + breaching-soon tab, breach notifications.
-3. **Time + parts** — time entries, parts, approval workflow, billable summary, CSV export.
+3. **Native time tracking + parts** — standalone `time_entries` (ticket-linked or not), start/stop timer widget (persistent across pages), technician timesheet page (week view, approval), parts, billable summary, CSV export.
 4. **Email-to-ticket** — inbound webhook + provider abstraction, threading, org resolution, outbound reply loop, settings UI, dead-letter view.
 
 Deferred / out of scope: per-partner custom statuses, escalation-policy wiring for tickets, native↔PSA bidirectional sync, invoice generation, customer satisfaction surveys, work sessions / time-entry templates.
+
+## 8a. Extensibility Guarantees (paths we must NOT cut off)
+
+Explicit checks against the long-term PSA roadmap. Implementation plans must not violate these:
+
+- **AI-agent/MCP-first**: all ticket/time logic in the service layer (`ticketService`, `timeEntryService`); routes, AI tools, and MCP are equal consumers. No handler-only business logic.
+- **Native workflows/automations**: every state change flows through the single lifecycle-event dispatch point (Section 2). A future workflow engine subscribes to events and calls service functions — zero ticket-code changes required.
+- **Billing/invoicing module (future)**: `time_entries` and `ticket_parts` carry `billing_status`, rates, and `cost_basis` — the exact input surface for invoice generation. A future `invoices`/`invoice_lines` schema FKs into these rows additively. Money columns are `numeric`; currency is assumed partner-level for now and a `currency` column can be added per-row later without backfill pain (default from partner settings).
+- **Service catalog (future)**: `ticket_parts` gains a nullable `catalog_item_id` FK when a `catalog_items` table exists (LanternOps pattern: `TicketPart.product` nullable). Parts stay usable free-text forever.
+- **Accounting & distributor integrations (QuickBooks, Xero, Sherweb, Pax8, TechData, …)**: follow the existing PSA pattern — per-integration connection tables + external-ref **mapping tables** (like `psa_ticket_mappings`), never columns on core tables. Time entries/parts → accounting invoice lines; catalog/parts → distributor SKUs. Nothing in the core schema needs to change for any of these.
+- **Large-scale MSP operations**: per-partner sequences are race-safe; queue queries are index-backed (status, assignee, org, SLA fields — composite indexes in the migration); `assignedTeam` already exists on `tickets` for team-based routing; custom statuses, boards/views, and round-robin assignment layer on without schema breakage.
+- **External API consumers**: the technician routes are the public API (same auth/RBAC as the rest of Breeze) — no separate "internal" API to deprecate later.
 
 ## 9. Testing
 
