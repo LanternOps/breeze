@@ -182,8 +182,8 @@ import {
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
-import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
+import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -1043,8 +1043,8 @@ async function initializeWorkers(): Promise<void> {
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
-    ['approvalExpiryReaper', initializeApprovalExpiryReaper],
     ['pamJobs', initializePamJobs],
+    ['approvalExpiryReaper', initializeApprovalExpiryReaper],
   ];
 
   await Promise.allSettled(
@@ -1195,8 +1195,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownOfflineDetector,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
-    shutdownApprovalExpiryReaper,
     shutdownPamJobs,
+    shutdownApprovalExpiryReaper,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,
