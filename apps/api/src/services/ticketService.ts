@@ -266,7 +266,8 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
 
 // Task 8 — Alert linking
 
-const SEVERITY_TO_PRIORITY: Record<string, 'low' | 'normal' | 'high' | 'urgent'> = {
+/** Maps alert severity to ticket priority. Exported for use by AI tools and routes. */
+export const SEVERITY_TO_PRIORITY: Record<string, 'low' | 'normal' | 'high' | 'urgent'> = {
   critical: 'urgent',
   high: 'high',
   medium: 'normal',
