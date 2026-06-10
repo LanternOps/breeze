@@ -89,8 +89,14 @@ func reconcileServiceUnitIfNeeded() {
 		// an unrestricted namespace; being a child of PID 1 it also survives
 		// the agent restart it triggers. --collect garbage-collects the
 		// transient unit on failure so a later retry is never blocked.
+		//
+		// The unit name is suffixed with our PID so that if the restart the
+		// child triggers races a freshly-started agent into reconcile again, the
+		// second systemd-run can't collide with a still-running first transient
+		// unit (--collect only reaps dead units, not running ones).
+		unitFlag := fmt.Sprintf("--unit=breeze-unit-reconcile-%d", os.Getpid())
 		out, err := exec.Command("systemd-run", "--quiet", "--collect",
-			"--unit=breeze-unit-reconcile", linuxBinaryPath, "service", "reconcile-unit").CombinedOutput()
+			unitFlag, linuxBinaryPath, "service", "reconcile-unit").CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"Warning: failed to auto-heal outdated systemd unit via systemd-run: %s. "+
@@ -406,6 +412,9 @@ var serviceReconcileUnitCmd = &cobra.Command{
 		if os.Geteuid() != 0 {
 			return fmt.Errorf("must run as root")
 		}
+		// Best-effort heal: if a later step fails the unit is already v2 on disk,
+		// so the next startup won't re-attempt the restart — the relaxed sandbox
+		// then applies on the following natural service restart rather than now.
 		if err := os.WriteFile(linuxUnitDst, []byte(linuxUnit), 0644); err != nil {
 			return fmt.Errorf("write unit: %w", err)
 		}
