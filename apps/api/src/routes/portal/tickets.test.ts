@@ -12,18 +12,37 @@
  *   - Asserting the conditions include both an isPublic filter and a deletedAt IS NULL filter.
  *   - Also asserting the response only contains the public, non-deleted comments
  *     that the mock is set up to return (black-box contract test).
+ *
+ * B1 fix: POST /tickets delegates to createTicket (mock) with source: 'portal',
+ *   submitter fields mapped, and the response shape preserved.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+
+// ── createTicket mock ─────────────────────────────────────────────────────────
+
+const { createTicketMock } = vi.hoisted(() => ({
+  createTicketMock: vi.fn()
+}));
+
+vi.mock('../../services/ticketService', () => ({
+  createTicket: createTicketMock,
+  TicketServiceError: class TicketServiceError extends Error {
+    status: number;
+    constructor(message: string, status = 400) {
+      super(message);
+      this.name = 'TicketServiceError';
+      this.status = status;
+    }
+  }
+}));
 
 // ── DB mock ───────────────────────────────────────────────────────────────────
 
 const { dbSelectMock } = vi.hoisted(() => ({
   dbSelectMock: vi.fn()
 }));
-
-vi.mock('nanoid', () => ({ nanoid: vi.fn(() => 'NANOIDTOKEN') }));
 
 vi.mock('../../db', () => ({
   db: {
@@ -217,5 +236,104 @@ describe('GET /tickets/:id — portal internal-note isolation', () => {
     });
 
     expect(res.status).toBe(404);
+  });
+});
+
+// ── POST /tickets — B1 fix: delegates to createTicket ────────────────────────
+
+const CREATED_AT = new Date('2026-01-15T10:00:00Z');
+const UPDATED_AT = new Date('2026-01-15T10:00:00Z');
+
+const CREATED_TICKET = {
+  id: 'tk-new-1',
+  ticketNumber: 'ABCDE12345',
+  subject: 'Printer not working',
+  description: 'It makes a clicking noise',
+  status: 'new' as const,
+  priority: 'normal' as const,
+  createdAt: CREATED_AT,
+  updatedAt: UPDATED_AT,
+  orgId: 'o-1',
+  partnerId: 'p-1',
+  internalNumber: 'T-2026-0001',
+};
+
+function buildPostApp() {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+    await next();
+  });
+  app.route('/', ticketRoutes);
+  return app;
+}
+
+describe('POST /tickets — delegates to createTicket', () => {
+  let app: ReturnType<typeof buildPostApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildPostApp();
+    createTicketMock.mockResolvedValue(CREATED_TICKET);
+  });
+
+  it('calls createTicket with source: portal and mapped submitter fields', async () => {
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Printer not working', description: 'It makes a clicking noise' })
+    });
+
+    expect(res.status).toBe(201);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: PORTAL_USER.orgId,
+        subject: 'Printer not working',
+        description: 'It makes a clicking noise',
+        source: 'portal',
+        submittedBy: PORTAL_USER.id,
+        submitterEmail: PORTAL_USER.email,
+        submitterName: PORTAL_USER.name,
+      }),
+      expect.objectContaining({ userId: PORTAL_USER.id })
+    );
+  });
+
+  it('returns the same response shape as before (id, ticketNumber, subject, description, status, priority, createdAt, updatedAt)', async () => {
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Printer not working', description: 'It clicks' })
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { ticket: Record<string, unknown> };
+    expect(body).toHaveProperty('ticket');
+    expect(body.ticket).toMatchObject({
+      id: CREATED_TICKET.id,
+      ticketNumber: CREATED_TICKET.ticketNumber,
+      subject: CREATED_TICKET.subject,
+      description: CREATED_TICKET.description,
+      status: CREATED_TICKET.status,
+      priority: CREATED_TICKET.priority,
+    });
+    // Ensure no extra fields from the service row bleed into the portal response
+    expect(body.ticket).not.toHaveProperty('partnerId');
+    expect(body.ticket).not.toHaveProperty('orgId');
+  });
+
+  it('forwards TicketServiceError status and message to the client', async () => {
+    const { TicketServiceError } = await import('../../services/ticketService');
+    createTicketMock.mockRejectedValue(new TicketServiceError('Organization not found', 404));
+
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Test', description: 'Something broke' })
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/organization not found/i);
   });
 });

@@ -113,6 +113,30 @@ describe('createTicket', () => {
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ status: 'open', assignedTo: 'u-99' });
   });
+
+  it('passes through portal submitter fields and category to the insert payload', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-3', orgId: 'o-1', internalNumber: 'T-2026-0044', status: 'new' }]);
+
+    await createTicket({
+      orgId: 'o-1',
+      subject: 'Keyboard broken',
+      source: 'portal',
+      submittedBy: 'pu-42',
+      submitterEmail: 'alice@example.com',
+      submitterName: 'Alice',
+      category: 'Hardware',
+    }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({
+      source: 'portal',
+      submittedBy: 'pu-42',
+      submitterEmail: 'alice@example.com',
+      submitterName: 'Alice',
+      category: 'Hardware',
+    });
+  });
 });
 
 describe('changeTicketStatus', () => {

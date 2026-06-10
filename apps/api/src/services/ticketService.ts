@@ -56,6 +56,11 @@ export interface CreateTicketInput {
   dueDate?: Date;
   assigneeId?: string;
   source: TicketSource;
+  // Portal-only fields — ignored when source is not 'portal' but harmless otherwise.
+  submittedBy?: string;
+  submitterEmail?: string;
+  submitterName?: string;
+  category?: string;
 }
 
 // NOTE: emitTicketEvent and createAuditLogAsync below are called while the
@@ -87,7 +92,11 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     dueDate: input.dueDate ?? null,
     assignedTo: input.assigneeId ?? null,
     status: (input.assigneeId ? 'open' : 'new') as typeof tickets.$inferInsert['status'],
-    source: input.source
+    source: input.source,
+    submittedBy: input.submittedBy ?? null,
+    submitterEmail: input.submitterEmail ?? null,
+    submitterName: input.submitterName ?? null,
+    category: input.category ?? null
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db
