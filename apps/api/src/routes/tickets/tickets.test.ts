@@ -51,12 +51,14 @@ vi.mock('../../db', () => ({
           leftJoin: vi.fn(() => ({
             leftJoin: vi.fn(() => ({
               // 3 leftJoins: list endpoint (tickets + orgs + devices + users)
+              // and the GET /:id decoration query (where → limit(1))
               where: vi.fn((...args: unknown[]) => {
                 lastWhereArgs.push({ conditions: args });
                 return {
                   orderBy: vi.fn(() => ({
                     limit: vi.fn(() => ({ offset: vi.fn(() => dbSelectMock()) }))
-                  }))
+                  })),
+                  limit: vi.fn(() => dbSelectMock())
                 };
               })
             })),
@@ -90,7 +92,8 @@ vi.mock('../../db/schema', () => ({
     priority: 'priority', assignedTo: 'assignedTo', categoryId: 'categoryId',
     internalNumber: 'internalNumber', subject: 'subject', createdAt: 'createdAt',
     updatedAt: 'updatedAt', dueDate: 'dueDate', deviceId: 'deviceId',
-    source: 'source', slaBreachedAt: 'slaBreachedAt', firstResponseAt: 'firstResponseAt'
+    source: 'source', slaBreachedAt: 'slaBreachedAt', firstResponseAt: 'firstResponseAt',
+    resolutionSlaMinutes: 'resolutionSlaMinutes'
   },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
   ticketCategories: {},
@@ -138,6 +141,26 @@ describe('GET /tickets', () => {
     const body = await res.json();
     expect(body).toHaveProperty('data');
     expect(body).toHaveProperty('pagination');
+  });
+
+  it('selects resolutionSlaMinutes and returns it in list rows (SLA chips)', async () => {
+    dbSelectMock.mockResolvedValue([
+      { id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer', resolutionSlaMinutes: 240 }
+    ]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ resolutionSlaMinutes: 240 });
+
+    // The selection object passed to db.select must include the column —
+    // the mock returns rows verbatim, so assert the query shape too.
+    const { db } = await import('../../db');
+    const selectionCalls = (db.select as any).mock.calls.filter(
+      (args: unknown[]) => args[0] && typeof args[0] === 'object'
+    );
+    expect(selectionCalls.some(
+      (args: any[]) => 'resolutionSlaMinutes' in args[0]
+    )).toBe(true);
   });
 
   it('rejects an invalid statusGroup', async () => {
@@ -279,15 +302,63 @@ describe('GET /tickets/:id — scoped pre-check', () => {
 
   it('returns the ticket when the scoped lookup resolves a row', async () => {
     // First call: getScopedTicketOr404 (the .limit(1) select)
-    // Second call onwards: child queries (comments, alertLinks) — return empty arrays
+    // Second call onwards: decoration + child queries (alertLinks) — return empty arrays
     dbSelectMock
       .mockResolvedValueOnce([STUB_TICKET]) // scoped ticket lookup
-      .mockResolvedValue([]);               // comments + alert links child queries
+      .mockResolvedValue([]);               // decoration + alert links child queries
 
     const res = await makeApp().request(`/tickets/${TICKET_ID}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toMatchObject({ id: TICKET_ID, subject: 'Printer' });
+  });
+
+  it('decorates the detail response with orgName, deviceHostname, assigneeName', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET]) // scoped ticket lookup
+      .mockResolvedValueOnce([{ orgName: 'Acme Corp', deviceHostname: 'WS-042', assigneeName: 'Tess Tech' }]) // decoration query
+      .mockResolvedValue([]);               // alert links child query
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Strictly additive: raw row fields still present alongside the decoration.
+    expect(body.data).toMatchObject({
+      id: TICKET_ID,
+      subject: 'Printer',
+      orgName: 'Acme Corp',
+      deviceHostname: 'WS-042',
+      assigneeName: 'Tess Tech'
+    });
+    expect(body.data).toHaveProperty('comments');
+    expect(body.data).toHaveProperty('alertLinks');
+  });
+
+  it('decoration is null-safe for tickets with no device or assignee', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET]) // scoped ticket lookup
+      .mockResolvedValueOnce([{ orgName: 'Acme Corp', deviceHostname: null, assigneeName: null }]) // left joins miss
+      .mockResolvedValue([]);               // alert links child query
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.orgName).toBe('Acme Corp');
+    expect(body.data.deviceHostname).toBeNull();
+    expect(body.data.assigneeName).toBeNull();
+  });
+
+  it('decoration falls back to nulls when the decoration query returns no row', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET]) // scoped ticket lookup
+      .mockResolvedValue([]);               // decoration returns nothing + alert links
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.orgName).toBeNull();
+    expect(body.data.deviceHostname).toBeNull();
+    expect(body.data.assigneeName).toBeNull();
   });
 });
 

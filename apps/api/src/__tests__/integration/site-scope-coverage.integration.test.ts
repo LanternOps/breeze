@@ -182,10 +182,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
-  // ---- Org-scoped ticket list: joins devices only to decorate deviceHostname
-  // on ticket rows; takes no device-id input. Site-axis ticket scoping is a
+  // ---- Org-scoped ticket list + detail: join devices only to decorate
+  // deviceHostname on ticket rows; take no device-id input. Site-axis ticket scoping is a
   // deferred product decision (PR #1196 follow-up, Phase 1b).
   'routes/tickets/tickets.ts:GET /',
+  'routes/tickets/tickets.ts:GET /:id',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -217,10 +218,11 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
-  // Org-scoped ticket list reached via user auth: devices join decorates
-  // deviceHostname only, no device-id input; site-axis ticket scoping deferred
+  // Org-scoped ticket list + detail reached via user auth: devices joins
+  // decorate deviceHostname only, no device-id input; site-axis ticket scoping deferred
   // (PR #1196 follow-up, Phase 1b).
   'routes/tickets/tickets.ts:GET /',
+  'routes/tickets/tickets.ts:GET /:id',
 ]);
 
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector
