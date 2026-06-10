@@ -8,9 +8,11 @@ import { navigateTo } from '@/lib/navigation';
 import TicketQueueList from './TicketQueueList';
 import TicketWorkbench from './TicketWorkbench';
 import { useQueueKeyboard } from './useQueueKeyboard';
-import { slaState, type TicketSummary } from './ticketConfig';
+import { priorityConfig, slaState, type TicketPriority, type TicketSummary } from './ticketConfig';
 
 type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed';
+
+const PRIORITY_ORDER: TicketPriority[] = ['low', 'normal', 'high', 'urgent'];
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'mine', label: 'My tickets' },
@@ -44,7 +46,54 @@ export default function TicketsPage() {
   const [error, setError] = useState<string>();
   const [selectedNumber, setSelectedNumber] = useState<string | null>(selectionFromHash);
   const [search, setSearch] = useState('');
+  const [orgFilter, setOrgFilter] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [assigneeFilter, setAssigneeFilter] = useState('');
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
+  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
+  // null = assignee select hidden (e.g. caller lacks USERS_READ); graceful degradation, no error UI.
+  const [assignees, setAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
   const fetchSeq = useRef(0);
+
+  // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
+  const assigneeLocked = tab === 'mine' || tab === 'unassigned';
+  const filtersActive = Boolean(orgFilter || priorityFilter || categoryFilter || assigneeFilter);
+
+  const clearFilters = useCallback(() => {
+    setOrgFilter('');
+    setPriorityFilter('');
+    setCategoryFilter('');
+    setAssigneeFilter('');
+  }, []);
+
+  // Filter options load once; failures degrade per-select (these are filters, not critical path).
+  useEffect(() => {
+    let cancelled = false;
+    const readJson = async (res: Response): Promise<unknown> => (res.ok ? res.json() : null);
+    void (async () => {
+      const [orgRes, catRes, userRes] = await Promise.allSettled([
+        fetchWithAuth('/orgs/organizations?limit=100').then(readJson),
+        fetchWithAuth('/ticket-categories').then(readJson),
+        fetchWithAuth('/users').then(readJson)
+      ]);
+      if (cancelled) return;
+      if (orgRes.status === 'fulfilled' && orgRes.value) {
+        const body = orgRes.value as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> };
+        setOrgs((body.data ?? body.organizations ?? []).filter((o) => o.id && o.name));
+      }
+      if (catRes.status === 'fulfilled' && catRes.value) {
+        const body = catRes.value as { data?: Array<{ id: string; name: string; isActive?: boolean }> };
+        setCategories((body.data ?? []).filter((cat) => cat.isActive !== false));
+      }
+      if (userRes.status === 'fulfilled' && userRes.value) {
+        const body = userRes.value as { data?: Array<{ id: string; name: string | null; email: string }> };
+        const rows = Array.isArray(body) ? body : body.data;
+        if (Array.isArray(rows)) setAssignees(rows.filter((u) => u.id));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const fetchTickets = useCallback(async () => {
     const seq = ++fetchSeq.current;
@@ -53,6 +102,11 @@ export default function TicketsPage() {
     try {
       const params = new URLSearchParams(tabQuery(tab));
       if (search) params.set('search', search);
+      if (orgFilter) params.set('orgId', orgFilter);
+      if (priorityFilter) params.set('priority', priorityFilter);
+      if (categoryFilter) params.set('categoryId', categoryFilter);
+      // The 'mine'/'unassigned' tabs already set assignee; the filter applies only on the other tabs.
+      if (assigneeFilter && tab !== 'mine' && tab !== 'unassigned') params.set('assignee', assigneeFilter);
       params.set('limit', '100');
       const res = await fetchWithAuth(`/tickets?${params.toString()}`);
       if (!res.ok) {
@@ -68,7 +122,7 @@ export default function TicketsPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, search]);
+  }, [tab, search, orgFilter, priorityFilter, categoryFilter, assigneeFilter]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -178,7 +232,13 @@ export default function TicketsPage() {
     return null;
   };
 
-  const trueEmpty = !loading && tickets.length === 0 && tab === 'open' && !search && !error;
+  const trueEmpty = !loading && tickets.length === 0 && tab === 'open' && !search && !filtersActive && !error;
+
+  const filterSelectClass = (active: boolean) =>
+    cn(
+      'h-8 max-w-[180px] rounded-md border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
+      active ? 'text-foreground' : 'text-muted-foreground'
+    );
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="tickets-page">
@@ -219,6 +279,61 @@ export default function TicketsPage() {
         />
       </div>
 
+      <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="tickets-filter-bar">
+        <select
+          value={orgFilter}
+          onChange={(e) => setOrgFilter(e.target.value)}
+          aria-label="Filter by organization"
+          data-testid="tickets-filter-org"
+          className={filterSelectClass(!!orgFilter)}
+        >
+          <option value="">All organizations</option>
+          {orgs.map((o) => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+        </select>
+        <select
+          value={priorityFilter}
+          onChange={(e) => setPriorityFilter(e.target.value)}
+          aria-label="Filter by priority"
+          data-testid="tickets-filter-priority"
+          className={filterSelectClass(!!priorityFilter)}
+        >
+          <option value="">All priorities</option>
+          {PRIORITY_ORDER.map((p) => (
+            <option key={p} value={p}>{priorityConfig[p].label}</option>
+          ))}
+        </select>
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          aria-label="Filter by category"
+          data-testid="tickets-filter-category"
+          className={filterSelectClass(!!categoryFilter)}
+        >
+          <option value="">All categories</option>
+          {categories.map((cat) => (
+            <option key={cat.id} value={cat.id}>{cat.name}</option>
+          ))}
+        </select>
+        {assignees !== null && (
+          <select
+            value={assigneeFilter}
+            onChange={(e) => setAssigneeFilter(e.target.value)}
+            disabled={assigneeLocked}
+            title={assigneeLocked ? 'Tab already filters by assignee' : undefined}
+            aria-label="Filter by assignee"
+            data-testid="tickets-filter-assignee"
+            className={filterSelectClass(!!assigneeFilter)}
+          >
+            <option value="">All assignees</option>
+            {assignees.map((u) => (
+              <option key={u.id} value={u.id}>{u.name || u.email}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
       {trueEmpty ? (
         <div className="flex flex-1 flex-col items-center justify-center text-center" data-testid="tickets-empty">
           <h2 className="text-base font-medium">No tickets yet</h2>
@@ -240,7 +355,13 @@ export default function TicketsPage() {
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
           <div className="w-full min-[1100px]:w-2/5 min-[1100px]:min-w-[320px] min-[1100px]:max-w-[480px] overflow-y-auto min-[1100px]:border-r">
-            <TicketQueueList tickets={visible} selectedId={selected?.id ?? null} onSelect={select} loading={loading} />
+            <TicketQueueList
+              tickets={visible}
+              selectedId={selected?.id ?? null}
+              onSelect={select}
+              loading={loading}
+              onClearFilters={filtersActive ? clearFilters : undefined}
+            />
           </div>
           <div className="hidden min-w-0 flex-1 min-[1100px]:block">
             {selected ? (

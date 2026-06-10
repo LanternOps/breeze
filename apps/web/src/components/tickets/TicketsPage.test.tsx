@@ -74,15 +74,26 @@ const breached = makeTicket({
 });
 
 const STATS = { data: { open: 3, unassigned: 1, mine: 0, breached: 1 } };
+const ORGS = { data: [{ id: 'org-1', name: 'Acme Corp' }, { id: 'org-2', name: 'Globex' }] };
+const CATEGORIES = { data: [{ id: 'cat-1', name: 'Hardware', isActive: true }, { id: 'cat-2', name: 'Retired', isActive: false }] };
+const USERS = { data: [{ id: 'user-1', name: 'Todd', email: 'todd@example.com', status: 'active' }] };
 
-function mockListApi(tickets: TicketSummary[]) {
+function mockListApi(tickets: TicketSummary[] | ((url: string) => TicketSummary[]), opts: { usersFail?: boolean } = {}) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
     if (url === '/tickets/stats') return makeJsonResponse(STATS);
-    if (url.startsWith('/tickets?')) return makeJsonResponse({ data: tickets });
+    if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
+    if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
+    if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
+    if (url === '/users') {
+      return opts.usersFail ? makeJsonResponse({ error: 'forbidden' }, false, 403) : makeJsonResponse(USERS);
+    }
     return makeJsonResponse({ error: 'unexpected' }, false, 404);
   });
 }
+
+const ticketFetchUrls = () =>
+  fetchMock.mock.calls.map((call) => String(call[0])).filter((url) => url.startsWith('/tickets?'));
 
 function clearHash() {
   history.replaceState(null, '', window.location.pathname);
@@ -163,5 +174,85 @@ describe('TicketsPage', () => {
       expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
     });
     expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+  });
+
+  it('picking a priority adds priority= to the fetch and re-renders from the result', async () => {
+    mockListApi((url) => (url.includes('priority=high') ? [atRisk] : [healthy, atRisk, breached]));
+    render(<TicketsPage />);
+
+    await screen.findByTestId('ticket-row-tk-healthy');
+
+    fireEvent.change(screen.getByTestId('tickets-filter-priority'), { target: { value: 'high' } });
+
+    await waitFor(() => {
+      expect(ticketFetchUrls().at(-1)).toContain('priority=high');
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull();
+    });
+    expect(screen.getByTestId('ticket-row-tk-risk')).toBeInTheDocument();
+  });
+
+  it('org filter adds orgId; clearing back to all removes it', async () => {
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+
+    await screen.findByTestId('ticket-row-tk-healthy');
+    // Wait for the org options to load before selecting one.
+    await screen.findByRole('option', { name: 'Globex' });
+
+    fireEvent.change(screen.getByTestId('tickets-filter-org'), { target: { value: 'org-2' } });
+    await waitFor(() => {
+      expect(ticketFetchUrls().at(-1)).toContain('orgId=org-2');
+    });
+
+    fireEvent.change(screen.getByTestId('tickets-filter-org'), { target: { value: '' } });
+    await waitFor(() => {
+      expect(ticketFetchUrls().at(-1)).not.toContain('orgId=');
+    });
+  });
+
+  it('hides the assignee select when the users request fails', async () => {
+    mockListApi([healthy], { usersFail: true });
+    render(<TicketsPage />);
+
+    await screen.findByTestId('ticket-row-tk-healthy');
+    // Other selects load their options; assignee stays hidden.
+    await screen.findByRole('option', { name: 'Globex' });
+    expect(screen.queryByTestId('tickets-filter-assignee')).toBeNull();
+    expect(screen.getByTestId('tickets-filter-org')).toBeInTheDocument();
+  });
+
+  it('shows the assignee select when users load, disabled on assignee tabs', async () => {
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+
+    const select = await screen.findByTestId('tickets-filter-assignee');
+    expect(select).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('tickets-tab-mine'));
+    expect(screen.getByTestId('tickets-filter-assignee')).toBeDisabled();
+    expect(screen.getByTestId('tickets-filter-assignee')).toHaveAttribute('title', 'Tab already filters by assignee');
+  });
+
+  it('active filter with empty results shows clear-filters; clicking resets and refetches', async () => {
+    mockListApi((url) => (url.includes('priority=') ? [] : [healthy]));
+    render(<TicketsPage />);
+
+    await screen.findByTestId('ticket-row-tk-healthy');
+
+    fireEvent.change(screen.getByTestId('tickets-filter-priority'), { target: { value: 'urgent' } });
+
+    await screen.findByTestId('tickets-queue-empty');
+    // Filtered-empty is the queue empty state, never the onboarding state.
+    expect(screen.queryByTestId('tickets-empty')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('tickets-filters-clear'));
+
+    await screen.findByTestId('ticket-row-tk-healthy');
+    const lastUrl = ticketFetchUrls().at(-1) ?? '';
+    expect(lastUrl).not.toContain('priority=');
+    expect(lastUrl).not.toContain('orgId=');
+    expect(lastUrl).not.toContain('categoryId=');
   });
 });

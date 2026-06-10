@@ -7,6 +7,8 @@ interface Props {
   selectedId: string | null;
   onSelect: (t: TicketSummary) => void;
   loading: boolean;
+  /** When set, the empty state offers a "Clear filters" action (UI brief: "View empty (filters)"). */
+  onClearFilters?: () => void;
 }
 
 function timeAgo(iso: string): string {
@@ -16,7 +18,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(mins / (60 * 24))}d ago`;
 }
 
-export default function TicketQueueList({ tickets, selectedId, onSelect, loading }: Props) {
+export default function TicketQueueList({ tickets, selectedId, onSelect, loading, onClearFilters }: Props) {
   if (loading) {
     return (
       <div className="divide-y" data-testid="tickets-queue-loading">
@@ -33,7 +35,17 @@ export default function TicketQueueList({ tickets, selectedId, onSelect, loading
   if (tickets.length === 0) {
     return (
       <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="tickets-queue-empty">
-        No tickets match.
+        <p>No tickets match.</p>
+        {onClearFilters && (
+          <button
+            type="button"
+            onClick={onClearFilters}
+            data-testid="tickets-filters-clear"
+            className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
     );
   }
