@@ -44,6 +44,9 @@ export default function CreateTicketPage() {
 
   useEffect(() => {
     if (!orgId) { setDevices([]); setDeviceId(''); return; }
+    // Reset on every org change — a stale deviceId from the previous org would
+    // submit a cross-org device (the select only LOOKS cleared once options swap).
+    setDeviceId('');
     void (async () => {
       const res = await fetchWithAuth(`/devices?orgId=${orgId}`);
       if (res.ok) {

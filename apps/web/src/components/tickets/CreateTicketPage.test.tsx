@@ -86,6 +86,33 @@ describe('CreateTicketPage', () => {
     expect(screen.getByTestId('create-ticket-device-input')).toHaveValue('dev-1');
   });
 
+  it('resets the selected device when switching organizations (no cross-org deviceId in the payload)', async () => {
+    mockOptionsApi();
+    render(<CreateTicketPage />);
+    await screen.findByTestId('create-ticket-form');
+
+    fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+    await screen.findByText('PC-1');
+    fireEvent.change(screen.getByTestId('create-ticket-device-input'), { target: { value: 'dev-1' } });
+    expect(screen.getByTestId('create-ticket-device-input')).toHaveValue('dev-1');
+
+    fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-b' } });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/devices?orgId=org-b');
+    });
+    expect(screen.getByTestId('create-ticket-device-input')).toHaveValue('');
+
+    fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Subj' } });
+    fireEvent.click(screen.getByTestId('create-ticket-submit'));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets', expect.objectContaining({ method: 'POST' }));
+    });
+    const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
+    const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('deviceId');
+    expect(body.orgId).toBe('org-b');
+  });
+
   it('shows the load-error retry state when the org fetch fails, and recovers on retry', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
