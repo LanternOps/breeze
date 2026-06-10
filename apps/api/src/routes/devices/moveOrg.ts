@@ -148,11 +148,11 @@ moveOrgRoutes.post(
           );
         }
 
-        // Forward-defense: rewrite denormalized site_id on any device-scoped
-        // table that has one. Currently empty (no such table exists today),
-        // but kept in lockstep with the org_id loop so a future schema PR
-        // adding site_id to a device-id-scoped table is handled automatically
-        // once it lands in DEVICE_SITE_DENORMALIZED_TABLES.
+        // Rewrite denormalized site_id on every device-scoped table that has
+        // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
+        // in core.ts). Skipping any of these strands rows under the OLD
+        // site_id. PATCH /devices/:id (core.ts) performs the same propagation
+        // for same-org site changes; keep both loops in lockstep.
         for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET site_id = ${targetSiteId}::uuid WHERE device_id = ${deviceId}::uuid`,

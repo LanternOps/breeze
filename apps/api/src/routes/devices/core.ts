@@ -112,8 +112,11 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
- * Cross-org-cross-site moves via POST /devices/:id/move-org must rewrite each
- * row's site_id alongside org_id, or those rows strand under the OLD site_id.
+ * EVERY write path that changes devices.site_id must rewrite each row's
+ * site_id in the same transaction, or those rows strand under the OLD
+ * site_id. Today that is two paths:
+ *   - POST /devices/:id/move-org (moveOrg.ts — cross-org-cross-site move)
+ *   - PATCH /devices/:id        (this file — same-org site change)
  * The moveOrg.coverage.test.ts drift-detector enforces that any future
  * schema PR adding site_id to a device-id-scoped table populates this list.
  */
@@ -1015,11 +1018,39 @@ coreRoutes.patch(
       updates.customFields = { ...existing, ...data.customFields };
     }
 
-    const [updated] = await db
-      .update(devices)
-      .set(updates)
-      .where(eq(devices.id, deviceId))
-      .returning();
+    // When the PATCH changes the device's site, the denormalized `site_id`
+    // on every table in DEVICE_SITE_DENORMALIZED_TABLES must be rewritten in
+    // the SAME transaction as the devices row flip — otherwise child rows
+    // (e.g. elevation_requests) stay pinned under the OLD site_id and drift
+    // out of site-visibility scoping. Mirrors moveOrg.ts. The proxied `db`
+    // resolves to the request-context tx via AsyncLocalStorage, so this
+    // opens a savepoint within the request transaction (established pattern).
+    const siteChanged = data.siteId !== undefined && data.siteId !== device.siteId;
+
+    let updated: typeof devices.$inferSelect | undefined;
+    if (siteChanged) {
+      await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(devices)
+          .set(updates)
+          .where(eq(devices.id, deviceId))
+          .returning();
+        updated = row;
+
+        for (const table of DEVICE_SITE_DENORMALIZED_TABLES) {
+          await tx.execute(
+            sql`UPDATE ${sql.identifier(table)} SET site_id = ${data.siteId}::uuid WHERE device_id = ${deviceId}::uuid`,
+          );
+        }
+      });
+    } else {
+      const [row] = await db
+        .update(devices)
+        .set(updates)
+        .where(eq(devices.id, deviceId))
+        .returning();
+      updated = row;
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,

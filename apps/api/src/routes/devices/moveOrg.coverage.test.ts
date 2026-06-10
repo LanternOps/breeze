@@ -116,15 +116,21 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
 /**
  * Mirror of the org_id coverage block, for `site_id`.
  *
- * `POST /devices/:id/move-org` can also change the device's site (within the
- * target org). Any device-id-scoped table that denormalizes `site_id` must
- * also be rewritten in the move transaction — otherwise child rows stay
- * pinned to the OLD site after the parent device has moved.
+ * Both write paths that change `devices.site_id` — `POST /devices/:id/move-org`
+ * (cross-org move) and `PATCH /devices/:id` (same-org site change) — must
+ * rewrite `site_id` on every table in DEVICE_SITE_DENORMALIZED_TABLES inside
+ * the same transaction, otherwise child rows stay pinned to the OLD site
+ * after the parent device has moved.
  *
- * As of this PR, NO device-id-scoped child table has a `site_id` column,
- * so DEVICE_SITE_DENORMALIZED_TABLES is empty. The drift detector below
- * exists so any future schema PR that adds such a column will fail CI
- * until the table is added to DEVICE_SITE_DENORMALIZED_TABLES in core.ts.
+ * The list currently contains `elevation_requests`. The drift detector below
+ * ensures any future schema PR that adds a `site_id` column to another
+ * device-id-scoped table fails CI until the table is added to
+ * DEVICE_SITE_DENORMALIZED_TABLES in core.ts.
+ *
+ * NOTE this detector only guards the CONSTANT against the schema — it cannot
+ * verify the route handlers actually consume the constant. Handler-level
+ * propagation is covered by behavior tests: moveOrg.test.ts (move-org path)
+ * and core.permissions.test.ts (PATCH path).
  */
 describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
   const siteDenormSet = new Set<string>(DEVICE_SITE_DENORMALIZED_TABLES);
