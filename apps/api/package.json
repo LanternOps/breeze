@@ -71,7 +71,7 @@
     "@types/oidc-provider": "^9.5.0",
     "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.8",
-    "dotenv": "^16.4.5",
+    "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "jszip": "^3.10.1",
     "tsup": "^8.3.5",

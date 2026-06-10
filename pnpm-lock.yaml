@@ -188,8 +188,8 @@ importers:
         specifier: ^4.1.8
         version: 4.1.8(vitest@4.1.8)
       dotenv:
-        specifier: ^16.4.5
-        version: 16.4.7
+        specifier: ^17.4.2
+        version: 17.4.2
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
@@ -283,7 +283,7 @@ importers:
         version: 2.12.0(react-redux@9.3.0(@types/react@19.2.17)(react@19.2.7)(redux@5.0.1))(react@19.2.7)
       '@sentry/react-native':
         specifier: ^8.10.0
-        version: 8.11.1(@expo/env@2.3.0)(dotenv@16.6.1)(expo@56.0.9)(react-native@0.83.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)
+        version: 8.11.1(@expo/env@2.3.0)(dotenv@17.4.2)(expo@56.0.9)(react-native@0.83.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)
       expo:
         specifier: ~56.0.9
         version: 56.0.9(@babel/core@7.29.7)(@expo/dom-webview@55.0.3)(react-dom@19.2.7(react@19.2.7))(react-native-worklets@0.9.1(@babel/core@7.29.7)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(react-native@0.83.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7))(react-native@0.83.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
@@ -5706,12 +5706,12 @@ packages:
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
 
-  dotenv@16.4.7:
-    resolution: {integrity: sha512-47qPchRCykZC03FhkYAhrvwU4xDBFIj1QPqaarj6mdM/hgUzfPHcpkHJOn3mJAufFeeAxAzeGsr5X0M4k6fLZQ==}
-    engines: {node: '>=12'}
-
   dotenv@16.6.1:
     resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
+    engines: {node: '>=12'}
+
+  dotenv@17.4.2:
+    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
     engines: {node: '>=12'}
 
   drizzle-kit@0.31.10:
@@ -8985,6 +8985,11 @@ packages:
 
   semver@7.8.3:
     resolution: {integrity: sha512-wnilbGyMxzbY7dNOl7jpKbLSjcfeweJWU5j4+u5qW+6/wuGD9KzIGOyZnQVSBM9E7DtWaaH3CyHkppYrKYoxwg==}
+    engines: {node: '>=10'}
+    hasBin: true
+
+  semver@7.8.4:
+    resolution: {integrity: sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -12815,7 +12820,7 @@ snapshots:
       ip: neoip@3.1.0
       node-stream-zip: 1.15.0
       ora: 5.4.1
-      semver: 7.8.3
+      semver: 7.8.4
       strip-ansi: 5.2.0
       wcwidth: 1.0.1
       yaml: 2.9.0
@@ -12888,7 +12893,7 @@ snapshots:
       node-fetch: 2.7.0
       open: 6.4.0
       ora: 5.4.1
-      semver: 7.8.3
+      semver: 7.8.4
       shell-quote: 1.8.4
       sudo-prompt: 9.2.1
     transitivePeerDependencies:
@@ -12919,7 +12924,7 @@ snapshots:
       fs-extra: 8.1.0
       graceful-fs: 4.2.11
       prompts: 2.4.2
-      semver: 7.8.3
+      semver: 7.8.4
     transitivePeerDependencies:
       - bufferutil
       - encoding
@@ -13611,12 +13616,12 @@ snapshots:
 
   '@sentry/core@10.56.0': {}
 
-  '@sentry/expo-upload-sourcemaps@8.11.1(@expo/env@2.3.0)(dotenv@16.6.1)':
+  '@sentry/expo-upload-sourcemaps@8.11.1(@expo/env@2.3.0)(dotenv@17.4.2)':
     dependencies:
       '@sentry/cli': 3.4.1
     optionalDependencies:
       '@expo/env': 2.3.0
-      dotenv: 16.6.1
+      dotenv: 17.4.2
 
   '@sentry/node-core@10.54.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.7.1(@opentelemetry/api@1.9.1))(@opentelemetry/instrumentation@0.214.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(@opentelemetry/semantic-conventions@1.41.1)':
     dependencies:
@@ -13689,13 +13694,13 @@ snapshots:
       '@opentelemetry/semantic-conventions': 1.41.1
       '@sentry/core': 10.56.0
 
-  '@sentry/react-native@8.11.1(@expo/env@2.3.0)(dotenv@16.6.1)(expo@56.0.9)(react-native@0.83.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)':
+  '@sentry/react-native@8.11.1(@expo/env@2.3.0)(dotenv@17.4.2)(expo@56.0.9)(react-native@0.83.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.84.1(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)':
     dependencies:
       '@sentry/babel-plugin-component-annotate': 5.2.1
       '@sentry/browser': 10.51.0
       '@sentry/cli': 3.4.1
       '@sentry/core': 10.51.0
-      '@sentry/expo-upload-sourcemaps': 8.11.1(@expo/env@2.3.0)(dotenv@16.6.1)
+      '@sentry/expo-upload-sourcemaps': 8.11.1(@expo/env@2.3.0)(dotenv@17.4.2)
       '@sentry/react': 10.51.0(react@19.2.7)
       '@sentry/types': 10.51.0
       react: 19.2.7
@@ -15974,9 +15979,9 @@ snapshots:
       domelementtype: 2.3.0
       domhandler: 5.0.3
 
-  dotenv@16.4.7: {}
-
   dotenv@16.6.1: {}
+
+  dotenv@17.4.2: {}
 
   drizzle-kit@0.31.10:
     dependencies:
@@ -16821,7 +16826,7 @@ snapshots:
       '@petamoriken/float16': 3.9.3
       debug: 4.4.3
       env-paths: 3.0.0
-      semver: 7.8.3
+      semver: 7.8.4
       shell-quote: 1.8.4
       which: 4.0.0
     transitivePeerDependencies:
@@ -20384,6 +20389,9 @@ snapshots:
   semver@7.8.0: {}
 
   semver@7.8.3: {}
+
+  semver@7.8.4:
+    optional: true
 
   send@0.19.2:
     dependencies:
