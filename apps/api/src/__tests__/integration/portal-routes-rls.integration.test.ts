@@ -16,9 +16,11 @@
  * behavior production would see — `getTestDb()` (superuser) is used for SEED only.
  */
 import './setup';
+import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { portalRoutes } from '../../routes/portal';
+import { portalResetTokens } from '../../routes/portal/helpers';
 import { portalUsers, devices, portalBranding } from '../../db/schema';
 import { hashPassword } from '../../services/password';
 import { createPartner, createOrganization, createSite } from './db-utils';
@@ -216,6 +218,47 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     const listAfter = await authed('/portal/assets');
     const listAfterBody = await listAfter.json();
     expect(listAfterBody.data.map((a: any) => a.id)).not.toContain(deviceId);
+  });
+
+  it('reset-password updates the portal user password under the unprivileged pool (system scope)', async () => {
+    const { orgId } = await seedOrgWithDevice('portal-reset-host');
+    const portalUser = await seedPortalUser(orgId);
+    const app = buildPortalApp();
+
+    // PORTAL_USE_REDIS is false under NODE_ENV=test, so the reset route reads
+    // the token from the in-memory map — seed it directly with a known token.
+    const resetToken = `reset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
+    portalResetTokens.set(tokenHash, {
+      userId: portalUser.id,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdAt: new Date(),
+    });
+
+    const newPassword = 'NewPortalPass456!';
+    const resetRes = await app.request('/portal/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetToken, password: newPassword }),
+    });
+    expect(resetRes.status).toBe(200);
+
+    // The UPDATE runs under withSystemDbAccessContext; without it the breeze_app
+    // pool would update zero rows and the route would still 200 (silent no-op).
+    // Prove the row actually changed: the new password logs in, the old fails.
+    const loginNew = await app.request('/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: portalUser.email, password: newPassword, orgId }),
+    });
+    expect(loginNew.status).toBe(200);
+
+    const loginOld = await app.request('/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: portalUser.email, password: PORTAL_PASSWORD, orgId }),
+    });
+    expect(loginOld.status).toBe(401);
   });
 
   it('profile read + update works under org scope', async () => {

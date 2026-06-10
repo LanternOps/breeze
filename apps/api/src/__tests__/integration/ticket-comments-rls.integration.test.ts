@@ -202,4 +202,82 @@ describe('ticket_comments RLS — parent-ticket visibility (2026-06-10-a migrati
 
     expect(rows).toEqual([]);
   });
+
+  // ---- breeze_ticket_parent_portal_insert (2026-06-10-b migration) ----
+  // The portal route app-filters the parent ticket by org before inserting, so
+  // a cross-org INSERT is only reachable at the DB layer. Prove the WITH CHECK
+  // gate directly through the bound-param driver, both branches.
+
+  it('allows a portal-authored comment INSERT on an org-accessible ticket under org scope', async () => {
+    const { org, portalUser, ticket } = await seedTicketWithMixedComments();
+
+    const orgContext: DbAccessContext = {
+      scope: 'organization',
+      orgId: org.id,
+      accessibleOrgIds: [org.id],
+      accessiblePartnerIds: [],
+      userId: null,
+    };
+
+    const inserted = await withDbAccessContext(orgContext, () =>
+      db
+        .insert(ticketComments)
+        .values({
+          ticketId: ticket.id,
+          portalUserId: portalUser.id,
+          authorType: 'portal',
+          content: 'customer reply inserted under org scope',
+        })
+        .returning({ id: ticketComments.id })
+    );
+
+    expect(inserted).toHaveLength(1);
+  });
+
+  it('rejects a portal-authored comment INSERT on a cross-org ticket (WITH CHECK fail-closed)', async () => {
+    const { ticket } = await seedTicketWithMixedComments(); // org A's ticket
+
+    const adminDb = getTestDb() as any;
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    const [otherPortalUser] = await adminDb
+      .insert(portalUsers)
+      .values({
+        orgId: otherOrg.id,
+        email: `tc-rls-other-portal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`,
+        name: 'Other Portal Customer',
+      })
+      .returning();
+
+    const otherOrgContext: DbAccessContext = {
+      scope: 'organization',
+      orgId: otherOrg.id,
+      accessibleOrgIds: [otherOrg.id],
+      accessiblePartnerIds: [],
+      userId: null,
+    };
+
+    // org-B caller attempting to comment on org-A's ticket: the parent-ticket
+    // gate (breeze_has_org_access) is false, so the row violates WITH CHECK.
+    // postgres.js surfaces the policy error on `.cause` (drizzle wraps the
+    // top-level message as "Failed query: ...").
+    let caught: unknown;
+    try {
+      await withDbAccessContext(otherOrgContext, () =>
+        db.insert(ticketComments).values({
+          ticketId: ticket.id,
+          portalUserId: otherPortalUser.id,
+          authorType: 'portal',
+          content: 'cross-org injection attempt',
+        })
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    const cause = (caught as { cause?: { message?: string } } | undefined)?.cause;
+    expect(cause?.message).toMatch(
+      /new row violates row-level security policy for table "ticket_comments"/
+    );
+  });
 });

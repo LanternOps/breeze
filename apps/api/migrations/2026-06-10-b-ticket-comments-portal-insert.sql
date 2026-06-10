@@ -5,8 +5,9 @@
 -- scope (portalAuthMiddleware establishes a withDbAccessContext, instead of
 -- querying the bare pool with no scope). The earlier
 -- 2026-06-10-a-ticket-comments-portal-visibility.sql migration noted that
--- portal-authored WRITES were left "system-scope-only"; that assumption held
--- only while portal routes ran context-less and is now superseded here.
+-- portal-authored WRITES were left "system-scope-only"; that NOTE is superseded
+-- for INSERT only. The -a- SELECT policy is left untouched, and portal
+-- UPDATE/DELETE remain system-scope-only (the portal exposes no edit/delete).
 --
 -- Problem: a portal customer replying to their own ticket produces a
 -- portal-authored row (user_id NULL, portal_user_id set). The Phase 6

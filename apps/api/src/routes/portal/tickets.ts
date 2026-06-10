@@ -87,8 +87,10 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
   try {
     // NOTE: the actor `userId` here is a portal_users id, NOT a users.id. The
     // ticket service only uses it for audit/event metadata (no FK). It must
-    // never be routed into a column that FKs users.id (e.g.
-    // ticket_comments.user_id) — portal comments set portal_user_id instead.
+    // never be routed into a column that FKs users.id — in particular, do NOT
+    // call addTicketComment from portal handlers (it writes actor.userId →
+    // ticket_comments.user_id). Portal comments set portal_user_id directly
+    // (see the POST /tickets/:id/comments handler below).
     created = await createTicket(
       {
         orgId: auth.user.orgId,
