@@ -465,7 +465,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 						"error": err.Error(),
 					})
 				} else {
-					processHeartbeatResponse(resp, wd, journal, cfg, tokenStore, recovery)
+					handleInitialFailoverHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
 
@@ -569,18 +569,13 @@ func handleFailoverPoll(
 		})
 		return
 	}
-	processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
 	// Commands targeted at the watchdog are claimed by the heartbeat (the
 	// server marks them 'sent' and returns them inline), so the poll below
 	// won't re-return them. Execute the heartbeat-delivered batch here, then
 	// the poll batch, deduped — otherwise a `restart_agent` etc. is consumed
 	// but never run (#1103).
-	var heartbeatCmds []watchdog.FailoverCommand
-	if resp != nil {
-		heartbeatCmds = resp.Commands
-	}
-
 	// Poll for any still-pending commands. A poll failure must not drop the
 	// heartbeat-delivered batch, so fall through with an empty poll set.
 	pollCmds, err := fc.PollCommands()
@@ -594,6 +589,36 @@ func handleFailoverPoll(
 	executeFailoverCommands(heartbeatCmds, pollCmds, func(cmd watchdog.FailoverCommand) {
 		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
 	})
+}
+
+// handleInitialFailoverHeartbeatResponse handles the first heartbeat sent when
+// failover starts. Those heartbeat commands are already claimed server-side, so
+// execute them immediately; there is no poll batch yet on this path.
+func handleInitialFailoverHeartbeatResponse(
+	fc *watchdog.FailoverClient,
+	resp *watchdog.HeartbeatResponse,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+) {
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+	})
+}
+
+func processInitialFailoverHeartbeatResponse(
+	resp *watchdog.HeartbeatResponse,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+	run func(watchdog.FailoverCommand),
+) {
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	executeFailoverCommands(heartbeatCmds, nil, run)
 }
 
 // executeFailoverCommands runs the heartbeat-delivered command batch first,
@@ -618,7 +643,8 @@ func executeFailoverCommands(
 	}
 }
 
-// processHeartbeatResponse handles upgrade directives from the API.
+// processHeartbeatResponse handles upgrade directives from the API and returns
+// any commands delivered inline with the heartbeat response.
 func processHeartbeatResponse(
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
@@ -626,9 +652,9 @@ func processHeartbeatResponse(
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
-) {
+) []watchdog.FailoverCommand {
 	if resp == nil {
-		return
+		return nil
 	}
 	if resp.UpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
@@ -642,6 +668,7 @@ func processHeartbeatResponse(
 		})
 		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
 	}
+	return resp.Commands
 }
 
 // handleFailoverCommand executes a single command from the API.
