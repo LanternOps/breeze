@@ -16,6 +16,7 @@
 import './setup';
 
 import { describe, it, expect } from 'vitest';
+import { eq } from 'drizzle-orm';
 
 import { getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
@@ -84,5 +85,18 @@ describe('c2c_connections microsoft_365 tenant-GUID CHECK (#1035)', () => {
     const orgId = await makeOrgId();
     const rows = await insertConnection(orgId, 'google_workspace', 'example.com');
     expect(rows[0]?.id).toBeTruthy();
+  });
+
+  it('rejects an UPDATE that flips a microsoft_365 tenant_id to a non-GUID (NOT VALID still enforces mutations)', async () => {
+    const orgId = await makeOrgId();
+    const rows = await insertConnection(orgId, 'microsoft_365', VALID_GUID);
+    const id = rows[0]?.id;
+    expect(id).toBeTruthy();
+    await expectCheckViolation(
+      getTestDb()
+        .update(c2cConnections)
+        .set({ tenantId: 'not-a-guid' })
+        .where(eq(c2cConnections.id, id as string)),
+    );
   });
 });
