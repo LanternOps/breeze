@@ -199,3 +199,35 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(false);
   });
 });
+
+// #1121 — the watchdogState collapse premise: a corrupted (non-string) value
+// must drop to undefined rather than 400 the heartbeat. The route-side
+// observability for this collapse is detectWatchdogStateCollapse in
+// heartbeat.ts (unit-tested in heartbeat.test.ts).
+describe('heartbeatSchema — watchdogState .catch collapse (#1121)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+
+  it('corrupted watchdogState (number) collapses to undefined, heartbeat still parses', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      role: 'watchdog',
+      watchdogState: 42,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.watchdogState).toBeUndefined();
+    }
+  });
+
+  it('valid FAILOVER passes through untouched', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      role: 'watchdog',
+      watchdogState: 'FAILOVER',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.watchdogState).toBe('FAILOVER');
+    }
+  });
+});
