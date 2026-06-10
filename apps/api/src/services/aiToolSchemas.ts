@@ -156,7 +156,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     content: z.string().optional(),
     isPublic: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
-    pendingReason: z.string().max(2000).optional(),
+    pendingReason: z.string().max(500).optional(),
   }),
 
   manage_alerts: z.object({
