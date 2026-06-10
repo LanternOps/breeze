@@ -26,6 +26,7 @@ import {
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type SlaHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -56,6 +57,19 @@ function safeHandler(toolName: string, fn: SlaHandler): SlaHandler {
 
 function clampLimit(value: unknown, fallback = 25, max = 100): number {
   return Math.min(Math.max(1, Number(value) || fallback), max);
+}
+
+/**
+ * Resolve the device-id set a site-restricted caller may read. Returns `null`
+ * for unrestricted callers (no narrowing) and `[]` for a site-restricted caller
+ * with zero in-scope devices (callers short-circuit to empty results). The site
+ * axis is app-layer authz — Postgres RLS does NOT enforce it.
+ */
+async function resolveSiteScopedDeviceIds(auth: AuthContext): Promise<string[] | null> {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  const orgId = getOrgId(auth);
+  if (!orgId) return []; // restricted caller without an org context — fail closed
+  return resolveSiteAllowedDeviceIds(orgId, auth);
 }
 
 // ============================================
@@ -106,6 +120,25 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       const breachConditions: SQL[] = [isNull(backupSlaEvents.resolvedAt), inArray(backupSlaEvents.slaConfigId, configs.map((config) => config.id))];
       const bc = orgWhere(auth, backupSlaEvents.orgId);
       if (bc) breachConditions.push(bc);
+
+      // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+      // caller's breach counts must only reflect its in-scope devices.
+      const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
+      if (allowedDeviceIds != null) {
+        if (allowedDeviceIds.length === 0) {
+          return JSON.stringify({
+            configs: configs.map((config) => ({
+              ...config,
+              complianceStatus: 'compliant',
+              activeBreaches: 0,
+              targetDeviceCount: Array.isArray(config.targetDevices) ? config.targetDevices.length : 0,
+              targetGroupCount: Array.isArray(config.targetGroups) ? config.targetGroups.length : 0,
+            })),
+            showing: configs.length,
+          });
+        }
+        breachConditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));
+      }
 
       const breachCounts = await db
         .select({
@@ -164,6 +197,21 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.deviceId === 'string') conditions.push(eq(backupSlaEvents.deviceId, input.deviceId));
       if (typeof input.eventType === 'string') conditions.push(eq(backupSlaEvents.eventType, input.eventType));
       if (input.unresolvedOnly === true) conditions.push(isNull(backupSlaEvents.resolvedAt));
+
+      // Site axis (app-layer only; RLS does NOT enforce it). backupSlaEvents has
+      // no site_id column, so narrow by the in-scope device-id set (this also
+      // scopes the hostname join). A restricted caller with zero in-scope
+      // devices short-circuits to empty results. Intersects with the optional
+      // deviceId filter above (most-restrictive wins). Breach events not tied
+      // to a device (deviceId null) are excluded for a restricted caller
+      // (fail closed).
+      const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
+      if (allowedDeviceIds != null) {
+        if (allowedDeviceIds.length === 0) {
+          return JSON.stringify({ breaches: [], showing: 0 });
+        }
+        conditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));
+      }
 
       if (typeof input.from === 'string') {
         const from = new Date(input.from);
@@ -234,6 +282,33 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       const readinessConditions: SQL[] = [];
       const rc = orgWhere(auth, recoveryReadiness.orgId);
       if (rc) readinessConditions.push(rc);
+
+      // Site axis (app-layer only; RLS does NOT enforce it). The report's
+      // device linkage is backupSlaEvents.deviceId / recoveryReadiness.deviceId,
+      // so narrow every device-linked aggregate to the in-scope device-id set.
+      // backupSlaConfigs is org-level config metadata (not device-linked) and
+      // stays org-scoped. A restricted caller with zero in-scope devices
+      // short-circuits before any scan (fail closed; events with deviceId null
+      // are excluded for a restricted caller).
+      const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
+      if (allowedDeviceIds != null) {
+        if (allowedDeviceIds.length === 0) {
+          return JSON.stringify({
+            reportWindowDays: daysBack,
+            activeConfigs: 0,
+            compliantConfigs: 0,
+            activeBreaches: 0,
+            configsWithBreaches: 0,
+            compliancePercent: 100,
+            totalEventsInWindow: 0,
+            avgEstimatedRpoMinutes: 0,
+            avgEstimatedRtoMinutes: 0,
+          });
+        }
+        activeEventConditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));
+        historyConditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));
+        readinessConditions.push(inArray(recoveryReadiness.deviceId, allowedDeviceIds));
+      }
 
       const [activeConfigs, activeBreaches, totalEvents, readiness, configsWithBreaches] = await Promise.all([
         db

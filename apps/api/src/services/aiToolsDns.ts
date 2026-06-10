@@ -16,10 +16,11 @@ import {
   dnsThreatCategoryEnum,
   type DnsPolicyDomain
 } from '../db/schema';
-import { eq, and, desc, sql, gte, lte, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { schedulePolicySync } from '../jobs/dnsSyncJob';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -123,6 +124,38 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
         conditions.push(eq(dnsSecurityEvents.category, normalizedCategory as typeof dnsSecurityEvents.category.enumValues[number]));
       }
 
+      // Site axis (app-layer only; RLS does NOT enforce it). dnsSecurityEvents /
+      // dnsEventAggregations have no site_id column, so narrow by the in-scope
+      // device-id set (this also scopes the topDevices hostname join). A
+      // restricted caller with zero in-scope devices short-circuits to an empty
+      // summary. Intersects with the optional deviceId filter above
+      // (most-restrictive wins). Events with no deviceId are excluded for a
+      // restricted caller (fail closed).
+      let siteAllowedDeviceIds: string[] | null = null;
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        siteAllowedDeviceIds = queryOrgId
+          ? await resolveSiteAllowedDeviceIds(queryOrgId, auth)
+          : [];
+        if (!siteAllowedDeviceIds || siteAllowedDeviceIds.length === 0) {
+          return JSON.stringify({
+            summary: {
+              totalQueries: 0,
+              blockedQueries: 0,
+              allowedQueries: 0,
+              redirectedQueries: 0,
+              blockedRate: 0,
+              timeRange: { start: start.toISOString(), end: end.toISOString() }
+            },
+            topBlockedDomains: [],
+            topCategories: [],
+            topDevices: [],
+            source: 'raw'
+          });
+        }
+        conditions.push(inArray(dnsSecurityEvents.deviceId, siteAllowedDeviceIds));
+      }
+
       const topN = Math.min(Math.max(1, Number(input.topN) || 10), 100);
       const where = and(...conditions);
 
@@ -139,6 +172,10 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
           aggConditions.push(
             eq(dnsEventAggregations.category, normalizedCategory as typeof dnsEventAggregations.category.enumValues[number])
           );
+        }
+        // Site axis narrowing for the aggregated path (see comment above).
+        if (siteAllowedDeviceIds) {
+          aggConditions.push(inArray(dnsEventAggregations.deviceId, siteAllowedDeviceIds));
         }
 
         const aggWhere = and(...aggConditions);

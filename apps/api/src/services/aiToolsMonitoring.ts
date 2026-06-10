@@ -12,10 +12,11 @@ import {
   networkMonitorAlertRules,
 } from '../db/schema/monitors';
 import { serviceProcessCheckResults } from '../db/schema/serviceProcessMonitoring';
-import { deviceChangeLog } from '../db/schema';
-import { eq, and, desc, gte, lte, sql, SQL } from 'drizzle-orm';
+import { deviceChangeLog, discoveredAssets } from '../db/schema';
+import { eq, and, desc, gte, lte, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -97,7 +98,21 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 
-      const rows = await db.select({
+      // Site axis (app-layer only; RLS does NOT enforce it). networkMonitors is
+      // not device-linked — its site is the linked discovered asset's site
+      // (mirrors hasMonitorSiteAccess in routes/monitors.ts). A site-restricted
+      // caller only sees monitors whose asset lives in an allowed site;
+      // monitors with no asset (siteId null) are denied (fail closed).
+      const allowedSites = auth.allowedSiteIds;
+      const siteRestricted = !!(allowedSites && auth.canAccessSite);
+      if (siteRestricted) {
+        if (allowedSites!.length === 0) {
+          return JSON.stringify({ monitors: [], showing: 0 });
+        }
+        conditions.push(inArray(discoveredAssets.siteId, allowedSites!));
+      }
+
+      const selection = {
         id: networkMonitors.id,
         name: networkMonitors.name,
         monitorType: networkMonitors.monitorType,
@@ -108,10 +123,19 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         lastResponseMs: networkMonitors.lastResponseMs,
         consecutiveFailures: networkMonitors.consecutiveFailures,
         pollingInterval: networkMonitors.pollingInterval,
-      }).from(networkMonitors)
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(networkMonitors.updatedAt))
-        .limit(limit);
+      };
+
+      // Unrestricted callers take the exact pre-existing query (no join).
+      const rows = siteRestricted
+        ? await db.select(selection).from(networkMonitors)
+          .leftJoin(discoveredAssets, eq(networkMonitors.assetId, discoveredAssets.id))
+          .where(and(...conditions))
+          .orderBy(desc(networkMonitors.updatedAt))
+          .limit(limit)
+        : await db.select(selection).from(networkMonitors)
+          .where(conditions.length > 0 ? and(...conditions) : undefined)
+          .orderBy(desc(networkMonitors.updatedAt))
+          .limit(limit);
 
       return JSON.stringify({ monitors: rows, showing: rows.length });
     }),
@@ -358,6 +382,19 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.since === 'string') conditions.push(gte(serviceProcessCheckResults.timestamp, new Date(input.since)));
         if (typeof input.until === 'string') conditions.push(lte(serviceProcessCheckResults.timestamp, new Date(input.until)));
 
+        // Site axis (app-layer only; RLS does NOT enforce it). Without a
+        // caller-supplied deviceId this path enumerates check results org-wide,
+        // so narrow a site-restricted caller to its in-scope device-id set.
+        // (A caller-supplied deviceId is already org+site gated centrally via
+        // `deviceArgs` → enforceDeviceArgs; this intersects with it.)
+        if (auth.allowedSiteIds && auth.canAccessSite) {
+          const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({ data: [], showing: 0 });
+          }
+          conditions.push(inArray(serviceProcessCheckResults.deviceId, allowed));
+        }
+
         const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
 
         const results = await db
@@ -389,17 +426,30 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
       if (action === 'known_services') {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
+        // Site axis (app-layer only; RLS does NOT enforce it). Both name sources
+        // below are derived per-device org-wide, so narrow a site-restricted
+        // caller to its in-scope device-id set (empty set ⇒ empty result).
+        let siteAllowedDeviceIds: string[] | null = null;
+        if (auth.allowedSiteIds && auth.canAccessSite) {
+          siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (!siteAllowedDeviceIds || siteAllowedDeviceIds.length === 0) {
+            return JSON.stringify({ data: [] });
+          }
+        }
+
         // Normalize service names by stripping per-user/per-device hex suffixes
         const normalizeServiceName = (name: string): string =>
           name.replace(/_[a-f0-9]{4,}$/i, '');
 
         // Source 1: Distinct service names from device change log
+        const changeLogConditions: SQL[] = [eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')];
+        if (siteAllowedDeviceIds) changeLogConditions.push(inArray(deviceChangeLog.deviceId, siteAllowedDeviceIds));
         let changeLogNames: { subject: string }[] = [];
         try {
           changeLogNames = await db
             .select({ subject: deviceChangeLog.subject })
             .from(deviceChangeLog)
-            .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
+            .where(and(...changeLogConditions))
             .groupBy(deviceChangeLog.subject)
             .limit(1000);
         } catch (err) {
@@ -410,6 +460,8 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         }
 
         // Source 2: Distinct service/process names from check results
+        const checkNameConditions: SQL[] = [eq(serviceProcessCheckResults.orgId, orgId)];
+        if (siteAllowedDeviceIds) checkNameConditions.push(inArray(serviceProcessCheckResults.deviceId, siteAllowedDeviceIds));
         let checkNames: { name: string; watchType: string }[] = [];
         try {
           checkNames = await db
@@ -418,7 +470,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
               watchType: serviceProcessCheckResults.watchType,
             })
             .from(serviceProcessCheckResults)
-            .where(eq(serviceProcessCheckResults.orgId, orgId))
+            .where(and(...checkNameConditions))
             .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
             .limit(500);
         } catch (err) {
