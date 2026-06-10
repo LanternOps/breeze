@@ -81,8 +81,26 @@ func GetScriptExtension(scriptType string) string {
 	}
 }
 
+// normalizeLineEndings converts CRLF (and stray CR) to LF for script types
+// interpreted by unix tooling. Scripts authored or pasted in a browser on
+// Windows arrive with \r\n; bash then sees tokens like `then\r` / `elif\r`
+// and fails with "syntax error near unexpected token" (#1184) — or, for
+// simple command lines, silently passes a trailing \r into arguments.
+// PowerShell and cmd handle (and in .bat's case, sometimes require) CRLF,
+// so Windows-native script types are left untouched.
+func normalizeLineEndings(content, scriptType string) string {
+	switch strings.ToLower(scriptType) {
+	case ScriptTypeBash, ScriptTypePython:
+		content = strings.ReplaceAll(content, "\r\n", "\n")
+		return strings.ReplaceAll(content, "\r", "\n")
+	default:
+		return content
+	}
+}
+
 // WriteScriptFile writes script content to a temporary file with the appropriate extension
 func WriteScriptFile(content, scriptType string) (string, error) {
+	content = normalizeLineEndings(content, scriptType)
 	// Get the temp directory
 	tempDir := os.TempDir()
 	scriptDir := filepath.Join(tempDir, "breeze-scripts")
