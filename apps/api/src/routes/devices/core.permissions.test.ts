@@ -48,8 +48,11 @@ vi.mock('../../middleware/auth', () => ({
       return c.json({ error: 'Permission denied' }, 403);
     }
     // Mark permissions so getDeviceWithOrgAndSiteCheck can read them; if the
-    // request opts into site restrictions, narrow to a specific siteId.
-    const allowedSiteIds = c.req.header('x-restrict-site')
+    // request opts into site restrictions, narrow to a specific siteId. A
+    // comma-separated `x-restrict-site-list` allows multi-site allowlists.
+    const allowedSiteIds = c.req.header('x-restrict-site-list')
+      ? (c.req.header('x-restrict-site-list') as string).split(',')
+      : c.req.header('x-restrict-site')
       ? [c.req.header('x-restrict-site') as string]
       : undefined;
     c.set('permissions', {
@@ -125,6 +128,29 @@ function rigDeviceLookup(device: unknown) {
   const where = vi.fn().mockReturnValue({ limit });
   const from = vi.fn().mockReturnValue({ where });
   vi.mocked(db.select).mockReturnValue({ from } as never);
+}
+
+function rigDeviceThenSiteLookup(device: unknown, targetSite: unknown) {
+  // PATCH /devices/:id issues TWO sequential `db.select()...limit(1)` calls:
+  //   1. getDeviceWithOrgAndSiteCheck → fixture device
+  //   2. target-site same-org validation → target site row
+  // Return the device on the first call, the site on the second.
+  const deviceLimit = vi.fn().mockResolvedValue(device ? [device] : []);
+  const deviceWhere = vi.fn().mockReturnValue({ limit: deviceLimit });
+  const deviceFrom = vi.fn().mockReturnValue({ where: deviceWhere });
+
+  const siteLimit = vi.fn().mockResolvedValue(targetSite ? [targetSite] : []);
+  const siteWhere = vi.fn().mockReturnValue({ limit: siteLimit });
+  const siteFrom = vi.fn().mockReturnValue({ where: siteWhere });
+
+  const updateReturning = vi.fn().mockResolvedValue([{ ...(device as object), siteId: undefined }]);
+  const updateWhere = vi.fn().mockReturnValue({ returning: updateReturning });
+  const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+
+  vi.mocked(db.select)
+    .mockReturnValueOnce({ from: deviceFrom } as never)
+    .mockReturnValueOnce({ from: siteFrom } as never);
+  vi.mocked(db.update).mockReturnValue({ set: updateSet } as never);
 }
 
 function rigDeviceListRows(rows: unknown[]) {
@@ -563,6 +589,91 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.map((device: { siteId: string }) => device.siteId)).toEqual([allowedListSiteId, deniedListSiteId]);
+    });
+  });
+
+  describe('PATCH /devices/:id — TARGET site-scope enforcement on move', () => {
+    // SR: a site-restricted caller could move a device they legitimately own
+    // (source site in their allowlist) into a TARGET site outside their
+    // allowlist. The source is gated by getDeviceWithOrgAndSiteCheck; the
+    // target must also be gated via canAccessSite, mirroring provision.ts.
+    // updateDeviceSchema validates siteId as a UUID, so use real UUIDs. The
+    // device's current site is also a UUID; the caller's allowlist contains it.
+    const siteAllowed = '77777777-7777-4777-8777-777777777777';
+    const siteB = '88888888-8888-4888-8888-888888888888'; // outside allowlist
+    const deviceInSiteAllowed = { ...ACCESSIBLE_DEVICE, siteId: siteAllowed };
+    const targetSiteRow = { id: siteB, orgId: 'org-123' };
+
+    it('returns 403 when a site-restricted caller moves a device to a TARGET site outside their allowlist', async () => {
+      rigDeviceThenSiteLookup(deviceInSiteAllowed, targetSiteRow);
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          // Caller is restricted to site-1 (the device's current site) only.
+          'x-restrict-site': siteAllowed,
+        },
+        body: JSON.stringify({ siteId: siteB }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/site denied/i);
+      // The 403 must fire BEFORE the UPDATE runs.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows an UNRESTRICTED caller to set the siteId (no regression)', async () => {
+      rigDeviceThenSiteLookup(deviceInSiteAllowed, targetSiteRow);
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          // No x-restrict-site → allowedSiteIds undefined → unrestricted.
+        },
+        body: JSON.stringify({ siteId: siteB }),
+      });
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('allows a site-restricted caller to move WITHIN their allowlist (siteA → siteA2 both allowed)', async () => {
+      const siteA2 = '99999999-9999-4999-8999-999999999999';
+      const siteA2Row = { id: siteA2, orgId: 'org-123' };
+      // Caller's allowlist includes both the device's current site (siteAllowed)
+      // and the destination (siteA2). The mock middleware narrows to a single
+      // site per `x-restrict-site`, so widen it here for this case.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([deviceInSiteAllowed]) }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([siteA2Row]) }),
+          }),
+        } as never);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...deviceInSiteAllowed, siteId: siteA2 }]),
+          }),
+        }),
+      } as never);
+
+      const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer t',
+          'Content-Type': 'application/json',
+          'x-restrict-site-list': `${siteAllowed},${siteA2}`,
+        },
+        body: JSON.stringify({ siteId: siteA2 }),
+      });
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
     });
   });
 });

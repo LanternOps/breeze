@@ -16,7 +16,7 @@ import {
   partners,
 } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
@@ -970,7 +970,11 @@ coreRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    // If moving to a different site, verify it's in the same org
+    // If moving to a different site, verify it's in the same org AND that a
+    // site-restricted caller is allowed to place a device into the TARGET site.
+    // The source device is already site-gated by getDeviceWithOrgAndSiteCheck
+    // above; without this the caller could move a device into a site outside
+    // their `allowedSiteIds` allowlist. Mirrors the gate in provision.ts.
     if (data.siteId && data.siteId !== device.siteId) {
       const [targetSite] = await db
         .select()
@@ -985,6 +989,11 @@ coreRoutes.patch(
 
       if (!targetSite) {
         return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
+      }
+
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      if (perms?.allowedSiteIds && !canAccessSite(perms, data.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
       }
     }
 
