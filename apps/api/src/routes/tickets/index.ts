@@ -1,0 +1,1 @@
+export { ticketsRoutes } from './tickets';
