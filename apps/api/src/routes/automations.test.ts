@@ -325,6 +325,68 @@ describe('automations routes', () => {
     expect(body.enabled).toBe(false);
   });
 
+  it('rejects an UPDATE from a site-restricted caller when the new target set escapes their sites', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            enabled: true, conditions: [], trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    // Post-update target set resolves outside the caller's allowlist.
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false, outOfScopeDeviceIds: ['dev-out-of-site'], unbounded: false,
+    } as any);
+
+    const res = await app.request('/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ trigger: { type: 'all' } }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(checkAutomationTargetsWithinSiteScope)).toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('allows an UPDATE from a site-restricted caller when targets stay in scope', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            enabled: true, conditions: [], trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'auto-1', enabled: false, trigger: { type: 'manual' } }]),
+        }),
+      }),
+    } as any);
+    // Default beforeEach mock already returns ok:true, but set it explicitly.
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true, outOfScopeDeviceIds: [], unbounded: false,
+    } as any);
+
+    const res = await app.request('/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.update)).toHaveBeenCalled();
+  });
+
   it('should delete an automation', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({
