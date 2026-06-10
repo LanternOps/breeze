@@ -28,52 +28,6 @@ const (
 	linuxWatchdogServiceName = "breeze-watchdog"
 )
 
-// Embedded systemd unit — matches agent/service/systemd/breeze-agent.service
-const linuxUnit = `[Unit]
-Description=Breeze RMM Agent
-Documentation=https://github.com/breeze-rmm/breeze
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=60
-StartLimitBurst=5
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/breeze-agent start
-WorkingDirectory=/etc/breeze
-Restart=on-failure
-# 30s cooldown spreads respawn across a fleet that crashes simultaneously
-# (e.g. correlated network blip). Combined with StartLimitBurst=5 over
-# StartLimitIntervalSec=60, a misbehaving host backs off entirely instead
-# of stampeding the API.
-RestartSec=30
-
-# Cap total stop time so a hung HTTP flush during OS shutdown (network
-# going down) doesn't block system power-off for the 90s systemd default.
-TimeoutStopSec=15
-KillMode=mixed
-
-# Security hardening
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/etc/breeze /var/lib/breeze /var/log/breeze /var/run/breeze /var/cache/apt /var/lib/apt /var/lib/dpkg /var/log/apt /usr/local/bin -/run/ufw.lock
-PrivateTmp=true
-NoNewPrivileges=false
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_FOWNER
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_FOWNER
-
-# Logging (stdout goes to journald)
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=breeze-agent
-
-# File limits
-LimitNOFILE=8192
-
-[Install]
-WantedBy=multi-user.target
-`
-
 // Embedded user-helper unit
 const linuxUserUnit = `[Unit]
 Description=Breeze RMM User Helper

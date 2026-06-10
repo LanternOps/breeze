@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestParseUnitVersion(t *testing.T) {
 	cases := []struct {
@@ -44,5 +48,39 @@ func TestUnitNeedsReconcile(t *testing.T) {
 				t.Fatalf("unitNeedsReconcile(%q,%d) = %v, want %v", tc.existing, tc.want, got, tc.expect)
 			}
 		})
+	}
+}
+
+func TestStaticUnitMatchesEmbedded(t *testing.T) {
+	// Test runs with cwd = package dir (agent/cmd/breeze-agent).
+	data, err := os.ReadFile("../../service/systemd/breeze-agent.service")
+	if err != nil {
+		t.Fatalf("read static unit: %v", err)
+	}
+	if string(data) != linuxUnit {
+		t.Fatalf("static breeze-agent.service is not byte-identical to embedded linuxUnit.\n" +
+			"Keep them in sync (the auto-heal writes the embedded copy).")
+	}
+}
+
+func TestUnitIsNotReHardened(t *testing.T) {
+	forbidden := []string{
+		"ProtectSystem=strict",
+		"ProtectHome=read-only",
+		"CapabilityBoundingSet",
+		"AmbientCapabilities",
+		"PrivateTmp=true",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(linuxUnit, f) {
+			t.Errorf("linuxUnit re-introduced a sandbox directive that breaks the remote "+
+				"terminal/scripts: %q (see the spec — do not re-add)", f)
+		}
+	}
+	if _, ok := parseUnitVersion(linuxUnit); !ok {
+		t.Errorf("linuxUnit is missing its %q marker", unitVersionPrefix)
+	}
+	if v, _ := parseUnitVersion(linuxUnit); v != currentUnitVersion {
+		t.Errorf("linuxUnit marker version != currentUnitVersion (%d)", currentUnitVersion)
 	}
 }
