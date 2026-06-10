@@ -1,4 +1,4 @@
-and a # Linux Agent systemd Sandbox Relaxation for Remote Terminal & Script Execution
+# Linux Agent systemd Sandbox Relaxation for Remote Terminal & Script Execution
 
 **Status:** Design / approved direction
 **Date:** 2026-06-09
@@ -169,13 +169,27 @@ it never rewrites the unit. So healing must escape the sandbox.
 **Mechanism:** on startup, if `unitNeedsReconcile`, the agent runs:
 
 ```
-systemd-run --scope --quiet --unit=breeze-unit-reconcile \
+systemd-run --quiet --collect --unit=breeze-unit-reconcile \
     /usr/local/bin/breeze-agent service reconcile-unit
 ```
 
-`--scope` runs the child synchronously in a **separate transient cgroup** that is NOT
-under `breeze-agent.service`'s sandbox, so it can write the unit. Because it is a separate
-scope, the agent restart it triggers does not kill it mid-write.
+This launches the reconcile as a **transient service**: `systemd-run` asks PID 1 over
+D-Bus to spawn the command, and PID 1 forks it in a **fresh execution environment** —
+full root capabilities and an unrestricted mount namespace — so it can write the unit.
+Because its parent is PID 1 (not the agent), the agent restart it triggers cannot kill
+it mid-write. `--collect` garbage-collects the transient unit even if it fails, so a
+retry on a later startup is never blocked by a leftover failed unit.
+
+> **Why NOT `systemd-run --scope`:** a scope child is forked by `systemd-run` itself —
+> a descendant of the sandboxed agent — and only its *cgroup* moves. The mount namespace
+> (`ProtectSystem=strict`) and the capability bounding set are inherited through
+> fork/exec regardless of cgroup, so a scope child would hit the same `Permission
+> denied` writing `/etc/systemd/system`. The escape MUST be a transient service.
+
+D-Bus from inside the sandbox is proven viable on the deployed fleet: the self-updater
+already calls `systemctl restart breeze-agent` from the sandboxed agent
+(`agent/internal/updater/restart_unix.go:30`) and that works in production — the same
+PID 1 round-trip `systemd-run` needs.
 
 **New subcommand `service reconcile-unit`** (root-gated, idempotent):
 1. Write the current `linuxUnit` to `/etc/systemd/system/breeze-agent.service`.
@@ -193,8 +207,8 @@ write somehow fails).
 
 ### 5.5 Graceful fallback (absorbs Option 3)
 
-If `systemd-run` is absent (minimal images), or the scope fails (no D-Bus, container
-without a system manager), the agent does **not** loop or crash. It:
+If `systemd-run` is absent (minimal images), or the transient service cannot be started
+(no D-Bus, container without a system manager), the agent does **not** loop or crash. It:
 - emits a one-time WARNING **diagnostic log** (ships to the API, visible as a device log)
   instructing the operator to run `sudo breeze-agent service install`, and
 - continues running on the old sandbox.
@@ -273,7 +287,7 @@ side-effecting exec is a thin, separately-reviewed wrapper.
   command execution) is unchanged.
 - The `reconcile-unit` subcommand writes a fixed, in-binary unit string to a fixed path and
   is root-gated; it takes no untrusted input.
-- `systemd-run --scope` is invoked with a fixed argv (no shell, no interpolation).
+- `systemd-run` is invoked with a fixed argv (no shell, no interpolation).
 - The watchdog remains sandboxed, preserving defense-in-depth for the supervisor that does
   not need elevated behavior.
 

@@ -4,7 +4,7 @@
 
 **Goal:** Make the Linux agent's remote terminal and remote script execution behave like a root SSH session by removing the inherited systemd sandbox, and auto-heal the already-deployed fleet on next startup.
 
-**Architecture:** Relax the `breeze-agent.service` unit (remove `CapabilityBoundingSet`/`ProtectSystem`/`ProtectHome`/`PrivateTmp`), version-stamp it, and on agent startup detect an outdated on-disk unit and rewrite it by escaping the sandbox via `systemd-run --scope` running a new `service reconcile-unit` subcommand. The watchdog unit stays hardened.
+**Architecture:** Relax the `breeze-agent.service` unit (remove `CapabilityBoundingSet`/`ProtectSystem`/`ProtectHome`/`PrivateTmp`), version-stamp it, and on agent startup detect an outdated on-disk unit and rewrite it by escaping the sandbox via a `systemd-run` **transient service** (PID 1 spawns `service reconcile-unit` outside the agent's namespace/caps — NOT `--scope`, which inherits both). The watchdog unit stays hardened.
 
 **Tech Stack:** Go (agent), systemd, cobra CLI. Tests: Go standard `testing`.
 
@@ -223,7 +223,9 @@ Expected: PASS (unchanged).
 
 - [ ] **Step 2: Write the failing drift / anti-re-hardening test**
 
-Add to `agent/cmd/breeze-agent/systemd_unit_test.go`:
+Add to `agent/cmd/breeze-agent/systemd_unit_test.go`. The file already imports
+`"testing"` from Task 1 — **merge** `"os"` and `"strings"` into that existing import
+block (do not paste a second one):
 
 ```go
 import (
@@ -394,8 +396,8 @@ var serviceReconcileUnitCmd = &cobra.Command{
 		}
 		fmt.Printf("Reconciled %s to unit version %d; restarting service.\n", linuxUnitDst, currentUnitVersion)
 		// Restart so the relaxed sandbox applies to the live process. This kills
-		// the old agent; we run in a separate systemd-run scope, so this child
-		// survives to finish the restart call.
+		// the old agent; we run as a systemd-run transient service whose parent
+		// is PID 1 (not the agent), so this child survives to finish the restart.
 		if out, err := exec.Command("systemctl", "restart", linuxServiceName).CombinedOutput(); err != nil {
 			return fmt.Errorf("restart: %s", strings.TrimSpace(string(out)))
 		}
@@ -420,8 +422,9 @@ var reconcileOnce sync.Once
 // reconcileServiceUnitIfNeeded runs at startup. If the installed unit predates
 // currentUnitVersion, it rewrites it. The running agent is itself sandboxed and
 // cannot write /etc/systemd/system (ProtectSystem=strict on old units), so it
-// escapes via `systemd-run --scope` into a transient cgroup outside this unit's
-// sandbox. Best-effort: on any failure it logs and continues on the old unit.
+// escapes via a systemd-run TRANSIENT SERVICE: PID 1 spawns the reconcile in a
+// fresh execution environment, outside this unit's mount namespace and
+// capability bounding set. Best-effort: on failure it logs and continues.
 func reconcileServiceUnitIfNeeded() {
 	reconcileOnce.Do(func() {
 		// Only act as the installed systemd service running as root.
@@ -442,10 +445,17 @@ func reconcileServiceUnitIfNeeded() {
 					"errors (e.g. apt). Fix: sudo breeze-agent service install\n", currentUnitVersion)
 			return
 		}
-		// --scope: run synchronously in a separate transient cgroup NOT under
-		// breeze-agent.service's sandbox, so the child can write the unit and
-		// survives the agent restart it triggers.
-		out, err := exec.Command("systemd-run", "--scope", "--quiet",
+		// TRANSIENT SERVICE, deliberately NOT --scope: a scope child is forked
+		// from this (sandboxed) process and only its cgroup moves — it would
+		// inherit our read-only /etc (ProtectSystem) and restricted CapBnd and
+		// fail with the same Permission denied. Without --scope, PID 1 spawns
+		// the command in a fresh execution environment with full root caps and
+		// an unrestricted namespace; being a child of PID 1 it also survives
+		// the agent restart it triggers. --collect garbage-collects the
+		// transient unit on failure so a later retry is never blocked.
+		// Fire-and-forget: systemd-run returns once the service starts; the
+		// child rewrites the unit, daemon-reloads, and restarts us.
+		out, err := exec.Command("systemd-run", "--quiet", "--collect",
 			"--unit=breeze-unit-reconcile", linuxBinaryPath, "service", "reconcile-unit").CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
@@ -469,7 +479,7 @@ Expected: clean build/vet; tests PASS.
 
 ```bash
 git add agent/cmd/breeze-agent/service_cmd_linux.go
-git commit -m "feat(agent): auto-heal outdated systemd unit via systemd-run scope on startup"
+git commit -m "feat(agent): auto-heal outdated systemd unit via systemd-run transient service"
 ```
 
 ---
