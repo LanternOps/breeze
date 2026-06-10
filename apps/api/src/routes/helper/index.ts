@@ -13,8 +13,7 @@ import { streamSSE } from 'hono/streaming';
 import { createHash } from 'crypto';
 import { eq, and, desc, sql, asc, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext } from '../../db';
-import { aiSessions, aiMessages, aiToolExecutions, devices, organizations } from '../../db/schema';
-import { approveToolSchema } from '@breeze/shared/validators/ai';
+import { aiSessions, aiMessages, devices, organizations } from '../../db/schema';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
 import { getHelperAllowedMcpToolNames, type HelperPermissionLevel } from '../../services/helperToolFilter';
@@ -634,61 +633,6 @@ helperRoutes.delete('/chat/sessions/:id', async (c) => {
 
   return c.json({ success: true });
 });
-
-// ============================================
-// POST /chat/sessions/:id/approve/:executionId — Approve or reject tool
-// ============================================
-
-helperRoutes.post(
-  '/chat/sessions/:id/approve/:executionId',
-  zValidator('json', approveToolSchema),
-  async (c) => {
-    const device = c.get('helperDevice');
-    const sessionId = c.req.param('id');
-    const executionId = c.req.param('executionId');
-    const { approved } = c.req.valid('json');
-
-    // Verify session belongs to this device
-    const [session] = await db
-      .select({ id: aiSessions.id })
-      .from(aiSessions)
-      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.deviceId, device.id)))
-      .limit(1);
-
-    if (!session) {
-      return c.json({ error: 'Session not found' }, 404);
-    }
-
-    // Verify execution belongs to session and is pending
-    const [execution] = await db
-      .select({ id: aiToolExecutions.id, status: aiToolExecutions.status })
-      .from(aiToolExecutions)
-      .where(and(
-        eq(aiToolExecutions.id, executionId),
-        eq(aiToolExecutions.sessionId, sessionId),
-      ))
-      .limit(1);
-
-    if (!execution) {
-      return c.json({ error: 'Execution not found' }, 404);
-    }
-
-    if (execution.status !== 'pending') {
-      return c.json({ error: 'Execution already processed' }, 409);
-    }
-
-    await db
-      .update(aiToolExecutions)
-      .set({
-        status: approved ? 'approved' : 'rejected',
-        approvedBy: null, // device context, not a user FK
-        approvedAt: new Date(),
-      })
-      .where(eq(aiToolExecutions.id, executionId));
-
-    return c.json({ success: true, approved });
-  },
-);
 
 // ============================================
 // POST /chat/sessions/:id/flag — Flag session for review
