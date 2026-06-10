@@ -54,11 +54,14 @@ vi.mock('../../db', () => ({
                 limit: vi.fn(() => ({ offset: vi.fn(() => dbSelectMock()) }))
               }))
             }))
-          }))
+          })),
+          // single leftJoin → where (e.g. ticketAlertLinks joined with alerts)
+          where: vi.fn(() => Promise.resolve(dbSelectMock() ?? []))
         })),
         where: vi.fn(() => ({
           orderBy: vi.fn(() => Promise.resolve([])),
           groupBy: vi.fn(() => dbGroupByMock()),
+          // getScopedTicketOr404 and GET /:id single-row lookups both use .limit(1)
           limit: vi.fn(() => dbSelectMock())
         }))
       }))
@@ -88,6 +91,9 @@ vi.mock('../../db/schema', () => ({
 }));
 
 import { ticketsRoutes } from './tickets';
+
+const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+const STUB_TICKET = { id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1', subject: 'Printer' };
 
 function makeApp() {
   const app = new Hono();
@@ -175,5 +181,74 @@ describe('GET /tickets/stats', () => {
 
     // Ensure groupBy was used (not orderBy) — the mock resolves via dbGroupByMock
     expect(dbGroupByMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /tickets/:id — scoped pre-check', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns 404 when getScopedTicketOr404 finds no row even if service would succeed', async () => {
+    // The scoped SELECT returns nothing (out-of-scope or missing ticket)
+    dbSelectMock.mockResolvedValue([]);
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Ticket not found');
+  });
+
+  it('returns the ticket when the scoped lookup resolves a row', async () => {
+    // First call: getScopedTicketOr404 (the .limit(1) select)
+    // Second call onwards: child queries (comments, alertLinks) — return empty arrays
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET]) // scoped ticket lookup
+      .mockResolvedValue([]);               // comments + alert links child queries
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ id: TICKET_ID, subject: 'Printer' });
+  });
+});
+
+describe('PATCH /tickets/:id — scoped update', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns 404 when the scoped UPDATE returns no rows (ticket out of scope)', async () => {
+    // PATCH goes directly to db.update(); returning empty array = out-of-scope / missing
+    const { db } = await import('../../db');
+    (db.update as any).mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+      }))
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Updated subject' })
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Ticket not found');
+  });
+
+  it('returns the updated ticket when it is in scope', async () => {
+    const updatedTicket = { ...STUB_TICKET, subject: 'Updated subject' };
+    const { db } = await import('../../db');
+    (db.update as any).mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([updatedTicket])) }))
+      }))
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Updated subject' })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ subject: 'Updated subject' });
   });
 });

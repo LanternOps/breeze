@@ -40,6 +40,57 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
   throw err;
 }
 
+/**
+ * Defense-in-depth app-layer scoping for ticket lookups.
+ * RLS is the primary tenant-isolation layer; this adds an explicit WHERE
+ * clause matching the house convention from alerts/helpers.ts.
+ *
+ * - organization scope: requires auth.orgId (403 if missing), adds eq(orgId)
+ * - partner scope: adds eq(partnerId, auth.partnerId)
+ * - system scope: no extra condition (unrestricted)
+ *
+ * Returns the ticket row, or null when not visible in the caller's scope.
+ */
+async function getScopedTicketOr404(
+  auth: AuthContext,
+  id: string
+): Promise<(typeof tickets.$inferSelect) | null> {
+  const conditions: SQL[] = [eq(tickets.id, id)];
+
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return null; // 403 callers: treat as not-found for consistency
+    conditions.push(eq(tickets.orgId, auth.orgId));
+  } else if (auth.scope === 'partner') {
+    if (!auth.partnerId) return null;
+    conditions.push(eq(tickets.partnerId, auth.partnerId));
+  }
+  // system scope: no extra condition
+
+  const rows = await db
+    .select()
+    .from(tickets)
+    .where(and(...conditions))
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+/**
+ * Build the scope conditions for bulk queries (stats, list).
+ * Returns an array of SQL conditions to splice into a caller's conditions array.
+ * Caller is responsible for checking auth.orgId and returning 403 before calling
+ * this when scope === 'organization' and orgId is missing.
+ */
+function buildScopeConditions(auth: AuthContext): SQL[] {
+  const conditions: SQL[] = [];
+  if (auth.scope === 'organization' && auth.orgId) {
+    conditions.push(eq(tickets.orgId, auth.orgId));
+  } else if (auth.scope === 'partner' && auth.partnerId) {
+    conditions.push(eq(tickets.partnerId, auth.partnerId));
+  }
+  return conditions;
+}
+
 // GET /tickets/stats — queue counts for tabs + dashboard widget
 // MUST be registered BEFORE GET /:id or 'stats' is captured by the param route.
 ticketsRoutes.get(
@@ -48,8 +99,10 @@ ticketsRoutes.get(
   requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const conditions: SQL[] = [];
-    if (auth.scope === 'organization' && auth.orgId) conditions.push(eq(tickets.orgId, auth.orgId));
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const conditions: SQL[] = buildScopeConditions(auth);
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -93,6 +146,8 @@ ticketsRoutes.get(
     if (auth.scope === 'organization') {
       if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
       conditions.push(eq(tickets.orgId, auth.orgId));
+    } else if (auth.scope === 'partner' && auth.partnerId) {
+      conditions.push(eq(tickets.partnerId, auth.partnerId));
     }
     if (q.orgId) conditions.push(eq(tickets.orgId, q.orgId));
     if (q.status) conditions.push(eq(tickets.status, q.status));
@@ -180,14 +235,14 @@ ticketsRoutes.get(
   requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
   zValidator('param', idParam),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
 
-    const ticketRows = await db
-      .select()
-      .from(tickets)
-      .where(eq(tickets.id, id))
-      .limit(1);
-    const ticket = ticketRows[0];
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const ticket = await getScopedTicketOr404(auth, id);
     if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
 
     const comments = await db
@@ -221,14 +276,28 @@ ticketsRoutes.patch(
   zValidator('param', idParam),
   zValidator('json', updateTicketSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
     if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+
+    // Build the scoped WHERE for the UPDATE itself so the DB also sees the constraint.
+    const updateConditions: SQL[] = [eq(tickets.id, id)];
+    if (auth.scope === 'organization' && auth.orgId) {
+      updateConditions.push(eq(tickets.orgId, auth.orgId));
+    } else if (auth.scope === 'partner' && auth.partnerId) {
+      updateConditions.push(eq(tickets.partnerId, auth.partnerId));
+    }
+
     const updated = await db
       .update(tickets)
       .set({ ...body, updatedAt: new Date() })
-      .where(eq(tickets.id, id))
+      .where(and(...updateConditions))
       .returning();
     if (!updated[0]) return c.json({ error: 'Ticket not found' }, 404);
     return c.json({ data: updated[0] });
@@ -243,8 +312,17 @@ ticketsRoutes.post(
   zValidator('param', idParam),
   zValidator('json', changeTicketStatusSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
+
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
     try {
       const ticket = await changeTicketStatus(id, body.status, {
         resolutionNote: body.resolutionNote,
@@ -265,8 +343,17 @@ ticketsRoutes.post(
   zValidator('param', idParam),
   zValidator('json', assignTicketSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const { assigneeId } = c.req.valid('json');
+
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
     try {
       const ticket = await assignTicket(id, assigneeId, actorFrom(c));
       return c.json({ data: ticket });
@@ -284,8 +371,17 @@ ticketsRoutes.post(
   zValidator('param', idParam),
   zValidator('json', addTicketCommentSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
+
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
     try {
       const result = await addTicketComment(id, body, actorFrom(c));
       return c.json({ data: result.comment }, 201);
@@ -303,8 +399,17 @@ ticketsRoutes.post(
   zValidator('param', idParam),
   zValidator('json', z.object({ alertId: z.string().uuid() })),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const { alertId } = c.req.valid('json');
+
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
     try {
       const link = await linkAlertToTicket(id, alertId, actorFrom(c));
       return c.json({ data: link }, 201);
@@ -321,7 +426,16 @@ ticketsRoutes.delete(
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
   zValidator('param', z.object({ id: z.string().uuid(), alertId: z.string().uuid() })),
   async (c) => {
+    const auth = c.get('auth');
     const { id, alertId } = c.req.valid('param');
+
+    // RLS is the primary isolation layer; this is defense-in-depth per house convention.
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
     try {
       await unlinkAlertFromTicket(id, alertId, actorFrom(c));
       return c.json({ success: true });
