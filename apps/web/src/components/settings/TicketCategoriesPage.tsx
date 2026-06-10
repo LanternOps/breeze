@@ -11,13 +11,20 @@ interface Category {
 export default function TicketCategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [name, setName] = useState('');
   const [color, setColor] = useState('#1c8a9e');
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetchWithAuth('/ticket-categories');
-    if (res.ok) setCategories((await res.json()).data ?? []);
+    setError(false);
+    try {
+      const res = await fetchWithAuth('/ticket-categories');
+      if (res.ok) setCategories((await res.json()).data ?? []);
+      else setError(true);
+    } catch {
+      setError(true);
+    }
     setLoading(false);
   }, []);
 
@@ -75,6 +82,11 @@ export default function TicketCategoriesPage() {
         <tbody className="divide-y">
           {loading ? (
             <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">Loading.</td></tr>
+          ) : error ? (
+            <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground" data-testid="ticket-categories-error">
+              Categories failed to load.{' '}
+              <button type="button" onClick={() => void load()} className="underline hover:text-foreground" data-testid="ticket-categories-retry">Retry</button>
+            </td></tr>
           ) : categories.length === 0 ? (
             <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground" data-testid="ticket-categories-empty">No categories yet. Add the first one above.</td></tr>
           ) : categories.map((c) => (

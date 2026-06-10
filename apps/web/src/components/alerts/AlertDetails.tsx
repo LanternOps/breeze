@@ -13,7 +13,7 @@ import {
   Ticket
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { runAction } from '../../lib/runAction';
+import { runAction, ActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import {
@@ -382,7 +382,7 @@ export default function AlertDetails({
                 onUnauthorized: () => void navigateTo('/login', { replace: true })
               })
                 .then((r) => void navigateTo(`/tickets#${r.data.internalNumber ?? r.data.id}`))
-                .catch(() => undefined); // runAction already surfaced the failure via toast
+                .catch((err) => { if (!(err instanceof ActionError)) throw err; }); // runAction already surfaced ActionError via toast
             }}
             title="Create a linked ticket pre-filled from this alert"
             className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"

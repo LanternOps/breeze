@@ -20,7 +20,7 @@ export default function CreateTicketPage() {
 
   useEffect(() => {
     void (async () => {
-      const [orgRes, catRes] = await Promise.all([fetchWithAuth('/orgs/organizations'), fetchWithAuth('/ticket-categories')]);
+      const [orgRes, catRes] = await Promise.all([fetchWithAuth('/orgs/organizations?limit=100'), fetchWithAuth('/ticket-categories')]);
       if (orgRes.ok) {
         const b = await orgRes.json();
         setOrgs((b.data ?? b.organizations ?? []).map((o: { id: string; name: string }) => ({ id: o.id, name: o.name })));
@@ -117,7 +117,7 @@ export default function CreateTicketPage() {
         </div>
       </div>
       <div className="flex justify-end gap-2">
-        <a href="/tickets" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Cancel</a>
+        <a href="/tickets" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="create-ticket-cancel">Cancel</a>
         <button type="submit" disabled={saving || !orgId || !subject.trim()} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" data-testid="create-ticket-submit">
           {saving ? 'Creating' : 'Create ticket'}
         </button>

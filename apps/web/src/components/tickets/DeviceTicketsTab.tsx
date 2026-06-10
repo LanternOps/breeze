@@ -7,17 +7,23 @@ import { cn } from '@/lib/utils';
 export default function DeviceTicketsTab({ deviceId }: { deviceId: string }) {
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       setLoading(true);
+      setError(false);
       try {
         const res = await fetchWithAuth(`/tickets?deviceId=${deviceId}&limit=50&sort=newest`);
         if (res.ok) {
           const body = await res.json();
           if (!cancelled) setTickets((body.data ?? []) as TicketSummary[]);
+        } else if (!cancelled) {
+          setError(true);
         }
+      } catch {
+        if (!cancelled) setError(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -26,7 +32,14 @@ export default function DeviceTicketsTab({ deviceId }: { deviceId: string }) {
   }, [deviceId]);
 
   if (loading) {
-    return <p className="p-4 text-sm text-muted-foreground">Loading tickets...</p>;
+    return <p className="p-4 text-sm text-muted-foreground" data-testid="device-tickets-loading">Loading tickets...</p>;
+  }
+  if (error) {
+    return (
+      <p className="p-4 text-sm text-muted-foreground" data-testid="device-tickets-error">
+        Tickets failed to load.
+      </p>
+    );
   }
   if (tickets.length === 0) {
     return (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -42,8 +42,10 @@ export default function TicketsPage() {
   const [error, setError] = useState<string>();
   const [selectedNumber, setSelectedNumber] = useState<string | null>(selectionFromHash);
   const [search, setSearch] = useState('');
+  const fetchSeq = useRef(0);
 
   const fetchTickets = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     setError(undefined);
     try {
@@ -56,11 +58,13 @@ export default function TicketsPage() {
         throw new Error('Tickets failed to load.');
       }
       const body = await res.json();
+      if (seq !== fetchSeq.current) return;
       setTickets(body.data ?? []);
     } catch (e) {
+      if (seq !== fetchSeq.current) return;
       setError(e instanceof Error ? e.message : 'Tickets failed to load.');
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [tab, search]);
 
@@ -94,8 +98,9 @@ export default function TicketsPage() {
   useEffect(() => {
     if (!loading && visible.length > 0 && !selected) {
       const first = visible[0];
-      window.location.hash = first.internalNumber ?? first.id;
-      setSelectedNumber(first.internalNumber ?? first.id);
+      const key = first.internalNumber ?? first.id;
+      history.replaceState(null, '', `#${key}`);
+      setSelectedNumber(key);
     }
   }, [loading, visible, selected]);
 
@@ -107,7 +112,7 @@ export default function TicketsPage() {
       return;
     }
     const key = t.internalNumber ?? t.id;
-    window.location.hash = key;
+    history.replaceState(null, '', `#${key}`);
     setSelectedNumber(key);
   }, []);
 
@@ -131,10 +136,11 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       void fetchTickets();
+      void fetchStats();
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
     }
-  }, [selected, fetchTickets]);
+  }, [selected, fetchTickets, fetchStats]);
 
   const focusComposer = useCallback((internal: boolean) => {
     const tabBtn = document.querySelector<HTMLButtonElement>(
@@ -166,7 +172,7 @@ export default function TicketsPage() {
     return null;
   };
 
-  const trueEmpty = !loading && tickets.length === 0 && tab === 'open' && !search;
+  const trueEmpty = !loading && tickets.length === 0 && tab === 'open' && !search && !error;
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="tickets-page">
@@ -214,15 +220,15 @@ export default function TicketsPage() {
             Tickets arrive from the customer portal, from alert rules, and from technicians. Create the first one, or wire an alert rule to open tickets automatically.
           </p>
           <div className="mt-3 flex gap-2">
-            <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90">Create ticket</a>
-            <a href="/settings/ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Ticketing settings</a>
+            <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">Create ticket</a>
+            <a href="/settings/ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">Ticketing settings</a>
           </div>
         </div>
       ) : error ? (
         <div className="flex flex-1 items-center justify-center" data-testid="tickets-error">
           <div className="text-center">
             <p className="text-sm text-muted-foreground">{error}</p>
-            <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Retry</button>
+            <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-error-retry">Retry</button>
           </div>
         </div>
       ) : (
