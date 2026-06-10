@@ -77,8 +77,21 @@ func TestUnitIsNotReHardened(t *testing.T) {
 		"ProtectSystem=",
 		"ProtectHome=",
 		"PrivateTmp=",
+		"PrivateDevices=",
 		"CapabilityBoundingSet",
 		"AmbientCapabilities",
+		// Other sandbox directives that are equally inherited by the terminal/
+		// script child processes and would re-break admin tasks (read-only FS,
+		// blocked syscalls/namespaces, no device nodes, etc.).
+		"ReadOnlyPaths=",
+		"ReadWritePaths=",
+		"InaccessiblePaths=",
+		"SystemCallFilter=",
+		"RestrictAddressFamilies=",
+		"RestrictNamespaces=",
+		"ProtectKernelModules=",
+		"ProtectKernelTunables=",
+		"MemoryDenyWriteExecute=",
 		// NoNewPrivileges=false is harmless (and was the old explicit value);
 		// only forbid turning it ON, which breaks sudo/su in the terminal.
 		"NoNewPrivileges=true",
