@@ -44,6 +44,7 @@ vi.mock('../db/schema', () => ({
     requestedAt: 'requestedAt',
     approvedAt: 'approvedAt',
     expiresAt: 'expiresAt',
+    executionId: 'executionId',
   },
   elevationAudit: { id: 'id' },
   pamRules: {
@@ -52,6 +53,7 @@ vi.mock('../db/schema', () => ({
     priority: 'priority',
     createdAt: 'createdAt',
   },
+  aiToolExecutions: { id: 'id', status: 'status' },
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -91,12 +93,15 @@ function setAuth() {
 interface TxRigOptions {
   row?: Record<string, unknown> | null;
   casWins?: boolean;
+  /** Whether the ai_tool_action execution mirror CAS flips a row (default true). */
+  mirrorWins?: boolean;
 }
 
 function rigTransaction(opts: TxRigOptions) {
   const updateSetCalls: unknown[] = [];
   const auditInserts: unknown[] = [];
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+    let updateCallCount = 0;
     const tx = {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
@@ -105,20 +110,23 @@ function rigTransaction(opts: TxRigOptions) {
           })),
         })),
       })),
-      update: vi.fn(() => ({
-        set: vi.fn((setArg: unknown) => {
-          updateSetCalls.push(setArg);
-          return {
-            where: vi.fn(() => ({
-              returning: vi
-                .fn()
-                .mockResolvedValue(
-                  opts.casWins ? [{ id: REQ_ID, status: 'approved' }] : [],
-                ),
-            })),
-          };
-        }),
-      })),
+      update: vi.fn(() => {
+        updateCallCount += 1;
+        const isMirror = updateCallCount > 1;
+        const wins = isMirror ? (opts.mirrorWins ?? true) : opts.casWins;
+        return {
+          set: vi.fn((setArg: unknown) => {
+            updateSetCalls.push(setArg);
+            return {
+              where: vi.fn(() => ({
+                returning: vi
+                  .fn()
+                  .mockResolvedValue(wins ? [{ id: REQ_ID, status: 'approved' }] : []),
+              })),
+            };
+          }),
+        };
+      }),
       insert: vi.fn(() => ({
         values: vi.fn((v: unknown) => {
           auditInserts.push(v);
@@ -298,6 +306,61 @@ describe('POST /pam/rules', () => {
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
   });
 
+  it('creates a tool-action rule (matchToolName only)', async () => {
+    const returning = vi.fn().mockResolvedValue([
+      { id: 'rule-2', name: 'govern services', verdict: 'require_approval', priority: 100 },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ returning })),
+    } as any);
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'govern services',
+        verdict: 'require_approval',
+        matchToolName: 'manage_services',
+        matchRiskTier: 2,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { matchToolName: string; matchRiskTier: number };
+    expect(valuesArg.matchToolName).toBe('manage_services');
+    expect(valuesArg.matchRiskTier).toBe(2);
+  });
+
+  it('rejects a rule mixing executable and tool-action criteria (400)', async () => {
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'mixed rule',
+        verdict: 'auto_approve',
+        matchHash: 'a'.repeat(64),
+        matchToolName: 'manage_services',
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it("rejects verdict 'ignore' on a tool-action rule (400)", async () => {
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'ignore tool rule',
+        verdict: 'ignore',
+        matchToolName: 'manage_services',
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
   it('creates a rule with a criterion and lowercases the hash', async () => {
     const returning = vi.fn().mockResolvedValue([
       { id: 'rule-1', name: 'allow tool', verdict: 'auto_approve', priority: 100 },
@@ -321,5 +384,174 @@ describe('POST /pam/rules', () => {
       .calls[0][0] as { matchHash: string; orgId: string };
     expect(valuesArg.matchHash).toBe('a'.repeat(64));
     expect(valuesArg.orgId).toBe(ORG_ID);
+  });
+});
+
+describe('ai_tool_action elevation requests (Phase 1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    busMocks.publishEvent.mockResolvedValue('evt');
+  });
+
+  const toolActionRow = {
+    id: REQ_ID,
+    orgId: ORG_ID,
+    siteId: null,
+    deviceId: 'dev-1',
+    flowType: 'ai_tool_action',
+    status: 'pending',
+    executionId: 'exec-1',
+  };
+
+  function mockListSelect(rows: unknown[] = [], total = 0) {
+    vi.mocked(db.select).mockImplementation(((sel: Record<string, unknown> | undefined) => {
+      const isCount = Boolean(sel && 'total' in sel);
+      const chain: any = Promise.resolve(isCount ? [{ total }] : rows);
+      chain.from = vi.fn(() => chain);
+      chain.leftJoin = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      chain.offset = vi.fn(() => chain);
+      return chain;
+    }) as any);
+  }
+
+  it('accepts flowType=ai_tool_action on the list filter', async () => {
+    mockListSelect([], 0);
+    const res = await app().request('/pam/elevation-requests?flowType=ai_tool_action');
+    expect(res.status).toBe(200);
+  });
+
+  it('still rejects unknown flowType values', async () => {
+    mockListSelect([], 0);
+    const res = await app().request('/pam/elevation-requests?flowType=bogus');
+    expect(res.status).toBe(400);
+  });
+
+  it('approve mirrors the linked execution to approved in the same transaction', async () => {
+    const { updateSetCalls } = rigTransaction({ row: toolActionRow, casWins: true, mirrorWins: true });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateSetCalls.length).toBe(2);
+    const mirrorSet = updateSetCalls[1] as { status: string; approvedBy: string };
+    expect(mirrorSet.status).toBe('approved');
+    expect(mirrorSet.approvedBy).toBe(USER_ID);
+  });
+
+  it('deny mirrors the linked execution to rejected', async () => {
+    const { updateSetCalls } = rigTransaction({ row: toolActionRow, casWins: true, mirrorWins: true });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'deny', reason: 'not on my watch' }),
+    });
+
+    expect(res.status).toBe(200);
+    const mirrorSet = updateSetCalls[1] as { status: string };
+    expect(mirrorSet.status).toBe('rejected');
+  });
+
+  it('409s (and rolls back) when the linked execution is no longer pending', async () => {
+    rigTransaction({ row: toolActionRow, casWins: true, mirrorWins: false });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('uac_intercept respond never touches the execution mirror', async () => {
+    const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateSetCalls.length).toBe(1);
+  });
+});
+
+describe('PATCH /pam/rules/:id shape validation (Phase 1)', () => {
+  const RULE_ID = '7b41c9a2-0000-4000-8000-000000000009';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  function mockExistingRule(rule: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([rule]),
+        })),
+      })),
+    } as any);
+  }
+
+  const toolRule = {
+    id: RULE_ID,
+    orgId: ORG_ID,
+    name: 'tool rule',
+    matchSigner: null,
+    matchHash: null,
+    matchPathGlob: null,
+    matchParentImage: null,
+    matchUser: null,
+    matchAdGroup: null,
+    matchToolName: 'manage_services',
+    matchRiskTier: null,
+    verdict: 'require_approval',
+  };
+
+  it('rejects an update that strips the last criterion (400)', async () => {
+    mockExistingRule(toolRule);
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchToolName: null }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('rejects an update that mixes executable criteria onto a tool-action rule (400)', async () => {
+    mockExistingRule(toolRule);
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchHash: 'a'.repeat(64) }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it("rejects flipping a tool-action rule's verdict to ignore (400)", async () => {
+    mockExistingRule(toolRule);
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verdict: 'ignore' }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
   });
 });

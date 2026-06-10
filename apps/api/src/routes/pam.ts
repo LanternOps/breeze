@@ -35,7 +35,21 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { writeAuditEvent } from '../services/auditEvents';
 import { publishEvent, type EventType } from '../services/eventBus';
+import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { resolveOrgIdForWrite } from './softwarePolicies';
+
+/**
+ * Thrown inside the respond transaction when an ai_tool_action elevation is
+ * decided but its linked ai_tool_executions row is no longer pending (the
+ * SDK gate's 5-minute wait already timed out and rejected it). Approving
+ * the elevation anyway would be a lie — the throw rolls the whole
+ * transaction back and the handler returns 409.
+ */
+class StaleExecutionError extends Error {
+  constructor() {
+    super('Linked tool execution is no longer pending');
+  }
+}
 
 const requirePamRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -98,7 +112,7 @@ const listQuerySchema = z.object({
   status: z
     .enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating'])
     .optional(),
-  flowType: z.enum(['uac_intercept', 'tech_jit_admin']).optional(),
+  flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
   deviceId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   from: z.string().datetime({ offset: true }).optional(),
@@ -235,68 +249,107 @@ pamRoutes.post(
     const approve = body.decision === 'approve';
     const durationMinutes = body.durationMinutes ?? DEFAULT_APPROVAL_DURATION_MINUTES;
 
-    const result = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .select({
-          id: elevationRequests.id,
-          orgId: elevationRequests.orgId,
-          siteId: elevationRequests.siteId,
-          deviceId: elevationRequests.deviceId,
-          flowType: elevationRequests.flowType,
-          status: elevationRequests.status,
-        })
-        .from(elevationRequests)
-        .where(eq(elevationRequests.id, id))
-        .limit(1);
+    let result:
+      | { kind: 'not_found' }
+      | { kind: 'forbidden' }
+      | { kind: 'conflict'; currentStatus: string }
+      | {
+          kind: 'ok';
+          row: { id: string; orgId: string; deviceId: string; flowType: string };
+          newStatus: string;
+        };
+    try {
+      result = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({
+            id: elevationRequests.id,
+            orgId: elevationRequests.orgId,
+            siteId: elevationRequests.siteId,
+            deviceId: elevationRequests.deviceId,
+            flowType: elevationRequests.flowType,
+            status: elevationRequests.status,
+            executionId: elevationRequests.executionId,
+          })
+          .from(elevationRequests)
+          .where(eq(elevationRequests.id, id))
+          .limit(1);
 
-      if (!row) return { kind: 'not_found' as const };
-      if (!auth.canAccessOrg(row.orgId)) return { kind: 'not_found' as const };
-      if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
-        return { kind: 'forbidden' as const };
-      }
+        if (!row) return { kind: 'not_found' as const };
+        if (!auth.canAccessOrg(row.orgId)) return { kind: 'not_found' as const };
+        if (perms && row.siteId && !canAccessSite(perms, row.siteId)) {
+          return { kind: 'forbidden' as const };
+        }
 
-      // CAS: only a pending row can be decided. The WHERE clause re-checks
-      // status so a concurrent respond/reaper loses cleanly (0 rows).
-      const updated = await tx
-        .update(elevationRequests)
-        .set(
-          approve
-            ? {
-                status: 'approved',
-                approvedByUserId: auth.user.id,
-                approvedAt: now,
-                expiresAt: new Date(now.getTime() + durationMinutes * 60_000),
-                updatedAt: now,
-              }
-            : {
-                status: 'denied',
-                deniedByUserId: auth.user.id,
-                denialReason: body.reason ?? null,
-                updatedAt: now,
-              },
-        )
-        .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))
-        .returning({ id: elevationRequests.id, status: elevationRequests.status });
+        // CAS: only a pending row can be decided. The WHERE clause re-checks
+        // status so a concurrent respond/reaper loses cleanly (0 rows).
+        const updated = await tx
+          .update(elevationRequests)
+          .set(
+            approve
+              ? {
+                  status: 'approved',
+                  approvedByUserId: auth.user.id,
+                  approvedAt: now,
+                  expiresAt: new Date(now.getTime() + durationMinutes * 60_000),
+                  updatedAt: now,
+                }
+              : {
+                  status: 'denied',
+                  deniedByUserId: auth.user.id,
+                  denialReason: body.reason ?? null,
+                  updatedAt: now,
+                },
+          )
+          .where(and(eq(elevationRequests.id, id), eq(elevationRequests.status, 'pending')))
+          .returning({ id: elevationRequests.id, status: elevationRequests.status });
 
-      if (updated.length === 0) {
-        return { kind: 'conflict' as const, currentStatus: row.status };
-      }
+        if (updated.length === 0) {
+          return { kind: 'conflict' as const, currentStatus: row.status };
+        }
 
-      await tx.insert(elevationAudit).values({
-        orgId: row.orgId,
-        elevationRequestId: row.id,
-        eventType: approve ? 'approved' : 'denied',
-        actor: 'technician',
-        actorUserId: auth.user.id,
-        details: {
-          reason: body.reason,
-          ...(approve ? { duration_minutes: durationMinutes } : {}),
-        },
-        occurredAt: now,
+        await tx.insert(elevationAudit).values({
+          orgId: row.orgId,
+          elevationRequestId: row.id,
+          eventType: approve ? 'approved' : 'denied',
+          actor: 'technician',
+          actorUserId: auth.user.id,
+          details: {
+            reason: body.reason,
+            ...(approve ? { duration_minutes: durationMinutes } : {}),
+          },
+          occurredAt: now,
+        });
+
+        // ai_tool_action rows: mirror the decision onto the linked
+        // ai_tool_executions row the SDK gate is polling — in the SAME
+        // transaction (Phase 1, security finding A). If the execution is no
+        // longer pending, roll everything back and 409.
+        if (row.flowType === 'ai_tool_action' && row.executionId) {
+          const flipped = await mirrorElevationDecisionToExecution(
+            tx,
+            row.executionId,
+            approve,
+            approve ? auth.user.id : null,
+          );
+          if (!flipped) {
+            throw new StaleExecutionError();
+          }
+        }
+
+        return { kind: 'ok' as const, row, newStatus: updated[0]!.status };
       });
-
-      return { kind: 'ok' as const, row, newStatus: updated[0]!.status };
-    });
+    } catch (err) {
+      if (err instanceof StaleExecutionError) {
+        return c.json(
+          {
+            success: false,
+            error: 'Linked tool execution is no longer pending (it likely timed out)',
+          },
+          409,
+        );
+      }
+      throw err;
+    }
 
     if (result.kind === 'not_found') {
       return c.json({ error: 'Elevation request not found' }, 404);
@@ -498,6 +551,8 @@ const ruleBaseSchema = z.object({
   matchParentImage: z.string().min(1).max(4096).nullable().optional(),
   matchUser: z.string().min(1).max(255).nullable().optional(),
   matchAdGroup: z.string().min(1).max(255).nullable().optional(),
+  matchToolName: z.string().min(1).max(100).nullable().optional(),
+  matchRiskTier: z.number().int().min(0).max(4).nullable().optional(),
   timeWindow: timeWindowSchema.nullable().optional(),
   verdict: z.enum(['auto_approve', 'auto_deny', 'require_approval', 'ignore']),
   approvalDurationMinutes: z
@@ -509,22 +564,64 @@ const ruleBaseSchema = z.object({
     .optional(),
 });
 
-// A rule must carry at least one executable-identifying criterion. A rule
-// scoped only by time window (or nothing) must never exist — it would match
-// every elevation in the org (catastrophic for verdict=auto_approve).
-function hasExecutableCriterion(rule: {
+type RuleCriteriaShape = {
   matchSigner?: string | null;
   matchHash?: string | null;
   matchPathGlob?: string | null;
   matchParentImage?: string | null;
   matchUser?: string | null;
   matchAdGroup?: string | null;
-}): boolean {
-  return ruleCriteriaFields.some((f) => Boolean(rule[f]));
+  matchToolName?: string | null;
+  matchRiskTier?: number | null;
+  verdict?: 'auto_approve' | 'auto_deny' | 'require_approval' | 'ignore';
+};
+
+// A rule must carry at least one identifying criterion. A rule scoped only
+// by time window (or nothing) must never exist — it would match every
+// elevation in the org (catastrophic for verdict=auto_approve).
+function hasAnyCriterion(rule: RuleCriteriaShape): boolean {
+  return ruleCriteriaFields.some((f) => Boolean(rule[f])) || hasToolActionCriteria(rule);
 }
 
-const createRuleSchema = ruleBaseSchema.refine(hasExecutableCriterion, {
-  message: 'At least one match criterion (signer/hash/path/parent/user/group) is required',
+// Binary-identifying criteria — what makes a rule executable-shaped (user/
+// group/time only narrow; they don't identify a binary).
+const executableCriteriaFields = [
+  'matchSigner',
+  'matchHash',
+  'matchPathGlob',
+  'matchParentImage',
+] as const;
+
+function hasToolActionCriteria(rule: RuleCriteriaShape): boolean {
+  return Boolean(rule.matchToolName) || rule.matchRiskTier != null;
+}
+
+function hasExecutableShapeCriteria(rule: RuleCriteriaShape): boolean {
+  return executableCriteriaFields.some((f) => Boolean(rule[f]));
+}
+
+/**
+ * A rule is either executable-shaped or tool-action-shaped (Phase 1 helper
+ * governance) — mixing the two is rejected because no single candidate
+ * carries both kinds of field, so a mixed rule could never match anything.
+ * Returns an error string, or null when the rule shape is valid.
+ */
+function validateRuleShape(rule: RuleCriteriaShape): string | null {
+  if (!hasAnyCriterion(rule)) {
+    return 'At least one match criterion (signer/hash/path/parent/user/group/tool/tier) is required';
+  }
+  if (hasExecutableShapeCriteria(rule) && hasToolActionCriteria(rule)) {
+    return 'A rule cannot mix executable criteria with tool-action criteria';
+  }
+  if (hasToolActionCriteria(rule) && rule.verdict === 'ignore') {
+    return "verdict 'ignore' is not valid for tool-action rules — a tool action must be decided";
+  }
+  return null;
+}
+
+const createRuleSchema = ruleBaseSchema.superRefine((rule, ctx) => {
+  const err = validateRuleShape(rule);
+  if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
 });
 
 pamRoutes.get('/rules', requirePamRead, async (c) => {
@@ -561,6 +658,8 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
       matchParentImage: payload.matchParentImage ?? null,
       matchUser: payload.matchUser ?? null,
       matchAdGroup: payload.matchAdGroup ?? null,
+      matchToolName: payload.matchToolName ?? null,
+      matchRiskTier: payload.matchRiskTier ?? null,
       timeWindow: payload.timeWindow ?? null,
       verdict: payload.verdict,
       approvalDurationMinutes: payload.approvalDurationMinutes ?? null,
@@ -600,13 +699,12 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
     return c.json({ error: 'Rule not found' }, 404);
   }
 
-  // The merged result must still carry at least one criterion.
+  // The merged result must still be a valid rule shape (criterion present,
+  // no executable/tool-action mixing, no ignore on tool-action rules).
   const merged = { ...existing, ...payload };
-  if (!hasExecutableCriterion(merged)) {
-    return c.json(
-      { error: 'At least one match criterion (signer/hash/path/parent/user/group) is required' },
-      400,
-    );
+  const shapeError = validateRuleShape(merged);
+  if (shapeError) {
+    return c.json({ error: shapeError }, 400);
   }
 
   const [updated] = await db
@@ -627,6 +725,8 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
         : {}),
       ...(payload.matchUser !== undefined ? { matchUser: payload.matchUser } : {}),
       ...(payload.matchAdGroup !== undefined ? { matchAdGroup: payload.matchAdGroup } : {}),
+      ...(payload.matchToolName !== undefined ? { matchToolName: payload.matchToolName } : {}),
+      ...(payload.matchRiskTier !== undefined ? { matchRiskTier: payload.matchRiskTier } : {}),
       ...(payload.timeWindow !== undefined ? { timeWindow: payload.timeWindow } : {}),
       ...(payload.verdict !== undefined ? { verdict: payload.verdict } : {}),
       ...(payload.approvalDurationMinutes !== undefined
