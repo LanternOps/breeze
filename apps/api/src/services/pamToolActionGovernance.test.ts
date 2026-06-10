@@ -112,7 +112,7 @@ function mockInserts(elevationId = 'elev-1') {
 
 function mockUpdate(flippedRows: Array<{ id: string }>) {
   const where = vi.fn(() => ({ returning: vi.fn().mockResolvedValue(flippedRows) }));
-  const set = vi.fn(() => ({ where }));
+  const set = vi.fn((_vals: Record<string, unknown>) => ({ where }));
   vi.mocked(db.update).mockReturnValue({ set } as any);
   return { set, where };
 }
@@ -288,7 +288,7 @@ describe('mirrorElevationDecisionToExecution', () => {
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: 'user-9' }),
     );
-    expect(set.mock.calls[0]![0].approvedAt).toBeInstanceOf(Date);
+    expect(set.mock.calls[0]?.[0]?.approvedAt).toBeInstanceOf(Date);
   });
 
   it('flips pending → rejected', async () => {

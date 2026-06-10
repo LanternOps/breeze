@@ -94,7 +94,7 @@ async function decideInContext(params: ToolActionParams): Promise<ToolActionDeci
   const now = new Date();
 
   const [device] = await db
-    .select({ siteId: devices.siteId, partnerId: devices.partnerId })
+    .select({ siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, params.deviceId))
     .limit(1);
@@ -136,7 +136,7 @@ async function decideInContext(params: ToolActionParams): Promise<ToolActionDeci
     .values({
       orgId: params.orgId,
       siteId,
-      partnerId: device?.partnerId ?? null,
+      // partner_id stays null, matching the uac_intercept ingest.
       deviceId: params.deviceId,
       flowType: 'ai_tool_action',
       subjectUserId: null,

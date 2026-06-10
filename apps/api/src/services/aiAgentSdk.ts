@@ -23,6 +23,7 @@ import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './au
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
 import { buildApprovalPush, getUserPushTokens, sendExpoPush } from './expoPush';
+import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 
@@ -263,6 +264,91 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // wrapped in withDbAccessContext({scope:'organization', orgId: session.orgId, ...})
     // to set the correct PostgreSQL GUCs under RLS.
     if (guardrailCheck.tier >= 2) {
+      // Helper sessions: PAM governs (Phase 1, security finding A). This
+      // branch precedes the auto_approve/plan shortcuts on purpose — a
+      // helper token must never self-relax the approval gate. The
+      // approval_requests/mobile bridge is skipped: the synthetic helper
+      // "user" id is a device id (no users-FK row, no mobile owner).
+      // Approval happens via POST /pam/elevation-requests/:id/respond
+      // (separate identity), which mirrors onto this execution row.
+      if (session.auth.helperDeviceId) {
+        const helperDeviceId = session.auth.helperDeviceId;
+        let helperExec: { id: string } | undefined;
+        try {
+          const [row] = await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .insert(aiToolExecutions)
+                .values({
+                  sessionId: session.breezeSessionId,
+                  toolName,
+                  toolInput: input,
+                  status: 'pending',
+                })
+                .returning()
+          );
+          helperExec = row;
+        } catch (err) {
+          console.error('[AI-SDK] Failed to create helper approval record:', toolName, err);
+          return { allowed: false, error: 'Failed to create approval record' };
+        }
+        if (!helperExec) {
+          return { allowed: false, error: 'Failed to create approval record' };
+        }
+
+        session.eventBus.publish({
+          type: 'approval_required',
+          executionId: helperExec.id,
+          toolName,
+          input,
+          description: guardrailCheck.description ?? `Execute ${toolName}`,
+          requiresAdminApproval: true,
+        });
+
+        const decision = await decideHelperToolAction({
+          orgId: session.orgId,
+          deviceId: helperDeviceId,
+          executionId: helperExec.id,
+          toolName: stripMcpPrefix(toolName),
+          toolInput: input as Record<string, unknown>,
+          riskTier: guardrailCheck.tier,
+          subjectUsername: session.auth.user.name ?? 'helper',
+        });
+
+        if (decision === 'denied') {
+          return { allowed: false, error: 'This action was denied by organization policy' };
+        }
+
+        // Block until PAM decides (an auto-approved elevation has already
+        // flipped the row, so this returns on the first poll).
+        const approved = await waitForApproval(
+          helperExec.id,
+          300_000,
+          session.abortController.signal,
+        );
+        if (!approved) {
+          return {
+            allowed: false,
+            error: 'Tool execution was rejected or timed out awaiting administrator approval',
+          };
+        }
+
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .update(aiToolExecutions)
+                .set({ status: 'executing' })
+                .where(eq(aiToolExecutions.id, helperExec!.id))
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to update helper approval to executing:', helperExec.id, err);
+        }
+        return { allowed: true };
+      }
+
       // Determine effective approval mode (pause overrides to per_step)
       const effectiveMode: AiApprovalMode = session.isPaused ? 'per_step' : session.approvalMode;
 

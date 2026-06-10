@@ -93,6 +93,12 @@ vi.mock('./expoPush', () => ({
   buildApprovalPush: (...args: unknown[]) => mockBuildApprovalPush(...args),
 }));
 
+const mockDecideHelperToolAction = vi.fn();
+vi.mock('./pamToolActionGovernance', () => ({
+  decideHelperToolAction: (...args: unknown[]) => mockDecideHelperToolAction(...args),
+  mirrorElevationDecisionToExecution: vi.fn(),
+}));
+
 // ============================================
 // Test helpers
 // ============================================
@@ -595,6 +601,132 @@ describe('createSessionPreToolUse', () => {
     });
     expect(checkGuardrails).not.toHaveBeenCalled();
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  describe('helper sessions (PAM governance, Phase 1)', () => {
+    function makeHelperSession(overrides: Record<string, unknown> = {}) {
+      return makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: 'device-7',
+          user: { id: 'device-7', email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+        approvalMode: 'per_step',
+        ...overrides,
+      });
+    }
+
+    it('routes tier-2 tools through PAM governance, skipping the approval_requests bridge and push', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      const { values } = mockInsertReturning({ id: 'exec-h1' });
+      mockDecideHelperToolAction.mockResolvedValue('pending');
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeHelperSession();
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'forged' });
+
+      expect(result).toEqual({ allowed: true });
+      // Only the ai_tool_executions insert — NO approval_requests row.
+      expect(values).toHaveBeenCalledTimes(1);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-1',
+        toolName: 'take_screenshot',
+        status: 'pending',
+      }));
+      expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+      expect(mockSendExpoPush).not.toHaveBeenCalled();
+
+      expect(mockDecideHelperToolAction).toHaveBeenCalledWith({
+        orgId: 'org-1',
+        deviceId: 'device-7',
+        executionId: 'exec-h1',
+        toolName: 'take_screenshot',
+        toolInput: { deviceId: 'forged' },
+        riskTier: 2,
+        subjectUsername: 'HOST-01',
+      });
+
+      // SSE event marks the approval as admin-side.
+      expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-h1',
+        requiresAdminApproval: true,
+      }));
+
+      expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal));
+      // Marked executing after approval.
+      expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
+    });
+
+    it('policy auto-deny short-circuits without waiting', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-h2' });
+      mockDecideHelperToolAction.mockResolvedValue('denied');
+      const session = makeHelperSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'This action was denied by organization policy',
+      });
+      expect(waitForApproval).not.toHaveBeenCalled();
+    });
+
+    it('rejection or timeout after pending decision denies the tool', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-h3' });
+      mockDecideHelperToolAction.mockResolvedValue('pending');
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeHelperSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Tool execution was rejected or timed out awaiting administrator approval',
+      });
+    });
+
+    it('auto_approve session mode cannot bypass PAM for helper sessions', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      const { values } = mockInsertReturning({ id: 'exec-h4' });
+      mockDecideHelperToolAction.mockResolvedValue('auto_approved');
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeHelperSession({ approvalMode: 'auto_approve' });
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', {});
+
+      expect(result).toEqual({ allowed: true });
+      // Went through governance, not the auto-approve 'executing' fast path.
+      expect(mockDecideHelperToolAction).toHaveBeenCalled();
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' }));
+      expect(waitForApproval).toHaveBeenCalled();
+    });
   });
 
   it('matches session allowlists across MCP server prefixes', async () => {
