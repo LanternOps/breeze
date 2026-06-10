@@ -63,13 +63,21 @@ func isDowngrade(target, current string) bool {
 // unparseable installed version means we cannot prove the directive isn't
 // a downgrade replay.
 //
-// An empty installed version means the helper isn't installed yet — that is
-// a fresh install, not a downgrade, so it is allowed.
-func helperUpgradeAllowed(target, installed string) (allowed bool, reason string) {
+// An empty installed version is only treated as a fresh install (allowed)
+// when the helper binary is genuinely absent from disk (installedOnDisk
+// false). If the binary IS on disk but its version is unreadable — e.g. no
+// user session has written a status file yet, or a status read failed — we
+// must FAIL CLOSED: an attacker-replayed older signed release could otherwise
+// be installed during that window. Distinguishing "absent" from "present but
+// version unknown" is the caller's job (helper.Manager.IsInstalled()).
+func helperUpgradeAllowed(target, installed string, installedOnDisk bool) (allowed bool, reason string) {
 	if _, _, _, ok := parseSemver(target); !ok {
 		return false, "target version is not a parseable semver"
 	}
 	if strings.TrimSpace(installed) == "" {
+		if installedOnDisk {
+			return false, "helper present on disk but installed version is unreadable; cannot rule out downgrade replay"
+		}
 		// Helper not installed yet — fresh install, not a downgrade.
 		return true, ""
 	}

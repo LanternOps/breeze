@@ -490,6 +490,13 @@ func (m *Manager) isInstalled() bool {
 	return err == nil
 }
 
+// IsInstalled reports whether the helper binary is present on disk. Exported
+// so the heartbeat downgrade guard can distinguish "not installed" from
+// "installed but version unreadable" (the latter must fail closed).
+func (m *Manager) IsInstalled() bool {
+	return m.isInstalled()
+}
+
 // downloadAndInstall downloads, INTEGRITY-VERIFIES, and installs the
 // platform-appropriate helper package for the given target version.
 //

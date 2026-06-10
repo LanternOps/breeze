@@ -2322,7 +2322,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
 		installedHelper := h.helperMgr.InstalledVersion()
-		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper); !allowed {
+		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, h.helperMgr.IsInstalled()); !allowed {
 			// SECURITY: never auto-downgrade the helper. The signed manifest
 			// only binds manifest.Release == requested version, so a
 			// compromised/MITM'd control plane could replay an older,
