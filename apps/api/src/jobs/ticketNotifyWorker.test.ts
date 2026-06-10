@@ -182,6 +182,16 @@ describe('handleTicketEvent', () => {
     expect(call.html).not.toContain('<script>');
   });
 
+  it('ticket.updated is an explicit no-op — no ticket lookup, no insert, no email', async () => {
+    await handleTicketEvent({
+      type: 'ticket.updated', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { changed: ['subject', 'priority'] }
+    });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
   it('ticket.status_changed to pending sends no email', async () => {
     selectMock.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',

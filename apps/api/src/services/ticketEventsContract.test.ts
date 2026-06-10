@@ -120,7 +120,7 @@ vi.mock('../services/emailLayout', () => ({
 
 // ── real implementations ─────────────────────────────────────────────────────
 
-import { createTicket, addTicketComment, changeTicketStatus } from './ticketService';
+import { createTicket, addTicketComment, changeTicketStatus, updateTicketFields } from './ticketService';
 import { handleTicketEvent } from '../jobs/ticketNotifyWorker';
 import type { TicketEvent } from './ticketEvents';
 
@@ -247,5 +247,38 @@ describe('ticket-events producer→consumer contract', () => {
     }));
     const emailCall = hoisted.sendEmailMock.mock.calls[0]![0] as { html: string };
     expect(emailCall.html).toContain('Fixed the printer.');
+  });
+
+  // ── updateTicketFields → ticket.updated ───────────────────────────────────
+
+  it('updateTicketFields: emitted ticket.updated event feeds handleTicketEvent → explicit no-op (no insert, no email)', async () => {
+    // Service selects: ticket lookup
+    hoisted.selectQueue.push([{
+      id: 't-c4', orgId: 'o-1', partnerId: 'p-1', status: 'open',
+      subject: 'Old subject', priority: 'normal', description: null,
+      categoryId: null, dueDate: null, deviceId: null, tags: []
+    }]);
+    // Service update: returning
+    hoisted.updateReturningQueue.push([{ id: 't-c4', subject: 'New subject', priority: 'high' }]);
+    // Service insert: system feed entry returning
+    hoisted.insertReturningQueue.push([{ id: 'feed-2' }]);
+
+    await updateTicketFields('t-c4', { subject: 'New subject', priority: 'high' }, actor);
+
+    expect(hoisted.emitCaptured).toHaveLength(1);
+    const event = hoisted.emitCaptured[0] as TicketEvent;
+    expect(event.type).toBe('ticket.updated');
+
+    // Verify payload field names via narrowed access — this is the seam assertion
+    if (event.type === 'ticket.updated') {
+      expect(event.payload.changed).toEqual(['subject', 'priority']);
+    }
+
+    hoisted.insertValuesMock.mockClear();
+
+    // Worker: ticket.updated is a deliberate no-op — must not throw, insert, or email
+    await expect(handleTicketEvent(event)).resolves.toBeUndefined();
+    expect(hoisted.insertValuesMock).not.toHaveBeenCalled();
+    expect(hoisted.sendEmailMock).not.toHaveBeenCalled();
   });
 });

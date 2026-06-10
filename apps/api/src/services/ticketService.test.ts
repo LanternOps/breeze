@@ -67,6 +67,7 @@ vi.mock('../db/schema', () => ({
 import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
+  updateTicketFields,
   TicketServiceError, TICKET_STATUS_TRANSITIONS
 } from './ticketService';
 
@@ -553,6 +554,152 @@ describe('assignTicket — additional status cases', () => {
     const updatePayload = setMock.mock.calls[0]![0];
     expect(updatePayload).toMatchObject({ assignedTo: 'u-2' });
     expect(updatePayload).not.toHaveProperty('status');
+  });
+});
+
+describe('updateTicketFields', () => {
+  const BASE_TICKET = {
+    id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open',
+    subject: 'Printer offline', description: null, categoryId: null,
+    priority: 'normal', dueDate: null, deviceId: null, tags: []
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('applies changed fields, writes ONE system feed entry with the humanized field list, emits ticket.updated, audits', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, subject: 'New subject', priority: 'high' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    const t = await updateTicketFields('t-1', { subject: 'New subject', priority: 'high' }, actor);
+    expect(t).toMatchObject({ subject: 'New subject', priority: 'high' });
+
+    // Update payload contains the changed fields + updatedAt stamp
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({ subject: 'New subject', priority: 'high' });
+    expect(updatePayload.updatedAt).toBeInstanceOf(Date);
+
+    // Exactly ONE feed entry: system, private, lists the changed fields
+    expect(valuesMock).toHaveBeenCalledTimes(1);
+    const commentPayload = valuesMock.mock.calls[0]![0];
+    expect(commentPayload).toMatchObject({
+      ticketId: 't-1',
+      commentType: 'system',
+      isPublic: false,
+      authorName: 'Tess Tech',
+      content: 'Updated subject, priority'
+    });
+
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      ticketId: 't-1',
+      orgId: 'o-1',
+      partnerId: 'p-1',
+      actorUserId: 'u-1',
+      payload: { changed: ['subject', 'priority'] }
+    }));
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o-1',
+      actorId: 'u-1',
+      action: 'ticket.update',
+      resourceType: 'ticket',
+      resourceId: 't-1',
+      result: 'success'
+    }));
+  });
+
+  it('no-op update (values identical) returns the ticket unchanged without update/feed/event/audit', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+
+    const t = await updateTicketFields('t-1', { subject: 'Printer offline', priority: 'normal' }, actor);
+    expect(t).toBe(BASE_TICKET);
+
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deviceId belonging to a different org with a 400 TicketServiceError and writes nothing', async () => {
+    // selects in order: ticket, device (cross-org)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-OTHER' }]);
+
+    const err = await updateTicketFields('t-1', { deviceId: 'd-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/same organization/i);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown deviceId with a 404 TicketServiceError', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([]); // device lookup: no row
+
+    const err = await updateTicketFields('t-1', { deviceId: 'd-missing' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(err.message).toMatch(/device not found/i);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('clearing deviceId (null) skips the device lookup and records the change', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, deviceId: 'd-1' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, deviceId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { deviceId: null }, actor);
+
+    // Only ONE select consumed (the ticket lookup) — no device lookup for null
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      payload: { changed: ['deviceId'] }
+    }));
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated device' }));
+  });
+
+  it('throws 404 when the ticket does not exist', async () => {
+    dbMocks.selectResult.mockResolvedValue([]);
+    const err = await updateTicketFields('t-missing', { subject: 'x' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(err.message).toMatch(/ticket not found/i);
+  });
+
+  it('treats equal dueDate (different Date instances) as a no-op but a new dueDate as a change', async () => {
+    const due = new Date('2026-07-01T00:00:00Z');
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, dueDate: due }]);
+
+    // Same instant, different instance → no-op
+    await updateTicketFields('t-1', { dueDate: new Date('2026-07-01T00:00:00Z') }, actor);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+
+    // Different instant → change, humanized as "due date"
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, dueDate: new Date('2026-08-01T00:00:00Z') }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    await updateTicketFields('t-1', { dueDate: new Date('2026-08-01T00:00:00Z') }, actor);
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated due date' }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      payload: { changed: ['dueDate'] }
+    }));
+  });
+
+  it('treats deep-equal tags as a no-op', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, tags: ['vip', 'hardware'] }]);
+    await updateTicketFields('t-1', { tags: ['vip', 'hardware'] }, actor);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 });
 

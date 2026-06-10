@@ -12,7 +12,7 @@ import {
 } from '@breeze/shared';
 import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
-  linkAlertToTicket, unlinkAlertFromTicket,
+  linkAlertToTicket, unlinkAlertFromTicket, updateTicketFields,
   TicketServiceError
 } from '../../services/ticketService';
 import type { AuthContext } from '../../middleware/auth';
@@ -309,7 +309,10 @@ ticketsRoutes.get(
   }
 );
 
-// PATCH /tickets/:id — field updates (not status/assignee; those have dedicated routes)
+// PATCH /tickets/:id — field updates (not status/assignee; those have dedicated routes).
+// Delegates to ticketService.updateTicketFields so plain edits produce a system
+// feed entry, an audit log, and a ticket.updated lifecycle event. The cross-org
+// deviceId guard lives in the service (mirrors createTicket's check).
 ticketsRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
@@ -325,39 +328,15 @@ ticketsRoutes.patch(
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
 
-    // Cross-org guard: a deviceId reassignment must reference a device in the
-    // ticket's org (mirrors the same-org device check in createTicket).
-    if (typeof body.deviceId === 'string') {
-      const ticket = await getScopedTicketOr404(auth, id);
-      if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
-      const deviceRows = await db
-        .select({ id: devices.id, orgId: devices.orgId })
-        .from(devices)
-        .where(eq(devices.id, body.deviceId))
-        .limit(1);
-      const device = deviceRows[0];
-      if (!device) return c.json({ error: 'Device not found' }, 404);
-      if (device.orgId !== ticket.orgId) {
-        return c.json({ error: 'Device must belong to the same organization as the ticket' }, 400);
-      }
+    try {
+      const ticket = await updateTicketFields(id, body, actorFrom(c));
+      return c.json({ data: ticket });
+    } catch (err) {
+      return handleServiceError(c, err);
     }
-
-    // Build the scoped WHERE for the UPDATE itself so the DB also sees the constraint.
-    const updateConditions: SQL[] = [eq(tickets.id, id)];
-    if (auth.scope === 'organization' && auth.orgId) {
-      updateConditions.push(eq(tickets.orgId, auth.orgId));
-    } else if (auth.scope === 'partner' && auth.partnerId) {
-      updateConditions.push(eq(tickets.partnerId, auth.partnerId));
-    }
-
-    const updated = await db
-      .update(tickets)
-      .set({ ...body, updatedAt: new Date() })
-      .where(and(...updateConditions))
-      .returning();
-    if (!updated[0]) return c.json({ error: 'Ticket not found' }, 404);
-    return c.json({ data: updated[0] });
   }
 );
 

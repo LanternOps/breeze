@@ -162,6 +162,11 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         }
         return;
       }
+      case 'ticket.updated': {
+        // Plain field edits (subject, priority, …) notify no one in Phase 1 —
+        // explicit no-op case so the exhaustiveness default stays meaningful.
+        return;
+      }
       case 'ticket.status_changed': {
         if (event.payload.to === 'resolved') {
           const note = event.payload.resolutionNote ?? '';

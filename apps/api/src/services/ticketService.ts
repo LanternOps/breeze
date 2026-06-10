@@ -233,6 +233,117 @@ export async function changeTicketStatus(
   return updated[0];
 }
 
+export interface UpdateTicketFieldsInput {
+  subject?: string;
+  description?: string;
+  categoryId?: string | null;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  dueDate?: Date | null;
+  deviceId?: string | null;
+  tags?: string[];
+}
+
+/** Humanized labels for the system feed entry, in canonical field order. */
+const UPDATE_FIELD_LABELS: Record<keyof UpdateTicketFieldsInput, string> = {
+  subject: 'subject',
+  description: 'description',
+  categoryId: 'category',
+  priority: 'priority',
+  dueDate: 'due date',
+  deviceId: 'device',
+  tags: 'tags'
+};
+
+function ticketFieldChanged(key: keyof UpdateTicketFieldsInput, oldValue: unknown, newValue: unknown): boolean {
+  if (key === 'dueDate') {
+    const oldMs = oldValue instanceof Date ? oldValue.getTime() : null;
+    const newMs = newValue instanceof Date ? newValue.getTime() : null;
+    return oldMs !== newMs;
+  }
+  if (key === 'tags') {
+    return JSON.stringify(oldValue ?? []) !== JSON.stringify(newValue ?? []);
+  }
+  return (oldValue ?? null) !== (newValue ?? null);
+}
+
+export async function updateTicketFields(
+  ticketId: string,
+  fields: UpdateTicketFieldsInput,
+  actor: TicketActor
+) {
+  const ticket = await getTicketOrThrow(ticketId);
+
+  // Cross-org guard: a deviceId reassignment must reference a device in the
+  // ticket's org (mirrors the same-org device check in createTicket).
+  // null clears the device and needs no lookup.
+  if (typeof fields.deviceId === 'string') {
+    const deviceRows = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, fields.deviceId))
+      .limit(1);
+    const device = deviceRows[0];
+    if (!device) throw new TicketServiceError('Device not found', 404);
+    if (device.orgId !== ticket.orgId) {
+      throw new TicketServiceError('Device must belong to the same organization as the ticket', 400);
+    }
+  }
+
+  // Compute the actually-changed fields; ignore no-op keys so the feed and
+  // event stream don't accumulate noise from idempotent saves.
+  const changed: (keyof UpdateTicketFieldsInput)[] = [];
+  for (const key of Object.keys(UPDATE_FIELD_LABELS) as (keyof UpdateTicketFieldsInput)[]) {
+    if (fields[key] === undefined) continue;
+    if (ticketFieldChanged(key, (ticket as Record<string, unknown>)[key], fields[key])) {
+      changed.push(key);
+    }
+  }
+  if (changed.length === 0) return ticket;
+
+  const patch: Partial<typeof tickets.$inferInsert> = { updatedAt: new Date() };
+  for (const key of changed) {
+    (patch as Record<string, unknown>)[key] = fields[key] ?? null;
+  }
+
+  const updated = await db
+    .update(tickets)
+    .set(patch)
+    .where(eq(tickets.id, ticketId))
+    .returning();
+  if (updated.length === 0) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  await db.insert(ticketComments).values({
+    ticketId,
+    userId: actor.userId,
+    authorName: actor.name ?? null,
+    authorType: 'internal',
+    commentType: 'system',
+    content: `Updated ${changed.map((k) => UPDATE_FIELD_LABELS[k]).join(', ')}`,
+    isPublic: false
+  });
+
+  await emitTicketEvent({
+    type: 'ticket.updated',
+    ticketId,
+    orgId: ticket.orgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { changed }
+  });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.update',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { changed },
+    result: 'success'
+  });
+  return updated[0];
+}
+
 export async function assignTicket(ticketId: string, assigneeId: string | null, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
   const prevAssignedTo = ticket.assignedTo;

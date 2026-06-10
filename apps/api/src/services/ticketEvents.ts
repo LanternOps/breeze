@@ -21,6 +21,7 @@ export type TicketEvent = TicketEventEnvelope & (
   | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus; resolutionNote: string | null } }
   | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
   | { type: 'ticket.commented'; payload: { commentId: string; isPublic: boolean } }
+  | { type: 'ticket.updated'; payload: { changed: string[] } }
 );
 
 export type TicketEventType = TicketEvent['type'];
