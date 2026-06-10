@@ -105,4 +105,21 @@ describe('handleTicketEvent', () => {
       actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
     })).rejects.toThrow(/not found/i);
   });
+
+  it('resolves without throwing when email send fails, in-app notification still inserted exactly once', async () => {
+    sendEmailMock.mockRejectedValueOnce(new Error('SMTP timeout'));
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Email breaks', submitterEmail: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', email: 'tech@msp.example' }]);
+
+    await expect(handleTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+    })).resolves.toBeUndefined();
+
+    expect(insertValuesMock).toHaveBeenCalledTimes(1);
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'u-2', type: 'ticket'
+    }));
+  });
 });

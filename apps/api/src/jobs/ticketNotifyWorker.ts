@@ -23,6 +23,7 @@ import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { tickets, userNotifications, users } from '../db/schema';
 import { getEmailService } from '../services/email';
+import { escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection } from '../services/redis';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
 
@@ -72,11 +73,15 @@ async function notifyAssignee(event: TicketEvent, assigneeId: string): Promise<v
   const assignee = assigneeRows[0];
   if (!assignee?.email) return;
 
-  await email.sendEmail({
-    to: assignee.email,
-    subject: `[${label}] Assigned to you: ${ticket.subject}`,
-    html: `<p>You have been assigned ticket <strong>${label}</strong>: ${ticket.subject}</p>`
-  });
+  try {
+    await email.sendEmail({
+      to: assignee.email,
+      subject: `[${label}] Assigned to you: ${ticket.subject}`,
+      html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`
+    });
+  } catch (err) {
+    console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
+  }
 }
 
 async function emailRequester(event: TicketEvent, bodyHtml: string, subjectPrefix: string): Promise<void> {
@@ -123,7 +128,7 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         const note = String(event.payload.resolutionNote ?? '');
         await emailRequester(
           event,
-          `<p>Your ticket has been resolved.</p><p>${note}</p>`,
+          `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`,
           'Resolved'
         );
       }
@@ -135,11 +140,22 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
 let worker: Worker<TicketEvent> | null = null;
 
 export function initializeTicketNotifyWorker(): Promise<void> {
+  if (worker) return Promise.resolve();
+
   worker = new Worker<TicketEvent>(
     TICKET_EVENTS_QUEUE,
     async (job: Job<TicketEvent>) => runWithSystemDbAccess(() => handleTicketEvent(job.data)),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
+
+  worker.on('error', (error) => {
+    console.error('[TicketNotify] Worker error:', error);
+  });
+
+  worker.on('failed', (job, error) => {
+    console.error(`[TicketNotify] Job ${job?.id} failed:`, error);
+  });
+
   return Promise.resolve();
 }
 
