@@ -2321,7 +2321,19 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
-		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+		installedHelper := h.helperMgr.InstalledVersion()
+		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper); !allowed {
+			// SECURITY: never auto-downgrade the helper. The signed manifest
+			// only binds manifest.Release == requested version, so a
+			// compromised/MITM'd control plane could replay an older,
+			// validly-signed, known-vulnerable helper release.
+			log.Error("SECURITY: refusing server-directed helper update",
+				"installedVersion", installedHelper,
+				"targetVersion", response.HelperUpgradeTo,
+				"reason", reason)
+		} else {
+			h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+		}
 	}
 
 	// Update tunnel manager policy flag
