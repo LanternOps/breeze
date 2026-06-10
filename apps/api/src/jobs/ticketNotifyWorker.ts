@@ -15,7 +15,13 @@
  * transaction time to become visible.
  *
  * EXCEPTION: a missing ASSIGNEE user row is terminal (the user was deleted),
- * not retryable — silently return for that case only.
+ * not retryable — silently return for that case only. The assignee lookup
+ * is performed BEFORE the userNotifications insert so we never attempt the
+ * FK-constrained insert for a non-existent user.
+ *
+ * Email sends happen OUTSIDE the system DB context (see pool-poison issue #1105):
+ * DB reads + in-app inserts are collected inside the context, emails are sent
+ * after the context exits.
  */
 
 import { Worker, type Job } from 'bullmq';
@@ -25,6 +31,7 @@ import { tickets, userNotifications, users } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection } from '../services/redis';
+import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
 
 const { db } = dbModule;
@@ -32,17 +39,36 @@ const { db } = dbModule;
 // Mirror the alertWorker pattern: wrap in withSystemDbAccessContext if available.
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem !== 'function') {
+    console.error('[TicketNotify] withSystemDbAccessContext unavailable — running without system DB context');
+    return fn();
+  }
+  return withSystem(fn);
 };
+
+interface EmailPayload {
+  to: string;
+  subject: string;
+  html: string;
+  bestEffort?: boolean; // if true, swallow send errors
+}
 
 async function getTicket(ticketId: string) {
   const rows = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
   return rows[0] ?? null;
 }
 
-async function notifyAssignee(event: TicketEvent, assigneeId: string): Promise<void> {
+/**
+ * Returns collected email payloads (does not send). The assignee lookup is
+ * done BEFORE the userNotifications insert so an FK-violation can never occur
+ * for a deleted user.
+ */
+async function collectAssigneeNotification(
+  event: TicketEvent,
+  assigneeId: string
+): Promise<EmailPayload[]> {
   // Self-assign: skip notification entirely.
-  if (!assigneeId || assigneeId === event.actorUserId) return;
+  if (!assigneeId || assigneeId === event.actorUserId) return [];
 
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
@@ -52,6 +78,18 @@ async function notifyAssignee(event: TicketEvent, assigneeId: string): Promise<v
 
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
+  // Assignee lookup FIRST — if no user row, terminal condition (deleted user).
+  const assigneeRows = await db.select({ id: users.id, email: users.email })
+    .from(users)
+    .where(eq(users.id, assigneeId))
+    .limit(1);
+  const assignee = assigneeRows[0];
+  if (!assignee) {
+    // User was deleted — silently skip, no insert, no email (terminal).
+    return [];
+  }
+
+  // Assignee exists — safe to insert FK-constrained notification row.
   await db.insert(userNotifications).values({
     userId: assigneeId,
     orgId: event.orgId,
@@ -62,77 +100,100 @@ async function notifyAssignee(event: TicketEvent, assigneeId: string): Promise<v
     link: `/tickets#${ticket.internalNumber ?? ticket.id}`
   }).returning();
 
-  const email = getEmailService();
-  if (!email) return;
+  if (!assignee.email) return [];
 
-  // A missing assignee user row is a terminal condition (deleted user) — silently return.
-  const assigneeRows = await db.select({ id: users.id, email: users.email })
-    .from(users)
-    .where(eq(users.id, assigneeId))
-    .limit(1);
-  const assignee = assigneeRows[0];
-  if (!assignee?.email) return;
-
-  try {
-    await email.sendEmail({
-      to: assignee.email,
-      subject: `[${label}] Assigned to you: ${ticket.subject}`,
-      html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`
-    });
-  } catch (err) {
-    console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
-  }
+  return [{
+    to: assignee.email,
+    subject: `[${label}] Assigned to you: ${ticket.subject}`,
+    html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
+    bestEffort: true
+  }];
 }
 
-async function emailRequester(event: TicketEvent, bodyHtml: string, subjectPrefix: string): Promise<void> {
+/**
+ * Returns collected email payloads (does not send).
+ */
+async function collectRequesterEmail(
+  event: TicketEvent,
+  bodyHtml: string,
+  subjectPrefix: string
+): Promise<EmailPayload[]> {
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
 
-  if (!ticket.submitterEmail) return;
-
-  const email = getEmailService();
-  if (!email) return;
+  if (!ticket.submitterEmail) return [];
 
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
-  await email.sendEmail({
+  return [{
     to: ticket.submitterEmail,
     subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
     html: bodyHtml
-  });
+  }];
 }
 
+/**
+ * Core handler: runs DB work inside the system context, collects email payloads,
+ * then sends emails after the context exits.
+ */
 export async function handleTicketEvent(event: TicketEvent): Promise<void> {
-  switch (event.type) {
-    case 'ticket.created':
-    case 'ticket.assigned': {
-      const assigneeId = event.payload.assigneeId as string | null;
-      if (assigneeId) await notifyAssignee(event, assigneeId);
-      return;
-    }
-    case 'ticket.commented': {
-      if (event.payload.isPublic === true) {
-        await emailRequester(
-          event,
-          '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
-          'New reply'
-        );
+  let emailPayloads: EmailPayload[] = [];
+
+  await runWithSystemDbAccess(async () => {
+    switch (event.type) {
+      case 'ticket.created':
+      case 'ticket.assigned': {
+        const assigneeId = event.payload.assigneeId as string | null;
+        if (assigneeId) {
+          emailPayloads = await collectAssigneeNotification(event, assigneeId);
+        }
+        return;
       }
-      return;
-    }
-    case 'ticket.status_changed': {
-      if (event.payload.to === 'resolved') {
-        const note = String(event.payload.resolutionNote ?? '');
-        await emailRequester(
-          event,
-          `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`,
-          'Resolved'
-        );
+      case 'ticket.commented': {
+        if (event.payload.isPublic === true) {
+          emailPayloads = await collectRequesterEmail(
+            event,
+            '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
+            'New reply'
+          );
+        }
+        return;
       }
-      return;
+      case 'ticket.status_changed': {
+        if (event.payload.to === 'resolved') {
+          const note = String(event.payload.resolutionNote ?? '');
+          emailPayloads = await collectRequesterEmail(
+            event,
+            `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`,
+            'Resolved'
+          );
+        }
+        return;
+      }
+      default: {
+        const _exhaustive: never = event.type;
+        console.warn('[TicketNotify] Unhandled event type:', _exhaustive);
+      }
+    }
+  });
+
+  // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
+  const email = getEmailService();
+  if (!email || emailPayloads.length === 0) return;
+
+  for (const payload of emailPayloads) {
+    if (payload.bestEffort) {
+      try {
+        await email.sendEmail({ to: payload.to, subject: payload.subject, html: payload.html });
+      } catch (err) {
+        console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
+      }
+    } else {
+      // Non-best-effort: let throw bubble up so BullMQ can retry.
+      await email.sendEmail({ to: payload.to, subject: payload.subject, html: payload.html });
     }
   }
 }
@@ -144,7 +205,7 @@ export function initializeTicketNotifyWorker(): Promise<void> {
 
   worker = new Worker<TicketEvent>(
     TICKET_EVENTS_QUEUE,
-    async (job: Job<TicketEvent>) => runWithSystemDbAccess(() => handleTicketEvent(job.data)),
+    async (job: Job<TicketEvent>) => handleTicketEvent(job.data),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
 
@@ -153,7 +214,13 @@ export function initializeTicketNotifyWorker(): Promise<void> {
   });
 
   worker.on('failed', (job, error) => {
-    console.error(`[TicketNotify] Job ${job?.id} failed:`, error);
+    const type = job?.data?.type;
+    const ticketId = job?.data?.ticketId;
+    const attempts = job?.attemptsMade;
+    console.error(`[TicketNotify] Job ${job?.id} failed (type=${type}, ticketId=${ticketId}, attempts=${attempts}):`, error);
+    if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+      captureException(error instanceof Error ? error : new Error(String(error)));
+    }
   });
 
   return Promise.resolve();

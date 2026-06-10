@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
+import { captureException } from './sentry';
 
 export const TICKET_EVENTS_QUEUE = 'ticket-events';
 
@@ -40,6 +41,7 @@ export async function emitTicketEvent(event: TicketEvent): Promise<void> {
       backoff: { type: 'exponential', delay: 2000 }
     });
   } catch (err) {
-    console.error('[TicketEvents] failed to enqueue', event.type, err instanceof Error ? err.message : err);
+    console.error('[TicketEvents] failed to enqueue', event.type, `ticketId=${event.ticketId}`, `orgId=${event.orgId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }
