@@ -20,7 +20,7 @@ import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { schedulePolicySync } from '../jobs/dnsSyncJob';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -150,7 +150,8 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
             topBlockedDomains: [],
             topCategories: [],
             topDevices: [],
-            source: 'raw'
+            source: 'raw',
+            scopeNote: SITE_SCOPE_EMPTY_NOTE
           });
         }
         conditions.push(inArray(dnsSecurityEvents.deviceId, siteAllowedDeviceIds));

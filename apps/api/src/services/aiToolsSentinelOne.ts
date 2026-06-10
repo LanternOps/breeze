@@ -21,7 +21,7 @@ import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess, resolveWritableToolOrgId } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -216,7 +216,8 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
             configured: true,
             integrationId: integration.id,
             total: 0,
-            threats: []
+            threats: [],
+            scopeNote: SITE_SCOPE_EMPTY_NOTE
           });
         }
         conditions.push(inArray(s1Threats.deviceId, allowed));

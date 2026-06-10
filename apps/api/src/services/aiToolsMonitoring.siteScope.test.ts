@@ -42,6 +42,15 @@ function chain(result: unknown): any {
   }
   return p;
 }
+/** Chainable query mock that rejects with `err` when awaited. */
+function rejectChain(err: unknown): any {
+  const p: any = Promise.reject(err);
+  p.catch(() => {}); // prevent unhandled-rejection noise; the handler awaits p itself
+  for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'groupBy', 'offset']) {
+    p[m] = () => p;
+  }
+  return p;
+}
 
 describe('query_monitors — site narrowing via the linked discovered asset', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -153,6 +162,64 @@ describe('get_service_monitoring_status known_services — site narrowing', () =
     const parsed = JSON.parse(r);
     expect(parsed.error).toBeUndefined();
     expect(parsed.data).toEqual([]);
+    // The empty result must be annotated as scope-limited, not "no services exist".
+    expect(parsed.scopeNote).toBeTruthy();
     expect(nameScanRan).toBe(false);
+  });
+});
+
+describe('get_service_monitoring_status known_services — DB error surfacing', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const isChangeLogSelect = (cols: unknown) =>
+    !!cols && typeof cols === 'object' && 'subject' in (cols as object);
+
+  it('an unknown DB error surfaces as a tool error — NOT a silent empty list', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      mockDb.select.mockImplementation((cols?: unknown) => {
+        if (isChangeLogSelect(cols)) {
+          return rejectChain(new Error('Connection terminated unexpectedly'));
+        }
+        return chain([{ name: 'nginx', watchType: 'service' }]);
+      });
+
+      const r = await handlerFor('get_service_monitoring_status')(
+        { action: 'known_services' }, makeAuth(undefined),
+      );
+      const parsed = JSON.parse(r);
+      expect(parsed.error).toBeDefined();
+      expect(parsed.data).toBeUndefined();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('a missing-table error is tolerated as an empty source (other sources still returned)', async () => {
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isChangeLogSelect(cols)) {
+        return rejectChain(new Error('relation "device_change_log" does not exist'));
+      }
+      return chain([{ name: 'nginx', watchType: 'service' }]);
+    });
+
+    const r = await handlerFor('get_service_monitoring_status')(
+      { action: 'known_services' }, makeAuth(undefined),
+    );
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.data).toEqual([{ name: 'nginx', source: 'check_results', watchType: 'service' }]);
+  });
+
+  it('both sources missing-table tolerated → empty list without error', async () => {
+    mockDb.select.mockImplementation(() =>
+      rejectChain(new Error('relation does not exist')));
+
+    const r = await handlerFor('get_service_monitoring_status')(
+      { action: 'known_services' }, makeAuth(undefined),
+    );
+    const parsed = JSON.parse(r);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.data).toEqual([]);
   });
 });

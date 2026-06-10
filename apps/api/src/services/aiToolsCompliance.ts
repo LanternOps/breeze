@@ -23,7 +23,7 @@ import type { AiTool } from './aiTools';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -104,7 +104,7 @@ registerTool({
       }
       const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
       if (!allowed || allowed.length === 0) {
-        return JSON.stringify({ count: 0, compliance: [] });
+        return JSON.stringify({ count: 0, compliance: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
       }
       conditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
     }
@@ -412,7 +412,11 @@ registerTool({
         }
         const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
         if (!allowed || allowed.length === 0) {
-          return JSON.stringify({ message: 'No matching violation rows found for remediation', queued: 0 });
+          return JSON.stringify({
+            message: 'No matching violation rows found for remediation',
+            queued: 0,
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
+          });
         }
         complianceConditions.push(inArray(softwareComplianceStatus.deviceId, allowed));
       }
@@ -578,7 +582,7 @@ registerTool({
       }
       const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
       if (!allowed || allowed.length === 0) {
-        return JSON.stringify({ records: [], total: 0, showing: 0, breakdown: {} });
+        return JSON.stringify({ records: [], total: 0, showing: 0, breakdown: {}, scopeNote: SITE_SCOPE_EMPTY_NOTE });
       }
       conditions.push(inArray(automationPolicyCompliance.deviceId, allowed));
     }

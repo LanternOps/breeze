@@ -16,7 +16,7 @@ import {
 import { eq, and, desc, asc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AnalyticsHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -154,7 +154,7 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           }
           const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
           if (!allowed || allowed.length === 0) {
-            return JSON.stringify({ capacityPredictions: [], showing: 0 });
+            return JSON.stringify({ capacityPredictions: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
           conditions.push(inArray(capacityPredictions.deviceId, allowed));
         }

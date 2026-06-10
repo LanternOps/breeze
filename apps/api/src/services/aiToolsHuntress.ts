@@ -19,7 +19,7 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { resolveWritableToolOrgId } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 
@@ -267,7 +267,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         const queryOrgId = requestedOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         const allowed = queryOrgId ? await resolveSiteAllowedDeviceIds(queryOrgId, auth) : [];
         if (!allowed || allowed.length === 0) {
-          return JSON.stringify({ incidents: [], total: 0, limit, offset, includeResolved });
+          return JSON.stringify({ incidents: [], total: 0, limit, offset, includeResolved, scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }
         conditions.push(inArray(huntressIncidents.deviceId, allowed));
       }

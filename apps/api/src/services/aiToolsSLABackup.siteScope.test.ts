@@ -66,6 +66,8 @@ describe('get_sla_breaches — site narrowing (cross-site enumeration)', () => {
     expect(parsed.error).toBeUndefined();
     expect(parsed.breaches).toEqual([]);
     expect(parsed.showing).toBe(0);
+    // The empty result must be annotated as scope-limited, not "no data exists".
+    expect(parsed.scopeNote).toBeTruthy();
     expect(breachScanRan).toBe(false);
     expect(JSON.stringify(parsed)).not.toContain('forbidden-host');
   });
@@ -86,27 +88,37 @@ describe('get_sla_breaches — site narrowing (cross-site enumeration)', () => {
 describe('get_sla_compliance_report — site narrowing', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('site-restricted caller with no in-scope devices gets an empty report without scanning', async () => {
-    let reportScanRan = false;
+  it('site-restricted caller with no in-scope devices gets an indeterminate report (configs counted, no device scans)', async () => {
+    let deviceLinkedScanRan = false;
+    let countQueries = 0;
     mockDb.select.mockImplementation((cols?: unknown) => {
       if (isDeviceResolverSelect(cols)) {
         return { from: () => ({ where: () => Promise.resolve([{ id: 'd-siteB', siteId: 'site-B' }]) }) };
       }
-      reportScanRan = true;
       if (cols && typeof cols === 'object' && 'avgRpo' in (cols as object)) {
+        deviceLinkedScanRan = true; // recoveryReadiness scan must not run
         return chain([{ avgRpo: 60, avgRto: 120 }]);
       }
+      countQueries += 1;
       return chain([{ count: 7 }]);
     });
 
     const r = await handlerFor('get_sla_compliance_report')({}, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
     expect(parsed.error).toBeUndefined();
+    // Org-level config metadata stays visible (configs are not device-linked)…
+    expect(parsed.activeConfigs).toBe(7);
+    expect(countQueries).toBe(1); // only the config count — no breach/event scans
+    // …but device-derived compliance is indeterminate — never a fabricated 100%.
+    expect(parsed.compliancePercent).toBeNull();
+    expect(parsed.compliantConfigs).toBeNull();
+    expect(parsed.configsWithBreaches).toBeNull();
     expect(parsed.activeBreaches).toBe(0);
     expect(parsed.totalEventsInWindow).toBe(0);
-    expect(parsed.avgEstimatedRpoMinutes).toBe(0);
-    expect(parsed.avgEstimatedRtoMinutes).toBe(0);
-    expect(reportScanRan).toBe(false);
+    expect(parsed.avgEstimatedRpoMinutes).toBeNull();
+    expect(parsed.avgEstimatedRtoMinutes).toBeNull();
+    expect(parsed.scopeNote).toBeTruthy();
+    expect(deviceLinkedScanRan).toBe(false);
   });
 
   it('unrestricted caller reads the report normally (no regression)', async () => {
@@ -129,7 +141,7 @@ describe('get_sla_compliance_report — site narrowing', () => {
 describe('query_backup_sla — site narrowing of breach counts', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('site-restricted caller with no in-scope devices sees configs with zero breach signal (no breach scan)', async () => {
+  it('site-restricted caller with no in-scope devices sees configs with indeterminate compliance (no breach scan)', async () => {
     let breachScanRan = false;
     const config = {
       id: 'c1', orgId: 'org-1', name: 'SLA Config', targetDevices: ['d-siteB'], targetGroups: [],
@@ -150,8 +162,10 @@ describe('query_backup_sla — site narrowing of breach counts', () => {
     const parsed = JSON.parse(r);
     expect(parsed.error).toBeUndefined();
     expect(parsed.showing).toBe(1);
-    expect(parsed.configs[0].activeBreaches).toBe(0);
-    expect(parsed.configs[0].complianceStatus).toBe('compliant');
+    // Compliance must be indeterminate — never a fabricated healthy 'compliant'.
+    expect(parsed.configs[0].activeBreaches).toBeNull();
+    expect(parsed.configs[0].complianceStatus).toBe('unknown');
+    expect(parsed.scopeNote).toBeTruthy();
     expect(breachScanRan).toBe(false);
   });
 

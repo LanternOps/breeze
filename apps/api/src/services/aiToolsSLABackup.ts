@@ -26,7 +26,7 @@ import {
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type SlaHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -126,15 +126,18 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
       if (allowedDeviceIds != null) {
         if (allowedDeviceIds.length === 0) {
+          // No in-scope devices: the caller cannot observe any breach events, so
+          // compliance is indeterminate — never fabricate a healthy 'compliant'.
           return JSON.stringify({
             configs: configs.map((config) => ({
               ...config,
-              complianceStatus: 'compliant',
-              activeBreaches: 0,
+              complianceStatus: 'unknown',
+              activeBreaches: null,
               targetDeviceCount: Array.isArray(config.targetDevices) ? config.targetDevices.length : 0,
               targetGroupCount: Array.isArray(config.targetGroups) ? config.targetGroups.length : 0,
             })),
             showing: configs.length,
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
           });
         }
         breachConditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));
@@ -208,7 +211,7 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
       if (allowedDeviceIds != null) {
         if (allowedDeviceIds.length === 0) {
-          return JSON.stringify({ breaches: [], showing: 0 });
+          return JSON.stringify({ breaches: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }
         conditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));
       }
@@ -293,16 +296,25 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
       if (allowedDeviceIds != null) {
         if (allowedDeviceIds.length === 0) {
+          // No in-scope devices: device-derived metrics are indeterminate — never
+          // fabricate a healthy 100%. Configs are org-level metadata the caller
+          // may legitimately see, so still report the real org-scoped count.
+          const visibleActiveConfigs = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(backupSlaConfigs)
+            .where(and(...configConditions))
+            .then((rows) => rows[0]?.count ?? 0);
           return JSON.stringify({
             reportWindowDays: daysBack,
-            activeConfigs: 0,
-            compliantConfigs: 0,
+            activeConfigs: visibleActiveConfigs,
+            compliantConfigs: null,
             activeBreaches: 0,
-            configsWithBreaches: 0,
-            compliancePercent: 100,
+            configsWithBreaches: null,
+            compliancePercent: null,
             totalEventsInWindow: 0,
-            avgEstimatedRpoMinutes: 0,
-            avgEstimatedRtoMinutes: 0,
+            avgEstimatedRpoMinutes: null,
+            avgEstimatedRtoMinutes: null,
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
           });
         }
         activeEventConditions.push(inArray(backupSlaEvents.deviceId, allowedDeviceIds));

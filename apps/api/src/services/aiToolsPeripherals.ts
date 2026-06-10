@@ -21,7 +21,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -155,6 +155,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({
             events: [],
             summary: { count: 0, byType: {}, start: start.toISOString(), end: end.toISOString() },
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
           });
         }
         conditions.push(inArray(peripheralEvents.deviceId, allowed));

@@ -25,6 +25,15 @@ import { eq } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 
 /**
+ * Annotation for tool results that are empty/indeterminate solely because a
+ * site-restricted caller has zero in-scope devices (or sites). Lets the model
+ * distinguish "no data exists" from "data exists but is outside your site
+ * access" instead of silently reporting an empty (or worse, healthy) result.
+ */
+export const SITE_SCOPE_EMPTY_NOTE =
+  'No devices are within your site access — this result is limited by site-based access restrictions, not necessarily an absence of data.';
+
+/**
  * Resolve the device IDs a site-restricted caller may read within `orgId`,
  * narrowed by their site allowlist. Returns `null` when the caller is NOT
  * site-restricted (no narrowing needed — callers should skip the inArray).

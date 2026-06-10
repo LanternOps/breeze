@@ -13,7 +13,7 @@ import {
   resolveSingleOrgId,
   searchFleetLogs,
 } from './logSearch';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -92,6 +92,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
             hasMore: false,
             nextCursor: null,
             logs: [],
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
           });
         }
         const result = await searchFleetLogs(auth, {
@@ -227,6 +228,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
               spikeThreshold: 3,
             },
             grouped: undefined,
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
           });
         }
 
@@ -319,9 +321,13 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
         });
 
         if (!result) {
+          // Distinguish "nothing matched" from "the caller's site access covers
+          // zero devices" (detectPatternCorrelation short-circuits to null).
+          const scopeLimited = allowedDeviceIds != null && allowedDeviceIds.length === 0;
           return JSON.stringify({
             detected: false,
             message: 'No correlation matched the requested thresholds for this pattern.',
+            ...(scopeLimited ? { scopeNote: SITE_SCOPE_EMPTY_NOTE } : {}),
           });
         }
 

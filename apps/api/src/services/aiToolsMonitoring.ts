@@ -16,7 +16,7 @@ import { deviceChangeLog, discoveredAssets } from '../db/schema';
 import { eq, and, desc, gte, lte, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -107,7 +107,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
       const siteRestricted = !!(allowedSites && auth.canAccessSite);
       if (siteRestricted) {
         if (allowedSites!.length === 0) {
-          return JSON.stringify({ monitors: [], showing: 0 });
+          return JSON.stringify({ monitors: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }
         conditions.push(inArray(discoveredAssets.siteId, allowedSites!));
       }
@@ -390,7 +390,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         if (auth.allowedSiteIds && auth.canAccessSite) {
           const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
           if (!allowed || allowed.length === 0) {
-            return JSON.stringify({ data: [], showing: 0 });
+            return JSON.stringify({ data: [], showing: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
           conditions.push(inArray(serviceProcessCheckResults.deviceId, allowed));
         }
@@ -433,7 +433,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         if (auth.allowedSiteIds && auth.canAccessSite) {
           siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, auth);
           if (!siteAllowedDeviceIds || siteAllowedDeviceIds.length === 0) {
-            return JSON.stringify({ data: [] });
+            return JSON.stringify({ data: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
           }
         }
 
@@ -453,10 +453,11 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
             .groupBy(deviceChangeLog.subject)
             .limit(1000);
         } catch (err) {
+          // Tolerate missing-table environments (older self-hosted schemas) as
+          // an empty source; any other DB error must surface as a tool error
+          // (via safeHandler / the aiAgentSdkTools catch), not a silent empty.
           const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('does not exist')) {
-            console.error(`[monitoring:known_services] Failed to query change log for org ${orgId}:`, err);
-          }
+          if (!msg.includes('does not exist')) throw err;
         }
 
         // Source 2: Distinct service/process names from check results
@@ -474,10 +475,10 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
             .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
             .limit(500);
         } catch (err) {
+          // Same policy as the change-log source: only missing-table errors are
+          // tolerated as an empty source; everything else surfaces as a tool error.
           const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('does not exist')) {
-            console.error(`[monitoring:known_services] Failed to query check results for org ${orgId}:`, err);
-          }
+          if (!msg.includes('does not exist')) throw err;
         }
 
         const seen = new Set<string>();
