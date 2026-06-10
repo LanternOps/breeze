@@ -64,28 +64,50 @@ once #1183 is merged. Device-scoping (Phase 0 #1) is permanent and underlies bot
 ## Phase 0 — security hardening (no #1183 dependency)
 
 ### 0.1 Device-scope the Helper auth context
-- Add `helperDeviceId: device.id` to the synthetic `AuthContext` produced by `helperAuth`
-  (`helper/index.ts`). (New optional field on `AuthContext` in `middleware/auth.ts`.)
-- Enforce it at the existing tool-authorization chokepoint: `verifyDeviceAccess` /
-  `enforceDeviceArgs` (the same gate hardened in the AI-tools site-scope fix). When
-  `auth.helperDeviceId` is set, the resolved target device id **must equal** it; otherwise
-  deny. This is independent of, and stricter than, org/site scoping.
-- Helper-exposed tools that take **no** device-id argument must be auto-scoped to
-  `helperDeviceId` (single-device) or excluded by the tool filter (see 0.3). An org-wide
-  enumeration tool must never run unscoped under a helper context.
+
+**Ground-truth finding (drives the mechanism):** the Helper's read tools do **not** declare
+`deviceArgs`; they query by `auth.orgCondition` (whole org) and self-narrow on a `deviceId`
+input. So a `verifyDeviceAccess`/`enforceDeviceArgs` lock alone does **not** stop cross-device
+reads under the Helper's org context. Two tool shapes exist:
+- **Single-device tools** take a uniform `deviceId` (or `search_logs`: `deviceIds[]`) input —
+  e.g. `get_device_details`, `analyze_metrics`, `analyze_disk_usage`, `get_cis_device_report`,
+  `get_s1_status`, `get_security_posture`, `take_screenshot`, `analyze_screen`.
+- **Org-wide tools** have **no** device param — e.g. `query_devices`, `get_fleet_health`.
+
+**Mechanism — a central gate in `executeTool` (`services/aiTools.ts:247-268`), keyed on a new
+`AuthContext.helperDeviceId`:**
+- Add optional `helperDeviceId?: string` to `AuthContext` (`middleware/auth.ts`). `helperAuth`
+  sets it to `device.id`.
+- A `HELPER_TOOL_SCOPING` map declares, per Helper-allowed tool, the device input field to
+  pin: `{ deviceField: 'deviceId' }` or `{ deviceField: 'deviceIds' }` (array → `[id]`).
+- In `executeTool`, when `auth.helperDeviceId` is set: if the tool is **not** in the map →
+  **deny** (org-wide tools can't run under a Helper context); if it **is** → **overwrite** the
+  declared input field with `auth.helperDeviceId` (ignoring any caller-supplied value) before
+  the handler runs. Every Helper tool therefore acts only on the Helper's own device.
+- Defense-in-depth: also enforce the lock in `verifyDeviceAccess` — when `auth.helperDeviceId`
+  is set, deny if the resolved `deviceId !== auth.helperDeviceId` (covers any future
+  `deviceArgs`-declared Helper tool).
 
 ### 0.2 Remove the self-approve endpoint
 - Delete `POST /chat/sessions/:id/approve/:executionId` (`helper/index.ts:642-688`). The
   helper token can no longer approve anything.
 
-### 0.3 Read-only Helper by default (chosen posture)
-- Drop mutating tools from the Helper's default permission level in
-  `services/helperToolFilter.ts` so the `standard` (and the unattended default) Helper
-  exposes **read-only/diagnostic** tools only, all device-scoped per 0.1.
-- Consequence: until Phase 1 governs them, there are **no self-serviceable privileged
-  Helper actions**, so there is nothing for a stolen token to approve. A stolen token →
-  device-scoped read + (rate-limited) chat only.
-- Mutating tools return in Phase 1, gated by PAM policy/approval.
+### 0.3 Read-only, single-device Helper by default (chosen posture)
+- Change the Helper's default level (`DEFAULT_PERMISSION_LEVEL` in `helper/index.ts`) to
+  `basic` (read-only). In `services/helperToolFilter.ts`, revise the `basic` set to a curated
+  **single-device** allowlist — only tools present in `HELPER_TOOL_SCOPING` (§0.1):
+  `get_device_details`, `analyze_metrics`, `analyze_disk_usage`, `get_cis_device_report`,
+  `get_s1_status`, `get_security_posture`, `take_screenshot`, `analyze_screen`, `search_logs`
+  (pinned to `[deviceId]`). **Remove** org-wide enumeration tools from `basic`
+  (`query_devices`, `get_fleet_health`, `get_s1_threats`, `get_log_trends`,
+  `detect_log_correlations`, `query_audit_log`, `query_change_log`, `get_fleet_health`, etc.) —
+  a single-device assistant does not need fleet queries, and they cannot be device-pinned.
+- Consequence: until Phase 1, there are **no self-serviceable privileged Helper actions** and
+  **no cross-device reads**. A stolen token → read of its **own device** + (rate-limited) chat.
+- The `standard`/`extended` levels keep their mutating tools (an org may opt a device in), but
+  those are now (a) device-pinned by §0.1 and (b) approval-gated with the self-approve path
+  removed (§0.2) so only a real authenticated admin can approve (§0.4). Mutating tools become
+  PAM-governed in Phase 1.
 
 ### 0.4 Interim approval path (for any approval-gated tool that remains)
 - Any tool that still requires approval is approved **only** via the existing authenticated
@@ -97,11 +119,16 @@ once #1183 is merged. Device-scoping (Phase 0 #1) is permanent and underlies bot
   so the mechanism is correct if an org opts a tool back on before Phase 1.)
 
 ### Phase 0 acceptance
-- A helper-token request whose tool targets a device other than the token's device → denied
-  (403/authorization error), with a test proving it.
-- `POST /chat/sessions/.../approve/...` returns 404 (endpoint gone).
-- Default Helper tool set contains no mutating tools (filter test).
-- HIGH finding closed: stolen token = device-scoped read only.
+- Under a helper context, a single-device tool invoked with a **forged** `deviceId` (some other
+  device) has its `deviceId` **overwritten** to the helper's own device before the handler runs
+  (test asserts the handler receives `helperDeviceId`).
+- Under a helper context, an **org-wide** tool not in `HELPER_TOOL_SCOPING` (e.g. `query_devices`)
+  is **denied** (test asserts deny).
+- `verifyDeviceAccess` denies a mismatched device when `helperDeviceId` is set (DiD test).
+- `POST /chat/sessions/:id/approve/:executionId` is gone (route returns 404; test).
+- Default Helper level is `basic` and the `basic` set is the curated single-device allowlist
+  with no org-wide or mutating tools (filter test).
+- HIGH finding closed: a stolen token yields read of its **own device only** + rate-limited chat.
 
 ---
 
