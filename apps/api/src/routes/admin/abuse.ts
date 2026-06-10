@@ -33,9 +33,14 @@ const SUSPENSION_DISABLED_REASON = 'partner_suspended';
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
 /**
- * Disable every non-platform-admin user under a partner as part of suspension,
- * stamping the suspension marker. Users already disabled (for other reasons) are
- * left untouched — not re-stamped — so a later unsuspend won't resurrect them.
+ * Disable the currently-active non-platform-admin users under a partner as part
+ * of suspension, stamping the suspension marker so unsuspend restores exactly
+ * these (back to 'active'). We deliberately only touch `status='active'` users:
+ *  - already-`disabled` users keep their existing reason (e.g. compromise), so
+ *    unsuspend won't resurrect them; and
+ *  - `invited` users are left invited rather than disabled — the partner-level
+ *    suspension gate already blocks them, and stamping them would make unsuspend
+ *    silently promote an unaccepted invite into a full 'active' account.
  * Returns the ids actually disabled by this call.
  */
 export function disablePartnerUsersForSuspension(tx: Tx, partnerId: string) {
@@ -46,7 +51,7 @@ export function disablePartnerUsersForSuspension(tx: Tx, partnerId: string) {
       and(
         eq(users.partnerId, partnerId),
         eq(users.isPlatformAdmin, false),
-        ne(users.status, 'disabled'),
+        eq(users.status, 'active'),
       ),
     )
     .returning({ id: users.id });

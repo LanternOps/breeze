@@ -35,14 +35,26 @@ function readUser(id: string) {
   });
 }
 
+function makePlatformAdmin(id: string) {
+  return withSystemDbAccessContext(() =>
+    db.update(users).set({ isPlatformAdmin: true }).where(eq(users.id, id)),
+  );
+}
+
 describe('partner suspend/unsuspend user scoping (#917 L-5)', () => {
-  it('disables active users with the suspension marker and leaves other disabled users untouched', async () => {
+  it('disables only active users (with the marker) and leaves disabled, invited, and platform-admin users untouched', async () => {
     const partner = await createPartner({ status: 'active' });
     const stamp = Date.now();
     const active1 = await createUser({ partnerId: partner.id, status: 'active', email: `l5-active1-${stamp}@example.com` });
     const active2 = await createUser({ partnerId: partner.id, status: 'active', email: `l5-active2-${stamp}@example.com` });
     // Disabled for some other reason (compromise / off-boarding) → reason NULL.
     const preDisabled = await createUser({ partnerId: partner.id, status: 'disabled', email: `l5-pre-${stamp}@example.com` });
+    // An unaccepted invite must NOT be disabled (and so never promoted to active
+    // by a later unsuspend).
+    const invited = await createUser({ partnerId: partner.id, status: 'invited', email: `l5-inv-${stamp}@example.com` });
+    // A platform admin that happens to be a member must never be disabled.
+    const admin = await createUser({ partnerId: partner.id, status: 'active', email: `l5-admin-${stamp}@example.com` });
+    await makePlatformAdmin(admin.id);
 
     const disabled = await withSystemDbAccessContext(() =>
       db.transaction((tx) => disablePartnerUsersForSuspension(tx, partner.id)),
@@ -53,6 +65,24 @@ describe('partner suspend/unsuspend user scoping (#917 L-5)', () => {
     expect(await readUser(active2.id)).toEqual({ status: 'disabled', disabledReason: 'partner_suspended' });
     // The pre-disabled user is NOT re-stamped — its reason stays NULL.
     expect(await readUser(preDisabled.id)).toEqual({ status: 'disabled', disabledReason: null });
+    // Invited and platform-admin users are left exactly as they were.
+    expect(await readUser(invited.id)).toEqual({ status: 'invited', disabledReason: null });
+    expect(await readUser(admin.id)).toEqual({ status: 'active', disabledReason: null });
+  });
+
+  it('an invited user stays invited across a full suspend/unsuspend cycle (never promoted to active)', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const stamp = Date.now();
+    const invited = await createUser({ partnerId: partner.id, status: 'invited', email: `l5-inv2-${stamp}@example.com` });
+
+    await withSystemDbAccessContext(() =>
+      db.transaction((tx) => disablePartnerUsersForSuspension(tx, partner.id)),
+    );
+    await withSystemDbAccessContext(() =>
+      db.transaction((tx) => reEnableSuspensionDisabledUsers(tx, partner.id)),
+    );
+
+    expect(await readUser(invited.id)).toEqual({ status: 'invited', disabledReason: null });
   });
 
   it('unsuspend re-enables only suspension-disabled users, leaving the rest disabled', async () => {

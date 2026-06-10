@@ -1236,7 +1236,12 @@ userRoutes.patch(
       return c.json({ error: 'User not found' }, 404);
     }
 
-    const updates: { name?: string; status?: 'active' | 'invited' | 'disabled'; updatedAt: Date } = {
+    const updates: {
+      name?: string;
+      status?: 'active' | 'invited' | 'disabled';
+      disabledReason?: string | null;
+      updatedAt: Date;
+    } = {
       updatedAt: new Date()
     };
 
@@ -1246,6 +1251,11 @@ userRoutes.patch(
 
     if (data.status) {
       updates.status = data.status;
+      // Any status change made here is a manual admin action, not a partner
+      // suspension. Clear the suspension marker so a manual disable reads as
+      // "disabled for another reason" (partner unsuspend must not re-enable it)
+      // and so reactivation never leaves a stale marker behind. See #917 L-5.
+      updates.disabledReason = null;
     }
 
     const [updated] = await db
