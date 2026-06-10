@@ -85,6 +85,10 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
 
   let created: Awaited<ReturnType<typeof createTicket>>;
   try {
+    // NOTE: the actor `userId` here is a portal_users id, NOT a users.id. The
+    // ticket service only uses it for audit/event metadata (no FK). It must
+    // never be routed into a column that FKs users.id (e.g.
+    // ticket_comments.user_id) — portal comments set portal_user_id instead.
     created = await createTicket(
       {
         orgId: auth.user.orgId,
@@ -244,6 +248,13 @@ ticketRoutes.post(
         createdAt: ticketComments.createdAt
       });
     if (!comment) {
+      // Near-impossible (an insert that neither throws nor returns a row), but
+      // every other failure on this route flows through onError+Sentry — make
+      // this branch visible too rather than returning a silent 500.
+      console.error('[portal] ticket_comments insert returned no row', {
+        ticketId: ticket.id,
+        orgId: auth.user.orgId,
+      });
       return c.json({ error: 'Failed to create ticket comment' }, 500);
     }
 
