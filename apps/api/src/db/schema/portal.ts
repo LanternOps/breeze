@@ -68,7 +68,7 @@ export const tickets = pgTable('tickets', {
   resolvedAt: timestamp('resolved_at'),
   closedAt: timestamp('closed_at'),
   partnerId: uuid('partner_id').references(() => partners.id),
-  categoryId: uuid('category_id'), // FK created in SQL; no .references() here to avoid an import cycle with schema/tickets.ts
+  categoryId: uuid('category_id'), // FK created in SQL; no .references() here to avoid an import cycle with schema/tickets.ts. Composite (category_id, partner_id) -> ticket_categories also in SQL (2026-06-10-c) — same-partner categories enforced at the DB level.
   pendingReason: text('pending_reason'),
   dueDate: timestamp('due_date'),
   responseSlaMinutes: integer('response_sla_minutes'),

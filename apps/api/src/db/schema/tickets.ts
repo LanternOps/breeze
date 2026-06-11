@@ -17,6 +17,8 @@ export const ticketCategories = pgTable('ticket_categories', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   name: varchar('name', { length: 100 }).notNull(),
   color: varchar('color', { length: 7 }).notNull().default('#6b7d83'),
+  // Composite FK (parent_id, partner_id) -> (id, partner_id) lives in SQL only
+  // (2026-06-10-c migration) — same-partner parents enforced at the DB level.
   parentId: uuid('parent_id').references((): AnyPgColumn => ticketCategories.id, { onDelete: 'set null' }),
   defaultPriority: ticketPriorityEnum('default_priority'),
   responseSlaMinutes: integer('response_sla_minutes'),
