@@ -106,4 +106,35 @@ describe('SlaTimers', () => {
     render(<SlaTimers ticket={mkTicket()} />);
     expect(screen.queryByTestId('sla-timers')).toBeNull();
   });
+
+  it('resolved ticket with unmet response SLA shows Not met, not a countdown', () => {
+    render(
+      <SlaTimers
+        ticket={mkTicket({
+          responseSlaMinutes: 60,
+          firstResponseAt: null,
+          status: 'resolved',
+          resolvedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
+          slaBreachReason: null,
+        })}
+      />
+    );
+    expect(screen.getByTestId('sla-timer-response')).toHaveTextContent('Not met');
+    expect(screen.getByTestId('sla-timer-response')).not.toHaveTextContent(/left/);
+  });
+
+  it('resolved ticket with breached response SLA shows Breached', () => {
+    render(
+      <SlaTimers
+        ticket={mkTicket({
+          responseSlaMinutes: 60,
+          firstResponseAt: null,
+          status: 'resolved',
+          resolvedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
+          slaBreachReason: 'response',
+        })}
+      />
+    );
+    expect(screen.getByTestId('sla-timer-response')).toHaveTextContent('Breached');
+  });
 });
