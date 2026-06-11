@@ -104,6 +104,27 @@ async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<b
   return siteAccessCheck(auth.allowedSiteIds)(rows[0]?.siteId);
 }
 
+/**
+ * Site-axis list condition (spec §7): device-bound tickets are limited to
+ * devices in the caller's allowed sites; deviceless (org-level) tickets stay
+ * visible. Uses an IN-subquery on devices instead of a join so the same
+ * condition works for the list, count, and stats queries unchanged. Empty
+ * allowlist = deviceless tickets only. Returns undefined for unrestricted
+ * callers (partner/system scope, or org users without a site restriction).
+ */
+function ticketSiteScopeCondition(auth: AuthContext): SQL | undefined {
+  const allowed = auth.allowedSiteIds;
+  if (!allowed) return undefined;
+  if (allowed.length === 0) return isNull(tickets.deviceId);
+  return or(
+    isNull(tickets.deviceId),
+    inArray(
+      tickets.deviceId,
+      db.select({ id: devices.id }).from(devices).where(inArray(devices.siteId, allowed))
+    )
+  )!;
+}
+
 /** Sentinel returned by buildScopeConditions when the caller context is broken. */
 const SCOPE_MISSING = Symbol('SCOPE_MISSING');
 
@@ -141,6 +162,10 @@ ticketsRoutes.get(
       return c.json({ error: 'Partner context required' }, 403);
     }
     const conditions: SQL[] = scopeResult;
+    // Site-axis restriction: stats must not leak counts for out-of-site
+    // device-bound tickets (deviceless tickets remain counted).
+    const siteCondition = ticketSiteScopeCondition(auth);
+    if (siteCondition) conditions.push(siteCondition);
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -189,7 +214,17 @@ ticketsRoutes.get(
       conditions.push(eq(tickets.partnerId, auth.partnerId));
     }
     if (q.orgId) conditions.push(eq(tickets.orgId, q.orgId));
-    if (q.deviceId) conditions.push(eq(tickets.deviceId, q.deviceId));
+    if (q.deviceId) {
+      // Site gate on the explicit device filter (alerts pattern): a restricted
+      // caller asking for a device outside their sites gets a hard 403, not an
+      // empty list, so the failure is visible.
+      if (!(await deviceInSiteScope(auth, q.deviceId))) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      conditions.push(eq(tickets.deviceId, q.deviceId));
+    }
+    const siteCondition = ticketSiteScopeCondition(auth);
+    if (siteCondition) conditions.push(siteCondition);
     if (q.status) conditions.push(eq(tickets.status, q.status));
     else if (q.statusGroup === 'open') conditions.push(inArray(tickets.status, [...OPEN_STATUSES]));
     else if (q.statusGroup === 'closed') conditions.push(inArray(tickets.status, [...CLOSED_STATUSES]));

@@ -894,6 +894,52 @@ describe('site-axis scoping — per-ticket routes', () => {
   });
 });
 
+describe('site-axis scoping — list and stats', () => {
+  const SITE_AUTH = {
+    ...DEFAULT_AUTH,
+    scope: 'organization' as string,
+    orgId: 'org-1' as string | null,
+    partnerId: null as string | null,
+    allowedSiteIds: ['site-1']
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = SITE_AUTH as typeof authRef.current;
+  });
+
+  it('GET /tickets returns 403 when filtering by an out-of-site deviceId', async () => {
+    dbSelectMock.mockResolvedValueOnce([{ siteId: 'site-OTHER' }]); // device lookup
+    const res = await makeApp().request('/tickets?deviceId=9a8b7c6d-2222-4333-8444-555566667777');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toHaveProperty('error', 'Device not found or access denied');
+  });
+
+  it('GET /tickets returns 403 when filtering by a nonexistent deviceId', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // device lookup
+    const res = await makeApp().request('/tickets?deviceId=9a8b7c6d-2222-4333-8444-555566667777');
+    expect(res.status).toBe(403);
+  });
+
+  it('GET /tickets succeeds for a site-restricted caller (condition applied, no crash)', async () => {
+    dbSelectMock.mockResolvedValue([]); // list rows (subquery is built, never executed)
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([]);
+  });
+
+  it('GET /tickets/stats succeeds for a site-restricted caller', async () => {
+    dbGroupByMock.mockResolvedValue([
+      { status: 'open', assignedTo: 'u-1', breached: false, count: 2 }
+    ]);
+    const res = await makeApp().request('/tickets/stats');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ open: 2, mine: 2 });
+  });
+});
+
 // Regression: Phase 1a shipped these routes WITHOUT authMiddleware in the chain,
 // so over real HTTP every request 401'd ("Not authenticated") — requireScope
 // found no c.get('auth'). The old test mock had requireScope inject the auth
