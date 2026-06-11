@@ -148,6 +148,7 @@ export default function DiscoveryProfileForm({
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
   const [subnetsText, setSubnetsText] = useState((initialValues?.subnets ?? []).join('\n'));
   const [subnetErrors, setSubnetErrors] = useState<string[]>([]);
+  const isSnmpEnabled = formValues.methods.includes('snmp');
 
   useEffect(() => {
     setSubnetErrors([]);
@@ -431,165 +432,167 @@ export default function DiscoveryProfileForm({
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">SNMP Settings</h2>
-        <p className="text-sm text-muted-foreground">Credentials used for SNMP discovery probes.</p>
+      {isSnmpEnabled && (
+        <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="discovery-snmp-settings">
+          <h2 className="text-lg font-semibold">SNMP Settings</h2>
+          <p className="text-sm text-muted-foreground">Credentials used for SNMP discovery probes.</p>
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <div>
-            <label className="text-sm font-medium">SNMP version</label>
-            <select
-              value={formValues.snmp.version}
-              onChange={event =>
-                setFormValues(prev => ({
-                  ...prev,
-                  snmp: { ...prev.snmp, version: event.target.value as SnmpSettings['version'] }
-                }))
-              }
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="v2c">v2c</option>
-              <option value="v3">v3</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Port</label>
-            <input
-              type="number"
-              value={formValues.snmp.port}
-              onChange={event =>
-                setFormValues(prev => ({
-                  ...prev,
-                  snmp: { ...prev.snmp, port: Number(event.target.value) }
-                }))
-              }
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Timeout (ms)</label>
-            <input
-              type="number"
-              value={formValues.snmp.timeout}
-              onChange={event =>
-                setFormValues(prev => ({
-                  ...prev,
-                  snmp: { ...prev.snmp, timeout: Number(event.target.value) }
-                }))
-              }
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Retries</label>
-            <input
-              type="number"
-              value={formValues.snmp.retries}
-              onChange={event =>
-                setFormValues(prev => ({
-                  ...prev,
-                  snmp: { ...prev.snmp, retries: Number(event.target.value) }
-                }))
-              }
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-
-          {formValues.snmp.version === 'v2c' ? (
-            <div className="md:col-span-2">
-              <label className="text-sm font-medium">Community string</label>
-              <input
-                type="text"
-                value={formValues.snmp.community}
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-sm font-medium">SNMP version</label>
+              <select
+                value={formValues.snmp.version}
                 onChange={event =>
                   setFormValues(prev => ({
                     ...prev,
-                    snmp: { ...prev.snmp, community: event.target.value }
+                    snmp: { ...prev.snmp, version: event.target.value as SnmpSettings['version'] }
+                  }))
+                }
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="v2c">v2c</option>
+                <option value="v3">v3</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Port</label>
+              <input
+                type="number"
+                value={formValues.snmp.port}
+                onChange={event =>
+                  setFormValues(prev => ({
+                    ...prev,
+                    snmp: { ...prev.snmp, port: Number(event.target.value) }
                   }))
                 }
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
-          ) : (
-            <>
-              <div>
-                <label className="text-sm font-medium">Username</label>
+            <div>
+              <label className="text-sm font-medium">Timeout (ms)</label>
+              <input
+                type="number"
+                value={formValues.snmp.timeout}
+                onChange={event =>
+                  setFormValues(prev => ({
+                    ...prev,
+                    snmp: { ...prev.snmp, timeout: Number(event.target.value) }
+                  }))
+                }
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">Retries</label>
+              <input
+                type="number"
+                value={formValues.snmp.retries}
+                onChange={event =>
+                  setFormValues(prev => ({
+                    ...prev,
+                    snmp: { ...prev.snmp, retries: Number(event.target.value) }
+                  }))
+                }
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+
+            {formValues.snmp.version === 'v2c' ? (
+              <div className="md:col-span-2">
+                <label className="text-sm font-medium">Community string</label>
                 <input
                   type="text"
-                  value={formValues.snmp.username}
+                  value={formValues.snmp.community}
                   onChange={event =>
                     setFormValues(prev => ({
                       ...prev,
-                      snmp: { ...prev.snmp, username: event.target.value }
+                      snmp: { ...prev.snmp, community: event.target.value }
                     }))
                   }
                   className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
-              <div>
-                <label className="text-sm font-medium">Auth protocol</label>
-                <select
-                  value={formValues.snmp.authProtocol}
-                  onChange={event =>
-                    setFormValues(prev => ({
-                      ...prev,
-                      snmp: { ...prev.snmp, authProtocol: event.target.value as SnmpSettings['authProtocol'] }
-                    }))
-                  }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="sha">SHA</option>
-                  <option value="md5">MD5</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Auth passphrase</label>
-                <input
-                  type="password"
-                  value={formValues.snmp.authPassphrase}
-                  onChange={event =>
-                    setFormValues(prev => ({
-                      ...prev,
-                      snmp: { ...prev.snmp, authPassphrase: event.target.value }
-                    }))
-                  }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Privacy protocol</label>
-                <select
-                  value={formValues.snmp.privacyProtocol}
-                  onChange={event =>
-                    setFormValues(prev => ({
-                      ...prev,
-                      snmp: { ...prev.snmp, privacyProtocol: event.target.value as SnmpSettings['privacyProtocol'] }
-                    }))
-                  }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="aes">AES</option>
-                  <option value="des">DES</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Privacy passphrase</label>
-                <input
-                  type="password"
-                  value={formValues.snmp.privacyPassphrase}
-                  onChange={event =>
-                    setFormValues(prev => ({
-                      ...prev,
-                      snmp: { ...prev.snmp, privacyPassphrase: event.target.value }
-                    }))
-                  }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-            </>
-          )}
+            ) : (
+              <>
+                <div>
+                  <label className="text-sm font-medium">Username</label>
+                  <input
+                    type="text"
+                    value={formValues.snmp.username}
+                    onChange={event =>
+                      setFormValues(prev => ({
+                        ...prev,
+                        snmp: { ...prev.snmp, username: event.target.value }
+                      }))
+                    }
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Auth protocol</label>
+                  <select
+                    value={formValues.snmp.authProtocol}
+                    onChange={event =>
+                      setFormValues(prev => ({
+                        ...prev,
+                        snmp: { ...prev.snmp, authProtocol: event.target.value as SnmpSettings['authProtocol'] }
+                      }))
+                    }
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="sha">SHA</option>
+                    <option value="md5">MD5</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Auth passphrase</label>
+                  <input
+                    type="password"
+                    value={formValues.snmp.authPassphrase}
+                    onChange={event =>
+                      setFormValues(prev => ({
+                        ...prev,
+                        snmp: { ...prev.snmp, authPassphrase: event.target.value }
+                      }))
+                    }
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Privacy protocol</label>
+                  <select
+                    value={formValues.snmp.privacyProtocol}
+                    onChange={event =>
+                      setFormValues(prev => ({
+                        ...prev,
+                        snmp: { ...prev.snmp, privacyProtocol: event.target.value as SnmpSettings['privacyProtocol'] }
+                      }))
+                    }
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="aes">AES</option>
+                    <option value="des">DES</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Privacy passphrase</label>
+                  <input
+                    type="password"
+                    value={formValues.snmp.privacyPassphrase}
+                    onChange={event =>
+                      setFormValues(prev => ({
+                        ...prev,
+                        snmp: { ...prev.snmp, privacyPassphrase: event.target.value }
+                      }))
+                    }
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <h2 className="text-lg font-semibold">Network Alerting</h2>
