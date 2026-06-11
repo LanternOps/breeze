@@ -22,6 +22,7 @@
     "@astrojs/node": "^10.1.4",
     "@astrojs/react": "^5.0.7",
     "@astrojs/tailwind": "^6.0.0",
+    "@fontsource/plus-jakarta-sans": "^5.2.8",
     "@hookform/resolvers": "^5.4.0",
     "@monaco-editor/react": "^4.6.0",
     "@novnc/novnc": "1.7.0",

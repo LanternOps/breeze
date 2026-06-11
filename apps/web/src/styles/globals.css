@@ -1,3 +1,13 @@
+/* Self-hosted Plus Jakarta Sans (weights used by tailwind.config.mjs). Bundled
+   by Vite and served from our own origin, so it works under the app's CSP
+   (font-src 'self') without the Google Fonts CDN — which style-src-elem/font-src
+   block, leaving every page on the system fallback font (issue #1230). Must
+   precede the @tailwind directives: CSS requires @import before other rules. */
+@import '@fontsource/plus-jakarta-sans/400.css';
+@import '@fontsource/plus-jakarta-sans/500.css';
+@import '@fontsource/plus-jakarta-sans/600.css';
+@import '@fontsource/plus-jakarta-sans/700.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
