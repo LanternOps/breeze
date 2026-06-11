@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -563,6 +564,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Only relevant on Windows when running as a service.
 	if cfg.IsService {
 		ensureSASPolicy()
+	}
+
+	if cfg.PAMEnabled && runtime.GOOS == "windows" {
+		if err := elevaccount.New().EnsureProvisioned(); err != nil {
+			log.Warn("failed to provision PAM dormant elevation account, continuing",
+				"error", err.Error())
+		}
 	}
 
 	// On macOS, the root daemon has Full Disk Access and can write to the

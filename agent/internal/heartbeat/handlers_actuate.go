@@ -4,31 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
 // PAM Track 5: wire the server-pushed `actuate_elevation` device_command
 // into the pamactuator package. The server's approval-flow (Track 6) emits
-// this command after a tech approves an elevation request and the
-// dormant-admin credential has been minted. The agent types those creds
-// into the consent.exe prompt that's already up on the user's screen.
+// this command after a tech approves an elevation request. The command is a
+// go signal only; the agent mints the dormant-admin credential locally and
+// passes it to the actuator in-process.
 //
-// Payload shape (validated by apps/api/src/routes/agents/actuateElevation.ts):
+// Payload shape (validated by apps/api/src/routes/devices/actuateElevation.ts):
 //
 //	{
 //	  "elevationRequestId": "uuid",
-//	  "username":           "DOMAIN\\svc-pam",
-//	  "password":           "<one-time>",
 //	  "timeoutMs":          8000
 //	}
 //
-// We do NOT log the password or include it in the CommandResult. The
-// pamactuator's Reason field is mirrored into the result Stdout so the
-// server-side handler can switch on it for retry/escalate decisions
-// without parsing free-form text.
+// Deprecated username/password payload fields are ignored. The secret never
+// crosses the wire and is never included in CommandResult. The pamactuator's
+// Reason field is mirrored into Stdout so the server can switch on it without
+// parsing free-form text.
 
 func init() {
 	handlerRegistry[tools.CmdActuateElevation] = handleActuateElevation
@@ -38,8 +38,8 @@ func init() {
 // caller outside this file needs the shape.
 type actuatePayload struct {
 	ElevationRequestID string `json:"elevationRequestId"`
-	Username           string `json:"username"`
-	Password           string `json:"password"`
+	Username           string `json:"username,omitempty"`
+	Password           string `json:"password,omitempty"`
 	TimeoutMs          int    `json:"timeoutMs"`
 }
 
@@ -56,6 +56,9 @@ type actuateResult struct {
 // newActuator is an indirection so tests can install a fake without
 // touching package state in other tests. Set via swapActuatorForTest.
 var newActuator = pamactuator.New
+
+// newElevationAccountManager is test-swappable for handler safety tests.
+var newElevationAccountManager = elevaccount.New
 
 func handleActuateElevation(_ *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
@@ -75,11 +78,34 @@ func handleActuateElevation(_ *Heartbeat, cmd Command) tools.CommandResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
 	defer cancel()
 
+	manager := newElevationAccountManager()
+	cred, err := manager.Promote(ctx)
+	if err != nil {
+		out := actuateResult{
+			ElevationRequestID: payload.ElevationRequestID,
+			Success:            false,
+			Reason:             promoteFailureReason(err),
+			Message:            err.Error(),
+		}
+		return tools.NewSuccessResult(out, time.Since(start).Milliseconds())
+	}
+	defer func() {
+		demoteCtx, demoteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer demoteCancel()
+		if err := manager.Demote(demoteCtx); err != nil {
+			log.Warn("actuate_elevation: demote failed",
+				"elevationRequestId", payload.ElevationRequestID,
+				"error", err.Error(),
+			)
+		}
+	}()
+	defer zeroCredential(&cred)
+
 	act := newActuator()
 	res := act.Trigger(ctx, pamactuator.Request{
 		ElevationRequestID: payload.ElevationRequestID,
-		Username:           payload.Username,
-		Password:           payload.Password,
+		Username:           cred.Username,
+		Password:           cred.Password,
 		TimeoutMs:          payload.TimeoutMs,
 	})
 
@@ -98,7 +124,8 @@ func handleActuateElevation(_ *Heartbeat, cmd Command) tools.CommandResult {
 }
 
 // parseActuatePayload validates the incoming payload. Required fields:
-// elevationRequestId, username, password. timeoutMs is optional.
+// elevationRequestId. timeoutMs is optional. Deprecated username/password
+// fields may be present but are ignored by the handler.
 func parseActuatePayload(p map[string]any) (actuatePayload, error) {
 	raw, err := json.Marshal(p)
 	if err != nil {
@@ -111,11 +138,25 @@ func parseActuatePayload(p map[string]any) (actuatePayload, error) {
 	if out.ElevationRequestID == "" {
 		return actuatePayload{}, errors.New("actuate_elevation: elevationRequestId is required")
 	}
-	if out.Username == "" {
-		return actuatePayload{}, errors.New("actuate_elevation: username is required")
-	}
-	if out.Password == "" {
-		return actuatePayload{}, errors.New("actuate_elevation: password is required")
-	}
 	return out, nil
+}
+
+func promoteFailureReason(err error) string {
+	if errors.Is(err, elevaccount.ErrUnsupportedPlatform) {
+		return elevaccount.ErrUnsupportedPlatform.Error()
+	}
+	if err == nil {
+		return "credential_promote_failed"
+	}
+	return "credential_promote_failed"
+}
+
+func zeroCredential(cred *elevaccount.Credential) {
+	if cred == nil {
+		return
+	}
+	if cred.Password != "" {
+		cred.Password = strings.Repeat("\x00", len(cred.Password))
+		cred.Password = ""
+	}
 }

@@ -263,6 +263,18 @@ describe('POST /devices/:id/actuate-elevation', () => {
   });
 
   describe('input validation', () => {
+    it('accepts a slim go-signal body without username/password', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(undefined as never);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elevationRequestId: ELEVATION_ID }),
+      });
+      // 404 means validation passed and route logic ran (device not found).
+      expect(res.status).toBe(404);
+    });
+
     it('rejects missing elevationRequestId', async () => {
       const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
         method: 'POST',
@@ -456,7 +468,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(SAMPLE_DEVICE as never);
     });
 
-    it('queues actuate_elevation with full credential payload', async () => {
+    it('queues actuate_elevation with go-signal payload only', async () => {
       const { commandValues } = rigTransaction({
         elevationRow: SAMPLE_ELEVATION,
         commandRow: {
@@ -473,8 +485,6 @@ describe('POST /devices/:id/actuate-elevation', () => {
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
         body: JSON.stringify({
           elevationRequestId: ELEVATION_ID,
-          username: 'DOMAIN\\svc-admin',
-          password: 'one-time',
           timeoutMs: 5000,
         }),
       });
@@ -495,12 +505,13 @@ describe('POST /devices/:id/actuate-elevation', () => {
           createdBy: USER_ID,
           payload: expect.objectContaining({
             elevationRequestId: ELEVATION_ID,
-            username: 'DOMAIN\\svc-admin',
-            password: 'one-time',
             timeoutMs: 5000,
           }),
         }),
       );
+      const queued = commandValues.mock.calls[0]![0] as any;
+      expect(queued.payload).not.toHaveProperty('username');
+      expect(queued.payload).not.toHaveProperty('password');
     });
 
     it('applies the default 8000ms timeout when omitted', async () => {
@@ -520,8 +531,6 @@ describe('POST /devices/:id/actuate-elevation', () => {
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
         body: JSON.stringify({
           elevationRequestId: ELEVATION_ID,
-          username: 'u',
-          password: 'p',
         }),
       });
 
@@ -533,7 +542,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
       );
     });
 
-    it('writes audit without the password and an elevation_audit happy-path row', async () => {
+    it('writes audit without credentials and an elevation_audit happy-path row', async () => {
       const { auditInsertCalls } = rigTransaction({
         elevationRow: SAMPLE_ELEVATION,
         commandRow: {
@@ -550,28 +559,30 @@ describe('POST /devices/:id/actuate-elevation', () => {
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
         body: JSON.stringify({
           elevationRequestId: ELEVATION_ID,
-          username: 'svc-admin',
-          password: 'do-not-log-me',
+          username: 'deprecated-payload-user',
+          password: 'deprecated-payload-password',
         }),
       });
 
       expect(writeRouteAudit).toHaveBeenCalledTimes(1);
       const auditPayload = vi.mocked(writeRouteAudit).mock.calls[0]![1] as any;
       expect(auditPayload.action).toBe('device.elevation.actuate');
-      expect(auditPayload.details.username).toBe('svc-admin');
-      expect(JSON.stringify(auditPayload)).not.toContain('do-not-log-me');
+      expect(auditPayload.details).not.toHaveProperty('username');
+      expect(JSON.stringify(auditPayload)).not.toContain('deprecated-payload-user');
+      expect(JSON.stringify(auditPayload)).not.toContain('deprecated-payload-password');
 
-      // elevation_audit row written inside the transaction, also password-free
+      // elevation_audit row written inside the transaction, also credential-free
       expect(auditInsertCalls).toHaveLength(1);
       const txAudit = auditInsertCalls[0]!.values as any;
       expect(txAudit.eventType).toBe('command_executed');
       expect(txAudit.details).toMatchObject({
         deviceId: DEVICE_ID,
         commandId: 'cmd-3',
-        username: 'svc-admin',
         timeoutMs: 8000,
       });
-      expect(JSON.stringify(txAudit)).not.toContain('do-not-log-me');
+      expect(txAudit.details).not.toHaveProperty('username');
+      expect(JSON.stringify(txAudit)).not.toContain('deprecated-payload-user');
+      expect(JSON.stringify(txAudit)).not.toContain('deprecated-payload-password');
     });
   });
 });

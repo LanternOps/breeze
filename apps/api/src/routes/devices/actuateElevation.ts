@@ -39,24 +39,24 @@ actuateElevationRoutes.use('*', async (c, next) => {
  * POST /devices/:id/actuate-elevation
  *
  * PAM Track 5: queue an `actuate_elevation` device_command that the agent
- * picks up and uses to type the dormant-admin credentials into the
- * consent.exe prompt that's already up on the user's screen.
+ * picks up as a go signal for the consent.exe prompt that's already up on
+ * the user's screen. The agent mints the local dormant-admin credential and
+ * passes it to the actuator in-process; the secret never crosses the wire.
  *
  * This is the server-side push half of the actuator. The agent-side
  * implementation lives in `agent/internal/pamactuator/`.
  *
  * Scope: this PR ships only the command-queueing contract. The wider
  * approval flow that decides WHEN to call this — match elevation_requests
- * row against software_policies, mint a JIT credential, fan out to the
- * right agent — is Track 6.
+ * row against software_policies and fan out to the right agent — is Track 6.
  *
  * Auth: organization+ scope, DEVICES_EXECUTE permission, MFA. Same gates
  * as POST /devices/:id/commands, because functionally that's what this
- * is: a typed wrapper that validates the elevationRequestId / credential
+ * is: a typed wrapper that validates the elevationRequestId go-signal
  * payload before insertion.
  *
- * The credential is shipped through the command payload exactly once; the
- * agent does not persist it. device_commands is intentionally
+ * The command payload carries only the go signal; the credential is minted
+ * locally by the agent and never shipped. device_commands is intentionally
  * system-scoped (see CLAUDE.md tenancy notes), but RLS still covers the
  * `devices` row we read on the way in.
  *
@@ -70,8 +70,8 @@ actuateElevationRoutes.use('*', async (c, next) => {
 
 const actuateElevationSchema = z.object({
   elevationRequestId: z.string().uuid(),
-  username: z.string().min(1).max(255),
-  password: z.string().min(1).max(1024),
+  username: z.string().min(1).max(255).optional(),
+  password: z.string().min(1).max(1024).optional(),
   timeoutMs: z.number().int().min(1000).max(60000).optional(),
 });
 
@@ -200,8 +200,6 @@ actuateElevationRoutes.post(
           type: 'actuate_elevation',
           payload: {
             elevationRequestId: data.elevationRequestId,
-            username: data.username,
-            password: data.password,
             timeoutMs: data.timeoutMs ?? 8000,
           },
           status: 'pending',
@@ -215,7 +213,7 @@ actuateElevationRoutes.post(
       }
 
       // Blocker 2: elevation_audit insert on the happy path. The password
-      // is never recorded here — only the request id + command id + username.
+      // is agent-local and never present here.
       await tx.insert(elevationAudit).values({
         orgId: device.orgId,
         elevationRequestId: elevation.id,
@@ -225,7 +223,6 @@ actuateElevationRoutes.post(
         details: {
           deviceId,
           commandId: command.id,
-          username: data.username,
           timeoutMs: data.timeoutMs ?? 8000,
         },
         occurredAt: new Date(),
@@ -280,11 +277,8 @@ actuateElevationRoutes.post(
 
     const command = result.command;
 
-    // Audit log MUST NOT carry the password. elevationRequestId +
-    // username + deviceId is enough to correlate; the cleartext only
-    // exists in flight to the agent. (`commandAuditDetails` is not
-    // imported here because the default sanitizer would still see the
-    // password in the payload via deep-clone.)
+    // Audit log MUST NOT carry the password. The cleartext is minted by the
+    // agent only and is never present in this request or command payload.
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.elevation.actuate',
@@ -294,7 +288,6 @@ actuateElevationRoutes.post(
       details: {
         deviceId,
         elevationRequestId: data.elevationRequestId,
-        username: data.username,
         timeoutMs: data.timeoutMs ?? 8000,
       },
     });
