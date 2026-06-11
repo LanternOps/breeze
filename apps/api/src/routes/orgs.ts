@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
@@ -697,7 +698,8 @@ const listOrganizationsSchema = z.object({
 // auth.orgId and projects to safe fields only.
 const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext | undefined;
-  if (auth?.scope === 'organization') return next();
+  if (!auth) throw new HTTPException(401, { message: 'Not authenticated' });
+  if (auth.scope === 'organization') return next();
   return requireOrgRead(c, next);
 };
 

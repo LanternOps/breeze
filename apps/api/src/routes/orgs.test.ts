@@ -654,6 +654,26 @@ describe('org routes', () => {
 
       expect(res.status).toBe(403);
     });
+
+    // The partner happy-path (permission granted → 200) is already covered by
+    // the 'should return organizations with pagination' test above, which runs
+    // with permissionMockState.granted = true (the beforeEach default) and
+    // scope: 'partner'. Adding a duplicate would be noise.
+
+    it('returns empty data when org-scope token has null orgId (null-guard path)', async () => {
+      // Exercises the `if (!auth.orgId)` guard at ~line 715 of orgs.ts.
+      // The org-scope branch short-circuits before any DB call and must return
+      // 200 with an empty data array, not a 4xx or 5xx.
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'organization', orgId: null });
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
+    });
   });
 
   describe('POST /orgs/organizations', () => {
