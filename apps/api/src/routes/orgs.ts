@@ -23,6 +23,7 @@ import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
+import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -1026,6 +1027,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
 
 orgRoutes.patch('/organizations/:id', ...updateOrgHandler);
 orgRoutes.put('/organizations/:id', ...updateOrgHandler);
+
+// Customer-portal settings (portal_branding) — see routes/orgPortalSettings.ts
+registerOrgPortalSettingsRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
