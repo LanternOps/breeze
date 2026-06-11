@@ -187,6 +187,7 @@ import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs
 import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
+import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -1051,6 +1052,7 @@ async function initializeWorkers(): Promise<void> {
     ['pamJobs', initializePamJobs],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
+    ['ticketSlaWorker', initializeTicketSlaWorker],
   ];
 
   await Promise.allSettled(
@@ -1204,6 +1206,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPamJobs,
     shutdownApprovalExpiryReaper,
     shutdownTicketNotifyWorker,
+    shutdownTicketSlaWorker,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,

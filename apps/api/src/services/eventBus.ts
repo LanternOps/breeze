@@ -52,6 +52,8 @@ export type EventType =
   // Backup SLA events
   | 'backup.sla_breach'
   | 'backup.sla_resolved'
+  // Ticket SLA events (Phase 2, ticketSlaWorker)
+  | 'ticket.sla_breached'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
