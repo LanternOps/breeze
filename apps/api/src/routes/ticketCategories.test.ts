@@ -307,6 +307,92 @@ describe('DELETE /ticket-categories/:id', () => {
   });
 });
 
+describe('parentId tenant validation', () => {
+  const CAT_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+  const PARENT_ID = '9a8b7c6d-2222-4333-8444-555566667777';
+
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('POST rejects a parent category from another partner with 400', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: PARENT_ID, partnerId: 'p-OTHER' }]); // parent lookup
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Sub', parentId: PARENT_ID })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Parent category not found');
+  });
+
+  it('POST rejects a nonexistent parent with 400', async () => {
+    dbSelectResult.mockResolvedValueOnce([]); // parent lookup
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Sub', parentId: PARENT_ID })
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST accepts a same-partner parent', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: PARENT_ID, partnerId: 'p-1' }]); // parent lookup
+    dbInsertReturning.mockResolvedValue([{ id: CAT_ID, name: 'Sub', partnerId: 'p-1', parentId: PARENT_ID }]);
+    const res = await makeApp().request('/ticket-categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Sub', parentId: PARENT_ID })
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('PATCH rejects making a category its own parent with 400', async () => {
+    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId: CAT_ID })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Category cannot be its own parent');
+  });
+
+  it('PATCH rejects a cross-partner parent with 400', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: PARENT_ID, partnerId: 'p-OTHER' }]); // parent lookup
+    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId: PARENT_ID })
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toHaveProperty('error', 'Parent category not found');
+  });
+
+  it('PATCH accepts a same-partner parent', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: PARENT_ID, partnerId: 'p-1' }]); // parent lookup
+    dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, partnerId: 'p-1', parentId: PARENT_ID }]);
+    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId: PARENT_ID })
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('PATCH under system scope validates the parent against the category own partner', async () => {
+    resetAuth({ scope: 'system', partnerId: null });
+    dbSelectResult
+      .mockResolvedValueOnce([{ partnerId: 'p-1' }])                     // target category lookup
+      .mockResolvedValueOnce([{ id: PARENT_ID, partnerId: 'p-OTHER' }]); // parent lookup
+    const res = await makeApp().request(`/ticket-categories/${CAT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId: PARENT_ID })
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 // Regression: Phase 1a shipped these routes WITHOUT authMiddleware in the chain,
 // so over real HTTP every request 401'd ("Not authenticated") — requireScope
 // found no c.get('auth'). The old test mock had requireScope inject the auth

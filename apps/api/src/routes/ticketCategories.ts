@@ -78,6 +78,22 @@ ticketCategoriesRoutes.post(
       return c.json({ error: 'Partner context required' }, 403);
     }
     const body = c.req.valid('json');
+
+    // Tenant guard: a parent category must exist within the same partner.
+    // The DB composite FK (parent_id, partner_id) backs this; checking here
+    // returns a clean 400 instead of a constraint-violation 500.
+    if (body.parentId) {
+      const parentRows = await db
+        .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+        .from(ticketCategories)
+        .where(eq(ticketCategories.id, body.parentId))
+        .limit(1);
+      const parent = parentRows[0];
+      if (!parent || parent.partnerId !== auth.partnerId) {
+        return c.json({ error: 'Parent category not found' }, 400);
+      }
+    }
+
     const inserted = await db.insert(ticketCategories).values({
       ...body,
       // numeric column requires string; Drizzle's numeric type maps to string at runtime
@@ -102,6 +118,33 @@ ticketCategoriesRoutes.patch(
     }
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
+
+    if (typeof body.parentId === 'string') {
+      if (body.parentId === id) {
+        return c.json({ error: 'Category cannot be its own parent' }, 400);
+      }
+      // Partner scope: the caller's partner is authoritative. System scope:
+      // resolve the target category's partner and validate against that.
+      let targetPartnerId: string | null = auth.scope === 'partner' ? (auth.partnerId ?? null) : null;
+      if (!targetPartnerId) {
+        const catRows = await db
+          .select({ partnerId: ticketCategories.partnerId })
+          .from(ticketCategories)
+          .where(eq(ticketCategories.id, id))
+          .limit(1);
+        targetPartnerId = catRows[0]?.partnerId ?? null;
+        if (!targetPartnerId) return c.json({ error: 'Category not found' }, 404);
+      }
+      const parentRows = await db
+        .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+        .from(ticketCategories)
+        .where(eq(ticketCategories.id, body.parentId))
+        .limit(1);
+      const parent = parentRows[0];
+      if (!parent || parent.partnerId !== targetPartnerId) {
+        return c.json({ error: 'Parent category not found' }, 400);
+      }
+    }
 
     const conditions: SQL[] = [eq(ticketCategories.id, id)];
     if (auth.scope === 'partner' && auth.partnerId) {
