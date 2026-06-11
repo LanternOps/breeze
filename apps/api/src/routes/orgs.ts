@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -688,19 +689,57 @@ const listOrganizationsSchema = z.object({
   limit: z.string().optional()
 });
 
-orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgRead, zValidator('query', listOrganizationsSchema), async (c) => {
+// Org-scope callers may read their OWN org's name-level row without the
+// organizations:read permission (UI shell / tickets cold load, #1245 residual)
+// — every org user implicitly needs their org's name to render the app shell.
+// Partner/system scope still requires the permission: they list many orgs and
+// receive full rows. The handler's organization branch is hard-scoped to
+// auth.orgId and projects to safe fields only.
+const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
+  const auth = c.get('auth') as AuthContext | undefined;
+  if (auth?.scope === 'organization') return next();
+  return requireOrgRead(c, next);
+};
+
+orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { partnerId: queryPartnerId, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
 
-  let conditions;
   if (auth.scope === 'organization') {
-    // Organization-scoped users can only see their own organization
+    // Organization-scoped users can only see their own organization, and —
+    // because they reach this route without organizations:read (see
+    // requireOrgReadUnlessOwnOrg above) — only a name-level projection of it.
+    // An unprojected select() here would leak ssoConfig, billingContact,
+    // settings, maxDevices, etc. to roles that never held the permission.
     if (!auth.orgId) {
       return c.json({ data: [], pagination: { page, limit, total: 0 } });
     }
-    conditions = and(eq(organizations.id, auth.orgId), isNull(organizations.deletedAt));
-  } else if (auth.scope === 'partner') {
+    const ownOrgCondition = and(eq(organizations.id, auth.orgId), isNull(organizations.deletedAt));
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(organizations)
+      .where(ownOrgCondition);
+    const data = await db
+      .select({
+        id: organizations.id,
+        name: organizations.name,
+        slug: organizations.slug,
+        status: organizations.status
+      })
+      .from(organizations)
+      .where(ownOrgCondition)
+      .limit(limit)
+      .offset(offset)
+      .orderBy(organizations.createdAt);
+    return c.json({
+      data,
+      pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
+    });
+  }
+
+  let conditions;
+  if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
     if (orgIds.length === 0) {
       return c.json({
@@ -732,7 +771,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // Apply the partner's preferred organization order, when one is set.
   // - partner scope: load own partner settings.
   // - system scope: only when a partnerId filter is in the query.
-  // - organization scope: list is at most one row, nothing to reorder.
+  // (organization scope already returned above — at most one row anyway.)
   let ordered = data;
   let orderPartnerId: string | null = null;
   if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;

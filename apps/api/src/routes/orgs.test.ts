@@ -95,6 +95,12 @@ vi.mock('drizzle-orm', async (importActual) => {
   };
 });
 
+// Mutable switch for the requirePermission mock so individual tests can
+// simulate a caller whose role LACKS the gated permission (the real middleware
+// 403s). Hoisted because the vi.mock factory below references it. Reset to
+// granted in beforeEach.
+const permissionMockState = vi.hoisted(() => ({ granted: true }));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -117,7 +123,12 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePartner: vi.fn((c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (!permissionMockState.granted) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
@@ -182,6 +193,7 @@ describe('org routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionMockState.granted = true;
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
@@ -554,6 +566,93 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
+    });
+
+    // #1245 residual: org-scope users (Org Admin/Technician/Viewer) lack the
+    // organizations:read permission, but the tickets UI needs this route on
+    // cold load just to render their own org's name. The route skips the
+    // permission check for organization scope ONLY, and returns a projected
+    // name-level row instead of the full org row.
+    it('allows an org-scope user without organizations:read to read their own org', async () => {
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'organization', orgId: 'org-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([
+                    { id: 'org-123', name: 'Acme Corp', slug: 'acme', status: 'active' }
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].id).toBe('org-123');
+      expect(body.pagination.total).toBe(1);
+    });
+
+    it('projects the org-scope row to id/name/slug/status only (no privileged fields)', async () => {
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'organization', orgId: 'org-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([
+                    { id: 'org-123', name: 'Acme Corp', slug: 'acme', status: 'active' }
+                  ])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations');
+      expect(res.status).toBe(200);
+
+      // The data query (second db.select call, after the count) must pass an
+      // explicit projection of exactly the safe fields — an unprojected
+      // select() would return full rows incl. ssoConfig/billingContact.
+      const dataSelectArg = vi.mocked(db.select).mock.calls[1]?.[0];
+      expect(dataSelectArg).toBeDefined();
+      expect(Object.keys(dataSelectArg as Record<string, unknown>).sort())
+        .toEqual(['id', 'name', 'slug', 'status']);
+
+      const row = (await res.json()).data[0];
+      expect(row).not.toHaveProperty('ssoConfig');
+      expect(row).not.toHaveProperty('billingContact');
+      expect(row).not.toHaveProperty('settings');
+      expect(row).not.toHaveProperty('maxDevices');
+    });
+
+    it('still requires organizations:read for partner scope', async () => {
+      permissionMockState.granted = false;
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(403);
     });
   });
 
