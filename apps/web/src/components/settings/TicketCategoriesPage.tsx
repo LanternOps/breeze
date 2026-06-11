@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -247,7 +247,7 @@ export default function TicketCategoriesPage() {
               </td>
             </tr>
           ) : ordered.map((c) => (
-            <>
+            <Fragment key={c.id}>
               <tr key={c.id} data-testid={`ticket-category-row-${c.id}`} data-depth={c.depth}>
                 <td className={`px-4 py-2 text-sm${c.depth > 0 ? ' pl-10' : ''}`}>
                   <span className="mr-1.5 inline-block h-3 w-3 rounded-sm align-middle" style={{ backgroundColor: c.color }} />
@@ -393,7 +393,7 @@ export default function TicketCategoriesPage() {
                   </td>
                 </tr>
               )}
-            </>
+            </Fragment>
           ))}
         </tbody>
       </table>
