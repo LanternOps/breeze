@@ -13,6 +13,7 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
+import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 
 type Alert = {
   id: string;
@@ -36,11 +37,14 @@ type LinkedTicket = {
   id: string;
   internalNumber: string | null;
   subject: string;
-  status: string;
-  priority: string;
+  status: TicketStatus;
+  priority: TicketPriority;
   linkType: string;
   linkedAt: string;
 };
+
+// Statuses that no longer count as "open" for the duplicate-ticket warning.
+const NON_OPEN_TICKET_STATUSES: readonly TicketStatus[] = ['resolved', 'closed'];
 
 type AlertDetailPageProps = {
   alertId: string;
@@ -402,8 +406,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
           alertTitle={alert.title}
           alertSeverity={alert.severity}
           openTicketNumber={
-            linkedTickets.find((t) => !['resolved', 'closed'].includes(t.status))?.internalNumber ?? null
+            linkedTickets.find((t) => !NON_OPEN_TICKET_STATUSES.includes(t.status))?.internalNumber ?? null
           }
+          duplicateCheckFailed={linkedError}
           onClose={() => setTicketDialogOpen(false)}
           onCreated={() => {
             setTicketDialogOpen(false);

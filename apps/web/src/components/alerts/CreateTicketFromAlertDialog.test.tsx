@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import CreateTicketFromAlertDialog, { SEVERITY_TO_PRIORITY } from './CreateTicketFromAlertDialog';
+import CreateTicketFromAlertDialog, { SEVERITY_TO_PRIORITY, orderCategoriesForSelect } from './CreateTicketFromAlertDialog';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -120,5 +120,46 @@ describe('CreateTicketFromAlertDialog', () => {
     fireEvent.click(screen.getByTestId('alert-ticket-submit'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(baseProps.onCreated).not.toHaveBeenCalled();
+  });
+
+  it('shows a neutral notice when the duplicate check failed (no false "no duplicates")', async () => {
+    mockApi();
+    render(<CreateTicketFromAlertDialog {...baseProps} duplicateCheckFailed />);
+    expect(screen.getByTestId('alert-ticket-duplicate-check-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-ticket-duplicate-warning')).not.toBeInTheDocument();
+    expect(screen.getByTestId('alert-ticket-submit')).not.toBeDisabled();
+  });
+
+  it('open-ticket warning takes precedence over the failed-check notice', async () => {
+    mockApi();
+    render(<CreateTicketFromAlertDialog {...baseProps} openTicketNumber="T-2026-0042" duplicateCheckFailed />);
+    expect(screen.getByTestId('alert-ticket-duplicate-warning')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-ticket-duplicate-check-failed')).not.toBeInTheDocument();
+  });
+
+  it('shows a retry hint when categories fail to load (creation stays unblocked)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-categories' && !init?.method) {
+        return makeJsonResponse({ error: 'boom' }, false, 500);
+      }
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<CreateTicketFromAlertDialog {...baseProps} />);
+    await waitFor(() => expect(screen.getByTestId('alert-ticket-categories-failed')).toBeInTheDocument());
+    expect(screen.getByTestId('alert-ticket-submit')).not.toBeDisabled();
+  });
+});
+
+describe('orderCategoriesForSelect', () => {
+  it('regroups children under their parent regardless of input order; orphans render as roots', () => {
+    const cats = [
+      { id: 'child', name: 'Printers', parentId: 'root', isActive: true },
+      { id: 'root', name: 'Hardware', parentId: null, isActive: true },
+      { id: 'orphan', name: 'Lost', parentId: 'missing', isActive: true }
+    ];
+    expect(orderCategoriesForSelect(cats).map((c) => `${c.depth}:${c.id}`)).toEqual([
+      '0:root', '1:child', '0:orphan'
+    ]);
   });
 });

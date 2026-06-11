@@ -44,12 +44,14 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
         void navigateTo('/login', { replace: true });
         return;
       }
-      if (!res.ok) throw new Error('load failed');
+      if (!res.ok) throw new Error(`portal settings load failed: ${res.status}`);
       setDraft((await res.json()).data ?? null);
-    } catch {
+    } catch (err) {
+      console.warn('[OrgPortalSettingsEditor] load failed', err);
       setLoadError(true);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [orgId]);
 
   useEffect(() => { void load(); }, [load]);

@@ -96,8 +96,11 @@ const reorderSchema = z.object({
 // Bulk (not per-row swaps): pre-existing rows all tie at sortOrder=0, so
 // swapping tied values is a no-op, and paired PATCHes aren't atomic. The
 // client sends one sibling group's ids in their new order; the endpoint is
-// hierarchy-agnostic. withDbAccessContext wraps the request in a transaction,
-// so the sequential updates commit atomically.
+// hierarchy-agnostic, so "ids form a complete sibling group" is a client-owned
+// invariant — a partial subset just gets rebased to ranks 0..n-1 (cosmetic
+// only). withDbAccessContext (db/index.ts) wraps the request in a transaction,
+// so the sequential updates commit atomically; if that wrapper ever stops
+// being transactional, this loop needs its own db.transaction.
 ticketCategoriesRoutes.put(
   '/reorder',
   requireScope('partner', 'system'),

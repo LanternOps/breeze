@@ -31,10 +31,14 @@ interface EditDraft {
   defaultHourlyRate: string;
 }
 
+// Single comparator shared by hierarchyOrder and moveWithinSiblings — the
+// rendered order and the move order MUST agree (sortOrder, name tiebreak), so
+// don't fork this.
+const byRank = (a: Category, b: Category) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
+
 // One level of nesting only — the UI never offers non-root parents and the API
 // stays two-level in practice.
 function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
-  const byRank = (a: Category, b: Category) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
   const roots = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId));
   const out: Array<Category & { depth: number }> = [];
   for (const r of [...roots].sort(byRank)) {
@@ -55,15 +59,17 @@ function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
 
 // Compute the new id order for `id`'s sibling group (same parentId) after a
 // one-step move. Returns null when the move would fall off either edge or the
-// id is unknown — callers disable the corresponding arrow on null. Sort matches
-// hierarchyOrder's byRank so the visual order and the move order agree even
-// when sortOrder values tie (pre-existing rows all start at 0).
+// id is unknown — callers disable the corresponding arrow on null. Shares
+// byRank with hierarchyOrder so visual order and move order agree even when
+// sortOrder values tie (pre-existing rows all start at 0) — for the normal
+// two-level case; rows on hierarchyOrder's defensive orphan path group by
+// their raw parentId here and may not be visually adjacent.
 export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): string[] | null {
   const target = cats.find((c) => c.id === id);
   if (!target) return null;
   const siblings = cats
     .filter((c) => (c.parentId ?? null) === (target.parentId ?? null))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    .sort(byRank);
   const idx = siblings.findIndex((c) => c.id === id);
   const swap = idx + dir;
   if (swap < 0 || swap >= siblings.length) return null;

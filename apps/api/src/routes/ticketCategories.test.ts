@@ -550,6 +550,21 @@ describe('PUT /ticket-categories/reorder', () => {
     expect(vi.mocked(db.update)).not.toHaveBeenCalled();
   });
 
+  it("404 when ALL ids belong to another single partner — pins the has(expectedPartner) clause", async () => {
+    // partnerIds.size === 1 here, so only the final partnerIds.has(expectedPartner)
+    // term rejects this. Without this test, simplifying the guard to
+    // "rows.length === ids.length && size === 1" would silently allow a partner
+    // to rewrite another partner's entire category ordering.
+    dbSelectResult.mockResolvedValueOnce([
+      { id: ID_A, partnerId: 'p-OTHER' },
+      { id: ID_B, partnerId: 'p-OTHER' }
+    ]);
+    const res = await reorder({ ids: [ID_A, ID_B] });
+    expect(res.status).toBe(404);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
   it('404 when an id does not exist (fewer rows than ids)', async () => {
     dbSelectResult.mockResolvedValueOnce([{ id: ID_A, partnerId: 'p-1' }]);
     const res = await reorder({ ids: [ID_A, ID_B] });

@@ -9,11 +9,11 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { updatePortalSettingsSchema } from '@breeze/shared';
 
 // Admin read/write for the org's customer-portal settings (portal_branding).
-// Registered onto orgRoutes (not a mounted sub-router) so it inherits
-// orgRoutes' authMiddleware. The public portal lookup routes in
-// routes/portal/branding.ts stay read-only/pre-auth; this is the only write
-// surface. Visual branding + customDomain are excluded by the strict schema —
-// they ship with the domain-verification project.
+// Registered onto orgRoutes so it inherits orgRoutes' authMiddleware
+// (mounting at the top-level api app would silently skip auth). The public
+// portal lookup routes in routes/portal/branding.ts stay read-only/pre-auth;
+// this is the only write surface. Visual branding + customDomain are excluded
+// by the strict schema — they ship with the domain-verification project.
 
 const PORTAL_SETTINGS_DEFAULTS = {
   enableTickets: true,
@@ -35,6 +35,21 @@ type PortalSettingsRow = {
   supportPhone: string | null;
   welcomeMessage: string | null;
   footerText: string | null;
+};
+
+// Single projection used by BOTH the GET select and the PATCH .returning():
+// every column not listed here (logoUrl, faviconUrl, primary/secondary/accent
+// colors, customCss, customDomain, domainVerified) never reaches the app
+// layer on either path, so a toResponse refactor can't accidentally leak them.
+const PORTAL_SETTINGS_COLUMNS = {
+  enableTickets: portalBranding.enableTickets,
+  enableAssetCheckout: portalBranding.enableAssetCheckout,
+  enableSelfService: portalBranding.enableSelfService,
+  enablePasswordReset: portalBranding.enablePasswordReset,
+  supportEmail: portalBranding.supportEmail,
+  supportPhone: portalBranding.supportPhone,
+  welcomeMessage: portalBranding.welcomeMessage,
+  footerText: portalBranding.footerText
 };
 
 function toResponse(orgId: string, row?: PortalSettingsRow) {
@@ -81,20 +96,8 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
-      // Explicit projection (not select-all): the deferred visual-branding
-      // columns (logoUrl, colors, customCss, customDomain) never reach the
-      // app layer, so a toResponse refactor can't accidentally leak them.
       const rows = await db
-        .select({
-          enableTickets: portalBranding.enableTickets,
-          enableAssetCheckout: portalBranding.enableAssetCheckout,
-          enableSelfService: portalBranding.enableSelfService,
-          enablePasswordReset: portalBranding.enablePasswordReset,
-          supportEmail: portalBranding.supportEmail,
-          supportPhone: portalBranding.supportPhone,
-          welcomeMessage: portalBranding.welcomeMessage,
-          footerText: portalBranding.footerText
-        })
+        .select(PORTAL_SETTINGS_COLUMNS)
         .from(portalBranding)
         .where(eq(portalBranding.orgId, org.id))
         .limit(1);
@@ -126,7 +129,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
           target: portalBranding.orgId,
           set: { ...body, updatedAt: new Date() }
         })
-        .returning();
+        .returning(PORTAL_SETTINGS_COLUMNS);
 
       writeRouteAudit(c, {
         orgId: org.id,
