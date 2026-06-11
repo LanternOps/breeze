@@ -139,7 +139,8 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
               <h2 className="text-lg font-semibold">Log Forwarding</h2>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Forward collected event logs to an external Elasticsearch instance for long-term storage and analysis.
+              Forward collected event logs to an external Elasticsearch- or OpenSearch-compatible store
+              (Elasticsearch, OpenSearch, Wazuh indexer, Graylog) for long-term storage and analysis.
             </p>
           </div>
           <button
@@ -164,7 +165,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
           <div>
             <p className="font-medium">Enable log forwarding</p>
             <p className="text-xs text-muted-foreground">
-              When enabled, event logs are forwarded to your Elasticsearch cluster on a recurring schedule.
+              When enabled, event logs are forwarded to your log store on a recurring schedule.
             </p>
             {isLocked('enabled') && (
               <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
@@ -191,7 +192,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                 Connection
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Elasticsearch URL</label>
+                <label className="text-sm font-medium">Log endpoint URL</label>
                 <input
                   type="text"
                   value={elasticsearchUrl}
@@ -200,10 +201,12 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                     setElasticsearchUrl(event.target.value);
                     markDirty();
                   }}
-                  placeholder="https://your-cluster.es.example.com:9200"
+                  placeholder="https://logs.example.com:9200"
                   className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchUrl') ? 'opacity-60' : ''}`}
                 />
-                <p className="text-xs text-muted-foreground">Must use HTTPS.</p>
+                <p className="text-xs text-muted-foreground">
+                  Base URL of an Elasticsearch/OpenSearch-compatible <code>_bulk</code> endpoint. Must use HTTPS.
+                </p>
                 {isLocked('elasticsearchUrl') && (
                   <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
                 )}
@@ -277,7 +280,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                       setElasticsearchApiKey(event.target.value);
                       markDirty();
                     }}
-                    placeholder="Enter Elasticsearch API key"
+                    placeholder="Enter API key"
                     className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchApiKey') ? 'opacity-60' : ''}`}
                   />
                   {isLocked('elasticsearchApiKey') && (

@@ -1,4 +1,3 @@
-import { Client } from '@elastic/elasticsearch';
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -6,6 +5,11 @@ import { decryptForColumn } from './secretCrypto';
 
 interface LogForwardingConfig {
   enabled: boolean;
+  // Field names are retained from the original Elasticsearch-only design to
+  // avoid a settings-JSONB migration. The transport below speaks the plain
+  // Elasticsearch/OpenSearch `_bulk` wire protocol over HTTP, so any
+  // compatible sink works (Elasticsearch, OpenSearch, the Wazuh indexer,
+  // Graylog, AWS OpenSearch Service, etc.).
   elasticsearchUrl: string;
   elasticsearchApiKey?: string;
   elasticsearchUsername?: string;
@@ -25,9 +29,10 @@ interface EventLogDocument {
   rawData?: unknown;
 }
 
-// Per-org ES client cache (avoid creating new client per request)
-const clientCache = new Map<string, { client: Client; config: LogForwardingConfig; cachedAt: number }>();
-const CLIENT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+interface BulkResult {
+  indexed: number;
+  errors: number;
+}
 
 export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardingConfig | null> {
   const [org] = await db
@@ -51,60 +56,86 @@ export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardi
   };
 }
 
-function getOrCreateClient(orgId: string, config: LogForwardingConfig): Client {
-  const cached = clientCache.get(orgId);
-  if (cached && Date.now() - cached.cachedAt < CLIENT_CACHE_TTL) {
-    return cached.client;
-  }
-
-  const clientOpts: Record<string, unknown> = {
-    node: config.elasticsearchUrl,
-  };
-
+function buildAuthHeader(config: LogForwardingConfig): string | undefined {
   if (config.elasticsearchApiKey) {
-    clientOpts.auth = { apiKey: config.elasticsearchApiKey };
-  } else if (config.elasticsearchUsername && config.elasticsearchPassword) {
-    clientOpts.auth = {
-      username: config.elasticsearchUsername,
-      password: config.elasticsearchPassword,
-    };
+    return `ApiKey ${config.elasticsearchApiKey}`;
   }
-
-  const client = new Client(clientOpts as any);
-  clientCache.set(orgId, { client, config, cachedAt: Date.now() });
-  return client;
+  if (config.elasticsearchUsername && config.elasticsearchPassword) {
+    const creds = Buffer.from(`${config.elasticsearchUsername}:${config.elasticsearchPassword}`).toString('base64');
+    return `Basic ${creds}`;
+  }
+  return undefined;
 }
 
-export async function bulkIndexEvents(
-  orgId: string,
-  events: EventLogDocument[],
-): Promise<{ indexed: number; errors: number }> {
-  const config = await getOrgForwardingConfig(orgId);
-  if (!config) return { indexed: 0, errors: 0 };
+function buildBulkBody(indexName: string, events: EventLogDocument[]): string {
+  // Elasticsearch/OpenSearch bulk format: an action line followed by a source
+  // line per document, NDJSON, with a mandatory trailing newline.
+  return (
+    events
+      .flatMap((doc) => [JSON.stringify({ index: { _index: indexName } }), JSON.stringify(doc)])
+      .join('\n') + '\n'
+  );
+}
 
-  const client = getOrCreateClient(orgId, config);
+/**
+ * Ship a batch of event documents to any Elasticsearch/OpenSearch-compatible
+ * `_bulk` endpoint over plain HTTP. Uses fetch rather than the official
+ * `@elastic/elasticsearch` client so non-Elastic sinks (OpenSearch, the Wazuh
+ * indexer, Graylog) are not rejected by the client's product check.
+ */
+export async function bulkIndexToEndpoint(
+  config: LogForwardingConfig,
+  events: EventLogDocument[],
+): Promise<BulkResult> {
+  if (events.length === 0) return { indexed: 0, errors: 0 };
+
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
   const indexName = `${config.indexPrefix}-${today}`;
+  const url = `${config.elasticsearchUrl.replace(/\/+$/, '')}/_bulk`;
 
-  const operations = events.flatMap((doc) => [
-    { index: { _index: indexName } },
-    doc,
-  ]);
+  const headers: Record<string, string> = { 'content-type': 'application/x-ndjson' };
+  const auth = buildAuthHeader(config);
+  if (auth) headers.authorization = auth;
 
-  const result = await client.bulk({ operations, refresh: false });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: buildBulkBody(indexName, events),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    console.error(
+      `[logForwarding] Bulk request failed: HTTP ${response.status} ${detail.slice(0, 200)}`,
+    );
+    return { indexed: 0, errors: events.length };
+  }
+
+  const result = (await response.json()) as {
+    errors?: boolean;
+    items?: Array<{ index?: { error?: unknown } }>;
+  };
 
   let errors = 0;
-  if (result.errors) {
+  if (result.errors && Array.isArray(result.items)) {
     errors = result.items.filter((item) => item.index?.error).length;
-    console.error(`[logForwarding] Bulk index had ${errors} errors for org ${orgId}`);
+    console.error(`[logForwarding] Bulk index had ${errors} errors`);
   }
 
   return { indexed: events.length - errors, errors };
 }
 
+export async function bulkIndexEvents(orgId: string, events: EventLogDocument[]): Promise<BulkResult> {
+  const config = await getOrgForwardingConfig(orgId);
+  if (!config) return { indexed: 0, errors: 0 };
+  return bulkIndexToEndpoint(config, events);
+}
+
+/**
+ * Retained for API compatibility with the worker shutdown path. The HTTP
+ * transport keeps no per-org client/connection state (undici pools globally),
+ * so there is nothing to clear.
+ */
 export function clearClientCache(): void {
-  for (const [, entry] of clientCache) {
-    entry.client.close().catch(() => {});
-  }
-  clientCache.clear();
+  // no-op
 }

@@ -26,12 +26,12 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
       {data.enabled && (
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Elasticsearch URL</label>
+            <label className="text-sm font-medium">Log endpoint URL</label>
             <input
               type="url"
               value={data.elasticsearchUrl ?? ''}
               onChange={e => set({ elasticsearchUrl: e.target.value || undefined })}
-              placeholder="https://elasticsearch.example.com:9200"
+              placeholder="https://logs.example.com:9200"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
@@ -83,7 +83,8 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
       )}
 
       <p className="text-xs text-muted-foreground">
-        When enabled, all child organizations will ship event logs to the configured Elasticsearch instance.
+        When enabled, all child organizations will ship event logs to the configured endpoint. Works with any
+        Elasticsearch/OpenSearch-compatible <code>_bulk</code> store (Elasticsearch, OpenSearch, Wazuh indexer, Graylog).
         Leave disabled to let each organization configure individually.
       </p>
     </div>

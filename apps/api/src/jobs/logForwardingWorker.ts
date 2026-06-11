@@ -1,9 +1,10 @@
 /**
  * Log Forwarding Worker
  *
- * BullMQ worker that forwards device event logs to external destinations
- * (e.g. Elasticsearch) based on per-org forwarding configuration.
- * Includes backpressure protection to avoid overwhelming the queue.
+ * BullMQ worker that forwards device event logs to an external
+ * Elasticsearch/OpenSearch-compatible `_bulk` endpoint based on per-org
+ * forwarding configuration. Includes backpressure protection to avoid
+ * overwhelming the queue.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
