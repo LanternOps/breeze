@@ -333,6 +333,86 @@ describe('audit_logs checksum chain', () => {
     });
   });
 
+  // Deleting a chain entry (hiding a row from the chain) is flagged by the
+  // unsealed-row sweep.
+  it('verify_chain flags an audit row whose chain entry was deleted', async () => {
+    let targetId = '';
+    await withSystemDbAccessContext(async () => {
+      const rows = (await db.execute(sql`
+        INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+        VALUES (${orgId}, 'system', gen_random_uuid(), 'chain-delete-victim', 'test', 'success')
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      targetId = rows[0]!.id;
+    });
+
+    // Superuser + trigger disable simulates a DBA-level attacker (same pattern
+    // as the existing UPDATE-tamper test).
+    const sudo = getTestDb();
+    await sudo.execute(sql`ALTER TABLE audit_log_chain DISABLE TRIGGER audit_log_chain_block_delete`);
+    try {
+      await sudo.execute(sql`DELETE FROM audit_log_chain WHERE audit_id = ${targetId}`);
+    } finally {
+      await sudo.execute(sql`ALTER TABLE audit_log_chain ENABLE TRIGGER audit_log_chain_block_delete`);
+    }
+
+    const breaks = (await sudo.execute(sql`
+      SELECT broken_id, expected FROM public.audit_log_verify_chain(${orgId}::uuid)
+    `)) as unknown as Array<{ broken_id: string; expected: string | null }>;
+    // The victim is flagged unsealed; its successor (if any) is flagged for
+    // linkage. At minimum the victim appears.
+    expect(breaks.map((b) => b.broken_id)).toContain(targetId);
+    // Restore chain consistency for subsequent tests in this file: re-seal.
+    await sudo.execute(sql`SELECT audit_log_seal_one(a) FROM audit_logs a WHERE a.id = ${targetId}`);
+  });
+
+  // breeze_app cannot mutate the chain at all (append-only + REVOKE).
+  // Implementation note: we run the mutation attempts OUTSIDE withSystemDbAccessContext
+  // so they hit the breeze_app pool directly (no transaction wrapper). Inside a
+  // withSystemDbAccessContext transaction, a PostgresError aborts the whole transaction
+  // and the outer begin() also rejects, making it impossible to catch just the inner
+  // error cleanly. Running outside the context keeps each rejection self-contained.
+  // The underlying PostgresError message is "permission denied for table audit_log_chain";
+  // Drizzle wraps it in DrizzleQueryError (message: "Failed query: …") with the original
+  // in .cause — we walk the cause chain to match "permission denied" precisely.
+  it('chain table rejects UPDATE/DELETE from app-level SQL', async () => {
+    const expectPermissionDenied = async (promise: Promise<unknown>) => {
+      const err = await promise.then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).not.toBeNull();
+      // Walk the cause chain: Drizzle wraps the original PostgresError in a
+      // DrizzleQueryError whose .cause holds the real "permission denied" message.
+      const messages: string[] = [];
+      let cur: unknown = err;
+      while (cur instanceof Error) {
+        messages.push(cur.message);
+        cur = (cur as Error & { cause?: unknown }).cause;
+      }
+      const matched = messages.some((m) => /append-only|permission denied/i.test(m));
+      if (!matched) {
+        throw new Error(
+          `Expected "permission denied" or "append-only" in error chain, got:\n` +
+          messages.join('\n  caused by: '),
+        );
+      }
+    };
+
+    // runOutsideDbContext so db resolves to the bare breeze_app pool (no
+    // transaction wrapper). This keeps each rejection self-contained.
+    await runOutsideDbContext(() =>
+      expectPermissionDenied(
+        db.execute(sql`UPDATE audit_log_chain SET chain_checksum = 'forged' WHERE org_id = ${orgId}::uuid`),
+      )
+    );
+    await runOutsideDbContext(() =>
+      expectPermissionDenied(
+        db.execute(sql`DELETE FROM audit_log_chain WHERE org_id = ${orgId}::uuid`),
+      )
+    );
+  });
+
   // Retention prefix-cut: prune old rows, then the chain must still verify
   // clean WITHOUT any re-anchor — the first surviving entry's prev is the
   // trusted anchor. (Chain order is deterministic here because beforeEach

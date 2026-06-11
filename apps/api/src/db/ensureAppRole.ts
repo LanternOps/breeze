@@ -106,6 +106,13 @@ export async function ensureAppRole(): Promise<void> {
           -- bypass. Idempotent re-revoke is a no-op.
           REVOKE TRUNCATE ON TABLE audit_logs FROM PUBLIC;
         END IF;
+        -- audit_log_chain is also append-only from breeze_app's perspective:
+        -- the chain seal trigger + REVOKE in migration -g- together enforce
+        -- immutability, but the blanket GRANT above re-permits UPDATE/DELETE.
+        -- Re-revoke here so the privilege restriction actually sticks on boot.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_log_chain') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_log_chain FROM breeze_app;
+        END IF;
       END $$;
     `);
 
