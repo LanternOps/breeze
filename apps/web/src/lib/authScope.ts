@@ -6,7 +6,7 @@ export interface JwtClaims {
   partnerId: string | null;
 }
 
-const NO_CLAIMS: JwtClaims = { scope: null, orgId: null, partnerId: null };
+const NO_CLAIMS: Readonly<JwtClaims> = { scope: null, orgId: null, partnerId: null };
 
 /**
  * Decode the access-token claims WITHOUT verification. Browser-side only, used

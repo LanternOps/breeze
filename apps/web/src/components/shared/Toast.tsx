@@ -82,6 +82,7 @@ export default function ToastContainer() {
             <span className={`flex-1 text-sm ${isError ? '' : 'text-foreground'}`}>{toast.message}</span>
             {toast.type === 'undo' && toast.onUndo && (
               <button
+                type="button"
                 onClick={() => { toast.onUndo?.(); dismiss(toast.id); }}
                 className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors"
               >
@@ -90,6 +91,7 @@ export default function ToastContainer() {
               </button>
             )}
             <button
+              type="button"
               onClick={() => dismiss(toast.id)}
               aria-label="Dismiss"
               className={`rounded p-0.5 transition-colors ${
