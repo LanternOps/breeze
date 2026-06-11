@@ -1,6 +1,6 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
@@ -21,8 +21,25 @@ export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStat
 
 export type TicketServiceErrorStatus = 400 | 404 | 409 | 500;
 
+/**
+ * Machine-readable error codes for callers that aggregate outcomes (e.g. the
+ * bulk route's skippedReasons tally) instead of surfacing the message string.
+ */
+export type TicketServiceErrorCode =
+  | 'ASSIGNEE_NOT_FOUND'
+  | 'ASSIGNEE_WRONG_PARTNER'
+  | 'CATEGORY_NOT_FOUND'
+  | 'CATEGORY_WRONG_PARTNER'
+  | 'TICKET_PARTNER_UNRESOLVABLE'
+  | 'INVALID_TRANSITION'
+  | 'CONCURRENT_MODIFICATION';
+
 export class TicketServiceError extends Error {
-  constructor(message: string, public status: TicketServiceErrorStatus = 400) {
+  constructor(
+    message: string,
+    public status: TicketServiceErrorStatus = 400,
+    public code?: TicketServiceErrorCode
+  ) {
     super(message);
     this.name = 'TicketServiceError';
   }
@@ -51,7 +68,8 @@ async function getTicketOrThrow(ticketId: string) {
 /**
  * Resolve the partner a ticket belongs to. tickets.partner_id is stamped on
  * every create since Phase 1a but is nullable for legacy rows — fall back to
- * the org's partner for those.
+ * the org's partner for those. A null return means the ticket's partner is
+ * unresolvable (broken legacy data or a missing org) — callers fail closed.
  */
 async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId: string }): Promise<string | null> {
   if (ticket.partnerId) return ticket.partnerId;
@@ -60,7 +78,41 @@ async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId:
     .from(organizations)
     .where(eq(organizations.id, ticket.orgId))
     .limit(1);
-  return rows[0]?.partnerId ?? null;
+  const partnerId = rows[0]?.partnerId ?? null;
+  if (!partnerId) {
+    console.error(`[tickets] partner unresolvable for ticket in org ${ticket.orgId} — legacy data or missing org row`);
+  }
+  return partnerId;
+}
+
+/**
+ * Look up a prospective assignee for tenant validation. Runs in a system-scope
+ * DB context: this is an existence/ownership read, not an access check — an
+ * org-scoped request context has empty accessiblePartnerIds, which hides
+ * partner-level staff (org_id IS NULL) under the users RLS policy and would
+ * turn legitimate assignments into misleading 404s. The security decision is
+ * the explicit partner comparison the caller makes against the ticket's
+ * partner. (Same rationale as allocateInternalTicketNumber's system context.)
+ *
+ * Exported for the bulk route's request-level pre-validation.
+ */
+export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string } | null> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: users.id, partnerId: users.partnerId })
+        .from(users)
+        .where(eq(users.id, assigneeId))
+        .limit(1)
+    )
+  );
+  return rows[0] ?? null;
+}
+
+function throwIfPartnerUnresolvable(partnerId: string | null): asserts partnerId is string {
+  if (!partnerId) {
+    throw new TicketServiceError('Ticket partner could not be resolved', 500, 'TICKET_PARTNER_UNRESOLVABLE');
+  }
 }
 
 /**
@@ -69,29 +121,36 @@ async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId:
  * same-partner equality check is the complete cross-tenant boundary.
  */
 async function assertAssigneeInPartner(assigneeId: string, partnerId: string | null) {
-  const rows = await db
-    .select({ id: users.id, partnerId: users.partnerId })
-    .from(users)
-    .where(eq(users.id, assigneeId))
-    .limit(1);
-  const assignee = rows[0];
-  if (!assignee) throw new TicketServiceError('Assignee not found', 404);
-  if (!partnerId || assignee.partnerId !== partnerId) {
-    throw new TicketServiceError('Assignee must belong to the same partner as the ticket', 400);
+  const assignee = await getAssigneeForValidation(assigneeId);
+  if (!assignee) throw new TicketServiceError('Assignee not found', 404, 'ASSIGNEE_NOT_FOUND');
+  throwIfPartnerUnresolvable(partnerId);
+  if (assignee.partnerId !== partnerId) {
+    throw new TicketServiceError('Assignee must belong to the same partner as the ticket', 400, 'ASSIGNEE_WRONG_PARTNER');
   }
 }
 
-/** Tenant guard: a ticket's category must belong to the ticket's partner. */
+/**
+ * Tenant guard: a ticket's category must belong to the ticket's partner.
+ * The read runs in a system-scope DB context for the same reason as
+ * getAssigneeForValidation: ticket_categories is partner-axis RLS, invisible
+ * to org-scoped request contexts — the explicit partner comparison below is
+ * the security boundary, not the read.
+ */
 async function assertCategoryInPartner(categoryId: string, partnerId: string | null) {
-  const rows = await db
-    .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
-    .from(ticketCategories)
-    .where(eq(ticketCategories.id, categoryId))
-    .limit(1);
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+        .from(ticketCategories)
+        .where(eq(ticketCategories.id, categoryId))
+        .limit(1)
+    )
+  );
   const category = rows[0];
-  if (!category) throw new TicketServiceError('Category not found', 404);
-  if (!partnerId || category.partnerId !== partnerId) {
-    throw new TicketServiceError('Category must belong to the same partner as the ticket', 400);
+  if (!category) throw new TicketServiceError('Category not found', 404, 'CATEGORY_NOT_FOUND');
+  throwIfPartnerUnresolvable(partnerId);
+  if (category.partnerId !== partnerId) {
+    throw new TicketServiceError('Category must belong to the same partner as the ticket', 400, 'CATEGORY_WRONG_PARTNER');
   }
 }
 
@@ -215,7 +274,7 @@ export async function changeTicketStatus(
 
   if (fromStatus === toStatus) return ticket;
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
-    throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409);
+    throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409, 'INVALID_TRANSITION');
   }
   if (toStatus === 'resolved' && !opts.resolutionNote) {
     throw new TicketServiceError('A resolution note is required to resolve a ticket', 400);
@@ -253,7 +312,7 @@ export async function changeTicketStatus(
     .returning();
 
   if (updated.length === 0) {
-    throw new TicketServiceError('Ticket was modified concurrently', 409);
+    throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
   }
 
   await db.insert(ticketComments).values({
@@ -425,7 +484,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     .returning();
 
   if (updated.length === 0) {
-    throw new TicketServiceError('Ticket was modified concurrently', 409);
+    throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
   }
 
   await db.insert(ticketComments).values({

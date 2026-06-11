@@ -49,6 +49,7 @@ vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: vi.fn().mockRe
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: hoisted.withSystemDbAccessContextMock,
+  runOutsideDbContext: (fn: () => unknown) => fn(),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({

@@ -12,6 +12,7 @@ const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, write
       linkAlertToTicket: vi.fn(),
       unlinkAlertFromTicket: vi.fn(),
       updateTicketFields: vi.fn(),
+      getAssigneeForValidation: vi.fn(),
     },
     dbSelectMock: vi.fn(),
     dbGroupByMock: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock('../../services/ticketService', async () => {
 // populates c.get('auth'); requireScope 401s when it is missing (exactly the
 // production failure mode when authMiddleware isn't wired into the router —
 // regression for the Phase 1a routes shipping without it).
-vi.mock('../../middleware/auth', () => ({
+vi.mock('../../middleware/auth', async () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     if (!authRef.current) {
       return c.json({ error: 'Not authenticated' }, 401);
@@ -60,14 +61,17 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requirePermission: () => async (_c: any, next: any) => next(),
-  siteAccessCheck: (allowedSiteIds?: string[]) => (siteId?: string | null) => {
-    if (!allowedSiteIds) return true;
-    if (!siteId) return false;
-    return allowedSiteIds.includes(siteId);
-  },
+  // Real implementation, not a re-implementation: siteAccessCheck is a pure
+  // function and the single source of truth for site-allowlist semantics —
+  // re-exporting it keeps these route tests honest if those semantics change.
+  siteAccessCheck: (await vi.importActual<typeof import('../../middleware/auth')>('../../middleware/auth')).siteAccessCheck,
 }));
 
 vi.mock('../../db', () => ({
+  // Passthroughs for the service's system-scope validation reads (RLS concern,
+  // invisible to these mocked-db tests).
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -721,11 +725,17 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
 });
 
 describe('POST /tickets/bulk', () => {
-  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
-
   const T1 = 'aaaaaaaa-1111-4222-8333-444455556666';
   const T2 = 'bbbbbbbb-1111-4222-8333-444455556666';
   const ASSIGNEE_ID = '5a6b7c8d-1234-4321-abcd-000011112222';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetAuth();
+    // Request-level pre-validation resolves the assignee once before the loop;
+    // default to a same-partner user so per-test mocks stay focused.
+    serviceMocks.getAssigneeForValidation.mockResolvedValue({ id: ASSIGNEE_ID, partnerId: 'p-1' });
+  });
 
   const post = (body: unknown) =>
     makeApp().request('/tickets/bulk', {
@@ -741,7 +751,7 @@ describe('POST /tickets/bulk', () => {
     const res = await post({ ticketIds: [T1, T2], action: 'assign', assigneeId: ASSIGNEE_ID });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ updated: 2, skipped: 0, failed: 0, total: 2 });
+    expect(body.data).toEqual({ updated: 2, skipped: 0, failed: 0, skippedReasons: {}, total: 2 });
 
     expect(serviceMocks.assignTicket).toHaveBeenCalledTimes(2);
     expect(serviceMocks.assignTicket).toHaveBeenCalledWith(T1, ASSIGNEE_ID, expect.objectContaining({ userId: 'u-1' }));
@@ -772,12 +782,12 @@ describe('POST /tickets/bulk', () => {
     dbSelectMock.mockResolvedValue([STUB_TICKET]);
     serviceMocks.changeTicketStatus
       .mockResolvedValueOnce({ ...STUB_TICKET, status: 'pending' })
-      .mockRejectedValueOnce(new TicketServiceError('Cannot transition ticket from closed to pending', 409));
+      .mockRejectedValueOnce(new TicketServiceError('Cannot transition ticket from closed to pending', 409, 'INVALID_TRANSITION'));
 
     const res = await post({ ticketIds: [T1, T2], action: 'status', status: 'pending' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ updated: 1, skipped: 1, failed: 0, total: 2 });
+    expect(body.data).toEqual({ updated: 1, skipped: 1, failed: 0, skippedReasons: { INVALID_TRANSITION: 1 }, total: 2 });
     expect(serviceMocks.changeTicketStatus).toHaveBeenCalledTimes(2);
   });
 
@@ -790,7 +800,7 @@ describe('POST /tickets/bulk', () => {
     const res = await post({ ticketIds: [T1, T2], action: 'status', status: 'closed' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ updated: 1, skipped: 0, failed: 1, total: 2 });
+    expect(body.data).toEqual({ updated: 1, skipped: 0, failed: 1, skippedReasons: {}, total: 2 });
   });
 
   it('rejects status=resolved with 400 (resolution note is per-ticket) without calling the service', async () => {
@@ -804,9 +814,34 @@ describe('POST /tickets/bulk', () => {
     const res = await post({ ticketIds: [T1], action: 'assign', assigneeId: ASSIGNEE_ID });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ updated: 0, skipped: 1, failed: 0, total: 1 });
+    expect(body.data).toEqual({ updated: 0, skipped: 1, failed: 0, skippedReasons: { OUT_OF_SCOPE: 1 }, total: 1 });
     expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown assignee with a request-level 400 before touching any ticket', async () => {
+    serviceMocks.getAssigneeForValidation.mockResolvedValue(null);
+    const res = await post({ ticketIds: [T1, T2], action: 'assign', assigneeId: ASSIGNEE_ID });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toHaveProperty('error', 'Assignee not found');
+    expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cross-partner assignee with a request-level 400 for partner-scope callers', async () => {
+    serviceMocks.getAssigneeForValidation.mockResolvedValue({ id: ASSIGNEE_ID, partnerId: 'p-OTHER' });
+    const res = await post({ ticketIds: [T1], action: 'assign', assigneeId: ASSIGNEE_ID });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toHaveProperty('error', 'Assignee must belong to the same partner as the ticket');
+    expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+
+  it('skips assignee pre-validation when unassigning (null assigneeId)', async () => {
+    dbSelectMock.mockResolvedValue([STUB_TICKET]);
+    serviceMocks.assignTicket.mockResolvedValue({ ...STUB_TICKET, assignedTo: null });
+    const res = await post({ ticketIds: [T1], action: 'assign', assigneeId: null });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.getAssigneeForValidation).not.toHaveBeenCalled();
   });
 
   it('400s on an empty ticketIds array', async () => {
@@ -891,6 +926,96 @@ describe('site-axis scoping — per-ticket routes', () => {
       .mockResolvedValueOnce([]);                                                                     // alert links
     const res = await makeApp().request(`/tickets/${TICKET_ID}`);
     expect(res.status).toBe(200);
+  });
+
+  // The remaining per-ticket routes all resolve through getScopedTicketOr404 —
+  // these pin the BINDING (a refactor inlining any route's ticket fetch would
+  // silently drop the site gate; nothing else in the tree fails when that
+  // happens because these handlers don't query device tables directly).
+  it('POST /tickets/:id/status is blocked (404) for an out-of-site ticket', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                            // device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'open' })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+
+  it('POST /tickets/:id/comments is blocked (404) for an out-of-site ticket', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                            // device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'should not land', isPublic: false })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /tickets/:id/alerts/:alertId is blocked (404) for an out-of-site ticket', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                            // device fetch
+    const res = await makeApp().request(
+      `/tickets/${TICKET_ID}/alerts/9a8b7c6d-2222-4333-8444-555566667777`,
+      { method: 'DELETE' }
+    );
+    expect(res.status).toBe(404);
+    expect(serviceMocks.unlinkAlertFromTicket).not.toHaveBeenCalled();
+  });
+
+  it('POST /tickets/bulk counts an out-of-site ticket as skipped (OUT_OF_SCOPE)', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                            // device fetch
+    const res = await makeApp().request('/tickets/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketIds: [TICKET_ID], action: 'status', status: 'open' })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ updated: 0, skipped: 1, failed: 0, skippedReasons: { OUT_OF_SCOPE: 1 }, total: 1 });
+    expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('ticketSiteScopeCondition — tri-state contract', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const authWith = (allowedSiteIds?: string[]) =>
+    ({ ...DEFAULT_AUTH, scope: 'organization', orgId: 'org-1', allowedSiteIds }) as never;
+
+  it('returns undefined for unrestricted callers and builds no subquery', async () => {
+    const { ticketSiteScopeCondition } = await import('./tickets');
+    const { db } = await import('../../db');
+    expect(ticketSiteScopeCondition(authWith(undefined))).toBeUndefined();
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('returns a deviceless-only condition (no devices subquery) for an empty allowlist', async () => {
+    const { ticketSiteScopeCondition } = await import('./tickets');
+    const { db } = await import('../../db');
+    const cond = ticketSiteScopeCondition(authWith([]));
+    // A falsy-check regression (treating [] like undefined = unrestricted)
+    // would return undefined here and let a zero-site user list everything.
+    expect(cond).toBeDefined();
+    // ...and the deviceless-only branch never consults devices.
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('builds the devices IN-subquery for a populated allowlist', async () => {
+    const { ticketSiteScopeCondition } = await import('./tickets');
+    const { db } = await import('../../db');
+    const cond = ticketSiteScopeCondition(authWith(['site-1', 'site-2']));
+    expect(cond).toBeDefined();
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1); // the subquery
   });
 });
 
