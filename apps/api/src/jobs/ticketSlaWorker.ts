@@ -19,6 +19,7 @@ import { getEventBus } from '../services/eventBus';
  *
  * DB work runs inside withSystemDbAccessContext (one short transaction);
  * event emission happens AFTER the context exits (#1105 pool-poison rule).
+ * If the process dies after stamping but before notifyBreaches completes, those breach notifications are lost by design — the one-shot guard prevents re-stamping (duplicate notifications would be worse); sla_breached_at remains queryable for auditing gaps.
  */
 
 const QUEUE_NAME = 'ticket-sla-monitor';
@@ -73,7 +74,7 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
         AND sla_paused_at IS NULL
         AND ${unmetCondition}
         AND ${targetColumn} IS NOT NULL
-        AND NOT (${sql.raw(`'${target}'`)} = ANY(string_to_array(COALESCE(sla_breach_reason, ''), ',')))
+        AND NOT (${target} = ANY(string_to_array(COALESCE(sla_breach_reason, ''), ',')))
         AND now() >= created_at
           + (${targetColumn} + COALESCE(sla_paused_minutes, 0)) * interval '1 minute'
       ORDER BY created_at ASC

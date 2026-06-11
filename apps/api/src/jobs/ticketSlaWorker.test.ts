@@ -133,6 +133,8 @@ describe('ticketSlaWorker', () => {
       expect(responseSql).toContain('sla_paused_at IS NULL');
       expect(responseSql).toContain('first_response_at IS NULL');
       expect(responseSql).toContain('string_to_array');
+      expect(responseSql).toContain('NOT (');
+      expect(responseSql).toContain('= ANY(string_to_array(COALESCE(sla_breach_reason');
       expect(responseSql).toContain('FOR UPDATE SKIP LOCKED');
 
       const resolutionSql = sqlText(executeMock.mock.calls[1]?.[0]);
