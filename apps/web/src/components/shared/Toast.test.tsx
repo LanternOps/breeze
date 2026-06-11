@@ -127,6 +127,19 @@ describe('ToastContainer', () => {
     });
   });
 
+  it('renders a warning toast with role=status and the correct data-toast-type', () => {
+    render(<ToastContainer />);
+
+    act(() => {
+      showToast({ type: 'warning', message: 'heads up' });
+    });
+
+    const toast = screen.getByTestId('toast');
+    expect(toast).toHaveAttribute('data-toast-type', 'warning');
+    expect(toast).toHaveAttribute('role', 'status');
+    expect(toast).toHaveTextContent('heads up');
+  });
+
   it('auto-dismisses after the default 5000ms', async () => {
     vi.useFakeTimers();
     try {

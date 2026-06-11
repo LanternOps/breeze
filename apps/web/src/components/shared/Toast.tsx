@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, X, Undo2, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, X, Undo2, XCircle } from 'lucide-react';
 
 interface ToastData {
   id: string;
   message: string;
-  type: 'success' | 'error' | 'undo';
+  type: 'success' | 'error' | 'undo' | 'warning';
   onUndo?: () => void;
   duration?: number;
 }
@@ -54,6 +54,7 @@ export default function ToastContainer() {
     <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2" data-testid="toast-container">
       {toasts.map(toast => {
         const isError = toast.type === 'error';
+        const isWarning = toast.type === 'warning';
         return (
           <div
             key={toast.id}
@@ -65,12 +66,16 @@ export default function ToastContainer() {
             className={`flex items-center gap-3 rounded-lg border px-4 py-3 shadow-lg animate-in ${
               isError
                 ? 'bg-destructive text-destructive-foreground border-destructive/40'
-                : 'bg-card'
+                : isWarning
+                  ? 'bg-card border-warning/50'
+                  : 'bg-card'
             }`}
             style={{ minWidth: 280, maxWidth: 400 }}
           >
             {isError ? (
               <XCircle className="h-4 w-4 shrink-0" />
+            ) : isWarning ? (
+              <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
             ) : (
               <CheckCircle className="h-4 w-4 shrink-0 text-success" />
             )}
