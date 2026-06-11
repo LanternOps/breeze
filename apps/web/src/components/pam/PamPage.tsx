@@ -123,7 +123,7 @@ export default function PamPage() {
       {activeTab === 'overview' && <PamOverviewTab liveTick={liveTick} />}
       {activeTab === 'requests' && <PamRequestsTab liveTick={liveTick} />}
       {activeTab === 'rules' && <PamRulesTab />}
-      {activeTab === 'audit' && <PamAuditTab />}
+      {activeTab === 'audit' && <PamAuditTab liveTick={liveTick} />}
     </div>
   );
 }

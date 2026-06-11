@@ -33,6 +33,7 @@ export interface ElevationRequest {
   revokedReason?: string | null;
   approvedByUserId?: string | null;
   deniedByUserId?: string | null;
+  revokedByUserId?: string | null;
   denialReason?: string | null;
   toolName?: string | null;
   riskTier?: number | null;
@@ -40,6 +41,11 @@ export interface ElevationRequest {
   // Joined by the API
   deviceHostname?: string | null;
   siteName?: string | null;
+  // Decider display names joined by the API (null when unset or when the
+  // joined user row isn't visible to the caller).
+  approvedByName?: string | null;
+  deniedByName?: string | null;
+  revokedByName?: string | null;
 }
 
 export interface PamTimeWindow {
@@ -129,4 +135,29 @@ export function statusBadgeClass(status: ElevationStatus): string {
 export function requestTarget(r: ElevationRequest): string {
   if (r.flowType === 'ai_tool_action') return r.toolName ?? 'AI tool action';
   return r.targetExecutablePath ?? 'Elevation';
+}
+
+function shortUserId(id: string | null | undefined): string | null {
+  return id ? `${id.slice(0, 8)}…` : null;
+}
+
+/**
+ * Who approved/denied/revoked the request — prefers the API-joined display
+ * name, falling back to a truncated user id (older cached rows, or a decider
+ * the caller's users policy can't see). Null when no human decided yet
+ * (pending / auto_approved).
+ */
+export function decidedByLabel(r: ElevationRequest): string | null {
+  switch (r.status) {
+    case 'denied':
+      return r.deniedByName ?? shortUserId(r.deniedByUserId);
+    case 'revoked':
+      return r.revokedByName ?? shortUserId(r.revokedByUserId);
+    case 'approved':
+    case 'actuating':
+    case 'expired':
+      return r.approvedByName ?? shortUserId(r.approvedByUserId);
+    default:
+      return null;
+  }
 }

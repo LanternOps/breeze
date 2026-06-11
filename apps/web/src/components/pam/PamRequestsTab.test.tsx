@@ -159,6 +159,29 @@ describe('PamRequestsTab', () => {
     expect(screen.queryByTestId('pam-risk-tier-req-1')).toBeNull();
   });
 
+  it('shows who decided a request, preferring the joined display name', async () => {
+    const denied: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-3',
+      status: 'denied',
+      deniedByUserId: 'deadbeef-0000-4000-8000-000000000001',
+      deniedByName: 'Jane Admin',
+    };
+    const approvedNoName: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-4',
+      status: 'approved',
+      approvedByUserId: 'deadbeef-0000-4000-8000-000000000001',
+    };
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([denied, approvedNoName]));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-3'));
+    expect(screen.getByTestId('pam-decided-by-req-3')).toHaveTextContent('by Jane Admin');
+    expect(screen.getByTestId('pam-decided-by-req-3')).not.toHaveTextContent('deadbeef');
+    // Older cached rows without the join still show the truncated id.
+    expect(screen.getByTestId('pam-decided-by-req-4')).toHaveTextContent('by deadbeef…');
+  });
+
   it('fetches page=2 on Next and updates the footer range', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
       const requestedPage = Number(

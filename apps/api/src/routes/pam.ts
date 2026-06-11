@@ -21,6 +21,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { SQL, and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
 import { db } from '../db';
@@ -30,6 +31,7 @@ import {
   elevationRequests,
   pamRules,
   sites,
+  users,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -70,6 +72,14 @@ const DEFAULT_APPROVAL_DURATION_MINUTES = 15;
 const MAX_APPROVAL_DURATION_MINUTES = 24 * 60;
 
 const ACTIVE_STATUSES = ['approved', 'auto_approved', 'actuating'] as const;
+
+// Aliased user joins for the three decider columns (left joins — all three
+// ids are nullable). Reads run under the request's RLS context: a decider the
+// caller's users-policy can't see simply yields a null name (the UI falls
+// back to the user id).
+const approvedByUser = alias(users, 'approved_by_user');
+const deniedByUser = alias(users, 'denied_by_user');
+const revokedByUser = alias(users, 'revoked_by_user');
 
 export const pamRoutes = new Hono();
 pamRoutes.use('*', authMiddleware);
@@ -151,10 +161,16 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
         request: elevationRequests,
         deviceHostname: devices.hostname,
         siteName: sites.name,
+        approvedByName: approvedByUser.name,
+        deniedByName: deniedByUser.name,
+        revokedByName: revokedByUser.name,
       })
       .from(elevationRequests)
       .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
       .leftJoin(sites, eq(elevationRequests.siteId, sites.id))
+      .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
+      .leftJoin(deniedByUser, eq(elevationRequests.deniedByUserId, deniedByUser.id))
+      .leftJoin(revokedByUser, eq(elevationRequests.revokedByUserId, revokedByUser.id))
       .where(where)
       .orderBy(desc(elevationRequests.requestedAt))
       .limit(limit)
@@ -171,6 +187,9 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
       ...r.request,
       deviceHostname: r.deviceHostname,
       siteName: r.siteName,
+      approvedByName: r.approvedByName,
+      deniedByName: r.deniedByName,
+      revokedByName: r.revokedByName,
     })),
     pagination: { page, limit, total: countRows[0]?.total ?? 0 },
   });
@@ -198,10 +217,16 @@ pamRoutes.get('/active', requirePamRead, async (c) => {
       request: elevationRequests,
       deviceHostname: devices.hostname,
       siteName: sites.name,
+      approvedByName: approvedByUser.name,
+      deniedByName: deniedByUser.name,
+      revokedByName: revokedByUser.name,
     })
     .from(elevationRequests)
     .leftJoin(devices, eq(elevationRequests.deviceId, devices.id))
     .leftJoin(sites, eq(elevationRequests.siteId, sites.id))
+    .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
+    .leftJoin(deniedByUser, eq(elevationRequests.deniedByUserId, deniedByUser.id))
+    .leftJoin(revokedByUser, eq(elevationRequests.revokedByUserId, revokedByUser.id))
     .where(where)
     .orderBy(desc(elevationRequests.approvedAt))
     .limit(500);
@@ -212,6 +237,9 @@ pamRoutes.get('/active', requirePamRead, async (c) => {
       ...r.request,
       deviceHostname: r.deviceHostname,
       siteName: r.siteName,
+      approvedByName: r.approvedByName,
+      deniedByName: r.deniedByName,
+      revokedByName: r.revokedByName,
     })),
   });
 });

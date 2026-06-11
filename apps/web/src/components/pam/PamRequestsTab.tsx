@@ -12,6 +12,7 @@ import {
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
+  decidedByLabel,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -162,6 +163,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
               {requests.map((r) => {
                 const canRespond = r.status === 'pending';
                 const canRevoke = (ACTIVE_STATUSES as readonly string[]).includes(r.status);
+                const decidedBy = decidedByLabel(r);
                 return (
                   <tr key={r.id} className="border-b align-top last:border-0" data-testid={`pam-request-row-${r.id}`}>
                     <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
@@ -206,6 +208,15 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                       >
                         {STATUS_LABELS[r.status]}
                       </span>
+                      {decidedBy && (
+                        <div
+                          className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
+                          data-testid={`pam-decided-by-${r.id}`}
+                          title={`by ${decidedBy}`}
+                        >
+                          by {decidedBy}
+                        </div>
+                      )}
                       {r.denialReason && (
                         <div className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground" title={r.denialReason}>
                           {r.denialReason}

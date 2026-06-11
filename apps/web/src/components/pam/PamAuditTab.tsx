@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, ScrollText } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -9,6 +9,7 @@ import {
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
+  decidedByLabel,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -50,6 +51,9 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
     'reason',
     'denialReason',
     'revokedReason',
+    'approvedBy',
+    'deniedBy',
+    'revokedBy',
     'approvedAt',
     'expiresAt',
   ];
@@ -72,6 +76,11 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
         r.reason ?? '',
         r.denialReason ?? '',
         r.revokedReason ?? '',
+        // Prefer the joined display name; fall back to the full user id
+        // (audit-grade — no truncation in exports).
+        r.approvedByName ?? r.approvedByUserId ?? '',
+        r.deniedByName ?? r.deniedByUserId ?? '',
+        r.revokedByName ?? r.revokedByUserId ?? '',
         r.approvedAt ?? '',
         r.expiresAt ?? '',
       ]
@@ -82,7 +91,7 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
   return lines.join('\n');
 }
 
-export default function PamAuditTab() {
+export default function PamAuditTab({ liveTick }: { liveTick: number }) {
   const [rows, setRows] = useState<ElevationRequest[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0 });
   const [status, setStatus] = useState<ElevationStatus | ''>('');
@@ -109,8 +118,8 @@ export default function PamAuditTab() {
   );
 
   const fetchAudit = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true);
+    async (signal?: AbortSignal, opts: { silent?: boolean } = {}) => {
+      if (!opts.silent) setLoading(true);
       setError(null);
       try {
         const res = await fetchWithAuth(`/pam/elevation-requests?${buildParams(page, 50).toString()}`, {
@@ -136,11 +145,17 @@ export default function PamAuditTab() {
     [buildParams, page],
   );
 
+  // liveTick-driven refreshes are silent (rows stay rendered, same contract as
+  // the other tabs); filter/page changes (a new fetchAudit identity) show the
+  // loading state as before.
+  const lastTickRef = useRef(liveTick);
   useEffect(() => {
+    const silent = liveTick !== lastTickRef.current;
+    lastTickRef.current = liveTick;
     const controller = new AbortController();
-    void fetchAudit(controller.signal);
+    void fetchAudit(controller.signal, { silent });
     return () => controller.abort();
-  }, [fetchAudit]);
+  }, [fetchAudit, liveTick]);
 
   const exportCsv = async () => {
     if (exporting) return;
@@ -292,7 +307,9 @@ export default function PamAuditTab() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const decidedBy = decidedByLabel(r);
+                return (
                 <tr key={r.id} className="border-b last:border-0" data-testid={`pam-audit-row-${r.id}`}>
                   <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
                     {new Date(r.requestedAt).toLocaleString()}
@@ -326,9 +343,19 @@ export default function PamAuditTab() {
                     >
                       {STATUS_LABELS[r.status]}
                     </span>
+                    {decidedBy && (
+                      <div
+                        className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
+                        data-testid={`pam-audit-decided-by-${r.id}`}
+                        title={`by ${decidedBy}`}
+                      >
+                        by {decidedBy}
+                      </div>
+                    )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

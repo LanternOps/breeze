@@ -6,6 +6,7 @@ import {
   type ElevationRequest,
   FLOW_LABELS,
   STATUS_LABELS,
+  decidedByLabel,
   requestTarget,
   statusBadgeClass,
 } from './types';
@@ -161,20 +162,31 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
           </div>
         ) : (
           <ul className="divide-y rounded-md border bg-card">
-            {data.recent.map((r) => (
-              <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                <span className="min-w-0 flex-1 truncate" title={requestTarget(r)}>
-                  <span className="font-medium">{r.deviceHostname ?? r.deviceId}</span>
-                  <span className="text-muted-foreground"> · {r.subjectUsername} · </span>
-                  {requestTarget(r)}
-                </span>
-                <span
-                  className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
-                >
-                  {STATUS_LABELS[r.status]}
-                </span>
-              </li>
-            ))}
+            {data.recent.map((r) => {
+              const decidedBy = decidedByLabel(r);
+              return (
+                <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate" title={requestTarget(r)}>
+                    <span className="font-medium">{r.deviceHostname ?? r.deviceId}</span>
+                    <span className="text-muted-foreground"> · {r.subjectUsername} · </span>
+                    {requestTarget(r)}
+                  </span>
+                  {decidedBy && (
+                    <span
+                      className="shrink-0 text-xs text-muted-foreground"
+                      data-testid={`pam-decided-by-${r.id}`}
+                    >
+                      by {decidedBy}
+                    </span>
+                  )}
+                  <span
+                    className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
+                  >
+                    {STATUS_LABELS[r.status]}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

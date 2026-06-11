@@ -34,6 +34,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devices: { id: 'id', hostname: 'hostname' },
   sites: { id: 'id', name: 'name' },
+  users: { id: 'id', name: 'name' },
   elevationRequests: {
     id: 'id',
     orgId: 'orgId',
@@ -45,6 +46,9 @@ vi.mock('../db/schema', () => ({
     approvedAt: 'approvedAt',
     expiresAt: 'expiresAt',
     executionId: 'executionId',
+    approvedByUserId: 'approvedByUserId',
+    deniedByUserId: 'deniedByUserId',
+    revokedByUserId: 'revokedByUserId',
   },
   elevationAudit: { id: 'id' },
   pamRules: {
@@ -145,6 +149,21 @@ function app(): Hono {
   return a;
 }
 
+/** Rig db.select for the list/active read paths (count selects keyed on `total`). */
+function mockListSelect(rows: unknown[] = [], total = 0) {
+  vi.mocked(db.select).mockImplementation(((sel: Record<string, unknown> | undefined) => {
+    const isCount = Boolean(sel && 'total' in sel);
+    const chain: any = Promise.resolve(isCount ? [{ total }] : rows);
+    chain.from = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.offset = vi.fn(() => chain);
+    return chain;
+  }) as any);
+}
+
 const activeRow = {
   id: REQ_ID,
   orgId: ORG_ID,
@@ -153,6 +172,68 @@ const activeRow = {
   flowType: 'uac_intercept',
   status: 'pending',
 };
+
+describe('GET /pam/elevation-requests and /pam/active — decider display names', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  const listRow = {
+    request: {
+      id: REQ_ID,
+      orgId: ORG_ID,
+      deviceId: 'dev-1',
+      flowType: 'uac_intercept',
+      status: 'approved',
+      approvedByUserId: USER_ID,
+    },
+    deviceHostname: 'WS-ALPHA',
+    siteName: 'HQ',
+    approvedByName: 'Jane Admin',
+    deniedByName: null,
+    revokedByName: null,
+  };
+
+  it('list rows carry approvedByName/deniedByName/revokedByName from the user joins', async () => {
+    mockListSelect([listRow], 1);
+
+    const res = await app().request('/pam/elevation-requests');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.requests[0].approvedByName).toBe('Jane Admin');
+    expect(body.requests[0].deniedByName).toBeNull();
+    expect(body.requests[0].revokedByName).toBeNull();
+    // Existing joins are untouched.
+    expect(body.requests[0].deviceHostname).toBe('WS-ALPHA');
+    expect(body.requests[0].siteName).toBe('HQ');
+    expect(body.pagination).toEqual({ page: 1, limit: 50, total: 1 });
+
+    // The select projection asks for all three aliased user names.
+    const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+    expect(projection).toHaveProperty('approvedByName');
+    expect(projection).toHaveProperty('deniedByName');
+    expect(projection).toHaveProperty('revokedByName');
+  });
+
+  it('active rows carry the decider name fields', async () => {
+    mockListSelect([listRow]);
+
+    const res = await app().request('/pam/active');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.active[0].approvedByName).toBe('Jane Admin');
+    expect(body.active[0].revokedByName).toBeNull();
+    expect(body.active[0].deviceHostname).toBe('WS-ALPHA');
+
+    const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+    expect(projection).toHaveProperty('approvedByName');
+    expect(projection).toHaveProperty('deniedByName');
+    expect(projection).toHaveProperty('revokedByName');
+  });
+});
 
 describe('POST /pam/elevation-requests/:id/respond', () => {
   beforeEach(() => {
@@ -403,20 +484,6 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
     status: 'pending',
     executionId: 'exec-1',
   };
-
-  function mockListSelect(rows: unknown[] = [], total = 0) {
-    vi.mocked(db.select).mockImplementation(((sel: Record<string, unknown> | undefined) => {
-      const isCount = Boolean(sel && 'total' in sel);
-      const chain: any = Promise.resolve(isCount ? [{ total }] : rows);
-      chain.from = vi.fn(() => chain);
-      chain.leftJoin = vi.fn(() => chain);
-      chain.where = vi.fn(() => chain);
-      chain.orderBy = vi.fn(() => chain);
-      chain.limit = vi.fn(() => chain);
-      chain.offset = vi.fn(() => chain);
-      return chain;
-    }) as any);
-  }
 
   it('accepts flowType=ai_tool_action on the list filter', async () => {
     mockListSelect([], 0);
