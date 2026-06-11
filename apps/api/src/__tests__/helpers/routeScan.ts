@@ -96,6 +96,12 @@ const CANONICAL_GATE_NAMES = [
   'resolveSiteAllowedDeviceIds',
   'hasDeniedDeviceSite',
   'hasDeniedThreatDeviceSite',
+  // Ticket site-axis gates, extracted to routes/tickets/siteScope.ts (#1238
+  // follow-up). Previously file-local to routes/tickets/tickets.ts and picked
+  // up via findLocalGateWrappers; now cross-file canonical gates used by the
+  // tickets routes, alerts create-from-alert, and aiToolsTicketing.
+  'ticketSiteScopeCondition',
+  'deviceInSiteScope',
   // NOTE: `getDeviceWithOrgCheck` (routes/remote/helpers.ts) is a cross-file
   // site-aware resolver, but it is deliberately NOT listed as a gate token.
   // It gates only the code path where a deviceId is supplied — e.g.
