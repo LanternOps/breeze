@@ -79,7 +79,7 @@ describe('bulkIndexToEndpoint', () => {
     expect(result).toEqual({ indexed: 1, errors: 0 });
   });
 
-  it('assigns the same _id to identical events (idempotency)', async () => {
+  it('assigns the same _id to byte-identical events (idempotency)', async () => {
     safeFetchMock.mockResolvedValue(okBulkResponse());
 
     await bulkIndexToEndpoint(baseConfig, [event, { ...event }]);
@@ -88,6 +88,16 @@ describe('bulkIndexToEndpoint', () => {
     const id1 = JSON.parse(lines[0]!).index._id;
     const id2 = JSON.parse(lines[2]!).index._id;
     expect(id1).toBe(id2);
+  });
+
+  it('assigns distinct _ids to events that differ only in level (no overwrite)', async () => {
+    safeFetchMock.mockResolvedValue(okBulkResponse());
+
+    const result = await bulkIndexToEndpoint(baseConfig, [event, { ...event, level: 'warn' }]);
+
+    const lines = (safeFetchMock.mock.calls[0]![1]!.body as string).split('\n');
+    expect(JSON.parse(lines[0]!).index._id).not.toBe(JSON.parse(lines[2]!).index._id);
+    expect(result).toEqual({ indexed: 2, errors: 0 });
   });
 
   it('sends ApiKey auth when an API key is configured', async () => {
@@ -198,6 +208,34 @@ describe('bulkIndexToEndpoint', () => {
     );
 
     await expect(bulkIndexToEndpoint(baseConfig, [event, event])).rejects.toThrow(/retry/i);
+  });
+
+  it('throws when a batch mixes retryable and terminal items (retryable wins)', async () => {
+    safeFetchMock.mockResolvedValue(
+      okBulkResponse({
+        errors: true,
+        items: [
+          { index: { status: 429, error: { type: 'es_rejected_execution_exception' } } },
+          { index: { status: 400, error: { type: 'mapper_parsing_exception' } } },
+        ],
+      }),
+    );
+
+    await expect(bulkIndexToEndpoint(baseConfig, [event, event])).rejects.toThrow(/retry/i);
+  });
+
+  it('treats an item error with no status as terminal (drops, does not throw)', async () => {
+    safeFetchMock.mockResolvedValue(
+      okBulkResponse({
+        errors: true,
+        items: [{ index: { error: { type: 'unavailable_shards_exception' } } }],
+      }),
+    );
+
+    const result = await bulkIndexToEndpoint(baseConfig, [event]);
+
+    expect(result).toEqual({ indexed: 0, errors: 1 });
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('does not call safeFetch for an empty event batch', async () => {

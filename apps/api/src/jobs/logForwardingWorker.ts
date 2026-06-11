@@ -7,10 +7,34 @@
  * overwhelming the queue.
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, UnrecoverableError } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { withSystemDbAccessContext } from '../db';
 import { bulkIndexEvents, clearClientCache } from '../services/logForwarding';
+
+interface BulkResult {
+  indexed: number;
+  errors: number;
+}
+
+/**
+ * Surface a fully-dropped batch as a failed (but non-retryable) job.
+ *
+ * Terminal drops (SSRF block, auth/4xx misconfig, all-poison docs) return from
+ * bulkIndexEvents rather than throwing, so without this the worker would report
+ * the job as completed and the data loss would be invisible on the queue —
+ * captureException alone is a no-op when SENTRY_DSN is unset (self-hosted).
+ * UnrecoverableError fails the job for dashboard visibility + removeOnFail
+ * retention WITHOUT triggering the retry policy (retrying a terminal drop is
+ * pointless). Partial success (some docs indexed) is left as a normal return.
+ */
+export function assertBulkDelivered(result: BulkResult, ctx: { deviceId: string; orgId: string }): void {
+  if (result.errors > 0 && result.indexed === 0) {
+    throw new UnrecoverableError(
+      `[logForwarding] dropped ${result.errors} events (terminal, no retry) device=${ctx.deviceId} org=${ctx.orgId}`,
+    );
+  }
+}
 
 const QUEUE_NAME = 'log-forwarding';
 const MAX_LOG_FORWARDING_EVENTS = 500;
@@ -126,6 +150,7 @@ export async function initializeLogForwardingWorker(): Promise<void> {
         }));
 
         const result = await bulkIndexEvents(orgId, docs);
+        assertBulkDelivered(result, { deviceId, orgId });
         return result;
       });
     },
