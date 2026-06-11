@@ -274,7 +274,9 @@ describe('assignTicket', () => {
   });
 
   it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
-    dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null }]);
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null }])  // ticket
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);                                                 // assignee
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
@@ -294,7 +296,8 @@ describe('assignTicket', () => {
   });
 
   it('throws 409 on concurrent modification and does NOT write a feed entry or emit', async () => {
-    dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null }]);
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null }]);  // ticket
     dbMocks.updateReturning.mockResolvedValue([]);
 
     const err = await assignTicket('t-1', 'u-2', actor).catch(e => e);
@@ -824,7 +827,7 @@ describe('assignee tenant validation', () => {
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
 
     const t = await assignTicket('t-1', 'u-2', actor);
-    expect(t.assignedTo).toBe('u-2');
+    expect(t?.assignedTo).toBe('u-2');
   });
 
   it('assignTicket skips validation when unassigning (null assignee)', async () => {
@@ -833,7 +836,7 @@ describe('assignee tenant validation', () => {
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: null }]);
 
     const t = await assignTicket('t-1', null, actor);
-    expect(t.assignedTo).toBeNull();
+    expect(t?.assignedTo).toBeNull();
     expect(dbMocks.selectResult).toHaveBeenCalledTimes(1); // no user lookup
   });
 });
