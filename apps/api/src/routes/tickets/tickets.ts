@@ -76,7 +76,33 @@ export async function getScopedTicketOr404(
     .where(and(...conditions))
     .limit(1);
 
-  return rows[0] ?? null;
+  const ticket = rows[0] ?? null;
+  if (!ticket) return null;
+
+  // Site-axis restriction (spec §7): a device-bound ticket is visible only when
+  // its device's site is in the caller's allowlist. Deviceless (org-level)
+  // tickets stay visible — they aren't site-bound (matches alerts semantics).
+  if (ticket.deviceId && !(await deviceInSiteScope(auth, ticket.deviceId))) {
+    return null;
+  }
+  return ticket;
+}
+
+/**
+ * Site-axis (sub-org) device gate. `auth.allowedSiteIds` is only populated for
+ * organization-scope users with a site restriction — everyone else passes.
+ * A restricted caller is denied for a device with no site assignment
+ * (matches siteAccessCheck semantics in middleware/auth.ts).
+ */
+async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<boolean> {
+  if (!auth.allowedSiteIds) return true;
+  const rows = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  const siteId = rows[0]?.siteId;
+  return !!siteId && auth.allowedSiteIds.includes(siteId);
 }
 
 /** Sentinel returned by buildScopeConditions when the caller context is broken. */

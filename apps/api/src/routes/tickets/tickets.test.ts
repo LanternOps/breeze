@@ -118,7 +118,7 @@ vi.mock('../../db/schema', () => ({
   ticketCategories: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId', id: 'id', linkType: 'linkType' },
   alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status' },
-  devices: { id: 'id', hostname: 'hostname', orgId: 'orgId' },
+  devices: { id: 'id', hostname: 'hostname', orgId: 'orgId', siteId: 'siteId' },
   organizations: { id: 'id', name: 'name' },
   users: { id: 'id', name: 'name' }
 }));
@@ -814,6 +814,69 @@ describe('POST /tickets/bulk', () => {
     const res = await post({ ticketIds: [T1], action: 'assign' });
     expect(res.status).toBe(400);
     expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('site-axis scoping — per-ticket routes', () => {
+  const SITE_AUTH = {
+    ...DEFAULT_AUTH,
+    scope: 'organization' as string,
+    orgId: 'org-1' as string | null,
+    partnerId: null as string | null,
+    allowedSiteIds: ['site-1']
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = SITE_AUTH as typeof authRef.current;
+  });
+
+  it('GET /tickets/:id returns 404 for a ticket whose device is outside the caller sites', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                            // device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /tickets/:id returns 404 when the ticket device has no site (restricted caller)', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: null }]);                                    // device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /tickets/:id keeps deviceless tickets visible to site-restricted callers', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch
+      .mockResolvedValueOnce([{ orgName: 'Org', deviceHostname: null, assigneeName: null }]) // decoration
+      .mockResolvedValueOnce([]); // alert links
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /tickets/:id/assign is blocked (404) for an out-of-site ticket', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                            // device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigneeId: null })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+
+  it('unrestricted callers (no allowedSiteIds) skip the device lookup entirely', async () => {
+    authRef.current = { ...DEFAULT_AUTH } as typeof authRef.current; // partner scope, unrestricted
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, deviceId: 'd-1' }])                                  // ticket fetch
+      .mockResolvedValueOnce([{ orgName: 'Org', deviceHostname: 'host', assigneeName: null }])       // decoration
+      .mockResolvedValueOnce([]);                                                                     // alert links
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
   });
 });
 
