@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, asc, eq, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { ticketCategories, organizations } from '../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -46,11 +46,33 @@ ticketCategoriesRoutes.get(
         .limit(1);
       const partnerId = orgRows[0]?.partnerId;
       if (!partnerId) return c.json({ data: [] });
-      const data = await db
-        .select()
-        .from(ticketCategories)
-        .where(eq(ticketCategories.partnerId, partnerId))
-        .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.name));
+      // The org→partner resolution above stays in the request context (RLS lets an
+      // org user read their own org row). The category read runs in a system DB
+      // context: ticket_categories is partner-axis RLS, invisible to org-scoped
+      // request contexts. The explicit partnerId filter — derived from auth.orgId,
+      // never from caller input — is the security boundary, same pattern as
+      // ticketService.assertCategoryInPartner. Org users get read-only visibility
+      // of their MSP's categories; the write routes below remain partner/system.
+      // The column projection + isActive filter are deliberate: org users get the
+      // selectable catalog only — never the MSP's billing defaults
+      // (defaultHourlyRate/defaultBillable) or retired categories.
+      const data = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({
+              id: ticketCategories.id,
+              name: ticketCategories.name,
+              color: ticketCategories.color,
+              parentId: ticketCategories.parentId,
+              defaultPriority: ticketCategories.defaultPriority,
+              sortOrder: ticketCategories.sortOrder,
+              isActive: ticketCategories.isActive
+            })
+            .from(ticketCategories)
+            .where(and(eq(ticketCategories.partnerId, partnerId), eq(ticketCategories.isActive, true)))
+            .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.name))
+        )
+      );
       return c.json({ data });
     }
 

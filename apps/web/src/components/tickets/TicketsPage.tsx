@@ -5,10 +5,22 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketWorkbench from './TicketWorkbench';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { priorityConfig, statusConfig, slaState, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+
+// Human-readable labels for bulk-skip reason codes returned by POST /tickets/bulk.
+const SKIP_REASON_LABELS: Record<string, string> = {
+  OUT_OF_SCOPE: 'out of your scope',
+  INVALID_TRANSITION: 'invalid status change',
+  ASSIGNEE_NOT_FOUND: 'assignee not found',
+  ASSIGNEE_WRONG_PARTNER: 'assignee belongs to another partner',
+  CONCURRENT_MODIFICATION: 'modified by someone else',
+  TICKET_PARTNER_UNRESOLVABLE: 'ticket partner unresolvable',
+  OTHER: 'other errors'
+};
 
 type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed';
 
@@ -42,8 +54,16 @@ function selectionFromHash(): string | null {
 }
 
 export default function TicketsPage() {
+  // Re-read per render to hide the org filter for org-scoped users. On a cold
+  // page load the memory-only access token may not exist yet, so this can read
+  // null scope before token bootstrap — the options effect below re-reads the
+  // claims after its first fetches bootstrap the token, and `orgs.length > 1`
+  // keeps the filter hidden either way (belt and braces).
+  const orgScoped = getJwtClaims().scope === 'organization';
+
   const [tab, setTab] = useState<Tab>('open');
   const [resolveToken, setResolveToken] = useState(0);
+  const [paneRefresh, setPaneRefresh] = useState(0);
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,16 +100,14 @@ export default function TicketsPage() {
     let cancelled = false;
     const readJson = async (res: Response): Promise<unknown> => (res.ok ? res.json() : null);
     void (async () => {
-      const [orgRes, catRes, userRes] = await Promise.allSettled([
-        fetchWithAuth('/orgs/organizations?limit=100').then(readJson),
+      // Categories + users first: access tokens are memory-only, so on a cold
+      // load the JWT claims are unreadable at mount — these fetches bootstrap
+      // the token before we decide whether the orgs fetch is allowed.
+      const [catRes, userRes] = await Promise.allSettled([
         fetchWithAuth('/ticket-categories').then(readJson),
         fetchWithAuth('/users').then(readJson)
       ]);
       if (cancelled) return;
-      if (orgRes.status === 'fulfilled' && orgRes.value) {
-        const body = orgRes.value as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> };
-        setOrgs((body.data ?? body.organizations ?? []).filter((o) => o.id && o.name));
-      }
       if (catRes.status === 'fulfilled' && catRes.value) {
         const body = catRes.value as { data?: Array<{ id: string; name: string; isActive?: boolean }> };
         setCategories((body.data ?? []).filter((cat) => cat.isActive !== false));
@@ -98,6 +116,16 @@ export default function TicketsPage() {
         const body = userRes.value as { data?: Array<{ id: string; name: string | null; email: string }> };
         const rows = Array.isArray(body) ? body : body.data;
         if (Array.isArray(rows)) setAssignees(rows.filter((u) => u.id));
+      }
+      // Token is bootstrapped by the fetches above, so the claims read is reliable now.
+      // Org-scoped users can't list organizations (403 console spam) and don't need
+      // the filter — their queue is already single-org.
+      const orgScopedNow = getJwtClaims().scope === 'organization';
+      if (!orgScopedNow) {
+        const orgBody = await fetchWithAuth('/orgs/organizations?limit=100').then(readJson).catch(() => null);
+        if (cancelled || !orgBody) return;
+        const body = orgBody as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> };
+        setOrgs((body.data ?? body.organizations ?? []).filter((o) => o.id && o.name));
       }
     })();
     return () => { cancelled = true; };
@@ -118,7 +146,7 @@ export default function TicketsPage() {
       params.set('limit', '100');
       const res = await fetchWithAuth(`/tickets?${params.toString()}`);
       if (!res.ok) {
-        if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
+        if (res.status === 401) { void navigateTo(loginPathWithNext(), { replace: true }); return; }
         throw new Error('Tickets failed to load.');
       }
       const body = await res.json();
@@ -210,7 +238,7 @@ export default function TicketsPage() {
         request: () => fetchWithAuth(`/tickets/${selected.id}/assign`, { method: 'POST', body: JSON.stringify({ assigneeId: userId }) }),
         errorFallback: 'Assign failed. Retry.',
         successMessage: 'Assigned to you',
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       void fetchTickets();
       void fetchStats();
@@ -242,13 +270,24 @@ export default function TicketsPage() {
       ? { ticketIds, action: 'status', status: bulkStatus }
       : { ticketIds, action: 'assign', assigneeId: bulkAssignee === 'unassign' ? null : bulkAssignee };
     try {
-      await runAction<{ data: { updated: number; skipped: number; failed: number; total: number } }>({
+      const result = await runAction<{ data: { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> } }>({
         request: () => fetchWithAuth('/tickets/bulk', { method: 'POST', body: JSON.stringify(body) }),
         errorFallback: 'Bulk update failed. Retry.',
-        successMessage: (r) => `${r.data.updated} updated${r.data.skipped ? `, ${r.data.skipped} skipped` : ''}`,
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
+      const { updated, skipped, failed, skippedReasons } = result.data;
+      if (skipped + failed > 0) {
+        const reasons = Object.entries(skippedReasons ?? {})
+          .map(([code, n]) => `${n} ${SKIP_REASON_LABELS[code] ?? code.toLowerCase().replace(/_/g, ' ')}`)
+          .join(', ');
+        // Failures are reported distinctly from skips — "skipped" implies a
+        // pre-validation outcome, "failed" means the write itself errored.
+        showToast({ type: 'warning', message: `${updated} updated, ${skipped} skipped${failed ? `, ${failed} failed` : ''}${reasons ? ` — ${reasons}` : ''}` });
+      } else {
+        showToast({ type: 'success', message: `${updated} updated` });
+      }
       clearBulkSelection();
+      setPaneRefresh((t) => t + 1);
       void fetchTickets();
       void fetchStats();
     } catch (err) {
@@ -332,18 +371,20 @@ export default function TicketsPage() {
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="tickets-filter-bar">
-        <select
-          value={orgFilter}
-          onChange={(e) => setOrgFilter(e.target.value)}
-          aria-label="Filter by organization"
-          data-testid="tickets-filter-org"
-          className={filterSelectClass(!!orgFilter)}
-        >
-          <option value="">All organizations</option>
-          {orgs.map((o) => (
-            <option key={o.id} value={o.id}>{o.name}</option>
-          ))}
-        </select>
+        {!orgScoped && orgs.length > 1 && (
+          <select
+            value={orgFilter}
+            onChange={(e) => setOrgFilter(e.target.value)}
+            aria-label="Filter by organization"
+            data-testid="tickets-filter-org"
+            className={filterSelectClass(!!orgFilter)}
+          >
+            <option value="">All organizations</option>
+            {orgs.map((o) => (
+              <option key={o.id} value={o.id}>{o.name}</option>
+            ))}
+          </select>
+        )}
         <select
           value={priorityFilter}
           onChange={(e) => setPriorityFilter(e.target.value)}
@@ -483,7 +524,7 @@ export default function TicketsPage() {
           </div>
           <div className="hidden min-w-0 flex-1 min-[1100px]:block">
             {selected ? (
-              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
+              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
                 <p>Select a ticket. Use j/k to move, Enter to expand.</p>

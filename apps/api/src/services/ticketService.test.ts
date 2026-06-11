@@ -169,6 +169,43 @@ describe('createTicket', () => {
     expect(insertPayload).toMatchObject({ deviceId: 'd-1' });
   });
 
+  it('non-portal ticket defaults submitterName to the actor but NEVER stamps submitterEmail', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-5', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'Printer offline', source: 'manual' },
+      { userId: 'u-1', name: 'Tech One', email: 'tech@msp.com' }
+    );
+
+    // submitterEmail must stay null even when the actor has an email: the
+    // notify worker emails submitterEmail on every public comment/resolution
+    // with portal-oriented copy and no self-actor suppression.
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({
+      submitterName: 'Tech One',
+      submitterEmail: null,
+      submittedBy: null
+    });
+  });
+
+  it('non-portal ticket sets both submitter fields to null when actor has no name/email', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-6', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'Headless ticket', source: 'alert' },
+      { userId: 'u-sys' }
+    );
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({
+      submitterName: null,
+      submitterEmail: null,
+      submittedBy: null
+    });
+  });
+
   it('passes through portal submitter fields to the insert payload', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-3', orgId: 'o-1', internalNumber: 'T-2026-0044', status: 'new' }]);

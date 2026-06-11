@@ -18,9 +18,22 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
+// Mock authScope so each test can control getJwtClaims behaviour.
+import type { JwtClaims } from '../../lib/authScope';
+const mockGetJwtClaims = vi.fn((): JwtClaims => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }));
+vi.mock('../../lib/authScope', () => ({
+  getJwtClaims: () => mockGetJwtClaims(),
+  loginPathWithNext: () => '/login?next=%2F'
+}));
+
 // Keep the page test focused on the queue: the workbench fetch/load cycle has its own suite.
+// Extended to accept refreshToken so the pane-refresh assertion can inspect props.
+const capturedWorkbenchProps: Array<{ ticketId: string; refreshToken?: number }> = [];
 vi.mock('./TicketWorkbench', () => ({
-  default: ({ ticketId }: { ticketId: string }) => <div data-testid="ticket-workbench-mock">{ticketId}</div>
+  default: (props: { ticketId: string; refreshToken?: number }) => {
+    capturedWorkbenchProps.push({ ticketId: props.ticketId, refreshToken: props.refreshToken });
+    return <div data-testid="ticket-workbench-mock" data-refresh={props.refreshToken}>{props.ticketId}</div>;
+  }
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -80,11 +93,14 @@ const USERS = { data: [{ id: 'user-1', name: 'Todd', email: 'todd@example.com', 
 
 const BULK_RESULT = { data: { updated: 2, skipped: 0, failed: 0, total: 2 } };
 
-function mockListApi(tickets: TicketSummary[] | ((url: string) => TicketSummary[]), opts: { usersFail?: boolean } = {}) {
+function mockListApi(
+  tickets: TicketSummary[] | ((url: string) => TicketSummary[]),
+  opts: { usersFail?: boolean; bulkResult?: typeof BULK_RESULT } = {}
+) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
     if (url === '/tickets/stats') return makeJsonResponse(STATS);
-    if (url === '/tickets/bulk') return makeJsonResponse(BULK_RESULT);
+    if (url === '/tickets/bulk') return makeJsonResponse(opts.bulkResult ?? BULK_RESULT);
     if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
     if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
@@ -106,6 +122,9 @@ describe('TicketsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearHash();
+    capturedWorkbenchProps.length = 0;
+    // Default to partner scope so existing tests behave as before.
+    mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
     // jsdom defaults to 1024, which is below the 1100px split-pane breakpoint;
     // select() would navigate to the full page instead of selecting in-pane.
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
@@ -358,5 +377,195 @@ describe('TicketsPage', () => {
     expect(lastUrl).not.toContain('priority=');
     expect(lastUrl).not.toContain('orgId=');
     expect(lastUrl).not.toContain('categoryId=');
+  });
+
+  describe('org-scope hygiene', () => {
+    it('org-scoped session: does not fetch /orgs/organizations and hides the org filter select', async () => {
+      mockGetJwtClaims.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Give options effect time to settle.
+      await waitFor(() => {
+        expect(screen.queryByTestId('tickets-queue-loading')).toBeNull();
+      });
+
+      const allFetchUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(allFetchUrls.every((u) => !u.includes('/orgs/organizations'))).toBe(true);
+      expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
+    });
+
+    it('cold load: claims are null-scope at mount (memory-only token), org user still never fetches /orgs/organizations', async () => {
+      // Simulate the token bootstrapping during the first authenticated fetches:
+      // claims read null until any fetch has happened, organization afterwards.
+      let tokenBootstrapped = false;
+      mockGetJwtClaims.mockImplementation(() =>
+        tokenBootstrapped
+          ? { scope: 'organization', orgId: 'org-1', partnerId: null }
+          : { scope: null, orgId: null, partnerId: null }
+      );
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        tokenBootstrapped = true; // fetchWithAuth refreshes the access token
+        if (url === '/tickets/stats') return makeJsonResponse(STATS);
+        if (url.startsWith('/tickets?')) return makeJsonResponse({ data: [healthy] });
+        if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
+        if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
+        if (url === '/users') return makeJsonResponse(USERS);
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Wait for the options effect to settle (categories rendered).
+      await screen.findByRole('option', { name: 'Hardware' });
+
+      const allFetchUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(allFetchUrls.every((u) => !u.includes('/orgs/organizations'))).toBe(true);
+      expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
+    });
+
+    it('partner scope with one org returned: org filter hidden; with two orgs: visible', async () => {
+      // First: one org returned
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/tickets/stats') return makeJsonResponse(STATS);
+        if (url.startsWith('/tickets?')) return makeJsonResponse({ data: [healthy] });
+        if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme Corp' }] });
+        if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
+        if (url === '/users') return makeJsonResponse(USERS);
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+
+      const { unmount } = render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Options load asynchronously — wait for categories to confirm effect settled.
+      await screen.findByRole('option', { name: 'Hardware' });
+
+      expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
+      unmount();
+
+      vi.clearAllMocks();
+      capturedWorkbenchProps.length = 0;
+
+      // Second: two orgs returned
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      await screen.findByRole('option', { name: 'Globex' });
+
+      expect(screen.getByTestId('tickets-filter-org')).toBeInTheDocument();
+    });
+  });
+
+  describe('bulk outcome toasts', () => {
+    it('partial result with skippedReasons shows a warning toast with counts and labels', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/tickets/stats') return makeJsonResponse(STATS);
+        if (url.startsWith('/tickets?')) return makeJsonResponse({ data: [healthy, atRisk] });
+        if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
+        if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
+        if (url === '/users') return makeJsonResponse(USERS);
+        if (url === '/tickets/bulk') {
+          return makeJsonResponse({ data: { updated: 0, skipped: 2, failed: 0, total: 2, skippedReasons: { OUT_OF_SCOPE: 1, INVALID_TRANSITION: 1 } } });
+        }
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'warning',
+            message: expect.stringContaining('0 updated')
+          })
+        );
+      });
+      const call = showToast.mock.calls[0]?.[0] as { type: string; message: string };
+      expect(call.message).toContain('0 updated, 2 skipped');
+      expect(call.message).toContain('out of your scope');
+      expect(call.message).toContain('invalid status change');
+      // No failures → the failed segment is omitted entirely.
+      expect(call.message).not.toContain('failed');
+    });
+
+    it('failed writes are reported distinctly from skips in the warning toast', async () => {
+      mockListApi([healthy, atRisk, breached], {
+        bulkResult: { data: { updated: 1, skipped: 1, failed: 1, total: 3, skippedReasons: { OUT_OF_SCOPE: 1 } } } as typeof BULK_RESULT
+      });
+
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-breach'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'warning', message: expect.stringContaining(', 1 failed') })
+        );
+      });
+      const call = showToast.mock.calls[0]?.[0] as { type: string; message: string };
+      expect(call.message).toContain('1 updated, 1 skipped, 1 failed');
+      expect(call.message).toContain('out of your scope');
+    });
+
+    it('fully-successful bulk shows a success toast with updated count', async () => {
+      // 3 selected, 3 updated — the toast count must come from the server response.
+      mockListApi([healthy, atRisk, breached], { bulkResult: { data: { updated: 3, skipped: 0, failed: 0, total: 3 } } });
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-breach'));
+
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '3 updated' });
+      });
+    });
+  });
+
+  describe('pane refresh after bulk', () => {
+    it('increments refreshToken on TicketWorkbench after a successful bulk apply', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-workbench-mock')).toBeInTheDocument();
+      });
+
+      const tokenBefore = Number(screen.getByTestId('ticket-workbench-mock').getAttribute('data-refresh') ?? '0');
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        const tokenAfter = Number(screen.getByTestId('ticket-workbench-mock').getAttribute('data-refresh') ?? '0');
+        expect(tokenAfter).toBeGreaterThan(tokenBefore);
+      });
+    });
   });
 });

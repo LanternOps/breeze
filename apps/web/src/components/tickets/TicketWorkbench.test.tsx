@@ -89,20 +89,21 @@ describe('TicketWorkbench resolve-flow gating', () => {
     expect(mutationCalls()).toHaveLength(0);
   });
 
-  it('non-resolved status change posts immediately without the resolve form', async () => {
+  it('non-resolved, non-gated status change (e.g. open→closed) posts immediately without any form', async () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
 
     await screen.findByTestId('ticket-workbench');
-    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'pending' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/tickets/tk-1/status',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ status: 'pending' }) })
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ status: 'closed' }) })
       );
     });
     expect(screen.queryByTestId('ticket-workbench-resolve-form')).toBeNull();
+    expect(screen.queryByTestId('ticket-workbench-pending-form')).toBeNull();
   });
 
   it('resolve submit is disabled until a note is entered, then posts status+resolutionNote', async () => {
@@ -200,5 +201,359 @@ describe('TicketWorkbench load errors', () => {
     await screen.findByTestId('ticket-workbench-error');
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
     expect(screen.queryByTestId('ticket-workbench-back')).toBeNull();
+  });
+
+  it('404 shows the updated not-found copy including access hint', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'Not found' }, false, 404));
+    render(<TicketWorkbench ticketId="tk-gone" />);
+
+    await screen.findByTestId('ticket-workbench-error');
+    expect(screen.getByText(/may not have access to it/i)).toBeInTheDocument();
+  });
+});
+
+/** Helper: mock ticket + /users with a given list of users (or fail the /users call). */
+function mockTicketApiWithUsers(
+  detailById: Record<string, TicketDetail>,
+  users: Array<{ id: string; name: string | null; email: string }> | 'fail' = []
+) {
+  fetchMock.mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url === '/users') {
+      if (users === 'fail') return makeJsonResponse({ error: 'forbidden' }, false, 403);
+      return makeJsonResponse({ data: users });
+    }
+    if (!init?.method || init.method === 'GET') {
+      const match = url.match(/^\/tickets\/([^/]+)$/);
+      if (match && detailById[match[1]]) {
+        return makeJsonResponse({ data: detailById[match[1]] });
+      }
+    }
+    return makeJsonResponse({ success: true });
+  });
+}
+
+describe('TicketWorkbench assignee picker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows an assignee select when /users succeeds; changing value POSTs /assign', async () => {
+    const users = [{ id: 'u-9', name: 'Alice', email: 'alice@test.com' }];
+    mockTicketApiWithUsers({ 'tk-1': makeTicket() }, users);
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-assignee');
+    expect(select).toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: 'u-9' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/assign',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ assigneeId: 'u-9' }) })
+      );
+    });
+  });
+
+  it('no-op guard: changing select to empty on unassigned ticket does NOT POST', async () => {
+    const users = [{ id: 'u-9', name: 'Alice', email: 'alice@test.com' }];
+    mockTicketApiWithUsers({ 'tk-1': makeTicket({ assignedTo: null }) }, users);
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-assignee');
+    // Ticket is unassigned (value=''); changing to '' is a no-op
+    fireEvent.change(select, { target: { value: '' } });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/assign'))
+    ).toHaveLength(0);
+  });
+
+  it('changing select to empty on an assigned ticket POSTs assigneeId null', async () => {
+    const users = [{ id: 'u-9', name: 'Alice', email: 'alice@test.com' }];
+    mockTicketApiWithUsers({ 'tk-1': makeTicket({ assignedTo: 'u-9', assigneeName: 'Alice' }) }, users);
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const select = await screen.findByTestId('ticket-workbench-assignee');
+    fireEvent.change(select, { target: { value: '' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/assign',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ assigneeId: null }) })
+      );
+    });
+  });
+
+  it('RLS-invisible assignee shows a redacted "MSP staff" option', async () => {
+    // Ticket has assignedTo='partner-u' but /users does not include that id
+    const users = [{ id: 'u-9', name: 'Alice', email: 'alice@test.com' }];
+    mockTicketApiWithUsers(
+      { 'tk-1': makeTicket({ assignedTo: 'partner-u', assigneeName: null }) },
+      users
+    );
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench-assignee');
+    expect(screen.getByRole('option', { name: 'MSP staff' })).toBeInTheDocument();
+  });
+
+  it('/users failure on assigned ticket: degraded unassign button works', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket({ assignedTo: 'u-9', assigneeName: 'Alice' }) }, 'fail');
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const unassignBtn = await screen.findByTestId('ticket-workbench-unassign');
+    expect(unassignBtn).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-workbench-assignee')).toBeNull();
+
+    fireEvent.click(unassignBtn);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/assign',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ assigneeId: null }) })
+      );
+    });
+  });
+
+  it('/users failure on unassigned ticket: plain "Unassigned" span, no POST possible', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket({ assignedTo: null }) }, 'fail');
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    const span = await screen.findByTestId('ticket-workbench-unassigned');
+    expect(span).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-workbench-assignee')).toBeNull();
+    expect(screen.queryByTestId('ticket-workbench-unassign')).toBeNull();
+  });
+});
+
+describe('TicketWorkbench pending/on_hold prompt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('choosing pending does not POST immediately; pending form appears', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-workbench-pending-form')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'pending' } });
+
+    expect(screen.getByTestId('ticket-workbench-pending-form')).toBeInTheDocument();
+    expect(mutationCalls()).toHaveLength(0);
+  });
+
+  it('pending submit with reason POSTs {status:pending, pendingReason}', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'pending' } });
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-pending-reason'), {
+      target: { value: 'Waiting on vendor' },
+    });
+    fireEvent.click(screen.getByTestId('ticket-workbench-pending-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'pending', pendingReason: 'Waiting on vendor' }),
+        })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-workbench-pending-form')).toBeNull();
+    });
+  });
+
+  it('pending submit with empty reason POSTs {status:pending} only (no pendingReason key)', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'pending' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-pending-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'pending' }),
+        })
+      );
+    });
+  });
+
+  it('on_hold opens the same pending form with "Put on hold" button label', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'on_hold' } });
+
+    expect(screen.getByTestId('ticket-workbench-pending-form')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-pending-submit')).toHaveTextContent('Put on hold');
+  });
+});
+
+describe('TicketWorkbench rail and resolution note visibility', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resolutionNote is NOT shown when status is open', async () => {
+    mockTicketApiWithUsers({
+      'tk-1': makeTicket({ status: 'open', resolutionNote: 'Fixed the thing' }),
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench-rail');
+    expect(screen.queryByText('Fixed the thing')).toBeNull();
+  });
+
+  it('resolutionNote IS shown when status is resolved', async () => {
+    mockTicketApiWithUsers({
+      'tk-1': makeTicket({ status: 'resolved', resolutionNote: 'Fixed the thing' }),
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench-rail');
+    expect(screen.getByText('Fixed the thing')).toBeInTheDocument();
+  });
+});
+
+describe('TicketWorkbench refreshToken prop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('bumping refreshToken refetches the ticket detail', async () => {
+    mockTicketApiWithUsers({ 'tk-1': makeTicket() });
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" refreshToken={0} />);
+
+    await screen.findByTestId('ticket-workbench');
+    const initialFetchCount = fetchMock.mock.calls.filter(([url]) => String(url) === '/tickets/tk-1').length;
+
+    rerender(<TicketWorkbench ticketId="tk-1" refreshToken={1} />);
+
+    await waitFor(() => {
+      const newCount = fetchMock.mock.calls.filter(([url]) => String(url) === '/tickets/tk-1').length;
+      expect(newCount).toBeGreaterThan(initialFetchCount);
+    });
+  });
+
+  it('switching tickets with a non-zero refreshToken fetches the new ticket exactly once', async () => {
+    mockTicketApiWithUsers({
+      'tk-a': makeTicket({ id: 'tk-a', internalNumber: 'T-2026-0001' }),
+      'tk-b': makeTicket({ id: 'tk-b', internalNumber: 'T-2026-0002' })
+    });
+    const { rerender } = render(<TicketWorkbench ticketId="tk-a" refreshToken={1} />);
+
+    await screen.findByTestId('ticket-workbench');
+
+    // j/k switch: only the ticketId changes; the token stays at its bumped value.
+    rerender(<TicketWorkbench ticketId="tk-b" refreshToken={1} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-number')).toHaveTextContent('T-2026-0002');
+    });
+    // Without the ref guard, the stale refreshToken effect re-fires on the new
+    // load identity and double-fetches the ticket on every switch.
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/tickets/tk-b')).toHaveLength(1);
+  });
+});
+
+/** Helper: ticket GETs succeed, but POST /tickets/:id/status fails with a 500. */
+function mockTicketApiWithFailingStatus(detailById: Record<string, TicketDetail>) {
+  fetchMock.mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url === '/users') return makeJsonResponse({ data: [] });
+    if (init?.method === 'POST' && /\/status$/.test(url)) {
+      return makeJsonResponse({ error: 'boom' }, false, 500);
+    }
+    if (!init?.method || init.method === 'GET') {
+      const match = url.match(/^\/tickets\/([^/]+)$/);
+      if (match && detailById[match[1]]) {
+        return makeJsonResponse({ data: detailById[match[1]] });
+      }
+    }
+    return makeJsonResponse({ success: true });
+  });
+}
+
+describe('TicketWorkbench forms keep input when the status POST fails', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('pending form stays open and retains the typed reason on a failed POST', async () => {
+    mockTicketApiWithFailingStatus({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'pending' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-pending-reason'), {
+      target: { value: 'Waiting on vendor' }
+    });
+    fireEvent.click(screen.getByTestId('ticket-workbench-pending-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1/status', expect.objectContaining({ method: 'POST' }));
+    });
+    // Failure must NOT close the form or clear what the tech typed.
+    expect(screen.getByTestId('ticket-workbench-pending-form')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-pending-reason')).toHaveValue('Waiting on vendor');
+  });
+
+  it('resolve form stays open and retains the typed note on a failed POST', async () => {
+    mockTicketApiWithFailingStatus({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), {
+      target: { value: 'Replaced the toner cartridge.' }
+    });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1/status', expect.objectContaining({ method: 'POST' }));
+    });
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-resolve-note')).toHaveValue('Replaced the toner cartridge.');
+  });
+});
+
+describe('TicketWorkbench host-supplied assignees prop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('uses the provided list and never self-fetches /users', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    const provided = [{ id: 'u-7', name: 'Hosted Hank', email: 'hank@test.com' }];
+    render(<TicketWorkbench ticketId="tk-1" assignees={provided} />);
+
+    const select = await screen.findByTestId('ticket-workbench-assignee');
+    expect(select).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Hosted Hank' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/users')).toHaveLength(0);
+  });
+
+  it('assignees={null} hides the picker (degraded mode) without fetching /users', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ assignedTo: 'u-9', assigneeName: 'Alice' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={null} />);
+
+    await screen.findByTestId('ticket-workbench-unassign');
+    expect(screen.queryByTestId('ticket-workbench-assignee')).toBeNull();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/users')).toHaveLength(0);
   });
 });

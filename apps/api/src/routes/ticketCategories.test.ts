@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult } = vi.hoisted(() => {
+const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult, runOutsideDbContextSpy, withSystemDbAccessContextSpy } = vi.hoisted(() => {
+  // Spies for system-DB-context helpers; default to pass-through so existing tests are unaffected.
+  const runOutsideDbContextSpy = vi.fn((fn: () => unknown) => fn());
+  const withSystemDbAccessContextSpy = vi.fn((fn: () => unknown) => fn());
   return {
     authRef: {
       current: {
@@ -16,7 +19,9 @@ const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult } = vi.hoi
     },
     dbInsertReturning: vi.fn(),
     dbUpdateReturning: vi.fn(),
-    dbSelectResult: vi.fn()
+    dbSelectResult: vi.fn(),
+    runOutsideDbContextSpy,
+    withSystemDbAccessContextSpy
   };
 });
 
@@ -42,6 +47,10 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 vi.mock('../db', () => ({
+  // Pass-throughs for the system-scope context helpers used by the org branch of GET /.
+  // The spies are exposed via vi.hoisted so individual tests can assert call counts.
+  runOutsideDbContext: runOutsideDbContextSpy,
+  withSystemDbAccessContext: withSystemDbAccessContextSpy,
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -161,6 +170,77 @@ describe('GET /ticket-categories', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toHaveLength(2);
+  });
+
+  it('org scope: category read uses runOutsideDbContext + withSystemDbAccessContext', async () => {
+    resetAuth({ scope: 'organization', orgId: 'org-1', partnerId: null });
+    // First call: org lookup to get partnerId
+    // Second call: category list (runs inside the system DB context)
+    dbSelectResult
+      .mockResolvedValueOnce([{ partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
+
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+
+    // The category SELECT must be wrapped in both context helpers.
+    expect(runOutsideDbContextSpy).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('org scope: response never exposes billing defaults and only selects active categories', async () => {
+    resetAuth({ scope: 'organization', orgId: 'org-1', partnerId: null });
+    // First call: org lookup; second: category list returning the projected shape
+    // (the route's explicit column projection means billing columns never reach the row).
+    const projectedRow = {
+      id: 'cat-1',
+      name: 'Hardware',
+      color: '#1c8a9e',
+      parentId: null,
+      defaultPriority: 'normal',
+      sortOrder: 0,
+      isActive: true
+    };
+    dbSelectResult
+      .mockResolvedValueOnce([{ partnerId: 'p-1' }])
+      .mockResolvedValueOnce([projectedRow]);
+
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Rows pass through the projection untouched...
+    expect(body.data).toEqual([projectedRow]);
+    // ...and the MSP's billing defaults must never appear anywhere in the response.
+    const serialized = JSON.stringify(body);
+    expect(serialized.includes('defaultHourlyRate')).toBe(false);
+    expect(serialized.includes('defaultBillable')).toBe(false);
+
+    const { db } = await import('../db');
+    // Second select (the category list) must use an explicit column projection —
+    // never select-all — and that projection must exclude billing columns.
+    const projectionArg = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown> | undefined;
+    expect(projectionArg).toBeDefined();
+    expect(Object.keys(projectionArg!).sort()).toEqual(
+      ['color', 'defaultPriority', 'id', 'isActive', 'name', 'parentId', 'sortOrder']
+    );
+    // The WHERE must filter to active categories (isActive condition present).
+    const whereArg = vi.mocked(db.select).mock.results[1]?.value.from.mock.results[0]?.value.where.mock.calls[0]?.[0];
+    expect(JSON.stringify(whereArg)).toContain('isActive');
+  });
+
+  it('partner scope: category read does NOT use the system DB context helpers', async () => {
+    resetAuth({ scope: 'partner', partnerId: 'p-1' });
+    dbSelectResult.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
+
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+
+    // Partner reads stay in the request context — helpers must not be called.
+    expect(runOutsideDbContextSpy).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContextSpy).not.toHaveBeenCalled();
   });
 });
 

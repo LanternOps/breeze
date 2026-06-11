@@ -7,7 +7,8 @@ import {
   Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth } from '../../stores/auth';
+import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
 import KnownGuestsSettings from './KnownGuestsSettings';
 import PartnerSecurityTab, { currentIpCovered } from './PartnerSecurityTab';
@@ -197,15 +198,12 @@ export default function PartnerSettingsPage() {
     if (contextLoading) return;
     // No partner context in store yet. Try to seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
-    const token = useAuthStore.getState().tokens?.accessToken;
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        if (payload.scope === 'partner' && payload.partnerId) {
-          setPartnerContext(payload.partnerId as string);
-          return; // Re-render will follow with currentPartnerId set
-        }
-      } catch { /* ignore decode failures */ }
+    // getJwtClaims returns all-null on a missing/undecodable token, so the
+    // access-denied fall-through below covers those cases too.
+    const { scope, partnerId } = getJwtClaims();
+    if (scope === 'partner' && partnerId) {
+      setPartnerContext(partnerId);
+      return; // Re-render will follow with currentPartnerId set
     }
     setLoading(false); // JWT confirms non-partner scope; show access denied
   }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);

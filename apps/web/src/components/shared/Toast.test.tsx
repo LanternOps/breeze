@@ -127,6 +127,21 @@ describe('ToastContainer', () => {
     });
   });
 
+  it('renders a warning toast with role=status and the correct data-toast-type', () => {
+    render(<ToastContainer />);
+
+    act(() => {
+      showToast({ type: 'warning', message: 'heads up' });
+    });
+
+    const toast = screen.getByTestId('toast');
+    expect(toast).toHaveAttribute('data-toast-type', 'warning');
+    // The triangle icon is the only visual cue distinguishing warning from success.
+    expect(toast.querySelector('svg.lucide-triangle-alert, svg.lucide-alert-triangle')).not.toBeNull();
+    expect(toast).toHaveAttribute('role', 'status');
+    expect(toast).toHaveTextContent('heads up');
+  });
+
   it('auto-dismisses after the default 5000ms', async () => {
     vi.useFakeTimers();
     try {

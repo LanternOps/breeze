@@ -226,8 +226,13 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     status: (input.assigneeId ? 'open' : 'new') as typeof tickets.$inferInsert['status'],
     source: input.source,
     submittedBy: isPortal ? input.submittedBy : null,
+    // Non-portal tickets show the acting user as the requester NAME only (fixes
+    // "Unknown" requester in the UI). submitterEmail deliberately stays null for
+    // non-portal sources: the notify worker emails submitterEmail on every public
+    // comment/resolution with portal-oriented copy and no self-actor suppression,
+    // so staff-created tickets must keep "no external requester" semantics.
     submitterEmail: isPortal ? input.submitterEmail : null,
-    submitterName: isPortal ? (input.submitterName ?? null) : null,
+    submitterName: isPortal ? (input.submitterName ?? null) : (actor.name ?? null),
     category: null
   } satisfies typeof tickets.$inferInsert;
 
