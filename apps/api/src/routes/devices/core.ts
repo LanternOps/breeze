@@ -98,7 +98,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'elevation_requests',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
-  'peripheral_events', 'playbook_executions',
+  'peripheral_events', 'playbook_executions', 'provision_credential_handles',
   'recovery_readiness', 'recovery_tokens', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',
   'script_executions',
