@@ -111,53 +111,59 @@ function extractRowCount(result: unknown): number {
 }
 
 /**
- * The DELETE + chain re-anchor for a single org, parameterized over the
- * executor so it can run on either pool. Assumes the caller has already
- * armed the trigger-bypass GUC (`breeze.allow_audit_retention = '1'`) on
- * the same transaction/connection.
+ * The retention DELETE for a single org, parameterized over the executor so
+ * it can run on either pool. Assumes the caller has already armed the
+ * trigger-bypass GUC (`breeze.allow_audit_retention = '1'`) on the same
+ * transaction/connection.
  */
-async function deleteAndReanchor(exec: SqlExecutor, policy: PolicyRow): Promise<number> {
+async function deleteChainPrefix(exec: SqlExecutor, policy: PolicyRow): Promise<number> {
+  // Prefix-cut delete (issue #1002 redesign): chain_seq order is COMMIT order,
+  // which can disagree with timestamp order around long transactions, so a raw
+  // `timestamp < cutoff` delete could remove a mid-chain entry and leave a
+  // permanent linkage hole. Instead delete the maximal chain PREFIX that is
+  // entirely older than the cutoff — everything below the first "young" row in
+  // chain order. Old stragglers sitting behind a young row survive one extra
+  // nightly cycle and are caught as the prefix advances.
+  //
+  // No re-anchor follows: audit_log_verify_chain treats the first surviving
+  // entry's prev_chain_checksum as the trusted anchor (it references the
+  // legitimately pruned prefix), so retention never UPDATEs the chain — or
+  // audit_logs — at all. The FK ON DELETE CASCADE removes the pruned rows'
+  // chain entries; their BEFORE DELETE trigger passes because both call paths
+  // set breeze.allow_audit_retention='1' SET LOCAL before calling this.
   const result = await exec.execute(sql`
     DELETE FROM audit_logs
-    WHERE org_id = ${policy.org_id}
-      AND timestamp < (now() - (${policy.retention_days}::int * interval '1 day'))
+    WHERE id IN (
+      SELECT c.audit_id
+      FROM audit_log_chain c
+      WHERE c.org_id = ${policy.org_id}
+        AND c.chain_seq < COALESCE(
+          (
+            SELECT MIN(c2.chain_seq)
+            FROM audit_log_chain c2
+            JOIN audit_logs a2 ON a2.id = c2.audit_id
+            WHERE c2.org_id = ${policy.org_id}
+              AND a2.timestamp >= (now() - (${policy.retention_days}::int * interval '1 day'))
+          ),
+          (
+            SELECT MAX(c3.chain_seq) + 1
+            FROM audit_log_chain c3
+            WHERE c3.org_id = ${policy.org_id}
+          )
+        )
+    )
   `);
   const count = extractRowCount(result);
 
-  // Re-anchor the chain. After the DELETE the new oldest surviving row
-  // still carries prev_checksum pointing at the deleted row, which makes
-  // audit_log_verify_chain flag it as a break the next morning — defeating
-  // the entire tamper-detection signal.
-  //
-  // Find the new chain head per org and rewrite prev_checksum to NULL +
-  // checksum to the canonical hash with prev=NULL. The WHERE filter on the
-  // existing prev_checksum makes this a no-op when no rows were deleted
-  // (oldest row's prev_checksum already NULL) and avoids unnecessary writes
-  // on idempotent reruns.
-  if (count > 0) {
-    await exec.execute(sql`
-      WITH head AS (
-        SELECT a.*
-        FROM audit_logs a
-        WHERE a.org_id IS NOT DISTINCT FROM ${policy.org_id}
-        ORDER BY a.timestamp, a.id
-        LIMIT 1
-      )
-      UPDATE audit_logs
-      SET prev_checksum = NULL,
-          checksum = encode(
-            -- convert_to(... ,'UTF8'), not ::bytea: the text->bytea cast
-            -- throws on the backslash escapes jsonb details::text emits.
-            -- Must match the trigger/verifier hash exactly or this
-            -- re-anchor would itself break the chain.
-            sha256(convert_to(audit_log_canonical_payload(head, NULL), 'UTF8')),
-            'hex'
-          )
-      FROM head
-      WHERE audit_logs.id = head.id
-        AND head.prev_checksum IS NOT NULL
-    `);
-  }
+  // Sweep any UNSEALED old rows too (shouldn't exist post-backfill; keeps
+  // retention complete if one ever appears). The chain has no entry for them,
+  // so deleting them can't affect linkage.
+  await exec.execute(sql`
+    DELETE FROM audit_logs a
+    WHERE a.org_id = ${policy.org_id}
+      AND a.timestamp < (now() - (${policy.retention_days}::int * interval '1 day'))
+      AND NOT EXISTS (SELECT 1 FROM audit_log_chain c WHERE c.audit_id = a.id)
+  `);
 
   return count;
 }
@@ -192,7 +198,7 @@ async function pruneOrg(policy: PolicyRow): Promise<number> {
       // Trigger bypass; the connection logs in AS breeze_audit_admin, which
       // already holds the DELETE privilege (no SET ROLE needed).
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-      return deleteAndReanchor(tx as unknown as SqlExecutor, policy);
+      return deleteChainPrefix(tx as unknown as SqlExecutor, policy);
     });
   }
 
@@ -202,7 +208,7 @@ async function pruneOrg(policy: PolicyRow): Promise<number> {
     // transaction and revert on commit/rollback automatically.
     await dbModule.db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
     await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-    return deleteAndReanchor(dbModule.db as unknown as SqlExecutor, policy);
+    return deleteChainPrefix(dbModule.db as unknown as SqlExecutor, policy);
   });
 }
 

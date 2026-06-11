@@ -332,4 +332,64 @@ describe('audit_logs checksum chain', () => {
       expect(breaks).toEqual([]);
     });
   });
+
+  // Retention prefix-cut: prune old rows, then the chain must still verify
+  // clean WITHOUT any re-anchor — the first surviving entry's prev is the
+  // trusted anchor. (Chain order is deterministic here because beforeEach
+  // creates a FRESH org per test, so these three rows are the org's only
+  // chain entries: olds get the lowest chain_seq, the new row the highest.)
+  it('retention prefix-cut prune leaves a clean chain with no re-anchor', async () => {
+    // Three rows: two backdated past any cutoff, one current. Timestamps can
+    // be set explicitly — the BEFORE trigger no longer rewrites them.
+    for (const [action, ts] of [
+      ['retain-old-1', "now() - interval '400 days'"],
+      ['retain-old-2', "now() - interval '399 days'"],
+      ['retain-new', 'now()'],
+    ] as const) {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql.raw(`
+          INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
+          VALUES ('${orgId}', 'system', gen_random_uuid(), '${action}', 'test', 'success', ${ts})
+        `));
+      });
+    }
+
+    // Prune at 365 days as superuser with the retention GUC (mirrors the
+    // audit-admin path; this test pins the SQL semantics, the privsep file
+    // pins the role/pool wiring). MUST run inside ONE transaction — SET LOCAL
+    // and the DELETE have to share a connection, and separate execute() calls
+    // on the pooled client may not (use the drizzle transaction API, never
+    // raw BEGIN/COMMIT executes).
+    const sudo = getTestDb();
+    await sudo.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+      await tx.execute(sql`
+        DELETE FROM audit_logs
+        WHERE id IN (
+          SELECT c.audit_id FROM audit_log_chain c
+          WHERE c.org_id = ${orgId}
+            AND c.chain_seq < COALESCE(
+              (SELECT MIN(c2.chain_seq) FROM audit_log_chain c2
+               JOIN audit_logs a2 ON a2.id = c2.audit_id
+               WHERE c2.org_id = ${orgId} AND a2.timestamp >= (now() - interval '365 days')),
+              (SELECT MAX(c3.chain_seq) + 1 FROM audit_log_chain c3 WHERE c3.org_id = ${orgId})
+            )
+        )
+      `);
+    });
+
+    await withSystemDbAccessContext(async () => {
+      const old = (await db.execute(sql`
+        SELECT 1 FROM audit_logs WHERE org_id = ${orgId}::uuid AND action LIKE 'retain-old-%'
+      `)) as unknown as unknown[];
+      expect(old).toHaveLength(0);
+
+      // No re-anchor ran: the surviving head still carries a non-NULL prev
+      // pointing at pruned history — and verify must accept it as the anchor.
+      const breaks = (await db.execute(sql`
+        SELECT broken_id FROM public.audit_log_verify_chain(${orgId}::uuid)
+      `)) as unknown as Array<{ broken_id: string }>;
+      expect(breaks).toEqual([]);
+    });
+  });
 });
