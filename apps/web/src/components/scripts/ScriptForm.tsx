@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef, type ComponentType } from 'react';
+import { useMemo, useState, useEffect, useRef, useCallback, type ComponentType } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles } from 'lucide-react';
@@ -11,9 +11,10 @@ import type { EditorProps } from '@monaco-editor/react';
 // injection and leaving the editor's hidden `.inputarea` <textarea> rendered as
 // a bare unstyled white box on SPA navigation (issue #1186). A build-time <link>
 // is part of every editor route's server markup, so it survives the swap. The
-// stylesheet is self-contained (its codicon font is an inline data: URI), so
-// Vite processes it without external asset resolution. CSS-only — does not pull
-// the Monaco JS wrapper into the static bundle (see lib/monacoLoader.ts).
+// stylesheet is self-contained (all its url() assets — the codicon font and a
+// few images — are inline data: URIs), so Vite processes it without external
+// asset resolution. CSS-only — does not pull the Monaco JS wrapper into the
+// static bundle (see lib/monacoLoader.ts).
 import 'monaco-editor/min/vs/editor/editor.main.css';
 
 import ScriptAiPanel from './ScriptAiPanel';
@@ -58,6 +59,21 @@ export default function ScriptForm({
   // on SPA back-navigation (e.g. scripts list → edit → list → edit).
   const [MonacoEditor, setMonacoEditor] = useState<ComponentType<EditorProps> | null>(null);
   const [editorLoadError, setEditorLoadError] = useState<string | null>(null);
+
+  // Tear down the current Monaco instance, tolerating a throw from dispose()
+  // (double-dispose, or a Monaco-internal edge case). A swallowed-but-logged
+  // failure here must not abort the editor reload below or leave a stale ref
+  // that the astro:page-load layout() handler would then call into. See #1186.
+  const disposeEditor = useCallback(() => {
+    try {
+      editorInstanceRef.current?.dispose();
+    } catch (err) {
+      console.error('Failed to dispose previous Monaco editor:', err);
+    } finally {
+      editorInstanceRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const loadEditor = () => {
@@ -65,8 +81,7 @@ export default function ScriptForm({
       // swap Astro replaces the document without unmounting this React tree, so
       // the wrapper's own dispose never fires — without this the orphaned editor
       // (and its listeners/DOM) leaks on every SPA back-nav (issue #1186).
-      editorInstanceRef.current?.dispose();
-      editorInstanceRef.current = null;
+      disposeEditor();
       setEditorLoadError(null);
       // Point Monaco's loader at our self-hosted /monaco/vs assets before the
       // editor module initialises it, so it never reaches cdn.jsdelivr.net
@@ -89,10 +104,9 @@ export default function ScriptForm({
     return () => {
       cancelled = true;
       document.removeEventListener('astro:after-swap', loadEditor);
-      editorInstanceRef.current?.dispose();
-      editorInstanceRef.current = null;
+      disposeEditor();
     };
-  }, []);
+  }, [disposeEditor]);
 
   // Force editor relayout after View Transition navigation completes
   useEffect(() => {
