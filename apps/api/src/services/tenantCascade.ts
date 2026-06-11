@@ -184,6 +184,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'plugins',
   'portal_branding',
   'portal_users',
+  'provision_credential_handles',
   'psa_connections',
   'recovery_boot_media_artifacts',
   'recovery_media_artifacts',
