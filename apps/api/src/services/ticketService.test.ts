@@ -21,6 +21,10 @@ vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
 
 vi.mock('../db', () => ({
+  // Context helpers are passthroughs: the service routes its validation reads
+  // through a system-scope DB context (RLS concern), invisible to unit tests.
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -909,5 +913,21 @@ describe('assignee tenant validation', () => {
     const t = await assignTicket('t-1', null, actor);
     expect(t?.assignedTo).toBeNull();
     expect(dbMocks.selectResult).toHaveBeenCalledTimes(1); // no user lookup
+  });
+
+  it('assignTicket fails closed (500, not a blame-the-input 400) when the ticket partner is unresolvable', async () => {
+    // Legacy ticket with null partnerId whose org row is also missing — broken
+    // data. The guard must not report this as a cross-partner assignee problem.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-gone', partnerId: null, status: 'new', assignedTo: null }]) // ticket
+      .mockResolvedValueOnce([])                                  // org fallback: missing
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]); // assignee exists
+
+    const err = await assignTicket('t-1', 'u-2', actor).catch(e => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(500);
+    expect(err.code).toBe('TICKET_PARTNER_UNRESOLVABLE');
+    expect(setMock).not.toHaveBeenCalled();
   });
 });
