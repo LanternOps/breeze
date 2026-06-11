@@ -81,6 +81,20 @@ async function assertAssigneeInPartner(assigneeId: string, partnerId: string | n
   }
 }
 
+/** Tenant guard: a ticket's category must belong to the ticket's partner. */
+async function assertCategoryInPartner(categoryId: string, partnerId: string | null) {
+  const rows = await db
+    .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+    .from(ticketCategories)
+    .where(eq(ticketCategories.id, categoryId))
+    .limit(1);
+  const category = rows[0];
+  if (!category) throw new TicketServiceError('Category not found', 404);
+  if (!partnerId || category.partnerId !== partnerId) {
+    throw new TicketServiceError('Category must belong to the same partner as the ticket', 400);
+  }
+}
+
 interface BaseCreateTicketInput {
   orgId: string;
   subject: string;
@@ -129,6 +143,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
 
   if (input.assigneeId) {
     await assertAssigneeInPartner(input.assigneeId, org.partnerId);
+  }
+
+  if (input.categoryId) {
+    await assertCategoryInPartner(input.categoryId, org.partnerId);
   }
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
@@ -324,6 +342,10 @@ export async function updateTicketFields(
     if (device.orgId !== ticket.orgId) {
       throw new TicketServiceError('Device must belong to the same organization as the ticket', 400);
     }
+  }
+
+  if (typeof fields.categoryId === 'string') {
+    await assertCategoryInPartner(fields.categoryId, await resolveTicketPartnerId(ticket));
   }
 
   // Compute the actually-changed fields; ignore no-op keys so the feed and
