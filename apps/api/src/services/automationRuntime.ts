@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
@@ -1289,7 +1289,7 @@ export async function executeAutomationRun(
     ? await db
       .select()
       .from(scripts)
-      .where(inArray(scripts.id, scriptIds))
+      .where(and(inArray(scripts.id, scriptIds), isNull(scripts.deletedAt)))
     : [];
 
   const scriptsById = new Map(scriptRows.map((script) => [script.id, script]));
@@ -1701,7 +1701,7 @@ export async function executeConfigPolicyAutomationRun(
   )];
 
   const scriptRows = scriptIds.length > 0
-    ? await db.select().from(scripts).where(inArray(scripts.id, scriptIds))
+    ? await db.select().from(scripts).where(and(inArray(scripts.id, scriptIds), isNull(scripts.deletedAt)))
     : [];
   const scriptsById = new Map(scriptRows.map((s) => [s.id, s]));
 

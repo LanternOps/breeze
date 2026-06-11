@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, ilike, inArray, like, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, like, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
 import {
@@ -931,7 +931,7 @@ mobileRoutes.post(
       const [script] = await db
         .select()
         .from(scripts)
-        .where(eq(scripts.id, data.scriptId as string))
+        .where(and(eq(scripts.id, data.scriptId as string), isNull(scripts.deletedAt)))
         .limit(1);
 
       if (!script) {

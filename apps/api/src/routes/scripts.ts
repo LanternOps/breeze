@@ -39,7 +39,7 @@ async function getScriptWithOrgCheck(scriptId: string, auth: { canAccessOrg: (or
   const [script] = await db
     .select()
     .from(scripts)
-    .where(eq(scripts.id, scriptId))
+    .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
     .limit(1);
 
   if (!script) {
@@ -159,6 +159,9 @@ scriptRoutes.get(
 
     // Build conditions array
     const conditions: ReturnType<typeof eq>[] = [];
+
+    // Exclude soft-deleted scripts
+    conditions.push(isNull(scripts.deletedAt) as ReturnType<typeof eq>);
 
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
@@ -287,7 +290,7 @@ scriptRoutes.get(
         language: scripts.language,
       })
       .from(scripts)
-      .where(eq(scripts.isSystem, true))
+      .where(and(eq(scripts.isSystem, true), isNull(scripts.deletedAt)))
       .orderBy(scripts.category, scripts.name);
 
     return c.json({ data: systemScripts });
@@ -311,7 +314,7 @@ scriptRoutes.post(
     const [source] = await db
       .select()
       .from(scripts)
-      .where(and(eq(scripts.id, sourceId), eq(scripts.isSystem, true)))
+      .where(and(eq(scripts.id, sourceId), eq(scripts.isSystem, true), isNull(scripts.deletedAt)))
       .limit(1);
 
     if (!source) {
@@ -352,7 +355,7 @@ scriptRoutes.post(
     const [existing] = await db
       .select({ id: scripts.id })
       .from(scripts)
-      .where(and(eq(scripts.orgId, orgId), eq(scripts.name, source.name)))
+      .where(and(eq(scripts.orgId, orgId), eq(scripts.name, source.name), isNull(scripts.deletedAt)))
       .limit(1);
 
     if (existing) {
@@ -599,11 +602,13 @@ scriptRoutes.delete(
       }, 409);
     }
 
-    // Soft delete by setting orgId to null and renaming (or use a deletedAt field if available)
-    // Since schema doesn't have deletedAt, we'll do a hard delete for now
-    // In production, you'd want to add a deletedAt column
+    // Soft delete: a hard `DELETE` throws an FK violation once the script has
+    // any execution history (script_executions / batches reference it), so we
+    // stamp deletedAt instead. All read paths filter `deletedAt IS NULL`, which
+    // hides the script while preserving its execution history.
     await db
-      .delete(scripts)
+      .update(scripts)
+      .set({ deletedAt: new Date() })
       .where(eq(scripts.id, scriptId));
 
     writeRouteAudit(c, {

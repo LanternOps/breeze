@@ -301,6 +301,51 @@ describe('scripts routes', () => {
     expect(body.success).toBe(true);
   });
 
+  it('should soft-delete (not hard-delete) so scripts with execution history can be removed', async () => {
+    // Script exists, and the active-execution guard sees zero ACTIVE executions
+    // (completed/failed executions may still exist and hold FK references).
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Script One',
+              isSystem: false,
+              orgId: ORG_ID
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 0 }])
+        })
+      } as any);
+
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined)
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+
+    // Must be a soft delete: UPDATE the row (set deletedAt), never a hard DELETE
+    // — a hard DELETE throws an FK violation when execution history exists.
+    expect(db.update).toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedAt: expect.any(Date) })
+    );
+  });
+
   it.skip('should execute a script against multiple devices', async () => {
     // Skipped: Complex mock chain requires e2e testing
     vi.mocked(db.select)

@@ -1,7 +1,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { db } from '../db';
 import { deployments, deploymentDevices, devices, deviceCommands, scripts, users, organizationUsers, patches } from '../db/schema';
-import { eq, and, asc, inArray, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray, isNull, sql } from 'drizzle-orm';
 import {
   getDeploymentProgress,
   shouldPauseDeployment,
@@ -824,7 +824,7 @@ async function executeScriptPayload(
   const [script] = await db
     .select()
     .from(scripts)
-    .where(eq(scripts.id, payload.scriptId))
+    .where(and(eq(scripts.id, payload.scriptId), isNull(scripts.deletedAt)))
     .limit(1);
 
   if (!script) {
