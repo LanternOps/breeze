@@ -13,6 +13,9 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     transaction: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -56,6 +59,16 @@ vi.mock('../../db/schema', () => ({
   organizations: { id: 'id', partnerId: 'partnerId' },
   sites: { id: 'id', orgId: 'orgId' },
   partners: { id: 'id', maxDevices: 'maxDevices' },
+  provisionCredentialHandles: {
+    id: 'id', token: 'token', orgId: 'orgId', deviceId: 'deviceId',
+    credentials: 'credentials', consumedAt: 'consumedAt', expiresAt: 'expiresAt',
+  },
+}));
+
+vi.mock('../../services/provisionCredentialHandle', () => ({
+  PROVISION_HANDLE_TOKEN_PATTERN: /^[a-f0-9]{64}$/,
+  generateProvisionHandleToken: vi.fn(() => 'a'.repeat(64)),
+  provisionHandleExpiresAt: vi.fn(() => new Date('2030-01-01T00:00:00.000Z')),
 }));
 
 import { db } from '../../db';
@@ -134,6 +147,45 @@ function mockTransactionSuccess(insertedRow: any) {
   });
 }
 
+/** Mocks `db.insert(...).values(...)` resolving successfully (handle persist). */
+function mockInsertSuccess() {
+  vi.mocked(db.insert).mockReturnValue({
+    values: vi.fn().mockResolvedValue(undefined),
+  } as any);
+}
+
+/** Mocks the fetch-endpoint's `db.select(...).from().where().limit()` lookup. */
+function mockHandleSelect(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue(rows),
+      })),
+    })),
+  } as any);
+}
+
+/** Mocks the atomic `db.update(...).set().where().returning()` consume. */
+function mockHandleConsume(rows: any[]) {
+  vi.mocked(db.update).mockReturnValue({
+    set: vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue(rows),
+      })),
+    })),
+  } as any);
+}
+
+/** Mocks `db.delete(...).where()` (chainable, catch-able). */
+function mockHandleDelete() {
+  const chain: any = {
+    where: vi.fn(() => chain),
+    catch: vi.fn((cb: any) => Promise.resolve().catch(cb)),
+    then: (resolve: any) => Promise.resolve().then(resolve),
+  };
+  vi.mocked(db.delete).mockReturnValue(chain);
+}
+
 describe('POST /devices/provision', () => {
   let app: Hono;
 
@@ -159,7 +211,7 @@ describe('POST /devices/provision', () => {
   });
 
   describe('happy path', () => {
-    it('creates a device and returns the config blob', async () => {
+    it('creates a device and returns a one-time fetch URL (no inline secrets)', async () => {
       mockSelectRows([{ id: SITE_ID }]);     // site-in-org check
       mockSelectRows([]);                     // hostname collision check (none)
       mockTransactionSuccess({
@@ -170,6 +222,7 @@ describe('POST /devices/provision', () => {
         agentId: 'agent-prov-1',
         status: 'pending',
       });
+      mockInsertSuccess();                    // credential-handle persist
 
       const res = await app.request('/devices/provision', {
         method: 'POST',
@@ -181,14 +234,23 @@ describe('POST /devices/provision', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.device.id).toBe('device-prov-id');
-      expect(body.config).toMatchObject({
-        agent_id: 'agent-prov-1',
-        server_url: 'https://breeze.example.com',
-        org_id: ORG_ID,
-        site_id: SITE_ID,
-        auth_token: 'brz_prov_token',
+
+      // SECURITY (#917 L-3): secrets must NOT be inline in the provision body.
+      expect(body.config).toBeUndefined();
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain('brz_prov_token');     // auth/watchdog/helper tokens
+      expect(serialized).not.toContain('private_key');
+
+      // Instead, a short-TTL single-use fetch handle is returned.
+      expect(body.credentials).toMatchObject({
+        fetch_url: '/api/v1/devices/provision/fetch/' + 'a'.repeat(64),
+        fetch_token: 'a'.repeat(64),
+        single_use: true,
       });
-      expect(body.config.manifest_trust_keys).toEqual([]);
+      expect(body.credentials.expires_at).toBe('2030-01-01T00:00:00.000Z');
+
+      // The blob WAS persisted server-side (keyed by the handle).
+      expect(db.insert).toHaveBeenCalled();
 
       // Audit was written on success
       expect(writeRouteAudit).toHaveBeenCalledWith(
@@ -215,6 +277,7 @@ describe('POST /devices/provision', () => {
           agentId: 'agent-prov-1',
           status: 'pending',
         });
+        mockInsertSuccess();
 
         const res = await app.request('/devices/provision', {
           method: 'POST',
@@ -350,6 +413,7 @@ describe('POST /devices/provision', () => {
         agentId: 'agent-prov-1',
         status: 'pending',
       });
+      mockInsertSuccess();
 
       const res = await app.request('/devices/provision', {
         method: 'POST',
@@ -375,6 +439,7 @@ describe('POST /devices/provision', () => {
         agentId: 'agent-prov-1',
         status: 'pending',
       });
+      mockInsertSuccess();
 
       const res = await app.request('/devices/provision', {
         method: 'POST',
@@ -384,6 +449,125 @@ describe('POST /devices/provision', () => {
 
       expect(res.status).toBe(201);
       expect(db.transaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /devices/provision/fetch/:token (one-time credential fetch)', () => {
+    const TOKEN = 'a'.repeat(64);
+    const CONFIG = {
+      agent_id: 'agent-prov-1',
+      auth_token: 'brz_prov_token',
+      mtls: { private_key: 'SECRET-KEY' },
+    };
+
+    function fetchReq(token = TOKEN) {
+      return app.request(`/devices/provision/fetch/${token}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer t' },
+      });
+    }
+
+    it('returns the credential blob exactly once, then deletes the handle', async () => {
+      mockHandleSelect([
+        {
+          id: 'handle-1',
+          orgId: ORG_ID,
+          deviceId: 'device-prov-id',
+          credentials: CONFIG,
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        },
+      ]);
+      mockHandleConsume([{ id: 'handle-1' }]); // atomic consume wins
+      mockHandleDelete();
+
+      const res = await fetchReq();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.config).toEqual(CONFIG);
+
+      // Handle was consumed AND hard-deleted (secrets don't linger at rest).
+      expect(db.update).toHaveBeenCalled();
+      expect(db.delete).toHaveBeenCalled();
+
+      // Fetch is audited.
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'device.provision.fetch' }),
+      );
+    });
+
+    it('404s a second fetch of an already-consumed handle', async () => {
+      // Row exists but consume UPDATE returns empty (lost the single-use race).
+      mockHandleSelect([
+        {
+          id: 'handle-1',
+          orgId: ORG_ID,
+          deviceId: 'device-prov-id',
+          credentials: CONFIG,
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        },
+      ]);
+      mockHandleConsume([]); // already consumed by a prior fetch
+
+      const res = await fetchReq();
+      expect(res.status).toBe(404);
+    });
+
+    it('404s an unknown / nonexistent token', async () => {
+      mockHandleSelect([]); // no row
+
+      const res = await fetchReq();
+      expect(res.status).toBe(404);
+      // Never attempts a consume on a missing handle.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('410s an expired handle and never returns the blob', async () => {
+      mockHandleSelect([
+        {
+          id: 'handle-1',
+          orgId: ORG_ID,
+          deviceId: 'device-prov-id',
+          credentials: CONFIG,
+          expiresAt: new Date(Date.now() - 60_000), // already expired
+          consumedAt: null,
+        },
+      ]);
+      mockHandleDelete(); // best-effort cleanup of expired row
+
+      const res = await fetchReq();
+      expect(res.status).toBe(410);
+      const body = await res.json();
+      expect(body.config).toBeUndefined();
+      // Expired handles are never consumed.
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('404s when the caller cannot access the handle owning org', async () => {
+      setAuth({ canAccessOrg: () => false });
+      mockHandleSelect([
+        {
+          id: 'handle-1',
+          orgId: OTHER_ORG_ID,
+          deviceId: 'device-prov-id',
+          credentials: CONFIG,
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        },
+      ]);
+
+      const res = await fetchReq();
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('400s a malformed token (fails pattern, no DB lookup)', async () => {
+      const res = await fetchReq('not-a-valid-token');
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 });

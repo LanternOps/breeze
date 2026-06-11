@@ -69,6 +69,7 @@ export * from './incidentResponse';
 export * from './thirdPartyCatalog';
 export * from './tunnels';
 export * from './installerBootstrapTokens';
+export * from './provisionCredentialHandles';
 export * from './deploymentInvites';
 export * from './emailVerificationTokens';
 export * from './manifestSigningKeys';

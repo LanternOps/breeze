@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../../db';
-import { devices, organizations, sites, partners } from '../../db/schema';
+import { devices, organizations, sites, partners, provisionCredentialHandles } from '../../db/schema';
 import {
   authMiddleware,
   requireMfa,
@@ -16,6 +16,11 @@ import { provisionDeviceSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from '../agents/helpers';
 import { getActiveTrustKeyset } from '../../services/manifestSigning';
 import { stripSensitiveDeviceFields } from './helpers';
+import {
+  PROVISION_HANDLE_TOKEN_PATTERN,
+  generateProvisionHandleToken,
+  provisionHandleExpiresAt,
+} from '../../services/provisionCredentialHandle';
 
 export const provisionRoutes = new Hono();
 
@@ -247,6 +252,50 @@ provisionRoutes.post(
     const mtlsCert = await issueMtlsCertForDevice(device.id, data.orgId);
     const manifestTrustKeys = await getActiveTrustKeyset();
 
+    // ----------- assemble the config blob (contains long-lived secrets) -----------
+    // SECURITY (#917 L-3): the secrets below — auth_token, watchdog/helper
+    // tokens and the mTLS private key — are long-lived and MUST NOT be
+    // returned inline in this response. If the admin UI logged or persisted
+    // the body before transport, those secrets would sit in plaintext. We
+    // stash the blob server-side keyed by a short-TTL, single-use handle and
+    // return a one-time fetch URL instead.
+    const configBlob = {
+      agent_id: agentId,
+      server_url: serverUrl,
+      auth_token: apiKey,
+      watchdog_auth_token: watchdogApiKey,
+      helper_auth_token: helperApiKey,
+      org_id: data.orgId,
+      site_id: data.siteId,
+      heartbeat_interval_seconds: 60,
+      metrics_interval_seconds: 30,
+      manifest_trust_keys: manifestTrustKeys,
+      mtls: mtlsCert
+        ? {
+            certificate: mtlsCert.certificate,
+            private_key: mtlsCert.privateKey,
+            expires_at: mtlsCert.expiresAt,
+            serial_number: mtlsCert.serialNumber,
+          }
+        : null,
+    };
+
+    const handleToken = generateProvisionHandleToken();
+    const handleExpiresAt = provisionHandleExpiresAt();
+    try {
+      await db.insert(provisionCredentialHandles).values({
+        token: handleToken,
+        orgId: data.orgId,
+        deviceId: device.id,
+        credentials: configBlob,
+        createdBy: auth.user?.id ?? null,
+        expiresAt: handleExpiresAt,
+      });
+    } catch (err) {
+      console.error('[devices.provision] failed to persist credential handle:', err);
+      return c.json({ error: 'Failed to issue provisioning credentials' }, 500);
+    }
+
     writeRouteAudit(c, {
       orgId: data.orgId,
       action: 'device.provision',
@@ -258,39 +307,113 @@ provisionRoutes.post(
         osType: data.osType,
         agentId,
         mtlsCertIssued: mtlsCert !== null,
+        credentialHandleIssued: true,
       },
     });
 
-    // ----------- response: config blob the admin ships to the endpoint -----------
+    // ----------- response: one-time fetch URL (NO inline secrets) -----------
     return c.json(
       {
         success: true,
         device: stripSensitiveDeviceFields(device),
-        config: {
-          agent_id: agentId,
-          server_url: serverUrl,
-          auth_token: apiKey,
-          watchdog_auth_token: watchdogApiKey,
-          helper_auth_token: helperApiKey,
-          org_id: data.orgId,
-          site_id: data.siteId,
-          heartbeat_interval_seconds: 60,
-          metrics_interval_seconds: 30,
-          manifest_trust_keys: manifestTrustKeys,
-          mtls: mtlsCert
-            ? {
-                certificate: mtlsCert.certificate,
-                private_key: mtlsCert.privateKey,
-                expires_at: mtlsCert.expiresAt,
-                serial_number: mtlsCert.serialNumber,
-              }
-            : null,
+        credentials: {
+          fetch_url: `/api/v1/devices/provision/fetch/${handleToken}`,
+          fetch_token: handleToken,
+          expires_at: handleExpiresAt.toISOString(),
+          single_use: true,
         },
       },
       201,
     );
   },
 );
+
+/**
+ * GET /devices/provision/fetch/:token
+ *
+ * One-time retrieval of the provisioning credential blob created by
+ * POST /devices/provision (#917 L-3). The handle token is the bearer
+ * credential; the caller must additionally be an authenticated admin with
+ * access to the owning org (defense-in-depth on top of the unguessable
+ * token). The handle is single-use: the first successful fetch returns the
+ * blob and atomically deletes the row, so a replay 404s. Expired handles
+ * are rejected with 410.
+ *
+ * Invalid / consumed / non-existent tokens all return 404 to avoid leaking
+ * which condition was hit. The same caller fetches immediately after
+ * provisioning, so the 5-minute default TTL is generous.
+ */
+provisionRoutes.get('/provision/fetch/:token', async (c) => {
+  const auth = c.get('auth');
+  const token = c.req.param('token');
+
+  if (!PROVISION_HANDLE_TOKEN_PATTERN.test(token)) {
+    return c.json({ error: 'invalid token' }, 400);
+  }
+
+  const ip = c.req.header('cf-connecting-ip') ?? null;
+
+  // ── 1. Look up the handle ───────────────────────────────────────────────
+  const [row] = await db
+    .select()
+    .from(provisionCredentialHandles)
+    .where(eq(provisionCredentialHandles.token, token))
+    .limit(1);
+
+  if (!row) {
+    return c.json({ error: 'handle invalid, expired, or already used' }, 404);
+  }
+
+  // ── 2. Org-access check (defense-in-depth on top of the token) ──────────
+  if (!auth.canAccessOrg(row.orgId)) {
+    return c.json({ error: 'handle invalid, expired, or already used' }, 404);
+  }
+
+  // ── 3. Expiry ───────────────────────────────────────────────────────────
+  if (new Date(row.expiresAt) < new Date()) {
+    // Best-effort cleanup of the expired row; ignore failures.
+    await db
+      .delete(provisionCredentialHandles)
+      .where(eq(provisionCredentialHandles.id, row.id))
+      .catch(() => {});
+    return c.json({ error: 'handle expired' }, 410);
+  }
+
+  // ── 4. Atomic single-use consume ────────────────────────────────────────
+  // Mark consumed only if not already consumed; the UPDATE serializes
+  // concurrent fetches so exactly one wins.
+  const [consumed] = await db
+    .update(provisionCredentialHandles)
+    .set({ consumedAt: new Date(), consumedFromIp: ip })
+    .where(
+      and(
+        eq(provisionCredentialHandles.id, row.id),
+        isNull(provisionCredentialHandles.consumedAt),
+      ),
+    )
+    .returning();
+
+  if (!consumed) {
+    // Lost the race — another fetch already consumed it.
+    return c.json({ error: 'handle invalid, expired, or already used' }, 404);
+  }
+
+  // ── 5. Hard-delete so plaintext secrets don't linger at rest ────────────
+  await db
+    .delete(provisionCredentialHandles)
+    .where(eq(provisionCredentialHandles.id, row.id))
+    .catch(() => {});
+
+  writeRouteAudit(c, {
+    orgId: row.orgId,
+    action: 'device.provision.fetch',
+    resourceType: 'device',
+    resourceId: row.deviceId,
+    details: { credentialHandleConsumed: true },
+  });
+
+  return c.json({ success: true, config: row.credentials }, 200);
+});
 
 class HttpDeviceLimitError extends Error {
   constructor(public current: number, public max: number) {
