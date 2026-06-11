@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, AlertTriangle, CheckCircle, XCircle, Clock, ExternalLink, User, Bell } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, CheckCircle, XCircle, Clock, ExternalLink, User, Bell, Ticket } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { cn } from '@/lib/utils';
 import { useAiStore } from '@/stores/aiStore';
@@ -12,6 +12,7 @@ import {
   type AlertSeverity,
   type AlertStatus,
 } from './alertConfig';
+import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 
 type Alert = {
   id: string;
@@ -31,6 +32,16 @@ type Alert = {
   contextData?: Record<string, unknown>;
 };
 
+type LinkedTicket = {
+  id: string;
+  internalNumber: string | null;
+  subject: string;
+  status: string;
+  priority: string;
+  linkType: string;
+  linkedAt: string;
+};
+
 type AlertDetailPageProps = {
   alertId: string;
 };
@@ -47,6 +58,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
+  const [linkedTickets, setLinkedTickets] = useState<LinkedTicket[]>([]);
+  const [linkedError, setLinkedError] = useState(false);
+  const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
 
   const fetchAlert = useCallback(async () => {
     try {
@@ -76,9 +90,21 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     }
   }, [alertId]);
 
+  const fetchLinkedTickets = useCallback(async () => {
+    try {
+      const res = await fetchWithAuth(`/alerts/${alertId}/tickets`);
+      if (!res.ok) throw new Error('failed');
+      setLinkedTickets((await res.json()).data ?? []);
+      setLinkedError(false);
+    } catch {
+      setLinkedError(true);
+    }
+  }, [alertId]);
+
   useEffect(() => {
     fetchAlert();
-  }, [fetchAlert]);
+    void fetchLinkedTickets();
+  }, [fetchAlert, fetchLinkedTickets]);
 
   // Inject AI context when alert data is available
   const setPageContext = useAiStore((s) => s.setPageContext);
@@ -215,6 +241,15 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
           {/* Actions */}
           <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setTicketDialogOpen(true)}
+              className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+              data-testid="alert-create-ticket"
+            >
+              <Ticket className="mr-2 inline-block h-4 w-4" />
+              Create ticket
+            </button>
             {alert.status === 'active' && (
               <button
                 type="button"
@@ -246,6 +281,32 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         <h3 className="text-sm font-semibold text-muted-foreground mb-2">Message</h3>
         <p className="text-sm">{alert.message}</p>
       </div>
+
+      {/* Linked Tickets */}
+      {(linkedTickets.length > 0 || linkedError) && (
+        <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="alert-linked-tickets">
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3">Linked Tickets</h3>
+          {linkedError ? (
+            <p className="text-sm text-muted-foreground">
+              Linked tickets failed to load.{' '}
+              <button type="button" onClick={() => void fetchLinkedTickets()} className="underline hover:text-foreground">Retry</button>
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {linkedTickets.map((t) => (
+                <li key={t.id} className="flex items-center justify-between gap-3 text-sm">
+                  <a href={`/tickets#${t.internalNumber ?? ''}`} className="font-medium hover:underline">
+                    {t.internalNumber ?? t.id} — {t.subject}
+                  </a>
+                  <span className="rounded-full border px-2 py-0.5 text-xs capitalize text-muted-foreground">
+                    {t.status.replace('_', ' ')}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Details Grid */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -333,6 +394,22 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             {JSON.stringify(alert.contextData, null, 2)}
           </pre>
         </div>
+      )}
+
+      {ticketDialogOpen && (
+        <CreateTicketFromAlertDialog
+          alertId={alert.id}
+          alertTitle={alert.title}
+          alertSeverity={alert.severity}
+          openTicketNumber={
+            linkedTickets.find((t) => !['resolved', 'closed'].includes(t.status))?.internalNumber ?? null
+          }
+          onClose={() => setTicketDialogOpen(false)}
+          onCreated={() => {
+            setTicketDialogOpen(false);
+            void fetchLinkedTickets();
+          }}
+        />
       )}
     </div>
   );

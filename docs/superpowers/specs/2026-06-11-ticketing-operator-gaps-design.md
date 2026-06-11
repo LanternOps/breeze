@@ -67,7 +67,7 @@ New route file `apps/api/src/routes/orgPortalSettings.ts` (mounted under the exi
 ### Web (`AlertDetailPage.tsx`)
 
 - **Linked tickets section:** lists linked tickets with deep links into the tickets workbench (hash-based selection, matching existing ticket deep-link convention).
-- **Create ticket button:** shown only when the user has `tickets:write`. Opens a compact dialog:
+- **Create ticket button:** shown only when the user has `tickets:write`. *(Implementation note: the web app has no client-side permission store, so the button renders for everyone and the API's `tickets:write` check enforces — a 403 surfaces as an error toast.)* Opens a compact dialog:
   - Subject prefilled from alert title; category select (active categories from `GET /ticket-categories`); priority select defaulted from the severity mapping.
   - Assignee intentionally omitted from the dialog for v1 (endpoint supports it; a user-picker isn't worth the surface yet).
   - If an open (non-closed) linked ticket exists, the dialog shows a warning line — e.g. "This alert already has open ticket T-2026-0042" — but does **not** hard-disable creation; duplicates stay possible but deliberate.
