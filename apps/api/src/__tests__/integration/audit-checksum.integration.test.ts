@@ -177,6 +177,48 @@ describe('audit_logs checksum chain', () => {
     });
   });
 
+  // Regression for issue #1002: the BEFORE INSERT trigger forks the chain
+  // under concurrent same-org inserts. Each transaction reads the SAME latest
+  // committed checksum as its `prev` (it can't see the other in-flight
+  // transactions' uncommitted rows), so N concurrent inserts all link back to
+  // the same predecessor → the per-org chain forks → audit_log_verify_chain
+  // reports false-positive breaks even though nothing was tampered.
+  //
+  // The fix (-a- advisory-lock migration) takes a per-org
+  // pg_advisory_xact_lock BEFORE the predecessor SELECT, serializing the
+  // read-checksum/assign-prev critical section across concurrent same-org
+  // inserts so each picks up the prior committed row in turn.
+  //
+  // Each insert runs in its own `withSystemDbAccessContext` call (separate
+  // pooled connection + transaction), and Promise.all fires them
+  // concurrently — this is the production shape (row-per-API-call) that
+  // surfaced the fork on the US droplet.
+  it('audit_log_verify_chain returns no breaks under concurrent same-org inserts', async () => {
+    const N = 25;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        withSystemDbAccessContext(async () => {
+          await db.execute(sql`
+            INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+            VALUES (${orgId}, 'system', gen_random_uuid(), ${'concurrent-' + i}, 'test', 'success')
+          `);
+        })
+      )
+    );
+
+    await withSystemDbAccessContext(async () => {
+      const count = (await db.execute(sql`
+        SELECT COUNT(*)::int AS n FROM audit_logs WHERE org_id = ${orgId}::uuid
+      `)) as unknown as Array<{ n: number }>;
+      expect(count[0]!.n).toEqual(N);
+
+      const breaks = (await db.execute(sql`
+        SELECT broken_id FROM public.audit_log_verify_chain(${orgId}::uuid)
+      `)) as unknown as Array<{ broken_id: string }>;
+      expect(breaks).toEqual([]);
+    });
+  });
+
   it('audit_log_verify_chain detects tampering via direct SQL UPDATE', async () => {
     // Seed three rows each in their own transaction so the chain is
     // unambiguously ordered (see same-tx note above). Each insert returns the
