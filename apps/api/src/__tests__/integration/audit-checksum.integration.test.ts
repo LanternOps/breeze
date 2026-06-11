@@ -50,20 +50,45 @@ describe('audit_logs checksum chain', () => {
     });
   });
 
+  // Linkage lives in the audit_log_chain side table since migration
+  // 2026-06-11-h (issue #1002): the in-row prev_checksum is now always NULL
+  // and each row's seal entry chains to the previous seal for its org.
+  // The seal trigger is DEFERRED to COMMIT, so the chain rows are only
+  // visible after the inserting transaction commits — hence the second
+  // withSystemDbAccessContext for the assertions.
   it('each subsequent row chains to the previous within an org', async () => {
+    let aId = '';
+    let bId = '';
     await withSystemDbAccessContext(async () => {
       const a = (await db.execute(sql`
         INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
         VALUES (${orgId}, 'system', gen_random_uuid(), 'a', 'test', 'success')
-        RETURNING checksum
-      `)) as unknown as Array<{ checksum: string }>;
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      aId = a[0]!.id;
       const b = (await db.execute(sql`
         INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
         VALUES (${orgId}, 'system', gen_random_uuid(), 'b', 'test', 'success')
-        RETURNING checksum, prev_checksum
-      `)) as unknown as Array<{ checksum: string; prev_checksum: string }>;
-      expect(b[0]!.prev_checksum).toEqual(a[0]!.checksum);
-      expect(b[0]!.checksum).not.toEqual(a[0]!.checksum);
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      bId = b[0]!.id;
+    });
+
+    await withSystemDbAccessContext(async () => {
+      const seals = (await db.execute(sql`
+        SELECT audit_id, prev_chain_checksum, chain_checksum
+        FROM audit_log_chain
+        WHERE org_id = ${orgId}::uuid
+        ORDER BY chain_seq
+      `)) as unknown as Array<{
+        audit_id: string;
+        prev_chain_checksum: string | null;
+        chain_checksum: string;
+      }>;
+      expect(seals.map((s) => s.audit_id)).toEqual([aId, bId]);
+      expect(seals[0]!.prev_chain_checksum).toBeNull();
+      expect(seals[1]!.prev_chain_checksum).toEqual(seals[0]!.chain_checksum);
+      expect(seals[1]!.chain_checksum).not.toEqual(seals[0]!.chain_checksum);
     });
   });
 
@@ -107,8 +132,9 @@ describe('audit_logs checksum chain', () => {
   // insert order, producing false-positive "breaks" with no actual tampering.
   // Real production audit traffic flows row-per-API-call (separate
   // transactions, distinct timestamps), so this matches the production case.
-  // Fixing the chain to handle same-tx batches robustly requires a chain_seq
-  // bigserial + per-org advisory lock — tracked as future-task hardening.
+  // Same-transaction batches are now handled by the deferred commit-time seal
+  // (migration 2026-06-11-h, issue #1002) — covered by the 'multiple same-org
+  // inserts in ONE transaction' test below.
 
   it('audit_log_verify_chain returns no breaks on a freshly written chain', async () => {
     for (const action of ['a', 'b', 'c']) {
