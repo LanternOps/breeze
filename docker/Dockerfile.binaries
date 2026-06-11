@@ -1,4 +1,4 @@
-FROM alpine:3.23
+FROM alpine:3.24
 # Binaries are COPY'd in during CI build (not at runtime)
 COPY agent/ /binaries/agent/
 COPY viewer/ /binaries/viewer/
