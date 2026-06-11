@@ -7,6 +7,7 @@ const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const ORG_ID    = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const USER_ID   = 'uuuuuuuu-uuuu-4uuu-8uuu-uuuuuuuuuuuu';
 const SESSION_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const PARTNER_ID = 'pppppppp-pppp-4ppp-8ppp-pppppppppppp';
 
 // --- DB mock ---
 vi.mock('../db', () => ({
@@ -31,13 +32,34 @@ vi.mock('../db/schema', () => ({
 // --- Auth middleware ---
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
-      scope: 'organization',
-      partnerId: null,
-      orgId: ORG_ID,
-      user: { id: USER_ID, email: 'test@example.com' },
-      canAccessOrg: (id: string) => id === ORG_ID,
-    });
+    // Partner-scope callers (MSP users with an org selected in the picker) send
+    // their org via the `?orgId=` query param, NOT a JWT org claim. Tests opt
+    // into that shape with `x-test-scope: partner` + `x-test-accessible-orgs`
+    // (comma-separated), mirroring how the web client scopes API calls.
+    const testScope = c.req.header('x-test-scope');
+    if (testScope === 'partner') {
+      const accessibleOrgIds = (c.req.header('x-test-accessible-orgs') || '')
+        .split(',')
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      c.set('auth', {
+        scope: 'partner',
+        partnerId: PARTNER_ID,
+        orgId: null,
+        accessibleOrgIds,
+        user: { id: USER_ID, email: 'test@example.com' },
+        canAccessOrg: (id: string) => accessibleOrgIds.includes(id),
+      });
+    } else {
+      c.set('auth', {
+        scope: 'organization',
+        partnerId: null,
+        orgId: ORG_ID,
+        accessibleOrgIds: [ORG_ID],
+        user: { id: USER_ID, email: 'test@example.com' },
+        canAccessOrg: (id: string) => id === ORG_ID,
+      });
+    }
     // NOTE: authMiddleware does NOT populate `permissions` in production — only
     // requirePermission does. Keep it out here so a route relying on permissions
     // for site-scoping but lacking a permission gate fails its tests (not masks).
@@ -647,5 +669,146 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       status: 'disconnected',
     }));
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Allowlist routes — partner-scope org resolution ─────────────────────────
+// Regression for "Failed to create allowlist entry" (Enable Proxy Access on the
+// discovery page): partner-scope sessions carry no JWT org claim and pass the
+// target org via `?orgId=`. The routes must resolve that, not reject with 400.
+
+describe('Allowlist routes — partner-scope org resolution', () => {
+  let app: Hono;
+  const ORG_A = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1'; // accessible to the partner
+  const ORG_B = 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1'; // NOT accessible
+  const RULE_ID = 'f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1';
+
+  const ruleBody = {
+    direction: 'destination',
+    pattern: '10.1.2.50/32:80-443',
+    description: 'Auto-created for Printer',
+    source: 'discovery',
+    discoveredAssetId: '99999999-9999-4999-8999-999999999999',
+  };
+
+  // Capture the values passed to db.insert(...).values(...) so we can assert the
+  // resolved orgId is persisted.
+  function rigInsertCapture(returned: any) {
+    const valuesSpy = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([returned]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+    return valuesSpy;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('POST /allowlist resolves the org from ?orgId= for a partner caller (201)', async () => {
+    const valuesSpy = rigInsertCapture({ id: RULE_ID, orgId: ORG_A, ...ruleBody });
+
+    const res = await app.request(`/tunnels/allowlist?orgId=${ORG_A}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesSpy).toHaveBeenCalledTimes(1);
+    expect(valuesSpy.mock.calls[0]![0]).toEqual(expect.objectContaining({ orgId: ORG_A }));
+  });
+
+  it('POST /allowlist returns 403 when the partner cannot access the requested org', async () => {
+    rigInsertCapture({ id: RULE_ID });
+
+    const res = await app.request(`/tunnels/allowlist?orgId=${ORG_B}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('POST /allowlist auto-resolves the single accessible org when no ?orgId= is given', async () => {
+    const valuesSpy = rigInsertCapture({ id: RULE_ID, orgId: ORG_A, ...ruleBody });
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesSpy.mock.calls[0]![0]).toEqual(expect.objectContaining({ orgId: ORG_A }));
+  });
+
+  it('POST /allowlist returns 400 when a multi-org partner omits ?orgId=', async () => {
+    rigInsertCapture({ id: RULE_ID });
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': `${ORG_A},${ORG_B}`,
+      },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('GET /allowlist scopes to the resolved org for a partner caller (200)', async () => {
+    const where = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockResolvedValue([{ id: RULE_ID, orgId: ORG_A }]),
+    });
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where }),
+    } as any);
+
+    const res = await app.request(`/tunnels/allowlist?orgId=${ORG_A}`, {
+      method: 'GET',
+      headers: {
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toHaveLength(1);
+  });
+
+  it('DELETE /allowlist/:id resolves the org for a partner caller (404 when no row)', async () => {
+    // No matching row in the resolved org → 404 (NOT the old 400 org-context error).
+    vi.mocked(db.select).mockReturnValue(makeSelectChain([]) as any);
+
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}?orgId=${ORG_A}`, {
+      method: 'DELETE',
+      headers: {
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+    });
+
+    expect(res.status).toBe(404);
   });
 });

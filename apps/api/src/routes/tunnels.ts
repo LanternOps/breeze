@@ -53,6 +53,32 @@ const updateAllowlistSchema = z.object({
 
 // --- Helpers ---
 
+// Resolve the org a request acts on, from auth scope + an optional `?orgId=`.
+// Partner/system callers carry no JWT org claim — the web client passes the
+// selected org as a query param (see fetchWithAuth's auto-injection). Mirrors
+// the helper in discovery.ts / monitors.ts so the allowlist routes scope the
+// same way the rest of the discovery surface does.
+function resolveOrgId(
+  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
+  requestedOrgId?: string,
+) {
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
+    if (requestedOrgId && requestedOrgId !== auth.orgId) return { error: 'Access to this organization denied', status: 403 } as const;
+    return { orgId: auth.orgId } as const;
+  }
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) return { error: 'Access to this organization denied', status: 403 } as const;
+    return { orgId: requestedOrgId } as const;
+  }
+  if (auth.scope === 'partner') {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (accessibleOrgIds.length === 1) return { orgId: accessibleOrgIds[0]! } as const;
+    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
+  }
+  return { error: 'orgId is required', status: 400 } as const;
+}
+
 // Hardcoded blocked CIDRs (mirrors agent-side allowlist.go)
 const BLOCKED_CIDRS = [
   { cidr: '127.0.0.0/8', reason: 'localhost' },
@@ -374,12 +400,12 @@ tunnelRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (!auth.orgId) {
-      return c.json({ error: 'Org context required' }, 400);
-    }
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
 
     const { siteId } = c.req.valid('query');
-    const conditions: ReturnType<typeof eq>[] = [eq(tunnelAllowlists.orgId, auth.orgId)];
+    const conditions: ReturnType<typeof eq>[] = [eq(tunnelAllowlists.orgId, orgId)];
     if (siteId) {
       if (perms?.allowedSiteIds && !canAccessSite(perms, siteId)) {
         return c.json({ error: 'Access to this site denied' }, 403);
@@ -409,16 +435,16 @@ tunnelRoutes.post(
   zValidator('json', allowlistRuleSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    if (!auth.orgId) {
-      return c.json({ error: 'Org context required' }, 400);
-    }
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
 
     const body = c.req.valid('json');
 
     const [rule] = await db
       .insert(tunnelAllowlists)
       .values({
-        orgId: auth.orgId,
+        orgId,
         siteId: body.siteId || null,
         direction: body.direction,
         pattern: body.pattern,
@@ -442,16 +468,16 @@ tunnelRoutes.put(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
-    if (!auth.orgId) {
-      return c.json({ error: 'Org context required' }, 400);
-    }
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
 
     const body = c.req.valid('json');
 
     const [existing] = await db
       .select()
       .from(tunnelAllowlists)
-      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, auth.orgId)))
+      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, orgId)))
       .limit(1);
 
     if (!existing) {
@@ -466,7 +492,7 @@ tunnelRoutes.put(
     const [updated] = await db
       .update(tunnelAllowlists)
       .set(updates)
-      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, auth.orgId)))
+      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, orgId)))
       .returning();
 
     return c.json(updated);
@@ -481,14 +507,14 @@ tunnelRoutes.delete(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
-    if (!auth.orgId) {
-      return c.json({ error: 'Org context required' }, 400);
-    }
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
 
     const [existing] = await db
       .select()
       .from(tunnelAllowlists)
-      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, auth.orgId)))
+      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, orgId)))
       .limit(1);
 
     if (!existing) {
@@ -497,7 +523,7 @@ tunnelRoutes.delete(
 
     await db
       .delete(tunnelAllowlists)
-      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, auth.orgId)));
+      .where(and(eq(tunnelAllowlists.id, id), eq(tunnelAllowlists.orgId, orgId)));
 
     return c.json({ deleted: true });
   }
