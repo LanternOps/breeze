@@ -59,7 +59,12 @@ vi.mock('../../middleware/auth', () => ({
     }
     await next();
   },
-  requirePermission: () => async (_c: any, next: any) => next()
+  requirePermission: () => async (_c: any, next: any) => next(),
+  siteAccessCheck: (allowedSiteIds?: string[]) => (siteId?: string | null) => {
+    if (!allowedSiteIds) return true;
+    if (!siteId) return false;
+    return allowedSiteIds.includes(siteId);
+  },
 }));
 
 vi.mock('../../db', () => ({
@@ -867,6 +872,15 @@ describe('site-axis scoping — per-ticket routes', () => {
     });
     expect(res.status).toBe(404);
     expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+
+  it('GET /tickets/:id returns 404 for a device-bound ticket when the allowlist is empty', async () => {
+    authRef.current = { ...SITE_AUTH, allowedSiteIds: [] } as typeof authRef.current;
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-1' }]);                                // device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(404);
   });
 
   it('unrestricted callers (no allowedSiteIds) skip the device lookup entirely', async () => {

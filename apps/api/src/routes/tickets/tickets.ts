@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts } from '../../db/schema';
-import { requireScope, requirePermission } from '../../middleware/auth';
+import { requireScope, requirePermission, siteAccessCheck } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
@@ -101,8 +101,7 @@ async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<b
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
-  const siteId = rows[0]?.siteId;
-  return !!siteId && auth.allowedSiteIds.includes(siteId);
+  return siteAccessCheck(auth.allowedSiteIds)(rows[0]?.siteId);
 }
 
 /** Sentinel returned by buildScopeConditions when the caller context is broken. */
