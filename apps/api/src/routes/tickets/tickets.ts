@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts } from '../../db/schema';
-import { requireScope, requirePermission, siteAccessCheck } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
+import { deviceInSiteScope, ticketSiteScopeCondition } from './siteScope';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
@@ -109,47 +110,10 @@ export async function getScopedTicketOr404(
   return ticket;
 }
 
-/**
- * Site-axis (sub-org) device gate. `auth.allowedSiteIds` is only populated for
- * organization-scope users with a site restriction — everyone else passes.
- * A restricted caller is denied for a device with no site assignment
- * (matches siteAccessCheck semantics in middleware/auth.ts).
- *
- * This is a site gate, not an existence check: a nonexistent deviceId is
- * denied for restricted callers but passes for unrestricted ones — device
- * existence is enforced in the service layer.
- */
-async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<boolean> {
-  if (!auth.allowedSiteIds) return true;
-  const rows = await db
-    .select({ siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-  return siteAccessCheck(auth.allowedSiteIds)(rows[0]?.siteId);
-}
-
-/**
- * Site-axis list condition (spec §7): device-bound tickets are limited to
- * devices in the caller's allowed sites; deviceless (org-level) tickets stay
- * visible. Uses an IN-subquery on devices instead of a join so the same
- * condition works for the list, count, and stats queries unchanged. Empty
- * allowlist = deviceless tickets only. Returns undefined for unrestricted
- * callers (partner/system scope, or org users without a site restriction).
- * Exported for direct unit testing of the tri-state contract.
- */
-export function ticketSiteScopeCondition(auth: AuthContext): SQL | undefined {
-  const allowed = auth.allowedSiteIds;
-  if (!allowed) return undefined;
-  if (allowed.length === 0) return isNull(tickets.deviceId);
-  return or(
-    isNull(tickets.deviceId),
-    inArray(
-      tickets.deviceId,
-      db.select({ id: devices.id }).from(devices).where(inArray(devices.siteId, allowed))
-    )
-  )!;
-}
+// Site-axis helpers (deviceInSiteScope, ticketSiteScopeCondition) live in
+// ./siteScope so the alerts routes can share them; re-exported here for
+// existing consumers (tests pin the tri-state contract via this path).
+export { deviceInSiteScope, ticketSiteScopeCondition };
 
 /** Sentinel returned by buildScopeConditions when the caller context is broken. */
 const SCOPE_MISSING = Symbol('SCOPE_MISSING');
@@ -566,6 +530,22 @@ ticketsRoutes.post(
     const found = await getScopedTicketOr404(auth, id);
     if (!found) return c.json({ error: 'Ticket not found' }, 404);
 
+    // Site-axis gate on the ALERT's device (the ticket's device was already
+    // gated above): a site-restricted caller must not link alerts for devices
+    // outside their allowed sites. The service's same-org check stays in
+    // linkAlertToTicket — the route layer owns the site axis.
+    const alertRows = await db
+      .select({ deviceId: alerts.deviceId })
+      .from(alerts)
+      .where(eq(alerts.id, alertId))
+      .limit(1);
+    const alertRow = alertRows[0];
+    if (!alertRow) return c.json({ error: 'Alert not found' }, 404);
+    if (alertRow.deviceId && !(await deviceInSiteScope(auth, alertRow.deviceId))) {
+      // Out-of-site alerts are invisible, not forbidden — same shape as the ticket gate.
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
     try {
       const link = await linkAlertToTicket(id, alertId, actorFrom(c));
       return c.json({ data: link }, 201);
@@ -590,6 +570,19 @@ ticketsRoutes.delete(
     }
     const found = await getScopedTicketOr404(auth, id);
     if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
+    // Same site-axis gate as the link route: an out-of-site alert must be
+    // invisible to a restricted caller even for unlink.
+    const alertRows = await db
+      .select({ deviceId: alerts.deviceId })
+      .from(alerts)
+      .where(eq(alerts.id, alertId))
+      .limit(1);
+    const alertRow = alertRows[0];
+    if (!alertRow) return c.json({ error: 'Alert not found' }, 404);
+    if (alertRow.deviceId && !(await deviceInSiteScope(auth, alertRow.deviceId))) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
 
     try {
       await unlinkAlertFromTicket(id, alertId, actorFrom(c));

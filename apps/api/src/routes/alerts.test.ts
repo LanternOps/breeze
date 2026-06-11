@@ -109,15 +109,24 @@ vi.mock('../db/schema', () => ({
   partners: {}
 }));
 
-vi.mock('../middleware/auth', () => ({
+vi.mock('../middleware/auth', async () => ({
+  // Real implementation (single source of truth for site-allowlist semantics) —
+  // the create-ticket site gate resolves through it via tickets/siteScope.ts.
+  siteAccessCheck: (await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')).siteAccessCheck,
   authMiddleware: vi.fn((c: any, next: any) => {
+    // Opt-in site restriction on the AUTH context (deviceInSiteScope reads
+    // auth.allowedSiteIds, unlike the list narrowing which reads permissions).
+    const restrictAuth = c.req.header('x-auth-allowed-sites');
     c.set('auth', {
       scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
       partnerId: null,
       user: { id: 'user-123', email: 'test@example.com' },
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      allowedSiteIds: restrictAuth === undefined
+        ? undefined
+        : (restrictAuth === '__empty__' ? [] : restrictAuth.split(','))
     });
     // NOTE: authMiddleware does NOT populate `permissions` in production — only
     // requirePermission does. Keep it out here so a route relying on permissions
@@ -164,13 +173,19 @@ describe('alert routes', () => {
       failedCount: 0
     });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      // Opt-in site restriction on the AUTH context (deviceInSiteScope reads
+      // auth.allowedSiteIds, unlike the list narrowing which reads permissions).
+      const restrictAuth = c.req.header('x-auth-allowed-sites');
       c.set('auth', {
         scope: 'organization',
         orgId: '11111111-1111-1111-1111-111111111111',
         partnerId: null,
         user: { id: 'user-123', email: 'test@example.com' },
         accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-        canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
+        canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+        allowedSiteIds: restrictAuth === undefined
+          ? undefined
+          : (restrictAuth === '__empty__' ? [] : restrictAuth.split(','))
       });
       // permissions is populated by requirePermission (mirrors prod), not here.
       return next();
@@ -1191,6 +1206,77 @@ describe('alert routes', () => {
         ALERT_ID,
         expect.objectContaining({ userId: 'user-123' }),
         expect.objectContaining({ subject: 'Custom subject', priority: 'urgent' })
+      );
+    });
+
+    it('returns 404 for out-of-site alert devices (site-restricted caller)', async () => {
+      // Alert visibility check returns an alert bound to a device...
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              deviceId: 'device-1',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+      // ...whose site is outside the caller's allowlist.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ siteId: 'site-OTHER' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-auth-allowed-sites': 'site-1' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Alert not found');
+      expect(createTicketFromAlertMock).not.toHaveBeenCalled();
+    });
+
+    it('creates the ticket when the alert device is inside the caller site scope', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              deviceId: 'device-1',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ siteId: 'site-1' }])
+          })
+        })
+      } as any);
+      createTicketFromAlertMock.mockResolvedValue({ id: 't-11', internalNumber: 'T-2026-0044' });
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-auth-allowed-sites': 'site-1' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(201);
+      expect(createTicketFromAlertMock).toHaveBeenCalledWith(
+        ALERT_ID,
+        expect.objectContaining({ userId: 'user-123' }),
+        expect.any(Object)
       );
     });
 

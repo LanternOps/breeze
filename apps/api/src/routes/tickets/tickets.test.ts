@@ -139,7 +139,7 @@ vi.mock('../../db/schema', () => ({
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
   ticketCategories: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId', id: 'id', linkType: 'linkType' },
-  alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status' },
+  alerts: { id: 'id', title: 'title', severity: 'severity', status: 'status', deviceId: 'deviceId' },
   devices: { id: 'id', hostname: 'hostname', orgId: 'orgId', siteId: 'siteId' },
   organizations: { id: 'id', name: 'name' },
   users: { id: 'id', name: 'name' }
@@ -608,7 +608,9 @@ describe('POST /tickets/:id/alerts', () => {
 
   it('calls linkAlertToTicket and returns 201', async () => {
     const ALERT_ID = '4f3f2e9f-2222-4333-9444-555566667777';
-    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET])          // ticket fetch
+      .mockResolvedValueOnce([{ deviceId: null }]);  // alert row (site gate)
     serviceMocks.linkAlertToTicket.mockResolvedValue({ id: 'link-1', ticketId: TICKET_ID, alertId: ALERT_ID });
 
     const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
@@ -643,7 +645,9 @@ describe('DELETE /tickets/:id/alerts/:alertId', () => {
   const ALERT_ID = '4f3f2e9f-2222-4333-9444-555566667777';
 
   it('calls unlinkAlertFromTicket and returns 200', async () => {
-    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET])          // ticket fetch
+      .mockResolvedValueOnce([{ deviceId: null }]);  // alert row (site gate)
     serviceMocks.unlinkAlertFromTicket.mockResolvedValue({ ticketId: TICKET_ID, alertId: ALERT_ID });
 
     const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts/${ALERT_ID}`, {
@@ -1093,6 +1097,94 @@ describe('site-axis scoping — per-ticket routes', () => {
     const body = await res.json();
     expect(body.data).toEqual({ updated: 0, skipped: 1, failed: 0, skippedReasons: { OUT_OF_SCOPE: 1 }, total: 1 });
     expect(serviceMocks.changeTicketStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('site-axis scoping — alert-link routes gate on the ALERT device', () => {
+  const SITE_AUTH = {
+    ...DEFAULT_AUTH,
+    scope: 'organization' as string,
+    orgId: 'org-1' as string | null,
+    partnerId: null as string | null,
+    allowedSiteIds: ['site-1']
+  };
+  const ALERT_ID = '4f3f2e9f-2222-4333-9444-555566667777';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = SITE_AUTH as typeof authRef.current;
+  });
+
+  it('POST /tickets/:id/alerts returns 404 when the alert device is outside the caller site scope', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch (deviceless, in scope)
+      .mockResolvedValueOnce([{ deviceId: 'd-2' }])                                // alert row
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                          // alert device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertId: ALERT_ID })
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toHaveProperty('error', 'Alert not found');
+    expect(serviceMocks.linkAlertToTicket).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /tickets/:id/alerts/:alertId applies the same gate', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch (deviceless, in scope)
+      .mockResolvedValueOnce([{ deviceId: 'd-2' }])                                // alert row
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                          // alert device fetch
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts/${ALERT_ID}`, {
+      method: 'DELETE'
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toHaveProperty('error', 'Alert not found');
+    expect(serviceMocks.unlinkAlertFromTicket).not.toHaveBeenCalled();
+  });
+
+  it('alert links for in-site devices still work for restricted users', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch (deviceless, in scope)
+      .mockResolvedValueOnce([{ deviceId: 'd-2' }])                                // alert row
+      .mockResolvedValueOnce([{ siteId: 'site-1' }]);                              // alert device fetch (allowed)
+    serviceMocks.linkAlertToTicket.mockResolvedValue({ id: 'link-1', ticketId: TICKET_ID, alertId: ALERT_ID });
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertId: ALERT_ID })
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.linkAlertToTicket).toHaveBeenCalledWith(
+      TICKET_ID, ALERT_ID, expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('deviceless alerts stay linkable for restricted users (no device lookup)', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch
+      .mockResolvedValueOnce([{ deviceId: null }]);                                // alert row (deviceless)
+    serviceMocks.linkAlertToTicket.mockResolvedValue({ id: 'link-1', ticketId: TICKET_ID, alertId: ALERT_ID });
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertId: ALERT_ID })
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('a nonexistent alert row 404s before the service call', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch
+      .mockResolvedValueOnce([]);                                                  // alert row: missing
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertId: ALERT_ID })
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toHaveProperty('error', 'Alert not found');
+    expect(serviceMocks.linkAlertToTicket).not.toHaveBeenCalled();
   });
 });
 
