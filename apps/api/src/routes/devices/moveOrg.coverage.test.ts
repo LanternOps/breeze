@@ -3,6 +3,7 @@ import { getTableName } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 import * as schema from '../../db/schema';
 import {
+  CUSTOM_ORG_REWRITE_TABLES,
   DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_ORG_DENORMALIZED_TABLES,
@@ -118,6 +119,82 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
       `These tables are in DEVICE_ORG_DENORMALIZED_TABLES but missing from both ` +
         `DEVICE_CASCADE_DELETE_TABLES and DEVICE_DETACH_DEVICE_ID_TABLES.`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * CUSTOM_ORG_REWRITE_TABLES — documented exemption from the generic loop.
+ *
+ * These tables denormalize `org_id` for RLS but have NO `device_id` column,
+ * so the generic DEVICE_ORG_DENORMALIZED_TABLES loop in moveOrg.ts (which
+ * keys on `WHERE device_id = ...`) cannot reach them. Each gets a dedicated,
+ * hand-written UPDATE inside the move-org transaction — e.g.
+ * `ticket_alert_links` is rewritten via its alert_id join to alerts.device_id.
+ *
+ * The dedicated statements are covered by behavior tests in moveOrg.test.ts.
+ * This block only guards the list shape, so a future table can't silently
+ * skip BOTH the generic loop and the custom-rewrite path:
+ *   - it must be disjoint from the generic / device-managed lists (a table
+ *     with a device_id column belongs in the generic loop instead), and
+ *   - every entry must exist in the schema with org_id but without device_id.
+ */
+describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
+  const customSet = new Set<string>(CUSTOM_ORG_REWRITE_TABLES);
+
+  const allTables = Object.values(schema).filter(
+    (v) => v instanceof PgTable,
+  ) as PgTable<any>[];
+  const tableByName = new Map(allTables.map((t) => [getTableName(t), t] as const));
+
+  it('contains ticket_alert_links (the known no-device_id org-denormalized table)', () => {
+    expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_alert_links');
+  });
+
+  it('is disjoint from the generic denorm, device-managed, and intentional-exclusion lists', () => {
+    const overlapping = [
+      ...DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => customSet.has(t)).map(
+        (t) => `${t} (also in DEVICE_ORG_DENORMALIZED_TABLES)`,
+      ),
+      ...DEVICE_CASCADE_DELETE_TABLES.filter((t) => customSet.has(t)).map(
+        (t) => `${t} (also in DEVICE_CASCADE_DELETE_TABLES)`,
+      ),
+      ...DEVICE_DETACH_DEVICE_ID_TABLES.filter((t) => customSet.has(t)).map(
+        (t) => `${t} (also in DEVICE_DETACH_DEVICE_ID_TABLES)`,
+      ),
+      ...[...INTENTIONALLY_NO_ORG_ID].filter((t) => customSet.has(t)).map(
+        (t) => `${t} (also in INTENTIONALLY_NO_ORG_ID)`,
+      ),
+    ];
+    expect(
+      overlapping,
+      `CUSTOM_ORG_REWRITE_TABLES must be disjoint from the generic move-org ` +
+        `lists — a table is rewritten by exactly one path. If the table has a ` +
+        `device_id column it belongs in DEVICE_ORG_DENORMALIZED_TABLES, not here.`,
+    ).toEqual([]);
+  });
+
+  it('only lists tables that exist with an org_id column and WITHOUT a device_id column', () => {
+    const invalid: string[] = [];
+
+    for (const name of CUSTOM_ORG_REWRITE_TABLES) {
+      const table = tableByName.get(name);
+      if (!table) {
+        invalid.push(`${name} (table no longer exists in the schema)`);
+        continue;
+      }
+      const cols = getColumns(table);
+      if (!cols.some((c) => c.name === 'org_id')) {
+        invalid.push(`${name} (has no org_id column — nothing to rewrite)`);
+      }
+      if (cols.some((c) => c.name === 'device_id')) {
+        invalid.push(
+          `${name} (has a device_id column — move it to DEVICE_ORG_DENORMALIZED_TABLES; ` +
+            `the generic loop can reach it)`,
+        );
+      }
+    }
+
+    expect(invalid, `Stale or misplaced entries in CUSTOM_ORG_REWRITE_TABLES (core.ts).`).toEqual([]);
   });
 });
 

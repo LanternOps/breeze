@@ -120,6 +120,22 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
+ * Tables that denormalize `org_id` for RLS but have NO `device_id` column,
+ * so the generic {@link DEVICE_ORG_DENORMALIZED_TABLES} rewrite loop in
+ * moveOrg.ts (which keys on `WHERE device_id = ...`) cannot reach them.
+ * Each table here gets a dedicated, hand-written UPDATE inside the move-org
+ * transaction — e.g. `ticket_alert_links` is rewritten via its alert_id
+ * join to alerts.device_id.
+ *
+ * moveOrg.coverage.test.ts asserts this list is disjoint from the generic
+ * lists (a table with a device_id column belongs there instead) and that
+ * every entry exists with org_id but without device_id, so a future table
+ * can't silently skip both paths. The dedicated statements themselves are
+ * covered by behavior tests in moveOrg.test.ts.
+ */
+export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links'] as const;
+
+/**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
  * EVERY write path that changes devices.site_id must rewrite each row's
  * site_id in the same transaction, or those rows strand under the OLD

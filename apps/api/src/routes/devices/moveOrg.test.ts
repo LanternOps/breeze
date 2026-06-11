@@ -51,7 +51,11 @@ import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { moveOrgRoutes } from './moveOrg';
-import { DEVICE_ORG_DENORMALIZED_TABLES, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
+import {
+  CUSTOM_ORG_REWRITE_TABLES,
+  DEVICE_ORG_DENORMALIZED_TABLES,
+  DEVICE_SITE_DENORMALIZED_TABLES,
+} from './core';
 
 // Snapshot the gate registration BEFORE any `vi.clearAllMocks()` runs.
 // requireScope/requirePermission/requireMfa run at module-import time as the
@@ -126,11 +130,33 @@ function rigOrgAndSiteSelects(opts: {
   });
 }
 
+/**
+ * Flatten a Drizzle sql`` object into readable text. StringChunks carry a
+ * string[] `value`, sql.identifier Names carry a string `value`, nested SQL
+ * (subqueries) carries its own queryChunks, and raw bound params are pushed
+ * as-is (same chunk shapes as documented in cascadeDelete.test.ts).
+ */
+function sqlToText(q: any): string {
+  const chunks = q?.queryChunks ?? [];
+  return chunks
+    .map((ch: any) => {
+      if (ch !== null && typeof ch === 'object') {
+        if (Array.isArray(ch.queryChunks)) return sqlToText(ch);
+        if (Array.isArray(ch.value)) return ch.value.join('');
+        if ('value' in ch) return String(ch.value);
+      }
+      return String(ch);
+    })
+    .join('');
+}
+
 function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE }) {
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
-  // template — Drizzle exposes it as queryChunks[1].value).
+  // template — Drizzle exposes it as queryChunks[1].value) plus the full
+  // flattened statement text for shape assertions.
   const updatedTables: string[] = [];
+  const statements: string[] = [];
   const deviceUpdateSets: any[] = [];
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
@@ -150,13 +176,14 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
         if (tableChunk && typeof tableChunk.value === 'string') {
           updatedTables.push(tableChunk.value);
         }
+        statements.push(sqlToText(sqlVal));
         return [];
       }),
     };
     await cb(tx);
     return updatedRow;
   });
-  return { updatedTables, deviceUpdateSets };
+  return { updatedTables, statements, deviceUpdateSets };
 }
 
 describe('POST /devices/:id/move-org', () => {
@@ -224,11 +251,14 @@ describe('POST /devices/:id/move-org', () => {
       // Every denormalized table got an UPDATE issued in the transaction.
       // This is the unit-test proxy for "RLS will read from the new org
       // only post-move": each row in those tables has its org_id rewritten
-      // to the new org, so RLS in the OLD org no longer matches it. The
-      // SITE loop runs second and any table in DEVICE_SITE_DENORMALIZED_TABLES
+      // to the new org, so RLS in the OLD org no longer matches it.
+      // CUSTOM_ORG_REWRITE_TABLES (ticket_alert_links — no device_id column,
+      // rewritten via the alert join) follow the generic org loop. The SITE
+      // loop runs last and any table in DEVICE_SITE_DENORMALIZED_TABLES
       // appears in updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
         ...DEVICE_ORG_DENORMALIZED_TABLES,
+        ...CUSTOM_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
 
@@ -241,6 +271,39 @@ describe('POST /devices/:id/move-org', () => {
         expect.any(Number),
         expect.stringContaining('different organization'),
       );
+    });
+
+    it('rewrites ticket_alert_links org_id via the alert join inside the transaction', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_alert_links denormalizes org_id for RLS but has NO device_id
+      // column, so the generic DEVICE_ORG_DENORMALIZED_TABLES loop can't
+      // reach it. Without this dedicated rewrite, links for the moved
+      // device's alerts stay under the OLD org's RLS and disappear from the
+      // new org's ticket views (tenant-isolation bug).
+      const linkRewrites = statements.filter((s) => s.startsWith('UPDATE ticket_alert_links '));
+      expect(
+        linkRewrites,
+        `Expected exactly one ticket_alert_links org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_alert_links SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
     });
 
     it('writes device.move_org.failed audit when the transaction rolls back', async () => {
