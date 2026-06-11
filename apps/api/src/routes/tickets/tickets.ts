@@ -95,6 +95,10 @@ export async function getScopedTicketOr404(
  * organization-scope users with a site restriction — everyone else passes.
  * A restricted caller is denied for a device with no site assignment
  * (matches siteAccessCheck semantics in middleware/auth.ts).
+ *
+ * This is a site gate, not an existence check: a nonexistent deviceId is
+ * denied for restricted callers but passes for unrestricted ones — device
+ * existence is enforced in the service layer.
  */
 async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<boolean> {
   if (!auth.allowedSiteIds) return true;
@@ -113,8 +117,9 @@ async function deviceInSiteScope(auth: AuthContext, deviceId: string): Promise<b
  * condition works for the list, count, and stats queries unchanged. Empty
  * allowlist = deviceless tickets only. Returns undefined for unrestricted
  * callers (partner/system scope, or org users without a site restriction).
+ * Exported for direct unit testing of the tri-state contract.
  */
-function ticketSiteScopeCondition(auth: AuthContext): SQL | undefined {
+export function ticketSiteScopeCondition(auth: AuthContext): SQL | undefined {
   const allowed = auth.allowedSiteIds;
   if (!allowed) return undefined;
   if (allowed.length === 0) return isNull(tickets.deviceId);
