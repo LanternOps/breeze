@@ -14,21 +14,37 @@ vi.mock('./ticketService', async () => {
   return { ...actual, ...serviceMocks };
 });
 
-// Mutable handle so individual tests can override the limit() return value.
-// Typed as returning unknown[] so mockResolvedValue(TICKET_ROW) compiles.
-const mockLimit = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
+// Mutable handle so individual tests can override the limit() return value
+// (typed as returning unknown[] so mockResolvedValue(TICKET_ROW) compiles),
+// plus shared spies so the site-scope tests can assert on (a) how many
+// selects a list call issues (the devices IN-subquery is a second select)
+// and (b) the condition the list query hands to .where(). The returned shape
+// supports both the list chain (where → orderBy → limit) and the by-id chain
+// (where → limit). Hoisted because the vi.mock factory references them.
+const { mockLimit, mockWhere, mockSelect } = vi.hoisted(() => {
+  const mockLimit = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
+  const mockWhere = vi.fn((..._args: unknown[]) => ({
+    orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+    limit: mockLimit
+  }));
+  const mockSelect = vi.fn(() => ({
+    from: vi.fn(() => ({ where: mockWhere }))
+  }));
+  return { mockLimit, mockWhere, mockSelect };
+});
 
 vi.mock('../db', () => ({
-  db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
-          limit: mockLimit
-        }))
-      }))
-    }))
-  }
+  db: { select: mockSelect }
+}));
+
+// The REAL routes/tickets/siteScope module is exercised below (the list
+// action must route through ticketSiteScopeCondition), but it imports
+// siteAccessCheck from middleware/auth at module load. ticketSiteScopeCondition
+// never calls it — stub the module so this unit test doesn't drag in the full
+// auth middleware dependency tree (jwt/permissions/token revocation).
+vi.mock('../middleware/auth', () => ({
+  siteAccessCheck: (allowed: string[]) => (siteId?: string | null) =>
+    !!siteId && allowed.includes(siteId)
 }));
 
 vi.mock('../db/schema', async (importOriginal) => {
@@ -71,6 +87,19 @@ const authNoOrg: AuthContext = {
   ...auth,
   canAccessOrg: vi.fn(() => false),
 };
+
+// Site-restricted org-scope caller (mirrors makeAuth in the sibling
+// aiTools*.siteScope.test.ts files).
+function makeSiteAuth(allowedSiteIds?: string[]): AuthContext {
+  return {
+    ...auth,
+    scope: 'organization',
+    partnerId: null,
+    orgId: 'o-1',
+    allowedSiteIds,
+    canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
+  };
+}
 
 const TICKET_ROW = [{ id: 't-1', orgId: 'o-1', subject: 'Disk full', status: 'open', priority: 'normal' }];
 
@@ -270,6 +299,51 @@ describe('manage_tickets tool', () => {
     expect(parsed).toHaveProperty('error');
     expect(parsed.error).toMatch(/orgId is required/i);
     expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+});
+
+// ── list — site-axis scoping ──────────────────────────────────────────────
+//
+// The list action must mirror the HTTP list route (routes/tickets/tickets.ts)
+// and apply ticketSiteScopeCondition, so a site-restricted caller cannot read
+// device-bound tickets outside their allowed sites. These tests exercise the
+// REAL siteScope module (not a mock) and assert on the condition handed to
+// the list query's .where(); the semantic shape of the condition itself is
+// pinned by the tri-state contract tests in routes/tickets/tickets.test.ts.
+describe('manage_tickets list — site-axis scoping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue([]);
+  });
+
+  it('applies the site condition (devices IN-subquery) for a site-restricted caller', async () => {
+    const out = await getTool().handler({ action: 'list' }, makeSiteAuth(['site-1']));
+    expect(JSON.parse(out)).toHaveProperty('tickets');
+    // The site allowlist builds a devices subquery — plus the list query itself.
+    expect(mockSelect).toHaveBeenCalledTimes(2);
+    // With no org/status/device filters and orgCondition undefined, the ONLY
+    // possible condition is the site-axis one. Pre-fix the list query ran
+    // with where(undefined), returning every org ticket to a site-restricted
+    // caller.
+    const whereArg = mockWhere.mock.calls.at(-1)?.[0];
+    expect(whereArg).toBeDefined();
+  });
+
+  it('restricts an empty allowlist to deviceless tickets only', async () => {
+    await getTool().handler({ action: 'list' }, makeSiteAuth([]));
+    // Empty allowlist short-circuits to isNull(tickets.deviceId) — no devices
+    // subquery is built, just the list query itself.
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    const whereArg = mockWhere.mock.calls.at(-1)?.[0];
+    expect(whereArg).toBeDefined();
+    expect(JSON.stringify(whereArg)).toContain('is null');
+  });
+
+  it("leaves an unrestricted caller's list unchanged (no site condition)", async () => {
+    const out = await getTool().handler({ action: 'list' }, auth);
+    expect(JSON.parse(out)).toHaveProperty('tickets');
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    expect(mockWhere.mock.calls.at(-1)?.[0]).toBeUndefined();
   });
 });
 

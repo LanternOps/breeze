@@ -10,6 +10,7 @@ import { and, desc, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
   createTicket,
@@ -117,6 +118,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [];
         const orgCond = auth.orgCondition(tickets.orgId);
         if (orgCond) conditions.push(orgCond);
+        // Site axis: mirror the HTTP list route (routes/tickets/tickets.ts) —
+        // a site-restricted caller must not see device-bound tickets outside
+        // their allowed sites (deviceless org-level tickets stay visible).
+        const siteCondition = ticketSiteScopeCondition(auth);
+        if (siteCondition) conditions.push(siteCondition);
         if (input.orgId) conditions.push(eq(tickets.orgId, input.orgId as string));
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));
