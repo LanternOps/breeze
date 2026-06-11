@@ -1112,4 +1112,67 @@ describe('changeTicketStatus — SLA pause/resume (D4)', () => {
     expect(updatePayload).not.toHaveProperty('slaPausedAt');
     expect(updatePayload).not.toHaveProperty('slaPausedMinutes');
   });
+
+  it('leaving pending with slaPausedAt: null (anomalous legacy row) clears slaPausedAt and does not set slaPausedMinutes', async () => {
+    const now = new Date('2026-06-11T10:00:00Z');
+    vi.setSystemTime(now);
+
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      status: 'pending',
+      slaPausedAt: null,
+      slaPausedMinutes: 10,
+      resolvedAt: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'open', {}, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.slaPausedAt).toBeNull();
+    expect(updatePayload).not.toHaveProperty('slaPausedMinutes');
+  });
+
+  it('pending -> on_hold touches neither pause field', async () => {
+    const now = new Date('2026-06-11T11:00:00Z');
+    vi.setSystemTime(now);
+    const pausedAt = new Date('2026-06-11T10:00:00Z'); // 60 minutes ago
+
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      status: 'pending',
+      slaPausedAt: pausedAt,
+      slaPausedMinutes: 5
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'on_hold' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'on_hold', {}, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).not.toHaveProperty('slaPausedAt');
+    expect(updatePayload).not.toHaveProperty('slaPausedMinutes');
+  });
+
+  it('floor boundary: 90 seconds paused yields slaPausedMinutes: 1 (floor of 1.5)', async () => {
+    const now = new Date('2026-06-11T10:01:30Z');
+    vi.setSystemTime(now);
+    const pausedAt = new Date('2026-06-11T10:00:00Z'); // 90 seconds ago
+
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      status: 'on_hold',
+      slaPausedAt: pausedAt,
+      slaPausedMinutes: 0
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', 'open', {}, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.slaPausedAt).toBeNull();
+    expect(updatePayload.slaPausedMinutes).toBe(1); // floor(1.5) = 1
+  });
 });

@@ -334,7 +334,7 @@ export async function changeTicketStatus(
     patch.slaPausedAt = now;
   } else if (wasPaused && !willBePaused) {
     if (ticket.slaPausedAt) {
-      const elapsedMinutes = Math.max(0, Math.round((now.getTime() - new Date(ticket.slaPausedAt).getTime()) / 60_000));
+      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(ticket.slaPausedAt).getTime()) / 60_000));
       patch.slaPausedMinutes = (ticket.slaPausedMinutes ?? 0) + elapsedMinutes;
     }
     patch.slaPausedAt = null;
