@@ -56,7 +56,11 @@ vi.mock('../db', () => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           orderBy: vi.fn(() => dbSelectResult()),
-          limit: vi.fn(() => dbSelectResult())
+          limit: vi.fn(() => dbSelectResult()),
+          // The reorder route awaits where() directly (no orderBy/limit) —
+          // make the chain object thenable so `await db.select()...where(...)` works.
+          then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+            Promise.resolve(dbSelectResult()).then(resolve, reject)
         })),
         orderBy: vi.fn(() => dbSelectResult())
       }))
@@ -500,5 +504,86 @@ describe('authMiddleware wiring', () => {
     expect(res.status).toBe(200);
     const { authMiddleware } = await import('../middleware/auth');
     expect(authMiddleware).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PUT /ticket-categories/reorder', () => {
+  const ID_A = 'aaaaaaaa-1111-4222-8333-444455556666';
+  const ID_B = 'bbbbbbbb-1111-4222-8333-444455556666';
+  const ID_C = 'cccccccc-1111-4222-8333-444455556666';
+
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  const reorder = (body: unknown) =>
+    makeApp().request('/ticket-categories/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+  it('assigns sortOrder by array position', async () => {
+    dbSelectResult.mockResolvedValueOnce([
+      { id: ID_A, partnerId: 'p-1' },
+      { id: ID_B, partnerId: 'p-1' },
+      { id: ID_C, partnerId: 'p-1' }
+    ]);
+    const res = await reorder({ ids: [ID_B, ID_A, ID_C] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toHaveProperty('success', true);
+
+    const { db } = await import('../db');
+    const updates = vi.mocked(db.update).mock.results;
+    expect(updates).toHaveLength(3);
+    expect(updates[0]?.value.set.mock.calls[0]?.[0].sortOrder).toBe(0);
+    expect(updates[1]?.value.set.mock.calls[0]?.[0].sortOrder).toBe(1);
+    expect(updates[2]?.value.set.mock.calls[0]?.[0].sortOrder).toBe(2);
+  });
+
+  it('404 wholesale when any id belongs to another partner — no updates run', async () => {
+    dbSelectResult.mockResolvedValueOnce([
+      { id: ID_A, partnerId: 'p-1' },
+      { id: ID_B, partnerId: 'p-OTHER' }
+    ]);
+    const res = await reorder({ ids: [ID_A, ID_B] });
+    expect(res.status).toBe(404);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('404 when an id does not exist (fewer rows than ids)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ID_A, partnerId: 'p-1' }]);
+    const res = await reorder({ ids: [ID_A, ID_B] });
+    expect(res.status).toBe(404);
+  });
+
+  it('400 on duplicate ids', async () => {
+    expect((await reorder({ ids: [ID_A, ID_A] })).status).toBe(400);
+  });
+
+  it('400 on an empty array', async () => {
+    expect((await reorder({ ids: [] })).status).toBe(400);
+  });
+
+  it('403 when partner scope has null partnerId', async () => {
+    resetAuth({ scope: 'partner', partnerId: null });
+    expect((await reorder({ ids: [ID_A] })).status).toBe(403);
+  });
+
+  it('system scope: accepts ids that all share one partner', async () => {
+    resetAuth({ scope: 'system', partnerId: null });
+    dbSelectResult.mockResolvedValueOnce([
+      { id: ID_A, partnerId: 'p-2' },
+      { id: ID_B, partnerId: 'p-2' }
+    ]);
+    expect((await reorder({ ids: [ID_A, ID_B] })).status).toBe(200);
+  });
+
+  it('system scope: rejects ids spanning two partners', async () => {
+    resetAuth({ scope: 'system', partnerId: null });
+    dbSelectResult.mockResolvedValueOnce([
+      { id: ID_A, partnerId: 'p-1' },
+      { id: ID_B, partnerId: 'p-2' }
+    ]);
+    expect((await reorder({ ids: [ID_A, ID_B] })).status).toBe(404);
   });
 });
