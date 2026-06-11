@@ -27,6 +27,9 @@ ENV NODE_ENV=production
 ARG APP_VERSION=0.2.0
 ENV APP_VERSION=${APP_VERSION}
 
+# CVE-2026-45447: pinned base ships libcrypto3/libssl3 3.5.6; drop once the
+# node:24-alpine digest is refreshed past 3.5.7
+RUN apk upgrade --no-cache libcrypto3 libssl3
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 hono
