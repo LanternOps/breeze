@@ -84,7 +84,7 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
 
       <p className="text-xs text-muted-foreground">
         When enabled, all child organizations will ship event logs to the configured endpoint. Works with any
-        Elasticsearch/OpenSearch-compatible <code>_bulk</code> store (Elasticsearch, OpenSearch, Wazuh indexer, Graylog).
+        Elasticsearch/OpenSearch-compatible <code>_bulk</code> store (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service).
         Leave disabled to let each organization configure individually.
       </p>
     </div>

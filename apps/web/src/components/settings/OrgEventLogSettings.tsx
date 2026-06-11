@@ -140,7 +140,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
               Forward collected event logs to an external Elasticsearch- or OpenSearch-compatible store
-              (Elasticsearch, OpenSearch, Wazuh indexer, Graylog) for long-term storage and analysis.
+              (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service) for long-term storage and analysis.
             </p>
           </div>
           <button

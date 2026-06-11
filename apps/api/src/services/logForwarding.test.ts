@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db', () => ({ db: {} }));
 vi.mock('../db/schema', () => ({ organizations: {} }));
 vi.mock('./secretCrypto', () => ({ decryptForColumn: (_t: string, _c: string, v: unknown) => v }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { bulkIndexToEndpoint } from './logForwarding';
 
@@ -111,7 +112,8 @@ describe('bulkIndexToEndpoint', () => {
     expect(result).toEqual({ indexed: 1, errors: 1 });
   });
 
-  it('treats a non-2xx HTTP response as a full-batch failure', async () => {
+  it('drops the batch (no throw) on a terminal 4xx so BullMQ does not retry a poison batch', async () => {
+    // 401/403/400 are misconfiguration — retrying every batch 5x won't help.
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
@@ -122,6 +124,52 @@ describe('bulkIndexToEndpoint', () => {
     const result = await bulkIndexToEndpoint(baseConfig, [event, event]);
 
     expect(result).toEqual({ indexed: 0, errors: 2 });
+  });
+
+  it('throws on a 429 so the worker retries with backoff', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => 'too many requests',
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(bulkIndexToEndpoint(baseConfig, [event])).rejects.toThrow(/429/);
+  });
+
+  it('throws on a 5xx so the worker retries with backoff', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => 'service unavailable',
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(bulkIndexToEndpoint(baseConfig, [event])).rejects.toThrow(/503/);
+  });
+
+  it('propagates a fetch rejection (network/DNS/TLS error) so the worker retries', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(bulkIndexToEndpoint(baseConfig, [event])).rejects.toThrow('ECONNREFUSED');
+  });
+
+  it('treats a 2xx response with a non-JSON body as indexed (server accepted it)', async () => {
+    // Some compatible sinks/proxies 200 with an empty or plain-text ack body.
+    // Hard-failing here would retry and risk duplicate indexing.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+    } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await bulkIndexToEndpoint(baseConfig, [event, event]);
+
+    expect(result).toEqual({ indexed: 2, errors: 0 });
   });
 
   it('does not call fetch for an empty event batch', async () => {
