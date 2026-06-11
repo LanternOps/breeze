@@ -10,6 +10,8 @@ import {
   notificationChannels,
   alertNotifications,
   devices,
+  tickets,
+  ticketAlertLinks,
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
@@ -692,5 +694,39 @@ alertsRoutes.post(
       if (err instanceof TicketServiceError) return c.json({ error: err.message }, err.status);
       throw err;
     }
+  }
+);
+
+// GET /alerts/:id/tickets — tickets linked to this alert via ticket_alert_links
+alertsRoutes.get(
+  '/:id/tickets',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('param', alertIdParamSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const auth = c.get('auth');
+
+    const alert = await getAlertWithOrgCheck(id, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
+    const data = await db
+      .select({
+        id: tickets.id,
+        internalNumber: tickets.internalNumber,
+        subject: tickets.subject,
+        status: tickets.status,
+        priority: tickets.priority,
+        linkType: ticketAlertLinks.linkType,
+        linkedAt: ticketAlertLinks.createdAt
+      })
+      .from(ticketAlertLinks)
+      .innerJoin(tickets, eq(ticketAlertLinks.ticketId, tickets.id))
+      .where(eq(ticketAlertLinks.alertId, id))
+      .orderBy(desc(ticketAlertLinks.createdAt));
+
+    return c.json({ data });
   }
 );
