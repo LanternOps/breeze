@@ -3,7 +3,6 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
-import { showToast } from '../shared/Toast';
 import { type ElevationRequest, requestTarget } from './types';
 
 export default function PamRevokeModal({
@@ -42,7 +41,8 @@ export default function PamRevokeModal({
       if (err instanceof ActionError) {
         if (err.status === 401) return;
         if (err.status === 409) {
-          showToast({ type: 'success', message: 'Elevation already ended — refreshing.' });
+          // Already ended (race with expiry/another admin). runAction already
+          // toasted the server message — just refresh the list, no extra toast.
           onActioned();
           return;
         }

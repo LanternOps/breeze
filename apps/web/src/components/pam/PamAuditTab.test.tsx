@@ -56,6 +56,8 @@ describe('PamAuditTab', () => {
       expect(screen.getByTestId('pam-audit-row-aud-1')).toBeInTheDocument();
     });
     expect(screen.getByText('run_script')).toBeInTheDocument();
+    // ai_tool_action rows carry a risk tier badge next to the target.
+    expect(screen.getByTestId('pam-audit-risk-tier-aud-1')).toHaveTextContent('T2');
   });
 
   it('refetches with a status filter applied', async () => {

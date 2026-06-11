@@ -50,11 +50,17 @@ test.describe('pam admin', () => {
     await pam.ruleSubmit().click();
 
     await expect(pam.ruleRows()).toHaveCount(before + 1, { timeout: 15_000 });
-    await expect(cleanPage.getByText(ruleName)).toBeVisible();
 
-    // Delete it again to leave the environment clean.
-    const row = cleanPage.locator('[data-testid^="pam-rule-row-"]', { hasText: ruleName });
-    await row.locator('[data-testid^="pam-rule-delete-"]').click();
+    // Resolve the new row's id via the pam-rule-name-<id> testid cells
+    // (data-testid-only rule: no text/hasText locators).
+    const ruleId = await pam.ruleIdByName(ruleName);
+    expect(ruleId).not.toBeNull();
+    await expect(pam.ruleRow(ruleId!)).toBeVisible();
+
+    // Delete it again to leave the environment clean (delete is confirm-gated).
+    await pam.ruleDeleteButton(ruleId!).click();
+    await pam.ruleDeleteConfirmButton().waitFor();
+    await pam.ruleDeleteConfirmButton().click();
     await expect(pam.ruleRows()).toHaveCount(before, { timeout: 15_000 });
   });
 });

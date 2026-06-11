@@ -150,6 +150,38 @@ describe('PamRulesTab', () => {
     expect(bodyOf(findMutationCall('/pam/rules/rule-1', 'PATCH'))).toEqual({ enabled: false });
   });
 
+  it('gates rule deletion behind a confirm dialog', async () => {
+    installFetchRoutes({ rules: [signedRule] });
+    render(<PamRulesTab />);
+    await waitFor(() => screen.getByTestId('pam-rule-delete-rule-1'));
+
+    // First click opens the confirm dialog — no DELETE goes out yet.
+    fireEvent.click(screen.getByTestId('pam-rule-delete-rule-1'));
+    await waitFor(() => screen.getByTestId('pam-rule-delete-confirm'));
+    expect(findMutationCall('/pam/rules/rule-1', 'DELETE')).toBeUndefined();
+
+    // Confirming fires the DELETE.
+    fireEvent.click(screen.getByTestId('pam-rule-delete-confirm'));
+    await waitFor(() => {
+      expect(findMutationCall('/pam/rules/rule-1', 'DELETE')).toBeDefined();
+    });
+  });
+
+  it('does not DELETE when the confirm dialog is cancelled', async () => {
+    installFetchRoutes({ rules: [signedRule] });
+    render(<PamRulesTab />);
+    await waitFor(() => screen.getByTestId('pam-rule-delete-rule-1'));
+
+    fireEvent.click(screen.getByTestId('pam-rule-delete-rule-1'));
+    await waitFor(() => screen.getByTestId('pam-rule-delete-confirm'));
+    fireEvent.click(screen.getByText('Cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('pam-rule-delete-confirm')).toBeNull();
+    });
+    expect(findMutationCall('/pam/rules/rule-1', 'DELETE')).toBeUndefined();
+  });
+
   it('creates a rule through the modal, sending a clean executable-shaped payload', async () => {
     installFetchRoutes({ rules: [] });
     render(<PamRulesTab />);

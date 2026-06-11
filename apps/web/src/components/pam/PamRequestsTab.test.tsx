@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRequestsTab from './PamRequestsTab';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
 import type { ElevationRequest } from './types';
 
 vi.mock('../../stores/auth', () => ({
@@ -19,6 +20,7 @@ vi.mock('@/lib/navigation', () => ({
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
+const navigateToMock = vi.mocked(navigateTo);
 
 function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
   return {
@@ -111,7 +113,7 @@ describe('PamRequestsTab', () => {
     });
   });
 
-  it('treats a 409 respond as already-actioned and refetches gracefully', async () => {
+  it('treats a 409 respond as already-actioned: refetches with only the runAction error toast', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(listResponse([pendingRequest]))
       .mockResolvedValueOnce(
@@ -124,10 +126,91 @@ describe('PamRequestsTab', () => {
     fireEvent.click(screen.getByTestId('pam-respond-btn-req-1'));
     fireEvent.click(screen.getByTestId('pam-respond-submit'));
 
+    // runAction surfaces the server message as the single piece of feedback…
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith(
-        expect.objectContaining({ message: expect.stringContaining('already actioned') }),
+        expect.objectContaining({ type: 'error', message: 'Request is not pending' }),
       );
+    });
+    // …and the modal must NOT stack a contradictory success toast on top.
+    expect(showToastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+    // The list is still refetched (initial load + respond + refetch).
+    await waitFor(() => {
+      expect(fetchWithAuthMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+  });
+
+  it('shows a risk tier badge for ai_tool_action rows and not for executable rows', async () => {
+    const toolRequest: ElevationRequest = {
+      ...pendingRequest,
+      id: 'req-9',
+      flowType: 'ai_tool_action',
+      toolName: 'run_script',
+      riskTier: 2,
+      targetExecutablePath: null,
+    };
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([pendingRequest, toolRequest]));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-9'));
+    expect(screen.getByTestId('pam-risk-tier-req-9')).toHaveTextContent('T2');
+    expect(screen.queryByTestId('pam-risk-tier-req-1')).toBeNull();
+  });
+
+  it('fetches page=2 on Next and updates the footer range', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      const requestedPage = Number(
+        new URLSearchParams(String(url).split('?')[1] ?? '').get('page') ?? '1',
+      );
+      return listResponseAt(requestedPage);
+    });
+    function listResponseAt(page: number): Response {
+      return makeJsonResponse({
+        success: true,
+        requests: [{ ...pendingRequest, id: `req-p${page}` }],
+        pagination: { page, limit: 50, total: 80 },
+      });
+    }
+
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => {
+      expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => {
+      expect(
+        fetchWithAuthMock.mock.calls.some((c) => String(c[0]).includes('page=2')),
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+    });
+  });
+
+  it('redirects to /login when the list fetch returns 401', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({}, false, 401));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => {
+      expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+    });
+  });
+
+  it('refetches with flowType=ai_tool_action when the flow filter changes', async () => {
+    fetchWithAuthMock.mockResolvedValue(listResponse([]));
+    render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-filter-flow'));
+    fireEvent.change(screen.getByTestId('pam-filter-flow'), {
+      target: { value: 'ai_tool_action' },
+    });
+    await waitFor(() => {
+      expect(
+        fetchWithAuthMock.mock.calls.some((c) =>
+          String(c[0]).includes('flowType=ai_tool_action'),
+        ),
+      ).toBe(true);
     });
   });
 

@@ -170,8 +170,23 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                     <td className="px-3 py-2">{r.deviceHostname ?? r.deviceId}</td>
                     <td className="px-3 py-2">{r.subjectUsername}</td>
                     <td className="max-w-[260px] px-3 py-2">
-                      <div className="truncate" title={requestTarget(r)}>
-                        {requestTarget(r)}
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate" title={requestTarget(r)}>
+                          {requestTarget(r)}
+                        </span>
+                        {r.flowType === 'ai_tool_action' && r.riskTier != null && (
+                          <span
+                            data-testid={`pam-risk-tier-${r.id}`}
+                            title={`Risk tier ${r.riskTier}`}
+                            className={`inline-flex shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${
+                              r.riskTier >= 3
+                                ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                                : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            }`}
+                          >
+                            T{r.riskTier}
+                          </span>
+                        )}
                       </div>
                       {r.reason && (
                         <div className="mt-0.5 truncate text-xs text-muted-foreground" title={r.reason}>

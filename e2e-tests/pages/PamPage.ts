@@ -24,5 +24,25 @@ export class PamPage {
   ruleVerdict = () => this.page.getByTestId('pam-rule-verdict');
   ruleSubmit = () => this.page.getByTestId('pam-rule-submit');
   ruleRows = () => this.page.locator('[data-testid^="pam-rule-row-"]');
-  ruleDeleteButtons = () => this.page.locator('[data-testid^="pam-rule-delete-"]');
+  ruleRow = (id: string) => this.page.getByTestId(`pam-rule-row-${id}`);
+  ruleNameCells = () => this.page.locator('[data-testid^="pam-rule-name-"]');
+  ruleDeleteButton = (id: string) => this.page.getByTestId(`pam-rule-delete-${id}`);
+  ruleDeleteConfirmButton = () => this.page.getByTestId('pam-rule-delete-confirm');
+
+  /**
+   * Resolve a rule's id from its (unique) name without text-based locators:
+   * walk the `pam-rule-name-<id>` testid cells and compare textContent.
+   */
+  async ruleIdByName(name: string): Promise<string | null> {
+    const cells = this.ruleNameCells();
+    const count = await cells.count();
+    for (let i = 0; i < count; i++) {
+      const cell = cells.nth(i);
+      if ((await cell.textContent())?.trim() === name) {
+        const testId = await cell.getAttribute('data-testid');
+        return testId ? testId.replace('pam-rule-name-', '') : null;
+      }
+    }
+    return null;
+  }
 }

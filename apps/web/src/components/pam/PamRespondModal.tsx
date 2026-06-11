@@ -3,7 +3,6 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
-import { showToast } from '../shared/Toast';
 import { type ElevationRequest, FLOW_LABELS, requestTarget } from './types';
 
 export default function PamRespondModal({
@@ -52,8 +51,9 @@ export default function PamRespondModal({
       if (err instanceof ActionError) {
         if (err.status === 401) return;
         if (err.status === 409) {
-          // CAS race: someone else (or a reaper) actioned it first.
-          showToast({ type: 'success', message: 'Request was already actioned — refreshing.' });
+          // CAS race: someone else (or a reaper) actioned it first. runAction
+          // already toasted the server message (e.g. "Request is not pending")
+          // — just refresh the list, no extra toast.
           onActioned();
           return;
         }

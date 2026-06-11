@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import PamRuleModal from './PamRuleModal';
 import { type PamRule, VERDICT_LABELS } from './types';
 
@@ -28,6 +29,8 @@ export default function PamRulesTab() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<PamRule | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<PamRule | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // siteId → name, resolved once for the Scope column (GET /pam/rules returns
   // only siteId; no per-row lookups).
   const [siteNames, setSiteNames] = useState<Record<string, string>>({});
@@ -94,7 +97,10 @@ export default function PamRulesTab() {
     }
   };
 
-  const deleteRule = async (rule: PamRule) => {
+  const confirmDeleteRule = async () => {
+    if (!deleteTarget || deleting) return;
+    const rule = deleteTarget;
+    setDeleting(true);
     try {
       await runAction({
         request: () => fetchWithAuth(`/pam/rules/${rule.id}`, { method: 'DELETE' }),
@@ -108,6 +114,9 @@ export default function PamRulesTab() {
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: 'Failed to delete rule' });
       }
+    } finally {
+      setDeleting(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -169,7 +178,9 @@ export default function PamRulesTab() {
                 <tr key={rule.id} className="border-b last:border-0" data-testid={`pam-rule-row-${rule.id}`}>
                   <td className="px-3 py-2 text-muted-foreground">{rule.priority}</td>
                   <td className="px-3 py-2">
-                    <div className="font-medium">{rule.name}</div>
+                    <div className="font-medium" data-testid={`pam-rule-name-${rule.id}`}>
+                      {rule.name}
+                    </div>
                     {rule.description && (
                       <div className="mt-0.5 max-w-[240px] truncate text-xs text-muted-foreground" title={rule.description}>
                         {rule.description}
@@ -215,7 +226,7 @@ export default function PamRulesTab() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void deleteRule(rule)}
+                      onClick={() => setDeleteTarget(rule)}
                       data-testid={`pam-rule-delete-${rule.id}`}
                       className="ml-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
@@ -228,6 +239,18 @@ export default function PamRulesTab() {
           </table>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void confirmDeleteRule()}
+        title="Delete PAM rule"
+        message={`Delete rule "${deleteTarget?.name ?? ''}"? Elevation requests will no longer match it.`}
+        confirmLabel="Delete rule"
+        variant="destructive"
+        isLoading={deleting}
+        confirmTestId="pam-rule-delete-confirm"
+      />
 
       {(creating || editing) && (
         <PamRuleModal

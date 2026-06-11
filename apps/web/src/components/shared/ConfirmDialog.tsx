@@ -10,6 +10,8 @@ export interface ConfirmDialogProps {
   confirmLabel?: string;
   variant?: 'destructive' | 'warning';
   isLoading?: boolean;
+  /** data-testid for the confirm button (e2e suites are testid-only). */
+  confirmTestId?: string;
 }
 
 export function ConfirmDialog({
@@ -21,6 +23,7 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   variant = 'destructive',
   isLoading = false,
+  confirmTestId,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onClose={onClose} title={title} maxWidth="md" className="p-6">
@@ -54,6 +57,7 @@ export function ConfirmDialog({
           type="button"
           onClick={onConfirm}
           disabled={isLoading}
+          data-testid={confirmTestId}
           className={`rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
             variant === 'destructive'
               ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
