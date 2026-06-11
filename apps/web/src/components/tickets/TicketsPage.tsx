@@ -9,7 +9,7 @@ import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketWorkbench from './TicketWorkbench';
 import { useQueueKeyboard } from './useQueueKeyboard';
-import { priorityConfig, statusConfig, slaState, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+import { priorityConfig, statusConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 
 // Human-readable labels for bulk-skip reason codes returned by POST /tickets/bulk.
 const SKIP_REASON_LABELS: Record<string, string> = {
@@ -43,7 +43,9 @@ function tabQuery(tab: Tab): string {
     case 'mine': return 'statusGroup=open&assignee=me';
     case 'unassigned': return 'statusGroup=open&assignee=unassigned';
     case 'open': return 'statusGroup=open';
-    case 'breaching': return 'statusGroup=open'; // client-filters to at-risk/breached below
+    // Server-defined: breached ∪ at-risk (pause-aware — paused clocks are frozen, so
+    // paused tickets are intentionally excluded). Rows arrive pre-filtered.
+    case 'breaching': return 'statusGroup=open&slaState=breaching';
     case 'closed': return 'statusGroup=closed&sort=newest';
   }
 }
@@ -65,7 +67,7 @@ export default function TicketsPage() {
   const [resolveToken, setResolveToken] = useState(0);
   const [paneRefresh, setPaneRefresh] = useState(0);
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
-  const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number } | null>(null);
+  const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number; atRisk?: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [selectedNumber, setSelectedNumber] = useState<string | null>(selectionFromHash);
@@ -187,25 +189,20 @@ export default function TicketsPage() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  const visible = useMemo(() => {
-    if (tab !== 'breaching') return tickets;
-    return tickets.filter((t) => ['at-risk', 'breached'].includes(slaState(t).kind));
-  }, [tickets, tab]);
-
   const selected = useMemo(
-    () => visible.find((t) => t.internalNumber === selectedNumber || t.id === selectedNumber) ?? null,
-    [visible, selectedNumber]
+    () => tickets.find((t) => t.internalNumber === selectedNumber || t.id === selectedNumber) ?? null,
+    [tickets, selectedNumber]
   );
 
   // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
   useEffect(() => {
-    if (!loading && visible.length > 0 && !selected) {
-      const first = visible[0];
+    if (!loading && tickets.length > 0 && !selected) {
+      const first = tickets[0];
       const key = first.internalNumber ?? first.id;
       history.replaceState(null, '', `#${key}`);
       setSelectedNumber(key);
     }
-  }, [loading, visible, selected]);
+  }, [loading, tickets, selected]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -220,11 +217,11 @@ export default function TicketsPage() {
   }, []);
 
   const move = useCallback((delta: 1 | -1) => {
-    if (visible.length === 0) return;
-    const idx = selected ? visible.findIndex((t) => t.id === selected.id) : -1;
-    const next = visible[Math.min(visible.length - 1, Math.max(0, idx + delta))];
+    if (tickets.length === 0) return;
+    const idx = selected ? tickets.findIndex((t) => t.id === selected.id) : -1;
+    const next = tickets[Math.min(tickets.length - 1, Math.max(0, idx + delta))];
     if (next) select(next);
-  }, [visible, selected, select]);
+  }, [tickets, selected, select]);
 
   const assignMe = useCallback(async () => {
     if (!selected) return;
@@ -319,7 +316,9 @@ export default function TicketsPage() {
     if (id === 'mine') return stats.mine;
     if (id === 'unassigned') return stats.unassigned;
     if (id === 'open') return stats.open;
-    // No badge for 'breaching': the server stat counts only breached, but the tab also shows at-risk — no honest count available cheaply.
+    // Matches the tab's server definition (breached ∪ at-risk). Older /tickets/stats
+    // payloads may lack atRisk — treat as 0 rather than hiding the badge.
+    if (id === 'breaching') return stats.breached + (stats.atRisk ?? 0);
     return null;
   };
 
@@ -450,7 +449,7 @@ export default function TicketsPage() {
           <div className="relative flex w-full flex-col min-[1100px]:w-2/5 min-[1100px]:min-w-[320px] min-[1100px]:max-w-[480px] min-[1100px]:border-r">
             <div className="min-h-0 flex-1 overflow-y-auto">
               <TicketQueueList
-                tickets={visible}
+                tickets={tickets}
                 selectedId={selected?.id ?? null}
                 onSelect={select}
                 loading={loading}
@@ -470,7 +469,7 @@ export default function TicketsPage() {
                   <span className="text-sm font-medium tabular-nums">{bulkSelectedIds.size} selected</span>
                   <button
                     type="button"
-                    onClick={() => setBulkSelectedIds(new Set(visible.map((t) => t.id)))}
+                    onClick={() => setBulkSelectedIds(new Set(tickets.map((t) => t.id)))}
                     data-testid="tickets-bulk-select-all"
                     className="text-sm text-primary hover:underline"
                   >

@@ -86,7 +86,7 @@ export type SlaState =
   | { kind: 'breached'; minutesAgo: number };
 
 // "Quiet until it matters" — see SlaChip for per-state rendering. At-risk begins at 80% of the target elapsed.
-// Client twin of the server SLA rules (services/ticketSla.ts) — change together.
+// Client twin of the server SLA rules (services/ticketSla.ts and the SQL fragments in routes/tickets/tickets.ts) — change together.
 export function slaState(
   t: Pick<TicketSummary, 'slaBreachedAt' | 'createdAt' | 'status' | 'firstResponseAt'> &
      { resolutionSlaMinutes?: number | null; responseSlaMinutes?: number | null; slaPausedAt?: string | null; slaPausedMinutes?: number | null },

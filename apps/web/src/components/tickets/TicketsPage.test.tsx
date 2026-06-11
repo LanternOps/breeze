@@ -95,11 +95,11 @@ const BULK_RESULT = { data: { updated: 2, skipped: 0, failed: 0, total: 2 } };
 
 function mockListApi(
   tickets: TicketSummary[] | ((url: string) => TicketSummary[]),
-  opts: { usersFail?: boolean; bulkResult?: typeof BULK_RESULT } = {}
+  opts: { usersFail?: boolean; bulkResult?: typeof BULK_RESULT; stats?: unknown } = {}
 ) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
-    if (url === '/tickets/stats') return makeJsonResponse(STATS);
+    if (url === '/tickets/stats') return makeJsonResponse(opts.stats ?? STATS);
     if (url === '/tickets/bulk') return makeJsonResponse(opts.bulkResult ?? BULK_RESULT);
     if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
@@ -130,8 +130,11 @@ describe('TicketsPage', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
   });
 
-  it('breaching tab shows only at-risk and breached tickets', async () => {
-    mockListApi([healthy, atRisk, breached]);
+  it('breaching tab requests slaState=breaching from the API', async () => {
+    // The server owns the breaching definition (breached ∪ at-risk, pause-aware).
+    // Returning the healthy row from the slaState=breaching request proves the
+    // client renders rows as-is, with no client-side slaState filtering.
+    mockListApi((url) => (url.includes('slaState=breaching') ? [healthy, atRisk, breached] : [healthy]));
     render(<TicketsPage />);
 
     await screen.findByTestId('ticket-row-tk-healthy');
@@ -139,10 +142,25 @@ describe('TicketsPage', () => {
     fireEvent.click(screen.getByTestId('tickets-tab-breaching'));
 
     await waitFor(() => {
-      expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull();
+      expect(ticketFetchUrls().at(-1)).toContain('slaState=breaching');
     });
-    expect(screen.getByTestId('ticket-row-tk-risk')).toBeInTheDocument();
+    expect(ticketFetchUrls().at(-1)).toContain('statusGroup=open');
+
+    await screen.findByTestId('ticket-row-tk-risk');
     expect(screen.getByTestId('ticket-row-tk-breach')).toBeInTheDocument();
+    // Server-returned rows render unfiltered — the old client-side slaState() filter is gone.
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toBeInTheDocument();
+  });
+
+  it('breaching tab badge shows breached + atRisk from /tickets/stats', async () => {
+    mockListApi([healthy], { stats: { data: { open: 3, unassigned: 1, mine: 0, breached: 2, atRisk: 3 } } });
+    render(<TicketsPage />);
+
+    await screen.findByTestId('ticket-row-tk-healthy');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tickets-tab-breaching')).toHaveTextContent('5');
+    });
   });
 
   it('renders the error state (not the onboarding empty state) when the list fetch fails', async () => {
