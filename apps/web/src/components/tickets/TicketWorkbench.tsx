@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
 import TicketFeed from './TicketFeed';
 import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
@@ -14,19 +15,25 @@ interface Props {
   onChanged?: () => void;       // queue refresh hook
   expanded?: boolean;            // full-page mode
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
+  refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
 }
 
 const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
 const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
 
-export default function TicketWorkbench({ ticketId, onChanged, expanded, resolveRequestToken }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, expanded, resolveRequestToken, refreshToken }: Props) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<'not-found' | 'load' | undefined>();
   const [resolveOpen, setResolveOpen] = useState(false);
   const [resolutionNote, setResolutionNote] = useState('');
+  const [pendingOpen, setPendingOpen] = useState<'pending' | 'on_hold' | null>(null);
+  const [pendingReason, setPendingReason] = useState('');
   const [railOpen] = useState(true);
+
+  // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
+  const [assignees, setAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -36,7 +43,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       const res = await fetchWithAuth(`/tickets/${ticketId}`);
       if (res.status === 404 || res.status === 403) {
         setTicket(null);
-        setError('Ticket not found. It may have been deleted.');
+        setError('Ticket not found. It may have been deleted, or you may not have access to it.');
         setErrorKind('not-found');
         return;
       }
@@ -53,11 +60,17 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
 
   useEffect(() => { void load(); }, [load]);
 
+  // Bulk actions in the queue mutate tickets behind the pane's back; the parent
+  // bumps refreshToken after a bulk apply so the detail can't go stale.
+  useEffect(() => { if (refreshToken) void load(); }, [refreshToken, load]);
+
   // Reset the inline resolve form when switching tickets — otherwise ticket B
   // could be resolved with ticket A's note (`e` on A, then `j` to B).
   useEffect(() => {
     setResolveOpen(false);
     setResolutionNote('');
+    setPendingOpen(null);
+    setPendingReason('');
   }, [ticketId]);
 
   // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
@@ -65,13 +78,28 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     if (resolveRequestToken) setResolveOpen(true);
   }, [resolveRequestToken]);
 
+  // Fetch assignees once; degrade gracefully if the endpoint is unavailable.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWithAuth('/users')
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled || !body) return;
+        const rows = Array.isArray(body) ? body : (body as { data?: unknown }).data;
+        if (Array.isArray(rows))
+          setAssignees((rows as Array<{ id: string; name: string | null; email: string }>).filter((u) => u.id));
+      })
+      .catch(() => { /* degraded mode keeps the unassign-only affordance */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const mutate = useCallback(async (path: string, body: unknown, success: string) => {
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}${path}`, { method: 'POST', body: JSON.stringify(body) }),
         errorFallback: `${success} failed. Retry.`,
         successMessage: success,
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       await load();
       onChanged?.();
@@ -82,6 +110,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
 
   const onStatusChange = useCallback(async (status: TicketStatus) => {
     if (status === 'resolved') { setResolveOpen(true); return; }
+    if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
     await mutate('/status', { status }, 'Status updated');
   }, [mutate]);
 
@@ -92,11 +121,19 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
     setResolutionNote('');
   }, [mutate, resolutionNote]);
 
+  const submitPending = useCallback(async () => {
+    if (!pendingOpen) return;
+    const reason = pendingReason.trim();
+    await mutate('/status', { status: pendingOpen, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated');
+    setPendingOpen(null);
+    setPendingReason('');
+  }, [mutate, pendingOpen, pendingReason]);
+
   const sendComment = useCallback(async (content: string, isPublic: boolean) => {
     await runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/comments`, { method: 'POST', body: JSON.stringify({ content, isPublic }) }),
       errorFallback: 'Reply failed. Retry.',
-      onUnauthorized: () => void navigateTo('/login', { replace: true })
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
     await load();
     onChanged?.();
@@ -160,7 +197,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               void runAction({
                 request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ priority: e.target.value }) }),
                 errorFallback: 'Priority update failed. Retry.',
-                onUnauthorized: () => void navigateTo('/login', { replace: true })
+                onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
               }).then(() => { void load(); onChanged?.(); }).catch((err) => { if (!(err instanceof ActionError)) throw err; });
             }}
             className={cn('rounded-md border px-2 py-1 text-xs font-medium', priorityConfig[ticket.priority].color)}
@@ -169,14 +206,38 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
           >
             {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{priorityConfig[p].label}</option>)}
           </select>
-          <button
-            type="button"
-            onClick={() => void mutate('/assign', { assigneeId: null }, 'Unassigned')}
-            className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
-            data-testid="ticket-workbench-unassign"
-          >
-            {ticket.assigneeName ? `Assignee: ${ticket.assigneeName} ✕` : 'Unassigned'}
-          </button>
+          {assignees !== null ? (
+            <select
+              value={ticket.assignedTo ?? ''}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                if (next === (ticket.assignedTo ?? null)) return; // no-op guard: never write a bogus feed entry
+                void mutate('/assign', { assigneeId: next }, next ? 'Assigned' : 'Unassigned');
+              }}
+              className="max-w-[180px] rounded-md border px-2 py-1 text-xs"
+              data-testid="ticket-workbench-assignee"
+              aria-label="Assignee"
+            >
+              <option value="">Unassigned</option>
+              {ticket.assignedTo && !assignees.some((u) => u.id === ticket.assignedTo) && (
+                // Assignee exists but is RLS-invisible to this caller (partner staff seen
+                // from org scope) — show a redacted label instead of pretending unassigned.
+                <option value={ticket.assignedTo}>{ticket.assigneeName ?? 'MSP staff'}</option>
+              )}
+              {assignees.map((u) => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
+            </select>
+          ) : ticket.assignedTo ? (
+            <button
+              type="button"
+              onClick={() => void mutate('/assign', { assigneeId: null }, 'Unassigned')}
+              className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+              data-testid="ticket-workbench-unassign"
+            >
+              Assignee: {ticket.assigneeName ?? 'MSP staff'} ✕
+            </button>
+          ) : (
+            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground" data-testid="ticket-workbench-unassigned">Unassigned</span>
+          )}
         </div>
         {resolveOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">
@@ -199,6 +260,31 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
                 data-testid="ticket-workbench-resolve-submit"
               >
                 Resolve ticket
+              </button>
+            </div>
+          </div>
+        )}
+        {pendingOpen && (
+          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-pending-form">
+            <label className="text-xs font-medium" htmlFor="pending-reason">What are you waiting on? (optional)</label>
+            <textarea
+              id="pending-reason"
+              value={pendingReason}
+              onChange={(e) => setPendingReason(e.target.value)}
+              rows={2}
+              maxLength={500}
+              className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+              data-testid="ticket-workbench-pending-reason"
+            />
+            <div className="mt-1.5 flex justify-end gap-2">
+              <button type="button" onClick={() => { setPendingOpen(null); setPendingReason(''); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
+              <button
+                type="button"
+                onClick={() => void submitPending()}
+                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
+                data-testid="ticket-workbench-pending-submit"
+              >
+                {pendingOpen === 'pending' ? 'Set pending' : 'Put on hold'}
               </button>
             </div>
           </div>
@@ -226,7 +312,9 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{new Date(ticket.createdAt).toLocaleString()}</dd></div>
               {ticket.dueDate && <div><dt className="text-xs text-muted-foreground">Due</dt><dd>{new Date(ticket.dueDate).toLocaleString()}</dd></div>}
               {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">Waiting on</dt><dd>{ticket.pendingReason}</dd></div>}
-              {ticket.resolutionNote && <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>}
+              {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
+                <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>
+              )}
               <div>
                 <dt className="text-xs text-muted-foreground">Linked alerts</dt>
                 <dd className="space-y-1">
