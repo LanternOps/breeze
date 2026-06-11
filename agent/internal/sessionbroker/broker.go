@@ -272,6 +272,18 @@ type Broker struct {
 	onSessionClosed SessionClosedHandler
 	onSessionAuthed SessionAuthenticatedHandler
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries
+
+	// consoleSessionIDFn returns the active console (physical-monitor) Windows
+	// session id. It is the injectable seam that makes the assist/user
+	// console-session binding (#1009) unit-testable on non-Windows hosts: the
+	// platform-specific WTSGetActiveConsoleSessionId lookup lives behind the
+	// build-tagged GetConsoleSessionID(), which this defaults to in New().
+	consoleSessionIDFn func() string
+
+	// goos is the effective OS for console-session-binding decisions. Defaults
+	// to runtime.GOOS in New(); tests override it to drive the Windows
+	// multi-user code path on a darwin host.
+	goos string
 }
 
 // New creates a new session broker.
@@ -281,9 +293,11 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
 		startTime:    time.Now(),
 		sessions:     make(map[string]*Session),
-		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
-		onMessage:    onMessage,
+		byIdentity:         make(map[string][]*Session),
+		staleHelpers:       make(map[string][]int),
+		onMessage:          onMessage,
+		consoleSessionIDFn: GetConsoleSessionID,
+		goos:               runtime.GOOS,
 	}
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
@@ -528,6 +542,120 @@ func (b *Broker) PreferredSessionWithScope(scope string) *Session {
 	var best *Session
 	for _, s := range b.sessions {
 		if !s.HasScope(scope) {
+			continue
+		}
+		if best == nil {
+			best = s
+			continue
+		}
+		if s.HelperRole == ipc.HelperRoleUser && best.HelperRole != ipc.HelperRoleUser {
+			best = s
+			continue
+		}
+		if s.HelperRole != ipc.HelperRoleUser && best.HelperRole == ipc.HelperRoleUser {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
+// ConsoleSessionID returns the active console (physical-monitor) Windows
+// session id via the injectable seam (defaults to GetConsoleSessionID()). On
+// non-Windows hosts GetConsoleSessionID() returns "1".
+func (b *Broker) ConsoleSessionID() string {
+	var id string
+	if b.consoleSessionIDFn != nil {
+		id = b.consoleSessionIDFn()
+	} else {
+		id = GetConsoleSessionID()
+	}
+	// "0" is both the services/SYSTEM session (Session 0 isolation reserves it —
+	// no non-SYSTEM interactive user is ever legitimately there since Vista) and
+	// the sentinel GetConsoleSessionID() returns when WTSGetActiveConsoleSessionId
+	// fails or no session is attached (the API returns 0xFFFFFFFF). Either way it
+	// is not a valid interactive console session, so normalize it to "" — every
+	// consumer treats "" as "unknown → fail closed" for the assist/user binding,
+	// rather than admitting a peer that happens to report session 0 (#1009).
+	if id == "0" {
+		return ""
+	}
+	return id
+}
+
+// SetConsoleSessionIDFunc overrides the active-console-session lookup. Used by
+// tests to drive the assist/user console-session binding (#1009) deterministically
+// on non-Windows hosts.
+func (b *Broker) SetConsoleSessionIDFunc(fn func() string) {
+	b.mu.Lock()
+	b.consoleSessionIDFn = fn
+	b.mu.Unlock()
+}
+
+// SetGOOSForTest overrides the effective OS used for console-session-binding
+// decisions, letting tests drive the Windows multi-user code path on darwin.
+func (b *Broker) SetGOOSForTest(goos string) {
+	b.mu.Lock()
+	b.goos = goos
+	b.mu.Unlock()
+}
+
+// effectiveGOOS returns the OS used for console-session-binding decisions,
+// defaulting to runtime.GOOS for Broker fixtures constructed without New().
+func (b *Broker) effectiveGOOS() string {
+	if b.goos != "" {
+		return b.goos
+	}
+	return runtime.GOOS
+}
+
+// SessionInConsoleSession reports whether the given session is bound to the
+// active console session. Used to gate delivery of the device helper token so a
+// co-logged-in non-console assist helper can never receive it (#1009).
+//
+// The console-session binding is a Windows multi-user (RDS/terminal-server)
+// concept, so on non-Windows it always returns true (single interactive session
+// — no cross-user boundary to enforce here).
+func (b *Broker) SessionInConsoleSession(s *Session) bool {
+	if s == nil {
+		return false
+	}
+	if b.effectiveGOOS() != "windows" {
+		return true
+	}
+	return s.WinSessionID == b.ConsoleSessionID()
+}
+
+// PreferredRunAsUserSession returns the run_as_user helper to target for the
+// current host. On Windows it is constrained to the active console session so a
+// co-logged-in user's helper can never intercept a run_as_user script meant for
+// the console operator (#1009).
+func (b *Broker) PreferredRunAsUserSession() *Session {
+	return b.preferredRunAsUserSessionForOS(b.effectiveGOOS())
+}
+
+// preferredRunAsUserSessionForOS is the goos-parameterized core of
+// PreferredRunAsUserSession, kept separate so the console-session filter is
+// unit-testable on non-Windows hosts.
+func (b *Broker) preferredRunAsUserSessionForOS(goos string) *Session {
+	if goos != "windows" {
+		// Non-Windows: single interactive session; preserve prior behavior.
+		return b.PreferredSessionWithScope("run_as_user")
+	}
+
+	consoleSession := b.ConsoleSessionID()
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var best *Session
+	for _, s := range b.sessions {
+		if !s.HasScope("run_as_user") {
+			continue
+		}
+		if s.WinSessionID != consoleSession {
 			continue
 		}
 		if best == nil {
@@ -1314,16 +1442,30 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
+	// Kernel-verify the peer's Windows session id (from peer PID, via
+	// ProcessIdToSessionId) BEFORE the role gate so the gate can bind the
+	// assist/user roles to the active console session. On non-Windows / failure
+	// this is "" and the console binding is inert (Unix path returns early).
+	verifiedWinSession := ""
+	if vsid := peerWinSessionID(creds.PID); vsid != 0 {
+		verifiedWinSession = fmt.Sprintf("%d", vsid)
+	}
+	consoleWinSession := b.ConsoleSessionID()
+
 	// Step 10: Validate role matches peer identity to prevent privilege escalation.
 	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user/assist
 	// helpers must NOT run as SYSTEM. This prevents a non-SYSTEM process from
 	// claiming system role to get desktop scopes, or SYSTEM from claiming user
-	// role. The watchdog must also run as root/SYSTEM. The decision is factored
-	// into roleIdentityRejection so the gate can be unit-tested with an injected
-	// peer-cred SID/UID (a real peer-cred SID can't be faked over a pipe).
-	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, runtime.GOOS); rejected {
+	// role. The watchdog must also run as root/SYSTEM. Additionally, assist/user
+	// are bound to the active console session so a co-logged-in user on a
+	// multi-user host can't register them from another session (#1009). The
+	// decision is factored into roleIdentityRejection so the gate can be
+	// unit-tested with an injected peer-cred SID/UID and session ids (none of
+	// which can be faked over a pipe).
+	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, verifiedWinSession, consoleWinSession, runtime.GOOS); rejected {
 		log.Warn("role/identity mismatch",
 			"reason", reason, "role", helperRole, "sid", creds.SID, "uid", creds.UID,
+			"peerWinSession", verifiedWinSession, "consoleWinSession", consoleWinSession,
 			"pid", creds.PID, "binaryKind", authReq.BinaryKind)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
@@ -1364,14 +1506,16 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	session.DesktopContext = authReq.DesktopContext
 
-	// Use kernel-verified Windows session ID (from peer PID) instead of
-	// trusting the self-reported value, preventing session-jumping attacks.
-	if verifiedSID := peerWinSessionID(creds.PID); verifiedSID != 0 {
-		session.WinSessionID = fmt.Sprintf("%d", verifiedSID)
-		if verifiedSID != authReq.WinSessionID {
+	// Use the kernel-verified Windows session ID (computed above from the peer
+	// PID) instead of trusting the self-reported value, preventing
+	// session-jumping attacks. Falls back to the self-reported value only when
+	// the kernel lookup failed (verifiedWinSession == "").
+	if verifiedWinSession != "" {
+		session.WinSessionID = verifiedWinSession
+		if verifiedWinSession != fmt.Sprintf("%d", authReq.WinSessionID) {
 			log.Warn("WinSessionID mismatch — using kernel-verified value",
 				"reported", authReq.WinSessionID,
-				"verified", verifiedSID,
+				"verified", verifiedWinSession,
 				"pid", creds.PID,
 			)
 		}
@@ -1597,11 +1741,23 @@ const systemSID = "S-1-5-18"
 // rejected, and the rejection reason. All role/identity mismatches are
 // permanent. It returns ("", false) when the role/identity pairing is allowed.
 //
+// peerWinSession is the kernel-verified Windows session id of the peer (from
+// ProcessIdToSessionId) and consoleWinSession is the active console session id.
+// On Windows the assist/user roles are additionally bound to the active console
+// session: a co-logged-in non-SYSTEM user on a multi-user host (RDS/terminal
+// server) running the genuine allowlisted Helper from a NON-console session must
+// not be able to register as assist/user — otherwise it would obtain the device
+// helper token and intercept run_as_user scripts meant for the console operator
+// (#1009). The SYSTEM-capture gate is unchanged (still SID-only). The console
+// binding does not apply on Unix (single interactive session; the macOS desktop
+// helper authenticates as user-role from the GUI/loginwindow session).
+//
 // Pure and OS-parameterized so the privilege-escalation gate can be unit-tested
-// with an injected SID/UID — a real peer-cred SID can't be forged over a named
-// pipe / Unix socket, so end-to-end pipe tests can only exercise the current
-// test process's own identity.
-func roleIdentityRejection(role, sid string, uid uint32, goos string) (reason string, rejected bool) {
+// with an injected SID/UID and session ids — a real peer-cred SID and
+// kernel-verified session id can't be forged over a named pipe / Unix socket,
+// so end-to-end pipe tests can only exercise the current test process's own
+// identity.
+func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
 	if goos == "windows" {
 		switch {
 		case role == ipc.HelperRoleSystem && sid != systemSID:
@@ -1612,6 +1768,23 @@ func roleIdentityRejection(role, sid string, uid uint32, goos string) (reason st
 			return "assist role requires non-SYSTEM identity", true
 		case role == ipc.HelperRoleWatchdog && sid != systemSID:
 			return "watchdog role requires SYSTEM identity", true
+		}
+		// Positive console-session assertion for the cross-user roles. An unknown
+		// console session — "" (lookup failed) or "0" (the Session-0 services
+		// sentinel / WTS-failure value; Broker.ConsoleSessionID normalizes it to
+		// "", but the raw value is rejected here too so this pure gate is correct
+		// in isolation) — is treated as "no match" so we fail closed rather than
+		// admit an arbitrary session.
+		consoleUnknown := consoleWinSession == "" || consoleWinSession == "0"
+		switch role {
+		case ipc.HelperRoleAssist:
+			if consoleUnknown || peerWinSession != consoleWinSession {
+				return "assist role requires the active console session", true
+			}
+		case ipc.HelperRoleUser:
+			if consoleUnknown || peerWinSession != consoleWinSession {
+				return "user role requires the active console session", true
+			}
 		}
 		return "", false
 	}

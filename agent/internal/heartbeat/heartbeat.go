@@ -2596,6 +2596,14 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}
+	// #1009: never deliver the device helper token to an assist helper outside
+	// the active console session — on a multi-user host that would hand a
+	// co-logged-in user org-scoped fleet access. Inert on single-user/non-Windows.
+	if h.sessionBroker != nil && !h.sessionBroker.SessionInConsoleSession(session) {
+		log.Warn("withholding helper token from non-console assist session",
+			"sessionId", session.SessionID, "winSessionId", session.WinSessionID)
+		return
+	}
 	token := h.currentHelperToken()
 	if token == "" {
 		return
@@ -2614,6 +2622,12 @@ func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
 	}
 	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.ScopeAssist) {
 		if !shouldPushHelperToken(sess.AllowedScopes) {
+			continue
+		}
+		// #1009: only the console-session assist helper may receive the token.
+		if !h.sessionBroker.SessionInConsoleSession(sess) {
+			log.Warn("withholding rotated helper token from non-console assist session",
+				"sessionId", sess.SessionID, "winSessionId", sess.WinSessionID)
 			continue
 		}
 		h.pushHelperToken(sess, newToken)
@@ -3489,7 +3503,7 @@ func (h *Heartbeat) makeUserExecFunc() patching.UserExecFunc {
 			return "", "", -1, fmt.Errorf("no session broker available")
 		}
 
-		session := h.sessionBroker.PreferredSessionWithScope("run_as_user")
+		session := h.sessionBroker.PreferredRunAsUserSession()
 		if session == nil {
 			return "", "", -1, fmt.Errorf("no user helper connected")
 		}
