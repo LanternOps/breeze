@@ -1,12 +1,12 @@
 /**
  * Audit-Chain Verification Worker (issue #916 bonus / #917 sub-item L-2)
  *
- * `audit_log_verify_chain(org_id)` (migration
- * 2026-05-25-c-audit-log-checksum-canonical-fix.sql) walks each org's audit
- * hash-chain in (timestamp, id) order and returns one row
- * `(broken_id, expected, actual)` per break — a checksum that doesn't match
- * the canonical re-computation or a prev_checksum link that doesn't match the
- * preceding row. An empty result set means the chain is intact.
+ * `audit_log_verify_chain(org_id)` (v2 — migration
+ * 2026-06-11-h-audit-chain-seal-and-verify.sql) walks each org's audit
+ * hash-chain in `chain_seq` order on the `audit_log_chain` side table and
+ * returns one row `(broken_id, expected, actual)` per break — a checksum that
+ * doesn't match the canonical re-computation. An empty result set means the
+ * chain is intact.
  *
  * Until now that function was only ever called by tests: a forged or
  * truncated audit chain was *detectable* but never *observed* in production.
@@ -18,11 +18,15 @@
  *   Before #1002, concurrent same-org inserts could fork the chain and make
  *   verify_chain report *false-positive* breaks under load. The sibling
  *   migrations in this branch —
- *     2026-06-11-a-audit-chain-advisory-lock.sql (serializes the read-prev /
- *       assign-checksum critical section with a per-org advisory lock), and
- *     2026-06-11-b-audit-chain-fork-heal.sql (re-anchors already-forked rows)
- *   — eliminate that false-positive source. So a non-empty verify result is
- *   now a real tamper/integrity signal worth paging on.
+ *     2026-06-11-g-audit-chain-table.sql (creates the append-only
+ *       `audit_log_chain` side table), and
+ *     2026-06-11-h-audit-chain-seal-and-verify.sql (DEFERRABLE INITIALLY
+ *       DEFERRED constraint trigger seals each audit row into the side table
+ *       at COMMIT under a momentary per-org advisory lock; backfill sealed
+ *       historical rows)
+ *   — eliminate that false-positive source: linkage is sealed serially at
+ *   commit, so a non-empty verify result is a real tamper/integrity signal
+ *   worth paging on.
  *
  * #1105 long-transaction pitfall:
  *   `withSystemDbAccessContext` wraps its whole callback in a single
@@ -139,10 +143,10 @@ async function raiseChainBreakIncident(orgId: string, breaks: ChainBreakRow[]): 
   const title = 'Audit log hash-chain integrity break detected';
   const summary =
     `audit_log_verify_chain reported ${breakCount} break row(s) for this organization. ` +
-    `First broken audit_logs.id=${firstBrokenId}. A break means a stored checksum or ` +
-    `prev_checksum no longer matches the canonical re-computation — i.e. an audit row was ` +
-    `altered, deleted, or inserted out of band. Investigate immediately. ` +
-    `(#1002 advisory-lock + fork-heal fixes are in place, so this is not a concurrency ` +
+    `First broken audit_log_chain.broken_id=${firstBrokenId}. A break means a stored checksum ` +
+    `no longer matches the canonical re-computation — i.e. an audit row was altered, deleted, ` +
+    `or inserted out of band. Investigate immediately. ` +
+    `(#1002 deferred commit-time sealing is in place, so this is not a concurrency ` +
     `false-positive.)`;
 
   const timeline: IncidentTimelineEntry[] = [

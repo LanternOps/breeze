@@ -6,8 +6,8 @@
  * Sentry are stubbed so we can assert scheduling, the per-org verify loop,
  * and incident-raising behavior without a real Postgres.
  *
- * The verify_chain SQL itself (and the advisory-lock / fork-heal fixes from
- * #1002 that make a non-empty result trustworthy) are exercised by the
+ * The verify_chain SQL itself (and the deferred commit-time sealing from
+ * #1002 that makes a non-empty result trustworthy) are exercised by the
  * audit-chain integration tests, not here.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
