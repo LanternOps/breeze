@@ -28,6 +28,20 @@ export default function PamRulesTab() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<PamRule | null>(null);
   const [creating, setCreating] = useState(false);
+  // siteId → name, resolved once for the Scope column (GET /pam/rules returns
+  // only siteId; no per-row lookups).
+  const [siteNames, setSiteNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetchWithAuth('/orgs/sites?limit=100')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = (data.data ?? data.sites ?? data ?? []) as Array<{ id: string; name: string }>;
+        setSiteNames(Object.fromEntries(list.map((s) => [s.id, s.name])));
+      })
+      .catch(() => {});
+  }, []);
 
   const fetchRules = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -144,6 +158,7 @@ export default function PamRulesTab() {
                 <th className="px-3 py-2 font-medium">Priority</th>
                 <th className="px-3 py-2 font-medium">Name</th>
                 <th className="px-3 py-2 font-medium">Criteria</th>
+                <th className="px-3 py-2 font-medium">Scope</th>
                 <th className="px-3 py-2 font-medium">Verdict</th>
                 <th className="px-3 py-2 font-medium">Enabled</th>
                 <th className="px-3 py-2 font-medium" />
@@ -163,6 +178,12 @@ export default function PamRulesTab() {
                   </td>
                   <td className="max-w-[320px] truncate px-3 py-2 text-xs text-muted-foreground" title={ruleCriteriaSummary(rule)}>
                     {ruleCriteriaSummary(rule) || '—'}
+                  </td>
+                  <td
+                    className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"
+                    data-testid={`pam-rule-scope-${rule.id}`}
+                  >
+                    {rule.siteId ? siteNames[rule.siteId] ?? rule.siteId : 'Org-wide'}
                   </td>
                   <td className="px-3 py-2">{VERDICT_LABELS[rule.verdict]}</td>
                   <td className="px-3 py-2">

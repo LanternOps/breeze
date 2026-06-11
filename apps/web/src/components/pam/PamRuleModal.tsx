@@ -1,9 +1,16 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { type PamRule, type PamVerdict, VERDICT_LABELS } from './types';
+
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+interface NamedOption {
+  id: string;
+  name: string;
+}
 
 /**
  * Create/edit modal for pam_rules.
@@ -45,9 +52,19 @@ export default function PamRuleModal({
   );
   const [windowStart, setWindowStart] = useState(rule?.timeWindow?.start ?? '');
   const [windowEnd, setWindowEnd] = useState(rule?.timeWindow?.end ?? '');
+  const [windowDays, setWindowDays] = useState<number[]>(rule?.timeWindow?.days ?? []);
+  const [windowTimezone, setWindowTimezone] = useState(rule?.timeWindow?.timezone ?? '');
   const [approvalDuration, setApprovalDuration] = useState(
     rule?.approvalDurationMinutes ? String(rule.approvalDurationMinutes) : '',
   );
+  // Org/site scoping. On edit the org is fixed (PATCH has no orgId); on create
+  // partner-scoped users with >1 accessible org must pick one or the API 400s
+  // ("orgId is required for this scope" — resolveOrgIdForWrite).
+  const [orgs, setOrgs] = useState<NamedOption[]>([]);
+  const [orgsLoaded, setOrgsLoaded] = useState(false);
+  const [selectedOrgId, setSelectedOrgId] = useState('');
+  const [sites, setSites] = useState<NamedOption[]>([]);
+  const [siteId, setSiteId] = useState(rule?.siteId ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,6 +72,50 @@ export default function PamRuleModal({
   const descId = useId();
   const priorityId = useId();
   const verdictId = useId();
+  const orgSelectId = useId();
+  const siteSelectId = useId();
+  const timezoneId = useId();
+
+  useEffect(() => {
+    fetchWithAuth('/orgs/organizations?limit=100')
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          const items = (data.data ?? data.organizations ?? data ?? []) as NamedOption[];
+          setOrgs(items.map((o) => ({ id: o.id, name: o.name })));
+          if (!isEdit && items.length > 1) {
+            setSelectedOrgId((prev) => prev || items[0]!.id);
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setOrgsLoaded(true));
+  }, [isEdit]);
+
+  // Sites must belong to the rule's org. Explicit `organizationId` wins over
+  // the ambient orgId fetchWithAuth may inject (see routes/orgs.ts, #723).
+  const sitesOrgId = rule ? rule.orgId : selectedOrgId;
+  useEffect(() => {
+    if (!isEdit && !orgsLoaded) return;
+    const query = sitesOrgId
+      ? `?organizationId=${encodeURIComponent(sitesOrgId)}&limit=100`
+      : '?limit=100';
+    fetchWithAuth(`/orgs/sites${query}`)
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          const items = (data.data ?? data.sites ?? data ?? []) as NamedOption[];
+          setSites(items.map((s) => ({ id: s.id, name: s.name })));
+        }
+      })
+      .catch(() => {});
+  }, [isEdit, orgsLoaded, sitesOrgId]);
+
+  const toggleDay = (day: number) => {
+    setWindowDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b),
+    );
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,6 +160,16 @@ export default function PamRuleModal({
       setError('Tool-action rules cannot use the Ignore verdict.');
       return;
     }
+    if (Boolean(windowStart) !== Boolean(windowEnd)) {
+      setError('Time window start and end must both be set (or both left empty).');
+      return;
+    }
+
+    // Omit days when none or all are selected — the rule engine treats a
+    // missing days array as "every day" (services/pamRuleEngine.ts).
+    const days =
+      windowDays.length > 0 && windowDays.length < 7 ? [...windowDays].sort((a, b) => a - b) : undefined;
+    const timezone = windowTimezone.trim() || undefined;
 
     const payload: Record<string, unknown> = {
       name: name.trim(),
@@ -107,8 +178,19 @@ export default function PamRuleModal({
       priority: Number.parseInt(priority, 10) || 100,
       verdict,
       ...activeCriteria,
+      siteId: siteId || null,
+      // Create only: the server resolves the org when omitted; multi-org
+      // partner users must send an explicit choice. PATCH never carries orgId.
+      ...(!isEdit && orgs.length > 1 && selectedOrgId ? { orgId: selectedOrgId } : {}),
       timeWindow:
-        windowStart && windowEnd ? { start: windowStart, end: windowEnd } : null,
+        windowStart && windowEnd
+          ? {
+              start: windowStart,
+              end: windowEnd,
+              ...(days ? { days } : {}),
+              ...(timezone ? { timezone } : {}),
+            }
+          : null,
       approvalDurationMinutes: approvalDuration
         ? Number.parseInt(approvalDuration, 10) || null
         : null,
@@ -196,6 +278,61 @@ export default function PamRuleModal({
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
+          {orgs.length > 1 && (
+            <div>
+              <label htmlFor={orgSelectId} className="mb-1 block text-sm font-medium">
+                Organization
+              </label>
+              {rule ? (
+                <input
+                  id={orgSelectId}
+                  value={orgs.find((o) => o.id === rule.orgId)?.name ?? rule.orgId}
+                  readOnly
+                  disabled
+                  className={`${inputClass} text-muted-foreground`}
+                />
+              ) : (
+                <select
+                  id={orgSelectId}
+                  value={selectedOrgId}
+                  onChange={(e) => {
+                    setSelectedOrgId(e.target.value);
+                    setSiteId('');
+                  }}
+                  data-testid="pam-rule-org"
+                  className={inputClass}
+                >
+                  {orgs.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+          <div>
+            <label htmlFor={siteSelectId} className="mb-1 block text-sm font-medium">
+              Scope
+            </label>
+            <select
+              id={siteSelectId}
+              value={siteId}
+              onChange={(e) => setSiteId(e.target.value)}
+              data-testid="pam-rule-site"
+              className={inputClass}
+            >
+              <option value="">Org-wide (all sites)</option>
+              {sites.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={verdictId} className="mb-1 block text-sm font-medium">
               Verdict
@@ -279,6 +416,46 @@ export default function PamRuleModal({
             testId="pam-rule-approval-mins"
           />
         </div>
+
+        {(windowStart !== '' || windowEnd !== '') && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <span className="mb-1 block text-sm font-medium">Days (none = every day)</span>
+              <div className="flex gap-1">
+                {DAY_LABELS.map((label, day) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => toggleDay(day)}
+                    aria-pressed={windowDays.includes(day)}
+                    data-testid={`pam-rule-window-day-${day}`}
+                    className={`flex-1 rounded-md border px-1.5 py-2 text-xs ${
+                      windowDays.includes(day)
+                        ? 'border-primary bg-primary/10 font-medium'
+                        : 'text-muted-foreground'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label htmlFor={timezoneId} className="mb-1 block text-sm font-medium">
+                Timezone (optional)
+              </label>
+              <input
+                id={timezoneId}
+                value={windowTimezone}
+                onChange={(e) => setWindowTimezone(e.target.value)}
+                placeholder="UTC"
+                maxLength={64}
+                data-testid="pam-rule-window-timezone"
+                className={inputClass}
+              />
+            </div>
+          </div>
+        )}
 
         <label className="flex items-center gap-2 text-sm">
           <input
