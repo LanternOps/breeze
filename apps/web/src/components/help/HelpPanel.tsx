@@ -13,7 +13,7 @@ export default function HelpPanel() {
   // Keyboard shortcut: Cmd+Shift+H to toggle
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'h') {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault();
         toggle();
       }
