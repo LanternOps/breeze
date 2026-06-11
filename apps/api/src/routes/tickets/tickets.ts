@@ -400,6 +400,9 @@ ticketsRoutes.patch(
     if (Object.keys(body).length === 0) {
       // zod strips unknown keys, so a {status}/{assigneeId} body lands here looking
       // empty — point callers at the dedicated routes instead of a generic 400.
+      // c.req.json() re-reads Hono's memoized body (zValidator already consumed the
+      // stream); if Hono ever stops memoizing, this falls back to null and only the
+      // hint is lost, never the 400 itself.
       const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
       if (raw && 'status' in raw) {
         return c.json({ error: 'Status is not updatable via PATCH — use POST /tickets/:id/status' }, 400);

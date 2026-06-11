@@ -639,8 +639,9 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
     expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
   });
 
+  // No dbSelectMock setup needed for the hint tests: the 400 fires before the scoped DB lookup.
   it('400 with a status-route hint when only status is sent', async () => {
-    const res = await makeApp().request('/tickets/11111111-1111-4111-8111-111111111111', {
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'open' })
@@ -650,7 +651,7 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
   });
 
   it('400 with an assign-route hint when only assigneeId is sent', async () => {
-    const res = await makeApp().request('/tickets/11111111-1111-4111-8111-111111111111', {
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assigneeId: '22222222-2222-4222-8222-222222222222' })
