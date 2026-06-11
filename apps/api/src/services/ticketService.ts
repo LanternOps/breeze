@@ -5,6 +5,7 @@ import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devic
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
+import { resolveSlaTargets } from './ticketSla';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -140,7 +141,12 @@ async function assertCategoryInPartner(categoryId: string, partnerId: string | n
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+        .select({
+          id: ticketCategories.id,
+          partnerId: ticketCategories.partnerId,
+          responseSlaMinutes: ticketCategories.responseSlaMinutes,
+          resolutionSlaMinutes: ticketCategories.resolutionSlaMinutes
+        })
         .from(ticketCategories)
         .where(eq(ticketCategories.id, categoryId))
         .limit(1)
@@ -152,6 +158,7 @@ async function assertCategoryInPartner(categoryId: string, partnerId: string | n
   if (category.partnerId !== partnerId) {
     throw new TicketServiceError('Category must belong to the same partner as the ticket', 400, 'CATEGORY_WRONG_PARTNER');
   }
+  return category;
 }
 
 interface BaseCreateTicketInput {
@@ -204,9 +211,16 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     await assertAssigneeInPartner(input.assigneeId, org.partnerId);
   }
 
+  let category: Awaited<ReturnType<typeof assertCategoryInPartner>> | null = null;
   if (input.categoryId) {
-    await assertCategoryInPartner(input.categoryId, org.partnerId);
+    category = await assertCategoryInPartner(input.categoryId, org.partnerId);
   }
+
+  const slaTargets = resolveSlaTargets({
+    categoryResponseMinutes: category?.responseSlaMinutes ?? null,
+    categoryResolutionMinutes: category?.resolutionSlaMinutes ?? null,
+    priority: input.priority ?? 'normal'
+  });
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
@@ -233,7 +247,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     // so staff-created tickets must keep "no external requester" semantics.
     submitterEmail: isPortal ? input.submitterEmail : null,
     submitterName: isPortal ? (input.submitterName ?? null) : (actor.name ?? null),
-    category: null
+    category: null,
+    responseSlaMinutes: slaTargets.responseMinutes,
+    resolutionSlaMinutes: slaTargets.resolutionMinutes
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db

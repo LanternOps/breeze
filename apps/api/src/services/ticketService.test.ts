@@ -65,7 +65,7 @@ vi.mock('../db/schema', () => ({
   alerts: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', partnerId: 'partnerId' },
-  ticketCategories: { id: 'id', partnerId: 'partnerId' },
+  ticketCategories: { id: 'id', partnerId: 'partnerId', responseSlaMinutes: 'responseSlaMinutes', resolutionSlaMinutes: 'resolutionSlaMinutes' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
@@ -226,6 +226,44 @@ describe('createTicket', () => {
       submitterEmail: 'alice@example.com',
       submitterName: 'Alice',
     });
+  });
+
+  it('stamps SLA targets from the category when set', async () => {
+    // selects: org, category (with SLA fields set)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'cat-1', partnerId: 'p-1', responseSlaMinutes: 30, resolutionSlaMinutes: 120 }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-sla-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'SLA test', source: 'manual', categoryId: 'cat-1', priority: 'urgent' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 });
+  });
+
+  it('falls back to priority defaults when the category has no SLA', async () => {
+    // selects: org, category (with null SLA fields)
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'cat-1', partnerId: 'p-1', responseSlaMinutes: null, resolutionSlaMinutes: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-sla-2', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'SLA fallback', source: 'manual', categoryId: 'cat-1', priority: 'urgent' }, actor);
+
+    // urgent priority defaults: response=60, resolution=240
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: 60, resolutionSlaMinutes: 240 });
+  });
+
+  it('stamps no SLA for normal priority without category targets', async () => {
+    // no categoryId → no category select
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-sla-3', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'No SLA', source: 'manual', priority: 'normal' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: null, resolutionSlaMinutes: null });
   });
 });
 
