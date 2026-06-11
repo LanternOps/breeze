@@ -213,12 +213,14 @@ export default function TicketsPage() {
 
   useEffect(() => { void fetchTickets(); void fetchStats(); }, [fetchTickets, fetchStats]);
 
-  // Selection is per-view: switching tab or changing any filter/search clears it.
+  // Selection survives tab switches (POST /tickets/bulk takes raw ids; the bar's
+  // count chip reports off-view rows) but clears when a filter or the search
+  // changes — those genuinely change what the result set means.
   useEffect(() => {
     setBulkSelectedIds(new Set());
     setBulkAssignee('');
     setBulkStatus('');
-  }, [tab, search, orgFilter, priorityFilter, categoryFilter, assigneeFilter]);
+  }, [search, orgFilter, priorityFilter, categoryFilter, assigneeFilter]);
 
   useEffect(() => {
     const onHash = () => {
@@ -531,7 +533,8 @@ export default function TicketsPage() {
                   <span className="text-sm font-medium tabular-nums">{bulkSelectedIds.size} selected</span>
                   <button
                     type="button"
-                    onClick={() => setBulkSelectedIds(new Set(tickets.map((t) => t.id)))}
+                    // Union, not replace: cross-tab selections off-view must survive.
+                    onClick={() => setBulkSelectedIds((prev) => new Set([...prev, ...tickets.map((t) => t.id)]))}
                     data-testid="tickets-bulk-select-all"
                     className="text-sm text-primary hover:underline"
                   >
