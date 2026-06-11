@@ -511,6 +511,16 @@ export default function TicketsPage() {
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
           <div className="relative flex w-full flex-col min-[1100px]:w-2/5 min-[1100px]:min-w-[320px] min-[1100px]:max-w-[480px] min-[1100px]:border-r">
+            <div className="flex items-center gap-2 border-b px-3 py-1.5">
+              <button
+                type="button"
+                onClick={() => setBulkSelectedIds((prev) => new Set([...prev, ...tickets.map((t) => t.id)]))}
+                data-testid="tickets-select-all-header"
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+              >
+                Select all
+              </button>
+            </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
               <TicketQueueList
                 tickets={tickets}

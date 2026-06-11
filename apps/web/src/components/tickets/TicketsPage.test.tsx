@@ -476,6 +476,24 @@ describe('TicketsPage', () => {
         expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull();
       });
     });
+
+    it('header select-all is reachable with zero selections and selects all visible rows', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Confirm no bulk bar at zero selections.
+      expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull();
+
+      // The header affordance must be present without any prior selection.
+      const headerSelectAll = screen.getByTestId('tickets-select-all-header');
+      expect(headerSelectAll).toBeInTheDocument();
+
+      fireEvent.click(headerSelectAll);
+
+      // All 3 visible rows should be selected and the bulk bar shows the count.
+      expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('3 selected');
+    });
   });
 
   it('active filter with empty results shows clear-filters; clicking resets and refetches', async () => {

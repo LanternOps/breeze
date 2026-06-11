@@ -585,7 +585,7 @@ describe('TicketWorkbench sticky composer across refreshes', () => {
 
     // After the refresh settles the composer is still on the internal tab.
     await waitFor(() => {
-      expect(screen.getByTestId('ticket-workbench')).not.toHaveAttribute('aria-busy', 'true');
+      expect(screen.getByTestId('ticket-workbench')).not.toHaveAttribute('aria-busy');
     });
     expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
   });

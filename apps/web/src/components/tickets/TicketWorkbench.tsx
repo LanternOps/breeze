@@ -190,7 +190,7 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading}>
+    <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
       {/* Header */}
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
