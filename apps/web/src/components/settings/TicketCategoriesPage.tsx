@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 
@@ -29,6 +30,9 @@ interface EditDraft {
   defaultHourlyRate: string;
 }
 
+// One level of nesting only — the UI never offers non-root parents and the API
+// stays two-level in practice. A grandchild (parent exists but isn't a root)
+// would not be emitted here; revisit if the schema ever allows deeper trees.
 function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
   const byRank = (a: Category, b: Category) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
   const roots = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId));
@@ -47,7 +51,7 @@ function defaultsSummary(c: Category): string {
   if (c.defaultPriority) parts.push(c.defaultPriority.charAt(0).toUpperCase() + c.defaultPriority.slice(1));
   if (c.responseSlaMinutes != null) parts.push(`${c.responseSlaMinutes}m response`);
   if (c.resolutionSlaMinutes != null) parts.push(`${c.resolutionSlaMinutes}m resolve`);
-  if (c.defaultHourlyRate) parts.push(`$${c.defaultHourlyRate}/h`);
+  if (c.defaultHourlyRate) parts.push(`$${parseFloat(c.defaultHourlyRate).toFixed(2)}/h`);
   if (c.defaultBillable) parts.push('billable');
   else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';
@@ -135,6 +139,12 @@ export default function TicketCategoriesPage() {
 
   const saveEdit = useCallback(async (id: string) => {
     if (!draft.name.trim()) return;
+    // Number('60a') is NaN, which JSON-serializes to null — refuse instead of silently nulling.
+    const numeric = [draft.responseSlaMinutes, draft.resolutionSlaMinutes, draft.defaultHourlyRate];
+    if (numeric.some((v) => v !== '' && Number.isNaN(Number(v)))) {
+      showToast({ type: 'error', message: 'SLA minutes and hourly rate must be numbers.' });
+      return;
+    }
     const payload = {
       name: draft.name.trim(),
       color: draft.color,
@@ -279,30 +289,33 @@ export default function TicketCategoriesPage() {
                   <td colSpan={4} className="bg-muted/30 px-4 py-3">
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs font-medium">Name</label>
+                        <label className="text-xs font-medium" htmlFor="edit-name">Name</label>
                         <input
                           value={draft.name}
                           onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                           className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-name"
                           data-testid="ticket-category-edit-name"
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium">Color</label>
+                        <label className="text-xs font-medium" htmlFor="edit-color">Color</label>
                         <input
                           type="color"
                           value={draft.color}
                           onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))}
                           className="h-9 w-full rounded-md border"
+                          id="edit-color"
                           data-testid="ticket-category-edit-color"
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium">Parent</label>
+                        <label className="text-xs font-medium" htmlFor="edit-parent">Parent</label>
                         <select
                           value={draft.parentId}
                           onChange={(e) => setDraft((d) => ({ ...d, parentId: e.target.value }))}
                           className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-parent"
                           data-testid="ticket-category-edit-parent"
                         >
                           <option value="">None</option>
@@ -312,11 +325,12 @@ export default function TicketCategoriesPage() {
                         </select>
                       </div>
                       <div>
-                        <label className="text-xs font-medium">Default priority</label>
+                        <label className="text-xs font-medium" htmlFor="edit-priority">Default priority</label>
                         <select
                           value={draft.defaultPriority}
                           onChange={(e) => setDraft((d) => ({ ...d, defaultPriority: e.target.value }))}
                           className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-priority"
                           data-testid="ticket-category-edit-priority"
                         >
                           <option value="">None</option>
@@ -327,24 +341,26 @@ export default function TicketCategoriesPage() {
                         </select>
                       </div>
                       <div>
-                        <label className="text-xs font-medium">Response SLA (minutes)</label>
+                        <label className="text-xs font-medium" htmlFor="edit-response-sla">Response SLA (minutes)</label>
                         <input
                           type="number"
                           min={1}
                           value={draft.responseSlaMinutes}
                           onChange={(e) => setDraft((d) => ({ ...d, responseSlaMinutes: e.target.value }))}
                           className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-response-sla"
                           data-testid="ticket-category-edit-response-sla"
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium">Resolution SLA (minutes)</label>
+                        <label className="text-xs font-medium" htmlFor="edit-resolution-sla">Resolution SLA (minutes)</label>
                         <input
                           type="number"
                           min={1}
                           value={draft.resolutionSlaMinutes}
                           onChange={(e) => setDraft((d) => ({ ...d, resolutionSlaMinutes: e.target.value }))}
                           className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-resolution-sla"
                           data-testid="ticket-category-edit-resolution-sla"
                         />
                       </div>
@@ -359,7 +375,7 @@ export default function TicketCategoriesPage() {
                         <label htmlFor={`billable-${c.id}`} className="text-xs font-medium">Billable by default</label>
                       </div>
                       <div>
-                        <label className="text-xs font-medium">Default hourly rate ($)</label>
+                        <label className="text-xs font-medium" htmlFor="edit-rate">Default hourly rate ($)</label>
                         <input
                           type="number"
                           min={0}
@@ -367,6 +383,7 @@ export default function TicketCategoriesPage() {
                           value={draft.defaultHourlyRate}
                           onChange={(e) => setDraft((d) => ({ ...d, defaultHourlyRate: e.target.value }))}
                           className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-rate"
                           data-testid="ticket-category-edit-rate"
                         />
                       </div>
