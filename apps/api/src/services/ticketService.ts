@@ -325,6 +325,21 @@ export async function changeTicketStatus(
     patch.pendingReason = null;
   }
 
+  // SLA clock pause/resume (spec §3, decision D4): the clock pauses while the
+  // ticket sits in pending/on_hold. Fold elapsed pause time on ANY exit —
+  // including resolve/close — so reopen resumes from a consistent ledger.
+  const wasPaused = fromStatus === 'pending' || fromStatus === 'on_hold';
+  const willBePaused = toStatus === 'pending' || toStatus === 'on_hold';
+  if (!wasPaused && willBePaused) {
+    patch.slaPausedAt = now;
+  } else if (wasPaused && !willBePaused) {
+    if (ticket.slaPausedAt) {
+      const elapsedMinutes = Math.max(0, Math.round((now.getTime() - new Date(ticket.slaPausedAt).getTime()) / 60_000));
+      patch.slaPausedMinutes = (ticket.slaPausedMinutes ?? 0) + elapsedMinutes;
+    }
+    patch.slaPausedAt = null;
+  }
+
   // Compare-and-swap: include fromStatus in the WHERE so a concurrent update is detected.
   const updated = await db
     .update(tickets)
@@ -425,6 +440,7 @@ export async function updateTicketFields(
   }
 
   if (typeof fields.categoryId === 'string') {
+    // D2: category changes after create do not restamp SLA targets — return value deliberately discarded.
     await assertCategoryInPartner(fields.categoryId, await resolveTicketPartnerId(ticket));
   }
 
