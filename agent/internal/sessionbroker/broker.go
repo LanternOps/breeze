@@ -209,7 +209,7 @@ func (b *Broker) maybeStartKeepalive(session *Session, role string) {
 // Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
 var (
 	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
-	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
+	userHelperScopes     = []string{"notify", "clipboard", "run_as_user", ipc.ScopePam}
 	watchdogHelperScopes = []string{"watchdog"}
 	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
 	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
@@ -289,10 +289,10 @@ type Broker struct {
 // New creates a new session broker.
 func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
-		socketPath:   socketPath,
-		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
-		startTime:    time.Now(),
-		sessions:     make(map[string]*Session),
+		socketPath:         socketPath,
+		rateLimiter:        ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
+		startTime:          time.Now(),
+		sessions:           make(map[string]*Session),
 		byIdentity:         make(map[string][]*Session),
 		staleHelpers:       make(map[string][]int),
 		onMessage:          onMessage,
@@ -889,6 +889,9 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	}
 
 	hasCapability := func(s *Session) bool {
+		if capability == ipc.ScopePam {
+			return s.HelperRole == ipc.HelperRoleUser && s.HasScope(ipc.ScopePam)
+		}
 		// GetCapabilities takes s.mu — required because the atomic snapshot
 		// only protects the outer map identity, not per-session fields. A
 		// direct read of s.Capabilities races with SetCapabilities writers
@@ -1107,6 +1110,31 @@ func (b *Broker) LaunchProcessViaUserHelperForSession(sessionKey, binaryPath str
 // SendCommandAndWait forwards a command to a session and waits for the response.
 func (b *Broker) SendCommandAndWait(session *Session, id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
 	return session.SendCommand(id, cmdType, payload, timeout)
+}
+
+// RequestPamApproval sends a PAM approval request to the given user-helper
+// session and waits for the correlated dialog result. Failure to complete the
+// round-trip is treated as an explicit deny+dismiss so callers never proceed on
+// a missing user decision.
+func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error) {
+	denyDismiss := ipc.PamDialogResult{Approved: false, DismissedByUser: true}
+	if session == nil {
+		return denyDismiss, fmt.Errorf("nil PAM helper session")
+	}
+
+	resp, err := b.SendCommandAndWait(session, id, ipc.TypePamRequestDialog, req, timeout)
+	if err != nil {
+		return denyDismiss, err
+	}
+	if resp.Error != "" {
+		return denyDismiss, fmt.Errorf("PAM dialog helper error: %s", resp.Error)
+	}
+
+	var result ipc.PamDialogResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return denyDismiss, fmt.Errorf("decode PAM dialog result: %w", err)
+	}
+	return result, nil
 }
 
 // sendPreAuthRejectAndClose wraps rawConn, sends a PreAuthReject envelope

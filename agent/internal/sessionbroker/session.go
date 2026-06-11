@@ -353,6 +353,8 @@ func expectedResponseType(cmdType string) string {
 		return ipc.TypeCommandResult
 	case ipc.TypeNotify:
 		return ipc.TypeNotifyResult
+	case ipc.TypePamRequestDialog:
+		return ipc.TypePamDialogResult
 	case ipc.TypeClipboardGet:
 		return ipc.TypeClipboardData
 	case ipc.TypeClipboardSet:

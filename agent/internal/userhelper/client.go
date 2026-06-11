@@ -23,9 +23,9 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/helper"
-	"github.com/breeze-rmm/agent/internal/procoutput"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procoutput"
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -369,6 +369,9 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeNotify:
 			safeGo("notify", func() { c.handleNotify(env) })
+
+		case ipc.TypePamRequestDialog:
+			safeGo("pam_dialog", func() { c.handlePamDialog(env) })
 
 		case ipc.TypeTrayUpdate:
 			safeGo("tray_update", func() { c.handleTrayUpdate(env) })
@@ -894,6 +897,22 @@ func (c *Client) handleNotify(env *ipc.Envelope) {
 		Delivered: delivered,
 	}); err != nil {
 		log.Warn("failed to send notify result", "id", env.ID, "error", err)
+	}
+}
+
+func (c *Client) handlePamDialog(env *ipc.Envelope) {
+	var req ipc.PamRequestDialog
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid PAM dialog payload", "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypePamDialogResult, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
+			log.Warn("failed to send PAM dialog error", "error", sendErr)
+		}
+		return
+	}
+
+	result := showPamDialog(req)
+	if err := c.conn.SendTyped(env.ID, ipc.TypePamDialogResult, result); err != nil {
+		log.Warn("failed to send PAM dialog result", "id", env.ID, "error", err)
 	}
 }
 
