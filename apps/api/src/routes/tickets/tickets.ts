@@ -54,6 +54,8 @@ function handleServiceError(c: { json: (b: unknown, s: number) => Response }, er
  * - organization scope: adds eq(orgId); null orgId treated as not-found
  * - partner scope: adds eq(partnerId, auth.partnerId); null partnerId as not-found
  * - system scope: no extra condition (unrestricted)
+ * - site axis: device-bound tickets are additionally gated by the caller's
+ *   `allowedSiteIds` allowlist (see deviceInSiteScope).
  */
 export async function getScopedTicketOr404(
   auth: AuthContext,

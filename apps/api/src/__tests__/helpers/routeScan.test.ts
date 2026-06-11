@@ -93,6 +93,25 @@ describe('analyzeRouteSource — input-sourced device-data detector', () => {
     expect(route.touchesDeviceData).toBe(true);
     expect(route.usesSiteScopeGate).toBe(true);
   });
+
+  it('resolves a site gate reached via an exported async function helper (tickets pattern)', () => {
+    // LOCAL_HELPER_DECL must recognise `export async function` declarations
+    // (commit 2e4ed4e1). getScopedTicketOr404 in routes/tickets/tickets.ts
+    // is the canonical example: exported, async, references allowedSiteIds.
+    const src = [
+      `export async function getScopedTicketOr404(auth, id) {`,
+      `  if (auth.allowedSiteIds && !(await deviceInSiteScope(auth, deviceId))) return null;`,
+      `  return ticket;`,
+      `}`,
+      `router.get('/:id', async (c) => {`,
+      `  const ticket = await getScopedTicketOr404(auth, id);`,
+      `  return c.json(await db.select().from(devices).where(eq(devices.deviceId, id)));`,
+      `});`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.touchesDeviceData).toBe(true);
+    expect(route.usesSiteScopeGate).toBe(true);
+  });
 });
 
 describe('analyzeRouteSource — dead permissions-sourced site gate detector', () => {

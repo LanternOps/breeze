@@ -1108,7 +1108,7 @@ From `SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK`, delete:
 - [ ] **Step 2: Run the integration scanner (needs the local docker Postgres up)**
 
 ```bash
-cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run --config vitest.integration.config.ts src/__tests__/integration/site-scope-coverage.integration.test.ts
+cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run --config vitest.config.site-scope-coverage.ts
 ```
 
 Expected: PASS. The scanner is file-local — `tickets.ts` now contains `auth.allowedSiteIds` / site-gate usage, which is what it detects. **If it still flags the tickets handlers**, read the gate-detection markers in `apps/api/src/__tests__/helpers/routeScan.ts` and align the implementation's identifier usage with what the scanner greps for (do NOT re-add the exemption).
@@ -1116,7 +1116,7 @@ Expected: PASS. The scanner is file-local — `tickets.ts` now contains `auth.al
 - [ ] **Step 3: Run the RLS coverage contract test (sanity — no new tables, must stay green)**
 
 ```bash
-cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run --config vitest.integration.config.ts src/__tests__/integration/rls-coverage.integration.test.ts
+cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run --config vitest.config.rls-coverage.ts
 ```
 
 Expected: PASS.
