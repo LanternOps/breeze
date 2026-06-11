@@ -304,6 +304,13 @@ ticketsRoutes.post(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
+    // Site-axis guard: a site-restricted caller may only open device-bound
+    // tickets for devices in their allowed sites (deviceless org-level tickets
+    // are fine — they aren't site-bound).
+    if (body.deviceId && !(await deviceInSiteScope(auth, body.deviceId))) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+
     try {
       const ticket = await createTicket({ ...body, source: 'manual' }, actorFrom(c));
       return c.json({ data: ticket }, 201);
@@ -390,6 +397,12 @@ ticketsRoutes.patch(
     }
     const found = await getScopedTicketOr404(auth, id);
     if (!found) return c.json({ error: 'Ticket not found' }, 404);
+
+    // Site-axis guard on the NEW device (the existing ticket's device was
+    // already gated by getScopedTicketOr404 above).
+    if (typeof body.deviceId === 'string' && !(await deviceInSiteScope(auth, body.deviceId))) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
 
     try {
       const ticket = await updateTicketFields(id, body, actorFrom(c));

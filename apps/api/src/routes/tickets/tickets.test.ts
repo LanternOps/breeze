@@ -940,6 +940,69 @@ describe('site-axis scoping — list and stats', () => {
   });
 });
 
+describe('site-axis scoping — write guards', () => {
+  const SITE_AUTH = {
+    ...DEFAULT_AUTH,
+    scope: 'organization' as string,
+    orgId: 'org-1' as string | null,
+    partnerId: null as string | null,
+    allowedSiteIds: ['site-1']
+  };
+  const DEVICE_ID = '9a8b7c6d-2222-4333-8444-555566667777';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = SITE_AUTH as typeof authRef.current;
+  });
+
+  it('POST /tickets returns 403 for a deviceId outside the caller sites', async () => {
+    dbSelectMock.mockResolvedValueOnce([{ siteId: 'site-OTHER' }]); // device lookup
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x', deviceId: DEVICE_ID })
+    });
+    expect(res.status).toBe(403);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('POST /tickets allows a deviceless create for a site-restricted caller', async () => {
+    serviceMocks.createTicket.mockResolvedValue({ id: 't-1', orgId: ORG_ID, internalNumber: 'T-2026-0042' });
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x' })
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('PATCH /tickets/:id returns 403 when moving a ticket onto an out-of-site device', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch (in scope: deviceless)
+      .mockResolvedValueOnce([{ siteId: 'site-OTHER' }]);                           // new device lookup
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID })
+    });
+    expect(res.status).toBe(403);
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /tickets/:id allows clearing the device (null) without a new-device lookup', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: 'd-1' }]) // ticket fetch
+      .mockResolvedValueOnce([{ siteId: 'site-1' }]);                                // existing device gate (Task 5)
+    serviceMocks.updateTicketFields.mockResolvedValue({ ...STUB_TICKET, deviceId: null });
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: null })
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
 // Regression: Phase 1a shipped these routes WITHOUT authMiddleware in the chain,
 // so over real HTTP every request 401'd ("Not authenticated") — requireScope
 // found no c.get('auth'). The old test mock had requireScope inject the auth
