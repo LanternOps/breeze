@@ -28,8 +28,10 @@ import { createOrganization, createPartner } from './db-utils';
 const created: string[] = [];
 
 afterEach(async () => {
-  // Clean up rows the breeze_app inserts leave behind. Use the partner/org
-  // context they were created under is overkill; system scope reaches all.
+  // Clean up rows the test leaves behind. Reusing each row's original
+  // partner/org context would be overkill: under system scope
+  // breeze_has_org_access / breeze_has_partner_access short-circuit to TRUE,
+  // so one system-context pass deletes every tracked row.
   if (created.length === 0) return;
   await withDbAccessContext(
     { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null },
@@ -60,6 +62,30 @@ function orgContext(orgId: string): DbAccessContext {
     accessiblePartnerIds: [],
     userId: null,
   };
+}
+
+/**
+ * Seed a partner-wide field (org_id NULL) as that partner, returning its id.
+ * Tracked for cleanup unless `track` is false (the DELETE test removes the
+ * row itself, so tracking it would double-delete — harmless, but misleading).
+ */
+async function seedPartnerField(partnerId: string, track = true): Promise<string> {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rows = await withDbAccessContext(partnerContext(partnerId, []), () =>
+    db
+      .insert(customFieldDefinitions)
+      .values({
+        orgId: null,
+        partnerId,
+        name: 'Seed',
+        fieldKey: `seed_${unique}`,
+        type: 'text',
+      })
+      .returning(),
+  );
+  const id = rows[0]!.id;
+  if (track) created.push(id);
+  return id;
 }
 
 describe('custom_field_definitions RLS — dual-axis (2026-06-11 migration)', () => {
@@ -196,5 +222,92 @@ describe('custom_field_definitions RLS — dual-axis (2026-06-11 migration)', ()
         ),
     );
     expect(visible.map((r) => r.id)).toContain(inserted[0]?.id);
+  });
+
+  // The migration rewrites all four DML policies. UPDATE (USING + WITH CHECK)
+  // and DELETE (USING) are the silent-failure paths: pre-migration a partner
+  // mutation of a partner-wide row matched zero rows (USING breeze_has_org_
+  // access(NULL) = FALSE) with no error, so the route's PATCH/DELETE silently
+  // no-op'd. These guard against a regression reintroducing that.
+  it('partner scope can UPDATE its own partner-wide field', async () => {
+    const partner = await createPartner();
+    const id = await seedPartnerField(partner.id);
+
+    const updated = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .update(customFieldDefinitions)
+        .set({ name: 'Renamed' })
+        .where(eq(customFieldDefinitions.id, id))
+        .returning(),
+    );
+
+    // A USING-blocked update returns [] (no error); a real match returns the row.
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.name).toBe('Renamed');
+  });
+
+  it('partner scope can DELETE its own partner-wide field', async () => {
+    const partner = await createPartner();
+    const id = await seedPartnerField(partner.id, false); // this test removes it
+
+    const deleted = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .delete(customFieldDefinitions)
+        .where(eq(customFieldDefinitions.id, id))
+        .returning(),
+    );
+
+    // A USING-blocked delete returns [] (no error); a real match returns the row.
+    expect(deleted).toHaveLength(1);
+  });
+
+  it('a different partner can neither UPDATE nor DELETE the first partner\'s field', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const id = await seedPartnerField(partnerA.id);
+
+    // partnerB's UPDATE matches no rows — partnerA's row is hidden by USING.
+    const updatedByB = await withDbAccessContext(partnerContext(partnerB.id, []), () =>
+      db
+        .update(customFieldDefinitions)
+        .set({ name: 'Hijacked' })
+        .where(eq(customFieldDefinitions.id, id))
+        .returning(),
+    );
+    expect(updatedByB).toEqual([]);
+
+    // partnerB's DELETE likewise affects nothing.
+    const deletedByB = await withDbAccessContext(partnerContext(partnerB.id, []), () =>
+      db
+        .delete(customFieldDefinitions)
+        .where(eq(customFieldDefinitions.id, id))
+        .returning(),
+    );
+    expect(deletedByB).toEqual([]);
+
+    // The row still exists and is unchanged — confirm via the owning partner.
+    const stillThere = await withDbAccessContext(partnerContext(partnerA.id, []), () =>
+      db
+        .select({ id: customFieldDefinitions.id, name: customFieldDefinitions.name })
+        .from(customFieldDefinitions)
+        .where(eq(customFieldDefinitions.id, id)),
+    );
+    expect(stillThere).toHaveLength(1);
+    expect(stillThere[0]?.name).toBe('Seed');
+  });
+
+  it('stays fail-closed without a DB access context (scope "none")', async () => {
+    // Mirrors ticket-comments-rls: with no withDbAccessContext, breeze.scope is
+    // unset (breeze_current_scope() = 'none'), so both helpers return FALSE and
+    // a partner-wide row must be invisible on the bare pool.
+    const partner = await createPartner();
+    const id = await seedPartnerField(partner.id);
+
+    const rows = await db
+      .select({ id: customFieldDefinitions.id })
+      .from(customFieldDefinitions)
+      .where(eq(customFieldDefinitions.id, id));
+
+    expect(rows).toEqual([]);
   });
 });

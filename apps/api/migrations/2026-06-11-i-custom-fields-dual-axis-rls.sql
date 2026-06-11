@@ -11,10 +11,11 @@
 --   PostgresError: new row violates row-level security policy
 -- i.e. an Internal Server Error on "add custom field" for any partner/MSP user.
 --
--- Convert to Shape-4 dual-axis (org OR partner), mirroring access_reviews
--- (2026-05-29) / deployment_invites (2026-04-20-b) / users. The two axes are
--- mutually exclusive (the route writes exactly one of org_id / partner_id), so
--- no composite FK applies.
+-- Convert to Shape-4 dual-axis (org OR partner). The closest precedent is
+-- access_reviews (2026-05-29): same FK-less, mutually-exclusive shape. The
+-- policy predicate also matches deployment_invites (2026-04-20-b) / users, but
+-- those additionally enforce a composite FK (org_id, partner_id) that does NOT
+-- apply here — the route writes exactly one of org_id / partner_id, never both.
 -- Idempotent: DROP POLICY IF EXISTS then recreate. No inner BEGIN/COMMIT.
 DROP POLICY IF EXISTS breeze_org_isolation_select ON public.custom_field_definitions;
 DROP POLICY IF EXISTS breeze_org_isolation_insert ON public.custom_field_definitions;
