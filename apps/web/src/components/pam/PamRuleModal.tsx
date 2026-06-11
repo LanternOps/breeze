@@ -111,6 +111,17 @@ export default function PamRuleModal({
       .catch(() => {});
   }, [isEdit, orgsLoaded, sitesOrgId]);
 
+  // Reset days/tz when the time window is fully cleared so stale values don't
+  // invisibly resurface if a start/end is re-entered later. Safe on mount: a
+  // rule without a window initializes these empty anyway, and a rule with a
+  // window has non-empty start/end so the condition is false.
+  useEffect(() => {
+    if (!windowStart && !windowEnd) {
+      setWindowDays([]);
+      setWindowTimezone('');
+    }
+  }, [windowStart, windowEnd]);
+
   const toggleDay = (day: number) => {
     setWindowDays((prev) =>
       prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b),

@@ -325,6 +325,27 @@ describe('PamRulesTab', () => {
       expect(payload.timeWindow).toEqual({ start: '08:00', end: '18:00' });
     });
 
+    it('drops stale days and timezone after the window is fully cleared and re-entered', async () => {
+      installFetchRoutes({ rules: [windowedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-edit-rule-w'));
+      fireEvent.click(screen.getByTestId('pam-rule-edit-rule-w'));
+
+      // Clear both ends of the window, then re-enter a new one.
+      fireEvent.change(screen.getByTestId('pam-rule-window-start'), { target: { value: '' } });
+      fireEvent.change(screen.getByTestId('pam-rule-window-end'), { target: { value: '' } });
+      fireEvent.change(screen.getByTestId('pam-rule-window-start'), { target: { value: '09:00' } });
+      fireEvent.change(screen.getByTestId('pam-rule-window-end'), { target: { value: '17:00' } });
+      fireEvent.click(screen.getByTestId('pam-rule-submit'));
+
+      await waitFor(() => {
+        expect(findMutationCall('/pam/rules/rule-w', 'PATCH')).toBeDefined();
+      });
+      const payload = bodyOf(findMutationCall('/pam/rules/rule-w', 'PATCH'));
+      // Old days/timezone must not silently resurface with the new window.
+      expect(payload.timeWindow).toEqual({ start: '09:00', end: '17:00' });
+    });
+
     it('blocks submit with an inline error when start is set without end', async () => {
       installFetchRoutes({ rules: [] });
       render(<PamRulesTab />);
