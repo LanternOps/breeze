@@ -75,6 +75,7 @@ export const listTicketsQuerySchema = z.object({
   assignee: z.union([z.literal('me'), z.literal('unassigned'), z.string().uuid()]).optional(),
   categoryId: z.string().uuid().optional(),
   priority: ticketPrioritySchema.optional(),
+  slaState: z.enum(['ok', 'at_risk', 'breached', 'breaching']).optional(),
   search: z.string().max(200).optional(),
   sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage')
 });

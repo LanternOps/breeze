@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, writeRouteAuditMock } = vi.hoisted(() => {
+const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock } = vi.hoisted(() => {
   const lastWhereArgs: { conditions: unknown[] }[] = [];
+  const lastOrderByArgs: unknown[][] = [];
   return {
     serviceMocks: {
       createTicket: vi.fn(),
@@ -18,6 +19,7 @@ const { serviceMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, write
     dbGroupByMock: vi.fn(),
     writeRouteAuditMock: vi.fn(),
     lastWhereArgs,
+    lastOrderByArgs,
     /** Mutable ref so individual tests can override the injected auth context. */
     authRef: {
       current: {
@@ -83,9 +85,12 @@ vi.mock('../../db', () => ({
               where: vi.fn((...args: unknown[]) => {
                 lastWhereArgs.push({ conditions: args });
                 return {
-                  orderBy: vi.fn(() => ({
+                  orderBy: vi.fn((...orderArgs: unknown[]) => {
+                    lastOrderByArgs.push(orderArgs);
+                    return {
                     limit: vi.fn(() => ({ offset: vi.fn(() => dbSelectMock()) }))
-                  })),
+                    };
+                  }),
                   limit: vi.fn(() => dbSelectMock())
                 };
               })
@@ -99,12 +104,18 @@ vi.mock('../../db', () => ({
           // single leftJoin → where (e.g. ticketAlertLinks joined with alerts)
           where: vi.fn(() => Promise.resolve(dbSelectMock() ?? []))
         })),
-        where: vi.fn(() => ({
+        where: vi.fn((...args: unknown[]) => {
+          lastWhereArgs.push({ conditions: args });
+          const result = {
           orderBy: vi.fn(() => Promise.resolve([])),
           groupBy: vi.fn(() => dbGroupByMock()),
           // getScopedTicketOr404 and GET /:id single-row lookups both use .limit(1)
-          limit: vi.fn(() => dbSelectMock())
-        }))
+          limit: vi.fn(() => dbSelectMock()),
+          then: (resolve: (value: unknown) => unknown, reject: (reason?: unknown) => unknown) =>
+            Promise.resolve(dbSelectMock()).then(resolve, reject)
+          };
+          return result;
+        })
       }))
     })),
     update: vi.fn(() => ({
@@ -120,8 +131,10 @@ vi.mock('../../db/schema', () => ({
     priority: 'priority', assignedTo: 'assignedTo', categoryId: 'categoryId',
     internalNumber: 'internalNumber', subject: 'subject', createdAt: 'createdAt',
     updatedAt: 'updatedAt', dueDate: 'dueDate', deviceId: 'deviceId',
-    source: 'source', slaBreachedAt: 'slaBreachedAt', firstResponseAt: 'firstResponseAt',
-    resolutionSlaMinutes: 'resolutionSlaMinutes'
+    source: 'source', slaBreachedAt: 'sla_breached_at', firstResponseAt: 'first_response_at',
+    responseSlaMinutes: 'response_sla_minutes', resolutionSlaMinutes: 'resolution_sla_minutes',
+    slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
+    slaBreachReason: 'sla_breach_reason'
   },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
   ticketCategories: {},
@@ -162,6 +175,7 @@ function makeApp() {
 function resetAuth() {
   authRef.current = { ...DEFAULT_AUTH, canAccessOrg: () => true };
   lastWhereArgs.length = 0;
+  lastOrderByArgs.length = 0;
 }
 
 describe('GET /tickets', () => {
@@ -176,14 +190,29 @@ describe('GET /tickets', () => {
     expect(body).toHaveProperty('pagination');
   });
 
-  it('selects resolutionSlaMinutes and returns it in list rows (SLA chips)', async () => {
+  it('selects SLA fields and returns them in list rows (SLA chips)', async () => {
     dbSelectMock.mockResolvedValue([
-      { id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer', resolutionSlaMinutes: 240 }
+      {
+        id: 't-1',
+        internalNumber: 'T-2026-0001',
+        subject: 'Printer',
+        responseSlaMinutes: 60,
+        resolutionSlaMinutes: 240,
+        slaPausedAt: null,
+        slaPausedMinutes: 15,
+        slaBreachReason: null
+      }
     ]);
     const res = await makeApp().request('/tickets');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data[0]).toMatchObject({ resolutionSlaMinutes: 240 });
+    expect(body.data[0]).toMatchObject({
+      responseSlaMinutes: 60,
+      resolutionSlaMinutes: 240,
+      slaPausedAt: null,
+      slaPausedMinutes: 15,
+      slaBreachReason: null
+    });
 
     // The selection object passed to db.select must include the column —
     // the mock returns rows verbatim, so assert the query shape too.
@@ -191,9 +220,56 @@ describe('GET /tickets', () => {
     const selectionCalls = (db.select as any).mock.calls.filter(
       (args: unknown[]) => args[0] && typeof args[0] === 'object'
     );
-    expect(selectionCalls.some(
-      (args: any[]) => 'resolutionSlaMinutes' in args[0]
-    )).toBe(true);
+    const listSelection = selectionCalls.find(
+      (args: any[]) => args[0] && 'internalNumber' in args[0] && 'subject' in args[0]
+    )?.[0];
+    expect(listSelection).toMatchObject({
+      responseSlaMinutes: 'response_sla_minutes',
+      resolutionSlaMinutes: 'resolution_sla_minutes',
+      slaPausedAt: 'sla_paused_at',
+      slaPausedMinutes: 'sla_paused_minutes',
+      slaBreachReason: 'sla_breach_reason'
+    });
+  });
+
+  it('GET /tickets?slaState=breached filters on sla_breached_at IS NOT NULL', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?slaState=breached');
+    expect(res.status).toBe(200);
+
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('sla_breached_at');
+    expect(serialized).toContain('IS NOT NULL');
+  });
+
+  it('GET /tickets?slaState=breaching ORs breached with the at-risk expression', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?slaState=breaching');
+    expect(res.status).toBe(200);
+
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('sla_breached_at');
+    expect(serialized).toContain('OR');
+    expect(serialized).toContain('sla_paused_at');
+    expect(serialized).toContain('response_sla_minutes');
+    expect(serialized).toContain('resolution_sla_minutes');
+  });
+
+  it('triage sort orders breached first, then at-risk, then priority', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?sort=triage');
+    expect(res.status).toBe(200);
+
+    expect(lastOrderByArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastOrderByArgs[0]);
+    const breachedIndex = serialized.indexOf('sla_breached_at');
+    const atRiskIndex = serialized.indexOf('sla_paused_at');
+    const priorityIndex = serialized.indexOf('urgent');
+    expect(breachedIndex).toBeGreaterThanOrEqual(0);
+    expect(atRiskIndex).toBeGreaterThan(breachedIndex);
+    expect(priorityIndex).toBeGreaterThan(atRiskIndex);
   });
 
   it('rejects an invalid statusGroup', async () => {
@@ -307,7 +383,7 @@ describe('POST /tickets', () => {
 describe('GET /tickets/stats', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
-  it('aggregates open / unassigned / mine / breached counts via groupBy', async () => {
+  it('aggregates open / unassigned / mine / breached counts via groupBy and returns atRisk', async () => {
     // auth user id is 'u-1' (set in requireScope mock above)
     // Rows: open+assigned-to-u1+not-breached(3), new+unassigned+breached(2)
     const mockRows = [
@@ -315,6 +391,7 @@ describe('GET /tickets/stats', () => {
       { status: 'new',  assignedTo: null,   breached: true,  count: 2 }
     ];
     dbGroupByMock.mockResolvedValue(mockRows);
+    dbSelectMock.mockResolvedValue([{ atRisk: 4 }]);
 
     const res = await makeApp().request('/tickets/stats');
     expect(res.status).toBe(200);
@@ -324,7 +401,7 @@ describe('GET /tickets/stats', () => {
     // unassigned: row 2 has no assignedTo → 2
     // mine: row 1 has assignedTo === 'u-1' → 3
     // breached: row 2 has breached=true → 2
-    expect(body.data).toEqual({ open: 5, unassigned: 2, mine: 3, breached: 2 });
+    expect(body.data).toEqual({ open: 5, unassigned: 2, mine: 3, breached: 2, atRisk: 4 });
 
     // Ensure groupBy was used (not orderBy) — the mock resolves via dbGroupByMock
     expect(dbGroupByMock).toHaveBeenCalledTimes(1);

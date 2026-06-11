@@ -56,6 +56,13 @@ describe('ticket validators', () => {
     expect(listTicketsQuerySchema.safeParse({ deviceId: 'not-a-uuid' }).success).toBe(false);
   });
 
+  it('listTicketsQuerySchema accepts slaState values', () => {
+    for (const v of ['ok', 'at_risk', 'breached', 'breaching']) {
+      expect(listTicketsQuerySchema.parse({ slaState: v }).slaState).toBe(v);
+    }
+    expect(() => listTicketsQuerySchema.parse({ slaState: 'nope' })).toThrow();
+  });
+
   it('updateTicketSchema accepts SLA override minutes', () => {
     expect(updateTicketSchema.parse({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 }))
       .toEqual({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 });
