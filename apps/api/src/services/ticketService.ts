@@ -226,8 +226,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     status: (input.assigneeId ? 'open' : 'new') as typeof tickets.$inferInsert['status'],
     source: input.source,
     submittedBy: isPortal ? input.submittedBy : null,
-    submitterEmail: isPortal ? input.submitterEmail : null,
-    submitterName: isPortal ? (input.submitterName ?? null) : null,
+    // Non-portal tickets default the requester to the acting user — a technician
+    // logging a ticket is its requester unless the portal supplied one.
+    submitterEmail: isPortal ? input.submitterEmail : (actor.email ?? null),
+    submitterName: isPortal ? (input.submitterName ?? null) : (actor.name ?? null),
     category: null
   } satisfies typeof tickets.$inferInsert;
 
