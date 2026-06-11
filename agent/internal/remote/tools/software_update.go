@@ -75,89 +75,55 @@ func updateSoftwareOS(name, version, packageID string) error {
 }
 
 func updateSoftwareWindows(name, version, packageID string) error {
-	// Two-tier match strategy mirrors uninstallSoftwareWindows: try
-	// --name first (matches the human-readable name the user sees in
-	// the Software tab), then --id as a fallback (winget's stable
-	// identifier, used when the display name is ambiguous).
-	attempts := []updateAttempt{
-		{
-			command: "winget",
-			args: []string{
-				"upgrade",
-				"--name", name,
-				"--silent",
-				"--accept-source-agreements",
-				"--accept-package-agreements",
-				"--disable-interactivity",
-			},
-		},
-		{
-			command: "winget",
-			args: []string{
-				"upgrade",
-				"--id", name,
-				"--silent",
-				"--accept-source-agreements",
-				"--accept-package-agreements",
-				"--disable-interactivity",
-			},
-		},
+	return runUpdateAttempts(name, buildWindowsUpdateAttempts(name, version, packageID))
+}
+
+// wingetUpgradeAttempt builds a single `winget upgrade` attempt selecting the
+// package by the given flag (--name or --id), optionally version-pinned.
+func wingetUpgradeAttempt(selector, value, version string) updateAttempt {
+	args := []string{"upgrade", selector, value}
+	if version != "" {
+		args = append(args, "--version", version)
+	}
+	args = append(args,
+		"--silent",
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+	)
+	return updateAttempt{command: "winget", args: args}
+}
+
+// buildWindowsUpdateAttempts returns the ordered list of winget attempts.
+// Ordering is significant — the first attempt whose binary is present and whose
+// invocation succeeds wins (see runUpdateAttempts):
+//
+//  1. --id <packageID>  (when a known winget Id is supplied) — the most reliable
+//     selector, so it's tried first ahead of the display-name heuristics.
+//  2. --name <name>     (the human-readable name from the Software tab)
+//  3. --id <name>       (display name as a fallback id, for ambiguous names)
+//
+// A version-pinned variant is prepended within each tier when a target version
+// is supplied (winget treats --version as "upgrade to this exact version").
+func buildWindowsUpdateAttempts(name, version, packageID string) []updateAttempt {
+	var attempts []updateAttempt
+
+	if packageID != "" {
+		if version != "" {
+			attempts = append(attempts, wingetUpgradeAttempt("--id", packageID, version))
+		}
+		attempts = append(attempts, wingetUpgradeAttempt("--id", packageID, ""))
 	}
 
 	if version != "" {
-		// When a target version is supplied, prepend version-pinned
-		// variants. winget treats --version as "upgrade to this exact
-		// version" — useful for compliance pinning.
-		attempts = append([]updateAttempt{
-			{
-				command: "winget",
-				args: []string{
-					"upgrade",
-					"--name", name,
-					"--version", version,
-					"--silent",
-					"--accept-source-agreements",
-					"--accept-package-agreements",
-					"--disable-interactivity",
-				},
-			},
-		}, attempts...)
+		attempts = append(attempts, wingetUpgradeAttempt("--name", name, version))
 	}
+	attempts = append(attempts,
+		wingetUpgradeAttempt("--name", name, ""),
+		wingetUpgradeAttempt("--id", name, ""),
+	)
 
-	if packageID != "" {
-		// A known winget Id is the most reliable selector — prepend it so it's
-		// tried first, ahead of the display-name heuristics. Include a
-		// version-pinned variant when a target version is also supplied.
-		idAttempts := []updateAttempt{}
-		if version != "" {
-			idAttempts = append(idAttempts, updateAttempt{
-				command: "winget",
-				args: []string{
-					"upgrade",
-					"--id", packageID,
-					"--version", version,
-					"--silent",
-					"--accept-source-agreements",
-					"--accept-package-agreements",
-					"--disable-interactivity",
-				},
-			})
-		}
-		idAttempts = append(idAttempts, updateAttempt{
-			command: "winget",
-			args: []string{
-				"upgrade",
-				"--id", packageID,
-				"--silent",
-				"--accept-source-agreements",
-				"--accept-package-agreements",
-				"--disable-interactivity",
-			},
-		})
-		attempts = append(idAttempts, attempts...)
-	}
-
-	return runUpdateAttempts(name, attempts)
+	return attempts
 }
 
 func updateSoftwareMacOS(name string) error {

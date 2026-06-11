@@ -16,6 +16,10 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 
+// Mirrors the API's softwareActions packageId regex. Used to decide whether a
+// correlated update's packageId can be sent to the winget-only `--id` path.
+const WINGET_PACKAGE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
 function isApplePublisher(publisher: string): boolean {
   const p = publisher.toLowerCase();
   return p === 'apple' || p === 'apple inc.' || p === 'apple inc' || p === 'com.apple' || p.startsWith('com.apple.');
@@ -185,9 +189,14 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
       const verb = action === 'update' ? 'Update' : 'Uninstall';
       // Updates send the winget packageId (when known) so the agent upgrades by
       // --id, and never pin a version — we always want the latest available.
+      // Only a winget-shaped id is forwarded: the third_party patch bucket also
+      // carries Homebrew ids like "homebrew:cask:foo" whose colons the API
+      // rejects — those fall back to a name-based upgrade (which brew uses anyway).
       const body: Record<string, string> = { name };
       if (action === 'update') {
-        if (opts?.packageId) body.packageId = opts.packageId;
+        if (opts?.packageId && WINGET_PACKAGE_ID.test(opts.packageId)) {
+          body.packageId = opts.packageId;
+        }
       } else if (version) {
         body.version = version;
       }

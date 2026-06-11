@@ -118,6 +118,44 @@ describe('DeviceSoftwareInventory action buttons', () => {
     });
   });
 
+  it('does not forward a non-winget (Homebrew) packageId; updates by name', async () => {
+    const macFixture = {
+      thirdPartyUpdatesManaged: false,
+      data: [
+        {
+          id: 'sw-brewchrome',
+          name: 'Google Chrome',
+          version: '125.0',
+          publisher: 'Google LLC',
+          installDate: '2026-02-01',
+          updateAvailable: true,
+          availableVersion: '131.0',
+          updatePackageId: 'homebrew:cask:google-chrome', // colons → must NOT be forwarded
+          updateSource: 'third_party',
+        },
+      ],
+    };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse(macFixture))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, commandId: 'c', action: 'update' }));
+
+    render(<DeviceSoftwareInventory deviceId={deviceId} osType="macos" />);
+
+    const btn = await screen.findByTestId('software-update-sw-brewchrome');
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/devices/${deviceId}/software/update`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ name: 'Google Chrome' }),
+        })
+      );
+    });
+  });
+
   it('disables Update for a Windows row with no available update', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(SOFTWARE_FIXTURE));
 

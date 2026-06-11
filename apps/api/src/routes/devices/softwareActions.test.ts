@@ -155,6 +155,73 @@ describe('device software actions routes', () => {
       );
     });
 
+    it('passes a winget packageId through to the agent payload on Windows', async () => {
+      (getDeviceWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'device-1',
+        orgId: 'org-123',
+        siteId: null,
+        hostname: 'host-1',
+        status: 'online',
+        osType: 'windows',
+      });
+      queueCommandForExecutionMock.mockResolvedValue({
+        command: { id: 'cmd-pkg', status: 'pending' },
+      });
+
+      const res = await app.request('/devices/device-1/software/update', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Mozilla Firefox', packageId: 'Mozilla.Firefox' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+        'device-1',
+        'software_update',
+        { name: 'Mozilla Firefox', packageId: 'Mozilla.Firefox', source: 'device_software_tab' },
+        expect.objectContaining({ userId: 'user-123' })
+      );
+    });
+
+    it('does not forward packageId on a non-Windows device', async () => {
+      (getDeviceWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'device-1',
+        orgId: 'org-123',
+        siteId: null,
+        hostname: 'host-1',
+        status: 'online',
+        osType: 'macos',
+      });
+      queueCommandForExecutionMock.mockResolvedValue({
+        command: { id: 'cmd-pkg2', status: 'sent' },
+      });
+
+      const res = await app.request('/devices/device-1/software/update', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Mozilla Firefox', packageId: 'Mozilla.Firefox' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+        'device-1',
+        'software_update',
+        { name: 'Mozilla Firefox', source: 'device_software_tab' },
+        expect.objectContaining({ userId: 'user-123' })
+      );
+    });
+
+    it('rejects a malformed packageId before queueing', async () => {
+      const res = await app.request('/devices/device-1/software/update', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Firefox', packageId: 'Mozilla.Firefox;rm -rf /' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
     it.each(['macos', 'linux'])(
       'rejects a version pin with 422 on a %s device (agent ignores it)',
       async (osType) => {

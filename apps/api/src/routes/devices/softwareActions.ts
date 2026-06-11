@@ -98,7 +98,11 @@ softwareActionsRoutes.post(
 
     const payload: Record<string, unknown> = { name: data.name, source: 'device_software_tab' };
     if (data.version) payload.version = data.version;
-    if (data.packageId) payload.packageId = data.packageId;
+    // packageId drives winget's `--id` upgrade and is meaningless to the macOS /
+    // Linux agent paths (which upgrade by name). Forward it only on Windows so a
+    // stray id can never reach a non-winget package manager — consistent with the
+    // Windows-only version-pin gate above.
+    if (data.packageId && device.osType === 'windows') payload.packageId = data.packageId;
 
     const queued = await queueCommandForExecution(deviceId, CommandTypes.SOFTWARE_UPDATE, payload, {
       userId: auth.user.id,
