@@ -1,4 +1,4 @@
-import { Play, Pencil, Trash2, List } from 'lucide-react';
+import { Loader2, Play, Pencil, Trash2, List } from 'lucide-react';
 
 export type DiscoveryProfileStatus = 'active' | 'paused' | 'draft' | 'error';
 
@@ -20,7 +20,8 @@ type DiscoveryProfileListProps = {
   onRetry?: () => void;
   onEdit?: (profile: DiscoveryProfile) => void;
   onDelete?: (profile: DiscoveryProfile) => void;
-  onRun?: (profile: DiscoveryProfile) => void;
+  onRun?: (profile: DiscoveryProfile) => void | Promise<void>;
+  runningProfileId?: string | null;
   onViewJobs?: (profileId: string) => void;
 };
 
@@ -39,6 +40,7 @@ export default function DiscoveryProfileList({
   onEdit,
   onDelete,
   onRun,
+  runningProfileId,
   onViewJobs
 }: DiscoveryProfileListProps) {
   if (loading) {
@@ -169,10 +171,17 @@ export default function DiscoveryProfileList({
                       <button
                         type="button"
                         onClick={() => onRun?.(profile)}
-                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-                        title="Run now"
+                        disabled={runningProfileId === profile.id}
+                        aria-label={runningProfileId === profile.id ? `Running ${profile.name}` : `Run ${profile.name}`}
+                        aria-busy={runningProfileId === profile.id}
+                        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                        title={runningProfileId === profile.id ? 'Running...' : 'Run now'}
                       >
-                        <Play className="h-4 w-4" />
+                        {runningProfileId === profile.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Play className="h-4 w-4" />
+                        )}
                       </button>
                       <button
                         type="button"
