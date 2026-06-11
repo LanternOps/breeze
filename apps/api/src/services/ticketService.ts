@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -48,6 +48,39 @@ async function getTicketOrThrow(ticketId: string) {
   return ticket;
 }
 
+/**
+ * Resolve the partner a ticket belongs to. tickets.partner_id is stamped on
+ * every create since Phase 1a but is nullable for legacy rows — fall back to
+ * the org's partner for those.
+ */
+async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId: string }): Promise<string | null> {
+  if (ticket.partnerId) return ticket.partnerId;
+  const rows = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, ticket.orgId))
+    .limit(1);
+  return rows[0]?.partnerId ?? null;
+}
+
+/**
+ * Tenant guard: an assignee must be a user of the same partner as the ticket.
+ * users.partner_id is NOT NULL (every user belongs to exactly one MSP), so a
+ * same-partner equality check is the complete cross-tenant boundary.
+ */
+async function assertAssigneeInPartner(assigneeId: string, partnerId: string | null) {
+  const rows = await db
+    .select({ id: users.id, partnerId: users.partnerId })
+    .from(users)
+    .where(eq(users.id, assigneeId))
+    .limit(1);
+  const assignee = rows[0];
+  if (!assignee) throw new TicketServiceError('Assignee not found', 404);
+  if (!partnerId || assignee.partnerId !== partnerId) {
+    throw new TicketServiceError('Assignee must belong to the same partner as the ticket', 400);
+  }
+}
+
 interface BaseCreateTicketInput {
   orgId: string;
   subject: string;
@@ -92,6 +125,10 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     if (device.orgId !== input.orgId) {
       throw new TicketServiceError('Device must belong to the same organization as the ticket', 400);
     }
+  }
+
+  if (input.assigneeId) {
+    await assertAssigneeInPartner(input.assigneeId, org.partnerId);
   }
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
@@ -347,6 +384,10 @@ export async function updateTicketFields(
 export async function assignTicket(ticketId: string, assigneeId: string | null, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
   const prevAssignedTo = ticket.assignedTo;
+
+  if (assigneeId) {
+    await assertAssigneeInPartner(assigneeId, await resolveTicketPartnerId(ticket));
+  }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
   if (assigneeId && ticket.status === 'new') patch.status = 'open';
