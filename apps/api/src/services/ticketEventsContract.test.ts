@@ -104,7 +104,9 @@ vi.mock('../db/schema', () => ({
   ticketAlertLinks: {},
   organizations: { id: 'id', partnerId: 'partnerId' },
   alerts: { id: 'id', orgId: 'orgId' },
-  users: { id: 'id', email: 'email' },
+  users: { id: 'id', email: 'email', partnerId: 'partnerId' },
+  ticketCategories: { id: 'id', partnerId: 'partnerId' },
+  devices: { id: 'id', orgId: 'orgId' },
   userNotifications: {},
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
@@ -142,8 +144,9 @@ describe('ticket-events producer→consumer contract', () => {
   // ── createTicket with assignee → ticket.created ──────────────────────────
 
   it('createTicket with assignee: emitted event feeds handleTicketEvent → in-app insert + email', async () => {
-    // Service selects: org lookup
+    // Service selects: org lookup, then assignee lookup (users table)
     hoisted.selectQueue.push([{ id: 'o-1', partnerId: 'p-1' }]);
+    hoisted.selectQueue.push([{ id: 'u-assignee', partnerId: 'p-1' }]);
     // Service insert: ticket insert returning
     hoisted.insertReturningQueue.push([{ id: 't-c1', orgId: 'o-1', internalNumber: 'T-2026-C001', status: 'open' }]);
 
