@@ -25,6 +25,35 @@ describe('slaState', () => {
   it('closed/resolved tickets are never at-risk', () => {
     expect(slaState(ticket({ resolutionSlaMinutes: 10, status: 'resolved' }) as never, new Date('2026-06-10T00:00:00Z')).kind).toBe('none');
   });
+
+  describe('pause- and response-aware rules', () => {
+    const base = { status: 'open' as const, slaBreachedAt: null, createdAt: new Date(Date.now() - 60 * 60_000).toISOString(), firstResponseAt: null };
+
+    it('uses the response target when first response is outstanding', () => {
+      // 60m elapsed, response target 90m (66% — ok), resolution 480m
+      const s = slaState({ ...base, responseSlaMinutes: 90, resolutionSlaMinutes: 480 });
+      expect(s.kind).toBe('ok');
+      // 60m elapsed, response target 70m (86% — at-risk)
+      expect(slaState({ ...base, responseSlaMinutes: 70, resolutionSlaMinutes: 480 }).kind).toBe('at-risk');
+    });
+
+    it('ignores the response target once firstResponseAt is set', () => {
+      const s = slaState({ ...base, firstResponseAt: new Date().toISOString(), responseSlaMinutes: 10, resolutionSlaMinutes: 480 });
+      expect(s.kind).toBe('ok');
+    });
+
+    it('freezes the clock while paused and reports paused', () => {
+      const s = slaState({ ...base, slaPausedAt: new Date().toISOString(), resolutionSlaMinutes: 90, slaPausedMinutes: 0 });
+      expect(s.kind).toBe('paused');
+    });
+
+    it('subtracts accumulated pause minutes', () => {
+      // 60m wall elapsed, 30m paused → 30m active; target 90m → ok with 60m left
+      const s = slaState({ ...base, resolutionSlaMinutes: 90, slaPausedMinutes: 30 });
+      expect(s.kind).toBe('ok');
+      if (s.kind === 'ok') expect(Math.round(s.minutesLeft)).toBe(60);
+    });
+  });
 });
 
 describe('config completeness', () => {

@@ -43,6 +43,18 @@ describe('emitTicketEvent', () => {
     );
   });
 
+  it('enqueues ticket.sla_breached with target payload', async () => {
+    await emitTicketEvent({
+      type: 'ticket.sla_breached',
+      ticketId: 't1',
+      orgId: 'o1',
+      partnerId: 'p1',
+      actorUserId: null,
+      payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer on fire', assigneeId: 'u1' }
+    });
+    expect(addMock).toHaveBeenCalledWith('ticket.sla_breached', expect.objectContaining({ type: 'ticket.sla_breached' }), expect.anything());
+  });
+
   it('never throws to the caller when the queue is down', async () => {
     addMock.mockRejectedValueOnce(new Error('redis down'));
     await expect(emitTicketEvent({

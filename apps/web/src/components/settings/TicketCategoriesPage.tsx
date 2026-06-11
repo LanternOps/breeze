@@ -31,10 +31,14 @@ interface EditDraft {
   defaultHourlyRate: string;
 }
 
+// Single comparator shared by hierarchyOrder and moveWithinSiblings — the
+// rendered order and the move order MUST agree (sortOrder, name tiebreak), so
+// don't fork this.
+const byRank = (a: Category, b: Category) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
+
 // One level of nesting only — the UI never offers non-root parents and the API
 // stays two-level in practice.
 function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
-  const byRank = (a: Category, b: Category) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
   const roots = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId));
   const out: Array<Category & { depth: number }> = [];
   for (const r of [...roots].sort(byRank)) {
@@ -51,6 +55,27 @@ function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
     out.push({ ...c, depth: 0 });
   }
   return out;
+}
+
+// Compute the new id order for `id`'s sibling group (same parentId) after a
+// one-step move. Returns null when the move would fall off either edge or the
+// id is unknown — callers disable the corresponding arrow on null. Shares
+// byRank with hierarchyOrder so visual order and move order agree even when
+// sortOrder values tie (pre-existing rows all start at 0) — for the normal
+// two-level case; rows on hierarchyOrder's defensive orphan path group by
+// their raw parentId here and may not be visually adjacent.
+export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): string[] | null {
+  const target = cats.find((c) => c.id === id);
+  if (!target) return null;
+  const siblings = cats
+    .filter((c) => (c.parentId ?? null) === (target.parentId ?? null))
+    .sort(byRank);
+  const idx = siblings.findIndex((c) => c.id === id);
+  const swap = idx + dir;
+  if (swap < 0 || swap >= siblings.length) return null;
+  const order = siblings.map((c) => c.id);
+  [order[idx], order[swap]] = [order[swap], order[idx]];
+  return order;
 }
 
 function defaultsSummary(c: Category): string {
@@ -177,6 +202,24 @@ export default function TicketCategoriesPage() {
     }
   }, [draft, load]);
 
+  const move = useCallback(async (cat: Category, dir: -1 | 1) => {
+    const order = moveWithinSiblings(categories, cat.id, dir);
+    if (!order) return;
+    // Optimistic: apply the new ranks locally; restore server truth on failure.
+    const rank = new Map(order.map((id, i) => [id, i]));
+    setCategories((prev) => prev.map((c) => (rank.has(c.id) ? { ...c, sortOrder: rank.get(c.id)! } : c)));
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/ticket-categories/reorder', { method: 'PUT', body: JSON.stringify({ ids: order }) }),
+        errorFallback: 'Reorder failed. Retry.',
+        onUnauthorized: UNAUTHORIZED
+      });
+    } catch (err) {
+      void load();
+      if (!(err instanceof ActionError)) throw err;
+    }
+  }, [categories, load]);
+
   // Root categories that can be a parent in the create form (active, no parent)
   const createParentOptions = categories.filter((c) => !c.parentId && c.isActive);
 
@@ -274,6 +317,26 @@ export default function TicketCategoriesPage() {
                 <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c)}</td>
                 <td className="px-4 py-2 text-sm">{c.isActive ? 'Active' : 'Inactive'}</td>
                 <td className="px-4 py-2 text-right space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => void move(c, -1)}
+                    disabled={moveWithinSiblings(categories, c.id, -1) === null}
+                    className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
+                    aria-label={`Move ${c.name} up`}
+                    data-testid={`ticket-category-move-up-${c.id}`}
+                  >
+                    ▲
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void move(c, 1)}
+                    disabled={moveWithinSiblings(categories, c.id, 1) === null}
+                    className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
+                    aria-label={`Move ${c.name} down`}
+                    data-testid={`ticket-category-move-down-${c.id}`}
+                  >
+                    ▼
+                  </button>
                   <button
                     type="button"
                     onClick={() => startEdit(c)}

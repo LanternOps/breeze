@@ -593,6 +593,7 @@ export * from './ai';
 // ============================================
 
 export * from './tickets';
+export * from './portal';
 
 // ============================================
 // Backup Target Validators

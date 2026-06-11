@@ -64,6 +64,21 @@ describe('SlaChip', () => {
     expect(chip.textContent).toContain('left');
   });
 
+  it('renders a paused chip while slaPausedAt is set', () => {
+    // 30 minutes elapsed of a 120-minute SLA, paused now
+    const ticket = makeTicket({
+      id: 'tk-6',
+      resolutionSlaMinutes: 120,
+      createdAt: new Date(NOW.getTime() - 30 * 60_000).toISOString(),
+      slaPausedAt: NOW.toISOString(),
+      slaPausedMinutes: 0,
+    });
+    render(<SlaChip ticket={ticket} />);
+    const chip = screen.getByTestId('ticket-sla-tk-6');
+    expect(chip.textContent).toContain('Paused');
+    expect(chip.textContent).toContain('left');
+  });
+
   it('renders "Breached" when slaBreachedAt is set', () => {
     const ticket = makeTicket({
       id: 'tk-5',

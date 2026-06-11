@@ -30,6 +30,25 @@ const CLOSED_STATUSES = ['resolved', 'closed'] as const;
 const PRIORITY_ORDER = sql`CASE ${tickets.priority}
   WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END`;
 
+// SQL twins of services/ticketSla.ts rules — change them together.
+// Active elapsed = now - created_at - paused; at-risk at 80% of the tighter target (D7).
+const SLA_BREACHED = sql`${tickets.slaBreachedAt} IS NOT NULL`;
+const SLA_AT_RISK = sql`(
+  ${tickets.slaBreachedAt} IS NULL
+  AND ${tickets.status} IN ('new', 'open')
+  AND ${tickets.slaPausedAt} IS NULL
+  AND (
+    (${tickets.firstResponseAt} IS NULL AND ${tickets.responseSlaMinutes} IS NOT NULL
+      AND now() >= ${tickets.createdAt}
+        + COALESCE(${tickets.slaPausedMinutes}, 0) * interval '1 minute'
+        + ${tickets.responseSlaMinutes} * interval '1 minute' * 0.8)
+    OR (${tickets.resolutionSlaMinutes} IS NOT NULL
+      AND now() >= ${tickets.createdAt}
+        + COALESCE(${tickets.slaPausedMinutes}, 0) * interval '1 minute'
+        + ${tickets.resolutionSlaMinutes} * interval '1 minute' * 0.8)
+  )
+)`;
+
 export function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
   const auth = c.get('auth');
   return { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
@@ -197,7 +216,12 @@ ticketsRoutes.get(
         if (r.breached) breached += n;
       }
     }
-    return c.json({ data: { open, unassigned, mine, breached } });
+    const slaRows = await db
+      .select({ atRisk: sql<number>`count(*) FILTER (WHERE ${SLA_AT_RISK})` })
+      .from(tickets)
+      .where(whereCondition);
+    const atRisk = Number(slaRows[0]?.atRisk ?? 0);
+    return c.json({ data: { open, unassigned, mine, breached, atRisk } });
   }
 );
 
@@ -240,6 +264,10 @@ ticketsRoutes.get(
     else if (q.assignee) conditions.push(eq(tickets.assignedTo, q.assignee));
     if (q.categoryId) conditions.push(eq(tickets.categoryId, q.categoryId));
     if (q.priority) conditions.push(eq(tickets.priority, q.priority));
+    if (q.slaState === 'breached') conditions.push(SLA_BREACHED);
+    else if (q.slaState === 'at_risk') conditions.push(SLA_AT_RISK);
+    else if (q.slaState === 'breaching') conditions.push(sql`(${SLA_BREACHED} OR ${SLA_AT_RISK})`);
+    else if (q.slaState === 'ok') conditions.push(sql`(NOT ${SLA_BREACHED} AND NOT ${SLA_AT_RISK})`);
     if (q.search) {
       // Escape ILIKE special chars so literal % and _ in the query aren't wildcards.
       const escaped = q.search.replace(/[%_]/g, '\\$&');
@@ -253,7 +281,7 @@ ticketsRoutes.get(
       q.sort === 'newest' ? [desc(tickets.createdAt), desc(tickets.id)]
       : q.sort === 'oldest' ? [asc(tickets.createdAt), asc(tickets.id)]
       : q.sort === 'due' ? [asc(tickets.dueDate), asc(tickets.id)]
-      : [PRIORITY_ORDER, asc(tickets.createdAt), asc(tickets.id)]; // triage
+      : [desc(SLA_BREACHED), desc(SLA_AT_RISK), PRIORITY_ORDER, asc(tickets.createdAt), asc(tickets.id)]; // triage: breaches surface first
 
     const data = await db
       .select({
@@ -273,7 +301,11 @@ ticketsRoutes.get(
         dueDate: tickets.dueDate,
         slaBreachedAt: tickets.slaBreachedAt,
         firstResponseAt: tickets.firstResponseAt,
+        responseSlaMinutes: tickets.responseSlaMinutes,
         resolutionSlaMinutes: tickets.resolutionSlaMinutes,
+        slaPausedAt: tickets.slaPausedAt,
+        slaPausedMinutes: tickets.slaPausedMinutes,
+        slaBreachReason: tickets.slaBreachReason,
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt
       })

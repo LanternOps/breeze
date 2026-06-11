@@ -7,12 +7,14 @@ import {
   CheckCircle2,
   Copy,
   Check,
+  Globe,
   Monitor,
   Paintbrush,
   ScrollText,
   Shield
 } from 'lucide-react';
 import OrgBrandingEditor from './OrgBrandingEditor';
+import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
@@ -35,6 +37,12 @@ const tabs = [
     label: 'Branding',
     description: 'Portal theme and visuals',
     icon: Paintbrush
+  },
+  {
+    id: 'portal',
+    label: 'Customer Portal',
+    description: 'Portal features and support contact',
+    icon: Globe
   },
   {
     id: 'notifications',
@@ -382,6 +390,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             locked={locked}
           />
         );
+      case 'portal':
+        return effectiveOrgId ? (
+          <OrgPortalSettingsEditor
+            orgId={effectiveOrgId}
+            onDirty={handleDirty}
+            onSave={() => handleSave()}
+          />
+        ) : null;
       case 'notifications':
         return (
           <OrgNotificationSettings

@@ -49,6 +49,7 @@ const makeTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
   submitterEmail: null,
   pendingReason: null,
   resolutionNote: null,
+  resolvedAt: null,
   comments: [],
   alertLinks: [],
   ...overrides

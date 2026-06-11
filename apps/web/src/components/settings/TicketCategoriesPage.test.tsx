@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import TicketCategoriesPage from './TicketCategoriesPage';
+import TicketCategoriesPage, { moveWithinSiblings } from './TicketCategoriesPage';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -55,6 +55,9 @@ function mockGetCategories(cats: unknown[]) {
     }
     if (url.match(/\/ticket-categories\/.+/) && init?.method === 'PATCH') {
       return makeJsonResponse({ data: {} });
+    }
+    if (url === '/ticket-categories/reorder' && init?.method === 'PUT') {
+      return makeJsonResponse({ success: true });
     }
     return makeJsonResponse({ error: 'unexpected' }, false, 404);
   });
@@ -405,5 +408,78 @@ describe('TicketCategoriesPage', () => {
       expect(options).toContain(CAT_ROOT2.id);   // other root available
       expect(options).not.toContain(CAT_CHILD.id); // self excluded
     });
+  });
+});
+
+describe('moveWithinSiblings', () => {
+  const cats = [
+    { ...CAT_PARENT, id: 'p1', sortOrder: 0 },          // root
+    { ...CAT_ROOT2, id: 'r2', sortOrder: 1 },           // root
+    { ...CAT_PARENT, id: 'r3', name: 'Network', sortOrder: 2 }, // root
+    { ...CAT_CHILD, id: 'c1', parentId: 'p1', sortOrder: 0 },
+    { ...CAT_CHILD, id: 'c2', name: 'Scanners', parentId: 'p1', sortOrder: 1 }
+  ];
+
+  it('moves a root down: swaps with the next root only', () => {
+    expect(moveWithinSiblings(cats, 'p1', 1)).toEqual(['r2', 'p1', 'r3']);
+  });
+
+  it('moves a root up', () => {
+    expect(moveWithinSiblings(cats, 'r3', -1)).toEqual(['p1', 'r3', 'r2']);
+  });
+
+  it('returns null at the top edge', () => {
+    expect(moveWithinSiblings(cats, 'p1', -1)).toBeNull();
+  });
+
+  it('returns null at the bottom edge', () => {
+    expect(moveWithinSiblings(cats, 'r3', 1)).toBeNull();
+  });
+
+  it('children reorder within their own sibling group only', () => {
+    expect(moveWithinSiblings(cats, 'c1', 1)).toEqual(['c2', 'c1']);
+    expect(moveWithinSiblings(cats, 'c2', 1)).toBeNull();
+  });
+
+  it('handles all-tied sortOrder (pre-existing data) using the name tiebreak', () => {
+    const tied = [
+      { ...CAT_PARENT, id: 'a', name: 'Alpha', sortOrder: 0 },
+      { ...CAT_PARENT, id: 'b', name: 'Beta', sortOrder: 0 }
+    ];
+    expect(moveWithinSiblings(tied, 'b', -1)).toEqual(['b', 'a']);
+  });
+
+  it('returns null for an unknown id', () => {
+    expect(moveWithinSiblings(cats, 'nope', 1)).toBeNull();
+  });
+});
+
+describe('reorder buttons', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('PUTs the sibling-group id order on move-down', async () => {
+    mockGetCategories([CAT_PARENT, CAT_ROOT2, CAT_CHILD]);
+    render(<TicketCategoriesPage />);
+    await waitFor(() => expect(screen.getByTestId('ticket-category-move-down-p1')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('ticket-category-move-down-p1'));
+
+    await waitFor(() => {
+      const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+      expect(putCall).toBeDefined();
+      expect(String(putCall![0])).toBe('/ticket-categories/reorder');
+      expect(JSON.parse(String(putCall![1]!.body))).toEqual({ ids: ['r2', 'p1'] });
+    });
+  });
+
+  it('disables the up arrow on the first sibling and down arrow on the last', async () => {
+    mockGetCategories([CAT_PARENT, CAT_ROOT2]);
+    render(<TicketCategoriesPage />);
+    await waitFor(() => expect(screen.getByTestId('ticket-category-move-up-p1')).toBeInTheDocument());
+    expect(screen.getByTestId('ticket-category-move-up-p1')).toBeDisabled();
+    expect(screen.getByTestId('ticket-category-move-down-p1')).not.toBeDisabled();
+    expect(screen.getByTestId('ticket-category-move-down-r2')).toBeDisabled();
   });
 });

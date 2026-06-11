@@ -5,6 +5,7 @@ import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devic
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
+import { resolveSlaTargets } from './ticketSla';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -140,7 +141,12 @@ async function assertCategoryInPartner(categoryId: string, partnerId: string | n
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+        .select({
+          id: ticketCategories.id,
+          partnerId: ticketCategories.partnerId,
+          responseSlaMinutes: ticketCategories.responseSlaMinutes,
+          resolutionSlaMinutes: ticketCategories.resolutionSlaMinutes
+        })
         .from(ticketCategories)
         .where(eq(ticketCategories.id, categoryId))
         .limit(1)
@@ -152,6 +158,7 @@ async function assertCategoryInPartner(categoryId: string, partnerId: string | n
   if (category.partnerId !== partnerId) {
     throw new TicketServiceError('Category must belong to the same partner as the ticket', 400, 'CATEGORY_WRONG_PARTNER');
   }
+  return category;
 }
 
 interface BaseCreateTicketInput {
@@ -204,9 +211,16 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     await assertAssigneeInPartner(input.assigneeId, org.partnerId);
   }
 
+  let category: Awaited<ReturnType<typeof assertCategoryInPartner>> | null = null;
   if (input.categoryId) {
-    await assertCategoryInPartner(input.categoryId, org.partnerId);
+    category = await assertCategoryInPartner(input.categoryId, org.partnerId);
   }
+
+  const slaTargets = resolveSlaTargets({
+    categoryResponseMinutes: category?.responseSlaMinutes ?? null,
+    categoryResolutionMinutes: category?.resolutionSlaMinutes ?? null,
+    priority: input.priority ?? 'normal'
+  });
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
@@ -233,7 +247,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     // so staff-created tickets must keep "no external requester" semantics.
     submitterEmail: isPortal ? input.submitterEmail : null,
     submitterName: isPortal ? (input.submitterName ?? null) : (actor.name ?? null),
-    category: null
+    category: null,
+    responseSlaMinutes: slaTargets.responseMinutes,
+    resolutionSlaMinutes: slaTargets.resolutionMinutes
   } satisfies typeof tickets.$inferInsert;
 
   const inserted = await db
@@ -309,6 +325,21 @@ export async function changeTicketStatus(
     patch.pendingReason = null;
   }
 
+  // SLA clock pause/resume (spec §3, decision D4): the clock pauses while the
+  // ticket sits in pending/on_hold. Fold elapsed pause time on ANY exit —
+  // including resolve/close — so reopen resumes from a consistent ledger.
+  const wasPaused = fromStatus === 'pending' || fromStatus === 'on_hold';
+  const willBePaused = toStatus === 'pending' || toStatus === 'on_hold';
+  if (!wasPaused && willBePaused) {
+    patch.slaPausedAt = now;
+  } else if (wasPaused && !willBePaused) {
+    if (ticket.slaPausedAt) {
+      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(ticket.slaPausedAt).getTime()) / 60_000));
+      patch.slaPausedMinutes = (ticket.slaPausedMinutes ?? 0) + elapsedMinutes;
+    }
+    patch.slaPausedAt = null;
+  }
+
   // Compare-and-swap: include fromStatus in the WHERE so a concurrent update is detected.
   const updated = await db
     .update(tickets)
@@ -358,6 +389,8 @@ export interface UpdateTicketFieldsInput {
   categoryId?: string | null;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   dueDate?: Date | null;
+  responseSlaMinutes?: number | null;
+  resolutionSlaMinutes?: number | null;
   deviceId?: string | null;
   tags?: string[];
 }
@@ -369,6 +402,8 @@ const UPDATE_FIELD_LABELS: Record<keyof UpdateTicketFieldsInput, string> = {
   categoryId: 'category',
   priority: 'priority',
   dueDate: 'due date',
+  responseSlaMinutes: 'response SLA',
+  resolutionSlaMinutes: 'resolution SLA',
   deviceId: 'device',
   tags: 'tags'
 };
@@ -409,6 +444,7 @@ export async function updateTicketFields(
   }
 
   if (typeof fields.categoryId === 'string') {
+    // D2: category changes after create do not restamp SLA targets — return value deliberately discarded.
     await assertCategoryInPartner(fields.categoryId, await resolveTicketPartnerId(ticket));
   }
 

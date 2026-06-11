@@ -30,7 +30,7 @@ const patch = (title: string, version: string | null, packageId: string | null =
   title,
   version,
   packageId,
-  source: 'third_party',
+  source: 'third_party' as const,
 });
 
 describe('buildUpdateIndex', () => {
@@ -43,13 +43,23 @@ describe('buildUpdateIndex', () => {
     });
   });
 
-  it('keeps the first entry when two updates normalize to the same name', () => {
+  it('keeps the first entry when the same package is reported twice', () => {
     const index = buildUpdateIndex([
       patch('Mozilla Firefox', '130.0', 'Mozilla.Firefox'),
-      patch('Mozilla Firefox (x64 en-US)', '131.0', 'Mozilla.FirefoxESR'),
+      patch('Mozilla Firefox (x64 en-US)', '131.0', 'Mozilla.Firefox'),
     ]);
     expect(index.size).toBe(1);
     expect(index.get('mozilla firefox')?.availableVersion).toBe('130.0');
+  });
+
+  it('drops an ambiguous name shared by two different packages (x64 + x86)', () => {
+    const index = buildUpdateIndex([
+      patch('Microsoft Visual C++ 2015-2022 Redistributable (x64)', '14.40', 'Microsoft.VCRedist.2015+.x64'),
+      patch('Microsoft Visual C++ 2015-2022 Redistributable (x86)', '14.40', 'Microsoft.VCRedist.2015+.x86'),
+    ]);
+    // Both normalize to the same key but point at different packages — neither
+    // wins, so no inventory row gets a wrong-architecture update.
+    expect(index.size).toBe(0);
   });
 
   it('skips entries with unnormalizable titles', () => {

@@ -6,6 +6,16 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   if (s.kind === 'ok') {
     return <span className="text-xs text-muted-foreground" data-testid={`ticket-sla-${ticket.id}`}>{formatRelative(s.minutesLeft)}</span>;
   }
+  if (s.kind === 'paused') {
+    return (
+      <span
+        className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-muted text-muted-foreground border-border"
+        data-testid={`ticket-sla-${ticket.id}`}
+      >
+        Paused · {formatRelative(s.minutesLeft)} left
+      </span>
+    );
+  }
   if (s.kind === 'at-risk') {
     return (
       <span

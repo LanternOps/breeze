@@ -6,6 +6,7 @@
  *   - ticket.assigned / ticket.created (with assignee) → in-app + email to assignee
  *   - ticket.commented (isPublic) → email to requester
  *   - ticket.status_changed → resolved → email to requester
+ *   - ticket.sla_breached → in-app + email to assignee
  *
  * Pre-commit emission contract: ticketService emits events while the request
  * transaction is still open (see emitTicketEvent usage in ticketService.ts).
@@ -135,6 +136,47 @@ async function collectRequesterEmail(
   }];
 }
 
+async function collectSlaBreachNotification(
+  event: Extract<TicketEvent, { type: 'ticket.sla_breached' }>,
+  assigneeId: string
+): Promise<EmailPayload[]> {
+  const ticket = await getTicket(event.ticketId);
+  if (!ticket) {
+    throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
+  }
+
+  const assigneeRows = await db.select({ id: users.id, email: users.email })
+    .from(users)
+    .where(eq(users.id, assigneeId))
+    .limit(1);
+  const assignee = assigneeRows[0];
+  if (!assignee) {
+    return [];
+  }
+
+  const label = event.payload.internalNumber ?? event.ticketId;
+  const target = event.payload.target;
+
+  await db.insert(userNotifications).values({
+    userId: assigneeId,
+    orgId: event.orgId,
+    type: 'ticket',
+    priority: 'normal',
+    title: `SLA breached: ${label}`,
+    message: `${target} SLA breached for ${event.payload.subject}`,
+    link: `/tickets#${event.payload.internalNumber ?? event.ticketId}`
+  }).returning();
+
+  if (!assignee.email) return [];
+
+  return [{
+    to: assignee.email,
+    subject: `SLA breached: ${label} — ${event.payload.subject}`,
+    html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(event.payload.subject)}</p>`,
+    bestEffort: true
+  }];
+}
+
 /**
  * Core handler: runs DB work inside the system context, collects email payloads,
  * then sends emails after the context exits.
@@ -149,6 +191,13 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         const assigneeId = event.payload.assigneeId;
         if (assigneeId) {
           emailPayloads = await collectAssigneeNotification(event, assigneeId);
+        }
+        return;
+      }
+      case 'ticket.sla_breached': {
+        const assigneeId = event.payload.assigneeId;
+        if (assigneeId) {
+          emailPayloads = await collectSlaBreachNotification(event, assigneeId);
         }
         return;
       }

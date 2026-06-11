@@ -19,6 +19,10 @@ export interface TicketSummary {
   dueDate: string | null;
   slaBreachedAt: string | null;
   resolutionSlaMinutes?: number | null;
+  responseSlaMinutes?: number | null;
+  slaPausedAt?: string | null;
+  slaPausedMinutes?: number | null;
+  slaBreachReason?: string | null;
   firstResponseAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -44,6 +48,9 @@ export interface TicketDetail extends TicketSummary {
   submitterEmail: string | null;
   pendingReason: string | null;
   resolutionNote: string | null;
+  // Stamped by the API on resolve/close, cleared on reopen. The detail endpoint
+  // returns the full ticket row, so this is always present (unlike the list).
+  resolvedAt: string | null;
   comments: TicketComment[];
   alertLinks: Array<{ id: string; alertId: string; linkType: string; alertTitle: string | null; alertSeverity: string | null; alertStatus: string | null }>;
 }
@@ -78,21 +85,32 @@ export type SlaState =
   | { kind: 'none' }
   | { kind: 'ok'; minutesLeft: number }
   | { kind: 'at-risk'; minutesLeft: number }
+  | { kind: 'paused'; minutesLeft: number }
   | { kind: 'breached'; minutesAgo: number };
 
-// "Quiet until it matters" — see SlaChip for per-state rendering. At-risk begins at 80% of resolutionSlaMinutes elapsed.
+// "Quiet until it matters" — see SlaChip for per-state rendering. At-risk begins at 80% of the target elapsed.
+// Client twin of the server SLA rules (services/ticketSla.ts and the SQL fragments in routes/tickets/tickets.ts) — change together.
 export function slaState(
-  t: Pick<TicketSummary, 'slaBreachedAt' | 'createdAt' | 'status'> & { resolutionSlaMinutes?: number | null },
+  t: Pick<TicketSummary, 'slaBreachedAt' | 'createdAt' | 'status' | 'firstResponseAt'> &
+     { resolutionSlaMinutes?: number | null; responseSlaMinutes?: number | null; slaPausedAt?: string | null; slaPausedMinutes?: number | null },
   now: Date = new Date()
 ): SlaState {
   if (t.status === 'resolved' || t.status === 'closed') return { kind: 'none' };
   if (t.slaBreachedAt) {
     return { kind: 'breached', minutesAgo: (now.getTime() - new Date(t.slaBreachedAt).getTime()) / 60_000 };
   }
-  if (!t.resolutionSlaMinutes) return { kind: 'none' };
-  const elapsed = (now.getTime() - new Date(t.createdAt).getTime()) / 60_000;
-  const left = t.resolutionSlaMinutes - elapsed;
+  const targets: number[] = [];
+  if (t.responseSlaMinutes && !t.firstResponseAt) targets.push(t.responseSlaMinutes);
+  if (t.resolutionSlaMinutes) targets.push(t.resolutionSlaMinutes);
+  if (targets.length === 0) return { kind: 'none' };
+
+  // Both targets share the createdAt clock, so the smallest target is the most urgent.
+  const target = Math.min(...targets);
+  const clockEnd = t.slaPausedAt ? new Date(t.slaPausedAt) : now; // frozen while paused
+  const activeElapsed = (clockEnd.getTime() - new Date(t.createdAt).getTime()) / 60_000 - (t.slaPausedMinutes ?? 0);
+  const left = target - activeElapsed;
+  if (t.slaPausedAt) return { kind: 'paused', minutesLeft: Math.max(0, left) };
   if (left <= 0) return { kind: 'breached', minutesAgo: -left };
-  if (elapsed >= 0.8 * t.resolutionSlaMinutes) return { kind: 'at-risk', minutesLeft: left };
+  if (activeElapsed >= 0.8 * target) return { kind: 'at-risk', minutesLeft: left };
   return { kind: 'ok', minutesLeft: left };
 }

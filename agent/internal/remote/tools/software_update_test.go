@@ -73,6 +73,63 @@ func TestUpdateSoftwareRejectsUnsafePackageID(t *testing.T) {
 	}
 }
 
+// argsHave reports whether the attempt's args contain the given flag immediately
+// followed by the given value (e.g. "--id" then "Mozilla.Firefox").
+func argsHave(a updateAttempt, flag, value string) bool {
+	for i := 0; i+1 < len(a.args); i++ {
+		if a.args[i] == flag && a.args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBuildWindowsUpdateAttemptsPrefersPackageID(t *testing.T) {
+	t.Parallel()
+	attempts := buildWindowsUpdateAttempts("Mozilla Firefox", "", "Mozilla.Firefox")
+	if len(attempts) == 0 {
+		t.Fatal("expected at least one attempt")
+	}
+	// The --id <packageID> attempt must come first, ahead of any --name attempt.
+	if !argsHave(attempts[0], "--id", "Mozilla.Firefox") {
+		t.Fatalf("expected first attempt to select --id Mozilla.Firefox, got %v", attempts[0].args)
+	}
+	firstName, firstID := -1, -1
+	for i, a := range attempts {
+		if firstName == -1 && argsHave(a, "--name", "Mozilla Firefox") {
+			firstName = i
+		}
+		if firstID == -1 && argsHave(a, "--id", "Mozilla.Firefox") {
+			firstID = i
+		}
+	}
+	if firstID == -1 || firstName == -1 || firstID >= firstName {
+		t.Fatalf("expected --id packageID before --name; firstID=%d firstName=%d", firstID, firstName)
+	}
+}
+
+func TestBuildWindowsUpdateAttemptsVersionPinnedIDFirst(t *testing.T) {
+	t.Parallel()
+	attempts := buildWindowsUpdateAttempts("Mozilla Firefox", "131.0", "Mozilla.Firefox")
+	if !argsHave(attempts[0], "--id", "Mozilla.Firefox") || !argsHave(attempts[0], "--version", "131.0") {
+		t.Fatalf("expected first attempt to be version-pinned --id, got %v", attempts[0].args)
+	}
+}
+
+func TestBuildWindowsUpdateAttemptsNameFirstWithoutPackageID(t *testing.T) {
+	t.Parallel()
+	attempts := buildWindowsUpdateAttempts("Mozilla Firefox", "", "")
+	// Without a packageID, behavior is unchanged: --name is tried first.
+	if !argsHave(attempts[0], "--name", "Mozilla Firefox") {
+		t.Fatalf("expected first attempt to select --name when no packageID, got %v", attempts[0].args)
+	}
+	for _, a := range attempts {
+		if argsHave(a, "--id", "Mozilla.Firefox") {
+			t.Fatal("did not expect a packageID attempt when none was supplied")
+		}
+	}
+}
+
 func TestValidateSoftwarePackageID(t *testing.T) {
 	t.Parallel()
 	// Empty is allowed (the field is optional).

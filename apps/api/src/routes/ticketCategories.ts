@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, asc, eq, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { ticketCategories, organizations } from '../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
@@ -82,6 +82,55 @@ ticketCategoriesRoutes.get(
       .from(ticketCategories)
       .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.name));
     return c.json({ data });
+  }
+);
+
+const reorderSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200)
+}).refine((v) => new Set(v.ids).size === v.ids.length, {
+  message: 'ids must be unique',
+  path: ['ids']
+});
+
+// PUT /ticket-categories/reorder — assign sortOrder by array position.
+// Bulk (not per-row swaps): pre-existing rows all tie at sortOrder=0, so
+// swapping tied values is a no-op, and paired PATCHes aren't atomic. The
+// client sends one sibling group's ids in their new order; the endpoint is
+// hierarchy-agnostic, so "ids form a complete sibling group" is a client-owned
+// invariant — a partial subset just gets rebased to ranks 0..n-1 (cosmetic
+// only). withDbAccessContext (db/index.ts) wraps the request in a transaction,
+// so the sequential updates commit atomically; if that wrapper ever stops
+// being transactional, this loop needs its own db.transaction.
+ticketCategoriesRoutes.put(
+  '/reorder',
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('json', reorderSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    if (auth.scope === 'partner' && !auth.partnerId) {
+      return c.json({ error: 'Partner context required' }, 403);
+    }
+    const { ids } = c.req.valid('json');
+
+    // Every id must exist and belong to ONE partner — the caller's for partner
+    // scope. Reject wholesale otherwise: no partial reorders.
+    const rows = await db
+      .select({ id: ticketCategories.id, partnerId: ticketCategories.partnerId })
+      .from(ticketCategories)
+      .where(inArray(ticketCategories.id, ids));
+    const partnerIds = new Set(rows.map((r) => r.partnerId));
+    const expectedPartner = auth.scope === 'partner' ? auth.partnerId : rows[0]?.partnerId;
+    if (rows.length !== ids.length || partnerIds.size !== 1 || !expectedPartner || !partnerIds.has(expectedPartner)) {
+      return c.json({ error: 'One or more categories not found' }, 404);
+    }
+
+    for (const [index, id] of ids.entries()) {
+      await db.update(ticketCategories)
+        .set({ sortOrder: index, updatedAt: new Date() })
+        .where(eq(ticketCategories.id, id));
+    }
+    return c.json({ success: true });
   }
 );
 
