@@ -182,6 +182,9 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   'recovery_readiness',
   // PAM elevation requests (elevation_audit cascades automatically via FK ON DELETE CASCADE)
   'elevation_requests',
+  // Provisioning one-time credential handles (FK device_id → devices.id ON DELETE CASCADE;
+  // listed for the explicit-cascade coverage contract — leaf table, no children)
+  'provision_credential_handles',
 ] as const;
 
 export const coreRoutes = new Hono();
