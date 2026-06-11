@@ -159,6 +159,71 @@ describe('handleTicketEvent', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  // ── ticket.sla_breached fan-out tests ──────────────────────────────────────
+
+  it('ticket.sla_breached notifies the assignee in-app and by email', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0001', subject: 'Printer', submitterEmail: 'requester@acme.example' }])
+      .mockResolvedValueOnce([{ id: 'u-2', email: 'tech@msp.example' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
+    });
+
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'u-2',
+      orgId: 'o-1',
+      type: 'ticket',
+      priority: 'normal',
+      title: 'SLA breached: T-2026-0001',
+      message: expect.stringContaining('response'),
+      link: '/tickets#T-2026-0001'
+    }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'tech@msp.example',
+      subject: 'SLA breached: T-2026-0001 — Printer',
+      html: expect.stringContaining('response')
+    }));
+  });
+
+  it('ticket.sla_breached with no assignee creates no notification and no email', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0001', subject: 'Printer', submitterEmail: null }])
+      .mockResolvedValueOnce([]); // assignee user row absent (deleted user)
+
+    await expect(handleTicketEvent({
+      type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, payload: { target: 'resolution', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-deleted' }
+    })).resolves.toBeUndefined();
+
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    selectMock.mockReset();
+
+    await expect(handleTicketEvent({
+      type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: null }
+    })).resolves.toBeUndefined();
+
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('ticket.sla_breached throws when the ticket row is missing (retryable, pre-commit contract)', async () => {
+    selectMock.mockResolvedValueOnce([]); // no ticket row
+
+    await expect(handleTicketEvent({
+      type: 'ticket.sla_breached', ticketId: 'missing', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
+    })).rejects.toThrow(/not found/i);
+  });
+
   // ── ticket.status_changed fan-out tests ────────────────────────────────────
 
   it('ticket.status_changed to resolved sends email with internal number and HTML-escaped resolution note', async () => {
