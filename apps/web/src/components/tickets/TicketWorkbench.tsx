@@ -8,6 +8,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import TicketFeed from './TicketFeed';
 import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
+import { SlaTimers } from './SlaTimers';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
 
 interface Props {
@@ -335,27 +336,31 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
         </div>
         {railOpen && (
           <aside className="w-64 shrink-0 overflow-y-auto border-l p-3 text-sm hidden lg:block" data-testid="ticket-workbench-rail">
-            <dl className="space-y-3">
-              <div><dt className="text-xs text-muted-foreground">Requester</dt><dd>{ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}</dd></div>
-              <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
-              <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{new Date(ticket.createdAt).toLocaleString()}</dd></div>
-              {ticket.dueDate && <div><dt className="text-xs text-muted-foreground">Due</dt><dd>{new Date(ticket.dueDate).toLocaleString()}</dd></div>}
-              {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">Waiting on</dt><dd>{ticket.pendingReason}</dd></div>}
-              {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
-                <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>
-              )}
-              <div>
-                <dt className="text-xs text-muted-foreground">Linked alerts</dt>
-                <dd className="space-y-1">
-                  {ticket.alertLinks.length === 0 && <span className="text-muted-foreground">None</span>}
-                  {ticket.alertLinks.map((l) => (
-                    <a key={l.id} href={`/alerts#${l.alertId}`} className="block truncate hover:underline" data-testid={`ticket-alert-link-${l.alertId}`}>
-                      {l.alertTitle ?? l.alertId}
-                    </a>
-                  ))}
-                </dd>
-              </div>
-            </dl>
+            <div className="space-y-3">
+              {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
+              <SlaTimers ticket={ticket} />
+              <dl className="space-y-3">
+                <div><dt className="text-xs text-muted-foreground">Requester</dt><dd>{ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{new Date(ticket.createdAt).toLocaleString()}</dd></div>
+                {ticket.dueDate && <div><dt className="text-xs text-muted-foreground">Due</dt><dd>{new Date(ticket.dueDate).toLocaleString()}</dd></div>}
+                {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">Waiting on</dt><dd>{ticket.pendingReason}</dd></div>}
+                {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
+                  <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>
+                )}
+                <div>
+                  <dt className="text-xs text-muted-foreground">Linked alerts</dt>
+                  <dd className="space-y-1">
+                    {ticket.alertLinks.length === 0 && <span className="text-muted-foreground">None</span>}
+                    {ticket.alertLinks.map((l) => (
+                      <a key={l.id} href={`/alerts#${l.alertId}`} className="block truncate hover:underline" data-testid={`ticket-alert-link-${l.alertId}`}>
+                        {l.alertTitle ?? l.alertId}
+                      </a>
+                    ))}
+                  </dd>
+                </div>
+              </dl>
+            </div>
           </aside>
         )}
       </div>

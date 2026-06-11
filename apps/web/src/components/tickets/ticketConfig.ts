@@ -48,6 +48,9 @@ export interface TicketDetail extends TicketSummary {
   submitterEmail: string | null;
   pendingReason: string | null;
   resolutionNote: string | null;
+  // Stamped by the API on resolve/close, cleared on reopen. The detail endpoint
+  // returns the full ticket row, so this is always present (unlike the list).
+  resolvedAt: string | null;
   comments: TicketComment[];
   alertLinks: Array<{ id: string; alertId: string; linkType: string; alertTitle: string | null; alertSeverity: string | null; alertStatus: string | null }>;
 }
