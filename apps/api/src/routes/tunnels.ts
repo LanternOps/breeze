@@ -55,9 +55,13 @@ const updateAllowlistSchema = z.object({
 
 // Resolve the org a request acts on, from auth scope + an optional `?orgId=`.
 // Partner/system callers carry no JWT org claim — the web client passes the
-// selected org as a query param (see fetchWithAuth's auto-injection). Mirrors
-// the helper in discovery.ts / monitors.ts so the allowlist routes scope the
-// same way the rest of the discovery surface does.
+// selected org as a query param (see fetchWithAuth's auto-injection).
+//
+// Adapted from the resolveOrgId helpers in discovery.ts / monitors.ts, minus
+// their `requireForNonOrg` mode and permissive system-scope fall-through: these
+// routes always require a single resolvable org, so any unresolvable caller
+// (system or multi-org partner without `?orgId=`) gets a hard 400 and no
+// success branch can return a null org. Not kept in lockstep with those copies.
 function resolveOrgId(
   auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
   requestedOrgId?: string,

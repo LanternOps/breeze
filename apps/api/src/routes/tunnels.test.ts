@@ -777,7 +777,11 @@ describe('Allowlist routes — partner-scope org resolution', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('GET /allowlist scopes to the resolved org for a partner caller (200)', async () => {
+  it('GET /allowlist binds the RESOLVED org (not the null JWT org) into the WHERE clause', async () => {
+    // drizzle-orm is unmocked and schema columns are mocked as strings, so the
+    // org value is inlined as a raw chunk — JSON of the WHERE node contains it.
+    // This proves the route filters by the resolved ORG_A, not auth.orgId (null
+    // for partners), which a status-only assertion can't distinguish.
     const where = vi.fn().mockReturnValue({
       orderBy: vi.fn().mockResolvedValue([{ id: RULE_ID, orgId: ORG_A }]),
     });
@@ -795,6 +799,81 @@ describe('Allowlist routes — partner-scope org resolution', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toHaveLength(1);
+    expect(where).toHaveBeenCalledTimes(1);
+    const whereSql = JSON.stringify(where.mock.calls[0]![0]);
+    expect(whereSql).toContain(ORG_A);
+  });
+
+  it('POST /allowlist rejects an ORG-scope caller passing a foreign ?orgId= (403)', async () => {
+    // Regression guard for resolveOrgId's org-scope branch: an org-scoped user
+    // must not be able to redirect a write into another org via the query param.
+    // Default auth mock (no x-test-scope header) is org-scoped to ORG_ID.
+    rigInsertCapture({ id: RULE_ID });
+
+    const res = await app.request(`/tunnels/allowlist?orgId=${ORG_B}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('POST /allowlist resolves an explicit ?orgId= for a MULTI-org partner (201, binds ORG_A)', async () => {
+    // Distinct from the single-org auto-resolve path: a partner managing many
+    // orgs picks one in the UI. canAccessOrg must admit it and it must persist.
+    const valuesSpy = rigInsertCapture({ id: RULE_ID, orgId: ORG_A, ...ruleBody });
+
+    const res = await app.request(`/tunnels/allowlist?orgId=${ORG_A}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': `${ORG_A},${ORG_B}`,
+      },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesSpy.mock.calls[0]![0]).toEqual(expect.objectContaining({ orgId: ORG_A }));
+  });
+
+  it('PUT /allowlist/:id resolves the org for a partner caller, binding ORG_A (404 when no row)', async () => {
+    // PUT got the identical resolveOrgId treatment as POST/GET/DELETE; cover its
+    // partner path and prove the existence check filters by the resolved org.
+    const existsWhere = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: existsWhere }),
+    } as any);
+
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}?orgId=${ORG_A}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+      body: JSON.stringify({ pattern: '10.1.2.50/32:80-443' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(existsWhere.mock.calls[0]![0])).toContain(ORG_A);
+  });
+
+  it('PUT /allowlist/:id rejects a partner passing an inaccessible ?orgId= (403)', async () => {
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}?orgId=${ORG_B}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-test-scope': 'partner',
+        'x-test-accessible-orgs': ORG_A,
+      },
+      body: JSON.stringify({ pattern: '10.1.2.50/32:80-443' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('DELETE /allowlist/:id resolves the org for a partner caller (404 when no row)', async () => {
