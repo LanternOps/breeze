@@ -397,21 +397,19 @@ ticketsRoutes.patch(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const body = c.req.valid('json');
-    if (Object.keys(body).length === 0) {
-      // zod strips unknown keys, so a {status}/{assigneeId} body lands here looking
-      // empty — point callers at the dedicated routes instead of a generic 400.
-      // c.req.json() re-reads Hono's memoized body (zValidator already consumed the
-      // stream); if Hono ever stops memoizing, this falls back to null and only the
-      // hint is lost, never the 400 itself.
-      const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-      if (raw && 'status' in raw) {
-        return c.json({ error: 'Status is not updatable via PATCH — use POST /tickets/:id/status' }, 400);
-      }
-      if (raw && ('assigneeId' in raw || 'assignedTo' in raw)) {
-        return c.json({ error: 'Assignee is not updatable via PATCH — use POST /tickets/:id/assign' }, 400);
-      }
-      return c.json({ error: 'No fields to update' }, 400);
+    // zod strips unknown keys, so status/assignee changes sent here would silently
+    // vanish — reject them outright and point at the dedicated routes.
+    // c.req.json() re-reads Hono's memoized body (zValidator already consumed the
+    // stream); if Hono ever stops memoizing, this falls back to null and only the
+    // hint is lost, never the 400 itself.
+    const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (raw && 'status' in raw) {
+      return c.json({ error: 'Status is not updatable via PATCH — use POST /tickets/:id/status' }, 400);
     }
+    if (raw && ('assigneeId' in raw || 'assignedTo' in raw)) {
+      return c.json({ error: 'Assignee is not updatable via PATCH — use POST /tickets/:id/assign' }, 400);
+    }
+    if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);

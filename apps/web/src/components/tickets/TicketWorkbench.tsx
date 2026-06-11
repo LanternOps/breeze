@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -16,12 +16,17 @@ interface Props {
   expanded?: boolean;            // full-page mode
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
+  // Host-supplied assignee list (TicketsPage already fetches /users for its
+  // filter bar). When provided — including null for "picker hidden" — the
+  // workbench skips its own /users fetch; undefined keeps the standalone
+  // self-fetch (full-page /tickets/[id] view).
+  assignees?: Array<{ id: string; name: string | null; email: string }> | null;
 }
 
 const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
 const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
 
-export default function TicketWorkbench({ ticketId, onChanged, expanded, resolveRequestToken, refreshToken }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp }: Props) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -33,7 +38,9 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   const [railOpen] = useState(true);
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
-  const [assignees, setAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
+  const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
+  const assigneesProvided = assigneesProp !== undefined;
+  const assignees = assigneesProvided ? assigneesProp : fetchedAssignees;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,8 +68,17 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   useEffect(() => { void load(); }, [load]);
 
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
-  // bumps refreshToken after a bulk apply so the detail can't go stale.
-  useEffect(() => { if (refreshToken) void load(); }, [refreshToken, load]);
+  // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
+  // guard makes the effect fire only on an actual token bump — without it, a
+  // ticketId change (new `load` identity) with a non-zero token would refetch a
+  // second time on every j/k switch.
+  const lastRefreshToken = useRef(refreshToken ?? 0);
+  useEffect(() => {
+    if (refreshToken !== undefined && refreshToken !== lastRefreshToken.current) {
+      lastRefreshToken.current = refreshToken;
+      void load();
+    }
+  }, [refreshToken, load]);
 
   // Reset the inline resolve form when switching tickets — otherwise ticket B
   // could be resolved with ticket A's note (`e` on A, then `j` to B).
@@ -79,7 +95,9 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   }, [resolveRequestToken]);
 
   // Fetch assignees once; degrade gracefully if the endpoint is unavailable.
+  // Skipped entirely when the host already supplies the list via the prop.
   useEffect(() => {
+    if (assigneesProvided) return;
     let cancelled = false;
     void fetchWithAuth('/users')
       .then(async (r) => (r.ok ? r.json() : null))
@@ -87,13 +105,15 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
         if (cancelled || !body) return;
         const rows = Array.isArray(body) ? body : (body as { data?: unknown }).data;
         if (Array.isArray(rows))
-          setAssignees((rows as Array<{ id: string; name: string | null; email: string }>).filter((u) => u.id));
+          setFetchedAssignees((rows as Array<{ id: string; name: string | null; email: string }>).filter((u) => u.id));
       })
       .catch(() => { /* degraded mode keeps the unassign-only affordance */ });
     return () => { cancelled = true; };
-  }, []);
+  }, [assigneesProvided]);
 
-  const mutate = useCallback(async (path: string, body: unknown, success: string) => {
+  // Returns true on success, false on a swallowed ActionError — callers with
+  // form state (resolve/pending) must only close/clear when the POST landed.
+  const mutate = useCallback(async (path: string, body: unknown, success: string): Promise<boolean> => {
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}${path}`, { method: 'POST', body: JSON.stringify(body) }),
@@ -103,8 +123,10 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
       });
       await load();
       onChanged?.();
+      return true;
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
+      return false; // already toasted by runAction
     }
   }, [ticketId, load, onChanged]);
 
@@ -116,7 +138,8 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
 
   const submitResolve = useCallback(async () => {
     if (!resolutionNote.trim()) return;
-    await mutate('/status', { status: 'resolved', resolutionNote: resolutionNote.trim() }, 'Ticket resolved');
+    const ok = await mutate('/status', { status: 'resolved', resolutionNote: resolutionNote.trim() }, 'Ticket resolved');
+    if (!ok) return; // keep the form open and the typed note intact on failure
     setResolveOpen(false);
     setResolutionNote('');
   }, [mutate, resolutionNote]);
@@ -124,7 +147,8 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
     const reason = pendingReason.trim();
-    await mutate('/status', { status: pendingOpen, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated');
+    const ok = await mutate('/status', { status: pendingOpen, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated');
+    if (!ok) return; // keep the form open and the typed reason intact on failure
     setPendingOpen(null);
     setPendingReason('');
   }, [mutate, pendingOpen, pendingReason]);

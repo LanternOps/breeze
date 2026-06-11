@@ -1,9 +1,10 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
 
 interface Category {
   id: string;
@@ -31,8 +32,7 @@ interface EditDraft {
 }
 
 // One level of nesting only — the UI never offers non-root parents and the API
-// stays two-level in practice. A grandchild (parent exists but isn't a root)
-// would not be emitted here; revisit if the schema ever allows deeper trees.
+// stays two-level in practice.
 function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
   const byRank = (a: Category, b: Category) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
   const roots = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId));
@@ -43,12 +43,19 @@ function hierarchyOrder(cats: Category[]): Array<Category & { depth: number }> {
       out.push({ ...ch, depth: 1 });
     }
   }
+  // Defensive: the API tolerates deeper/cyclic parents (PATCH can produce a
+  // grandchild whose parent is itself a child); never hide a row from
+  // management — append anything not emitted above at depth 0.
+  const emitted = new Set(out.map((c) => c.id));
+  for (const c of cats.filter((cat) => !emitted.has(cat.id)).sort(byRank)) {
+    out.push({ ...c, depth: 0 });
+  }
   return out;
 }
 
 function defaultsSummary(c: Category): string {
   const parts: string[] = [];
-  if (c.defaultPriority) parts.push(c.defaultPriority.charAt(0).toUpperCase() + c.defaultPriority.slice(1));
+  if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(`${c.responseSlaMinutes}m response`);
   if (c.resolutionSlaMinutes != null) parts.push(`${c.resolutionSlaMinutes}m resolve`);
   if (c.defaultHourlyRate) parts.push(`$${parseFloat(c.defaultHourlyRate).toFixed(2)}/h`);
@@ -139,9 +146,10 @@ export default function TicketCategoriesPage() {
 
   const saveEdit = useCallback(async (id: string) => {
     if (!draft.name.trim()) return;
-    // Number('60a') is NaN, which JSON-serializes to null — refuse instead of silently nulling.
+    // Number('60a') is NaN and Number('1e999') is Infinity — both JSON-serialize
+    // to null, so refuse anything non-finite instead of silently nulling.
     const numeric = [draft.responseSlaMinutes, draft.resolutionSlaMinutes, draft.defaultHourlyRate];
-    if (numeric.some((v) => v !== '' && Number.isNaN(Number(v)))) {
+    if (numeric.some((v) => v !== '' && !Number.isFinite(Number(v)))) {
       showToast({ type: 'error', message: 'SLA minutes and hourly rate must be numbers.' });
       return;
     }
@@ -180,7 +188,7 @@ export default function TicketCategoriesPage() {
     return categories.filter((c) => !c.parentId && !excluded.has(c.id));
   }
 
-  const ordered = hierarchyOrder(categories);
+  const ordered = useMemo(() => hierarchyOrder(categories), [categories]);
 
   return (
     <div className="max-w-3xl" data-testid="ticket-categories-page">
@@ -334,10 +342,9 @@ export default function TicketCategoriesPage() {
                           data-testid="ticket-category-edit-priority"
                         >
                           <option value="">None</option>
-                          <option value="low">Low</option>
-                          <option value="normal">Normal</option>
-                          <option value="high">High</option>
-                          <option value="urgent">Urgent</option>
+                          {(Object.keys(priorityConfig) as TicketPriority[]).map((p) => (
+                            <option key={p} value={p}>{priorityConfig[p].label}</option>
+                          ))}
                         </select>
                       </div>
                       <div>

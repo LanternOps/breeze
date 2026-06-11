@@ -650,6 +650,18 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
     expect((await res.json()).error).toMatch(/POST \/tickets\/:id\/status/);
   });
 
+  it('400 with the status hint when status is mixed into an otherwise-valid body (no silent drop)', async () => {
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: 'high', status: 'closed' })
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/POST \/tickets\/:id\/status/);
+    // priority must NOT be applied while status is silently dropped
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
   it('400 with an assign-route hint when only assigneeId is sent', async () => {
     const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
       method: 'PATCH',

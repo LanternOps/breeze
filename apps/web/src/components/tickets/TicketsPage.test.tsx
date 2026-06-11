@@ -396,6 +396,36 @@ describe('TicketsPage', () => {
       expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
     });
 
+    it('cold load: claims are null-scope at mount (memory-only token), org user still never fetches /orgs/organizations', async () => {
+      // Simulate the token bootstrapping during the first authenticated fetches:
+      // claims read null until any fetch has happened, organization afterwards.
+      let tokenBootstrapped = false;
+      mockGetJwtClaims.mockImplementation(() =>
+        tokenBootstrapped
+          ? { scope: 'organization', orgId: 'org-1', partnerId: null }
+          : { scope: null, orgId: null, partnerId: null }
+      );
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        tokenBootstrapped = true; // fetchWithAuth refreshes the access token
+        if (url === '/tickets/stats') return makeJsonResponse(STATS);
+        if (url.startsWith('/tickets?')) return makeJsonResponse({ data: [healthy] });
+        if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
+        if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
+        if (url === '/users') return makeJsonResponse(USERS);
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Wait for the options effect to settle (categories rendered).
+      await screen.findByRole('option', { name: 'Hardware' });
+
+      const allFetchUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(allFetchUrls.every((u) => !u.includes('/orgs/organizations'))).toBe(true);
+      expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
+    });
+
     it('partner scope with one org returned: org filter hidden; with two orgs: visible', async () => {
       // First: one org returned
       fetchMock.mockImplementation(async (input) => {
@@ -462,9 +492,35 @@ describe('TicketsPage', () => {
         );
       });
       const call = showToast.mock.calls[0]?.[0] as { type: string; message: string };
-      expect(call.message).toContain('2 skipped');
+      expect(call.message).toContain('0 updated, 2 skipped');
       expect(call.message).toContain('out of your scope');
       expect(call.message).toContain('invalid status change');
+      // No failures → the failed segment is omitted entirely.
+      expect(call.message).not.toContain('failed');
+    });
+
+    it('failed writes are reported distinctly from skips in the warning toast', async () => {
+      mockListApi([healthy, atRisk, breached], {
+        bulkResult: { data: { updated: 1, skipped: 1, failed: 1, total: 3, skippedReasons: { OUT_OF_SCOPE: 1 } } } as typeof BULK_RESULT
+      });
+
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-breach'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'warning', message: expect.stringContaining(', 1 failed') })
+        );
+      });
+      const call = showToast.mock.calls[0]?.[0] as { type: string; message: string };
+      expect(call.message).toContain('1 updated, 1 skipped, 1 failed');
+      expect(call.message).toContain('out of your scope');
     });
 
     it('fully-successful bulk shows a success toast with updated count', async () => {

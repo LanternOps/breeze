@@ -53,12 +53,23 @@ ticketCategoriesRoutes.get(
       // never from caller input — is the security boundary, same pattern as
       // ticketService.assertCategoryInPartner. Org users get read-only visibility
       // of their MSP's categories; the write routes below remain partner/system.
+      // The column projection + isActive filter are deliberate: org users get the
+      // selectable catalog only — never the MSP's billing defaults
+      // (defaultHourlyRate/defaultBillable) or retired categories.
       const data = await runOutsideDbContext(() =>
         withSystemDbAccessContext(() =>
           db
-            .select()
+            .select({
+              id: ticketCategories.id,
+              name: ticketCategories.name,
+              color: ticketCategories.color,
+              parentId: ticketCategories.parentId,
+              defaultPriority: ticketCategories.defaultPriority,
+              sortOrder: ticketCategories.sortOrder,
+              isActive: ticketCategories.isActive
+            })
             .from(ticketCategories)
-            .where(eq(ticketCategories.partnerId, partnerId))
+            .where(and(eq(ticketCategories.partnerId, partnerId), eq(ticketCategories.isActive, true)))
             .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.name))
         )
       );

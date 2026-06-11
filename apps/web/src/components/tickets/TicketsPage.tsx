@@ -54,7 +54,11 @@ function selectionFromHash(): string | null {
 }
 
 export default function TicketsPage() {
-  // Read once on mount — scope is stable for the lifetime of the page.
+  // Re-read per render to hide the org filter for org-scoped users. On a cold
+  // page load the memory-only access token may not exist yet, so this can read
+  // null scope before token bootstrap — the options effect below re-reads the
+  // claims after its first fetches bootstrap the token, and `orgs.length > 1`
+  // keeps the filter hidden either way (belt and braces).
   const orgScoped = getJwtClaims().scope === 'organization';
 
   const [tab, setTab] = useState<Tab>('open');
@@ -96,18 +100,14 @@ export default function TicketsPage() {
     let cancelled = false;
     const readJson = async (res: Response): Promise<unknown> => (res.ok ? res.json() : null);
     void (async () => {
-      const [orgRes, catRes, userRes] = await Promise.allSettled([
-        // Org-scoped users can't list organizations (403 console spam) and don't need
-        // the filter — their queue is already single-org.
-        orgScoped ? Promise.resolve(null) : fetchWithAuth('/orgs/organizations?limit=100').then(readJson),
+      // Categories + users first: access tokens are memory-only, so on a cold
+      // load the JWT claims are unreadable at mount — these fetches bootstrap
+      // the token before we decide whether the orgs fetch is allowed.
+      const [catRes, userRes] = await Promise.allSettled([
         fetchWithAuth('/ticket-categories').then(readJson),
         fetchWithAuth('/users').then(readJson)
       ]);
       if (cancelled) return;
-      if (orgRes.status === 'fulfilled' && orgRes.value) {
-        const body = orgRes.value as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> };
-        setOrgs((body.data ?? body.organizations ?? []).filter((o) => o.id && o.name));
-      }
       if (catRes.status === 'fulfilled' && catRes.value) {
         const body = catRes.value as { data?: Array<{ id: string; name: string; isActive?: boolean }> };
         setCategories((body.data ?? []).filter((cat) => cat.isActive !== false));
@@ -117,10 +117,18 @@ export default function TicketsPage() {
         const rows = Array.isArray(body) ? body : body.data;
         if (Array.isArray(rows)) setAssignees(rows.filter((u) => u.id));
       }
+      // Token is bootstrapped by the fetches above, so the claims read is reliable now.
+      // Org-scoped users can't list organizations (403 console spam) and don't need
+      // the filter — their queue is already single-org.
+      const orgScopedNow = getJwtClaims().scope === 'organization';
+      if (!orgScopedNow) {
+        const orgBody = await fetchWithAuth('/orgs/organizations?limit=100').then(readJson).catch(() => null);
+        if (cancelled || !orgBody) return;
+        const body = orgBody as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> };
+        setOrgs((body.data ?? body.organizations ?? []).filter((o) => o.id && o.name));
+      }
     })();
     return () => { cancelled = true; };
-    // orgScoped is stable (computed once from JWT on render), so omitting it
-    // from deps is intentional — the effect runs once and doesn't need to re-run.
   }, []);
 
   const fetchTickets = useCallback(async () => {
@@ -268,12 +276,13 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       const { updated, skipped, failed, skippedReasons } = result.data;
-      const missed = skipped + failed;
-      if (missed > 0) {
+      if (skipped + failed > 0) {
         const reasons = Object.entries(skippedReasons ?? {})
           .map(([code, n]) => `${n} ${SKIP_REASON_LABELS[code] ?? code.toLowerCase().replace(/_/g, ' ')}`)
           .join(', ');
-        showToast({ type: 'warning', message: `${updated} updated, ${missed} skipped${reasons ? ` — ${reasons}` : ''}` });
+        // Failures are reported distinctly from skips — "skipped" implies a
+        // pre-validation outcome, "failed" means the write itself errored.
+        showToast({ type: 'warning', message: `${updated} updated, ${skipped} skipped${failed ? `, ${failed} failed` : ''}${reasons ? ` — ${reasons}` : ''}` });
       } else {
         showToast({ type: 'success', message: `${updated} updated` });
       }
@@ -515,7 +524,7 @@ export default function TicketsPage() {
           </div>
           <div className="hidden min-w-0 flex-1 min-[1100px]:block">
             {selected ? (
-              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
+              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} onChanged={() => { void fetchTickets(); void fetchStats(); }} />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
                 <p>Select a ticket. Use j/k to move, Enter to expand.</p>

@@ -307,6 +307,74 @@ describe('TicketCategoriesPage', () => {
     });
   });
 
+  describe('hierarchy defensive rendering', () => {
+    it('renders a grandchild (parent exists but is itself a child) instead of hiding it', async () => {
+      // A → B → C chain: C's parent B is itself a child. The API tolerates this
+      // via PATCH even though the UI only offers roots — management must never
+      // hide a row.
+      const A = { ...CAT_PARENT, id: 'a1', name: 'A Root' };
+      const B = { ...CAT_CHILD, id: 'b1', name: 'B Child', parentId: 'a1' };
+      const C = { ...CAT_CHILD, id: 'c9', name: 'C Grandchild', parentId: 'b1' };
+      mockGetCategories([A, B, C]);
+      render(<TicketCategoriesPage />);
+
+      await screen.findByTestId('ticket-category-row-a1');
+      expect(screen.getByTestId('ticket-category-row-b1')).toBeInTheDocument();
+      // Without the defensive append, C would silently vanish from management.
+      const cRow = screen.getByTestId('ticket-category-row-c9');
+      expect(cRow).toBeInTheDocument();
+      expect(cRow.getAttribute('data-depth')).toBe('0');
+    });
+  });
+
+  describe('numeric guard on save', () => {
+    it.each(['60a', '1e999'])('refuses non-finite numeric input %s with an error toast and no PATCH', async (bad) => {
+      mockGetCategories([CAT_CHILD]);
+      render(<TicketCategoriesPage />);
+      await screen.findByTestId(`ticket-category-edit-${CAT_CHILD.id}`);
+
+      fireEvent.click(screen.getByTestId(`ticket-category-edit-${CAT_CHILD.id}`));
+      // '60a' → NaN; '1e999' → Infinity. Both JSON-serialize to null, silently
+      // nulling the field server-side — the guard must refuse both.
+      // jsdom sanitizes invalid strings on type=number inputs to '' before React
+      // sees them (real browsers pass e.g. '1e999' through), so flip the type to
+      // text for the change event to exercise the guard the way a browser would.
+      const rateInput = screen.getByTestId('ticket-category-edit-rate') as HTMLInputElement;
+      rateInput.type = 'text';
+      fireEvent.change(rateInput, { target: { value: bad } });
+      fireEvent.click(screen.getByTestId(`ticket-category-save-${CAT_CHILD.id}`));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'SLA minutes and hourly rate must be numbers.' });
+      });
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        `/ticket-categories/${CAT_CHILD.id}`,
+        expect.objectContaining({ method: 'PATCH' })
+      );
+    });
+  });
+
+  describe('priority options from priorityConfig', () => {
+    it('edit panel lists None + the priorityConfig entries in declared order', async () => {
+      mockGetCategories([CAT_CHILD]);
+      render(<TicketCategoriesPage />);
+      await screen.findByTestId(`ticket-category-edit-${CAT_CHILD.id}`);
+
+      fireEvent.click(screen.getByTestId(`ticket-category-edit-${CAT_CHILD.id}`));
+      const prioritySelect = screen.getByTestId('ticket-category-edit-priority');
+      const options = Array.from(prioritySelect.querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value);
+      expect(options).toEqual(['', 'urgent', 'high', 'normal', 'low']);
+      expect(screen.getByRole('option', { name: 'Urgent' })).toBeInTheDocument();
+    });
+
+    it('defaults summary uses the priorityConfig label', async () => {
+      mockGetCategories([{ ...CAT_CHILD, defaultPriority: 'high' }]);
+      render(<TicketCategoriesPage />);
+      const row = await screen.findByTestId(`ticket-category-row-${CAT_CHILD.id}`);
+      expect(row.textContent).toContain('High');
+    });
+  });
+
   describe('parent select in edit panel', () => {
     it('excludes the category itself and its children from the parent dropdown', async () => {
       // p1 is parent, c1 is child, r2 is another root

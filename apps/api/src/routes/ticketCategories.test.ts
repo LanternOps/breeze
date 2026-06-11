@@ -190,6 +190,47 @@ describe('GET /ticket-categories', () => {
     expect(withSystemDbAccessContextSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('org scope: response never exposes billing defaults and only selects active categories', async () => {
+    resetAuth({ scope: 'organization', orgId: 'org-1', partnerId: null });
+    // First call: org lookup; second: category list returning the projected shape
+    // (the route's explicit column projection means billing columns never reach the row).
+    const projectedRow = {
+      id: 'cat-1',
+      name: 'Hardware',
+      color: '#1c8a9e',
+      parentId: null,
+      defaultPriority: 'normal',
+      sortOrder: 0,
+      isActive: true
+    };
+    dbSelectResult
+      .mockResolvedValueOnce([{ partnerId: 'p-1' }])
+      .mockResolvedValueOnce([projectedRow]);
+
+    const res = await makeApp().request('/ticket-categories');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Rows pass through the projection untouched...
+    expect(body.data).toEqual([projectedRow]);
+    // ...and the MSP's billing defaults must never appear anywhere in the response.
+    const serialized = JSON.stringify(body);
+    expect(serialized.includes('defaultHourlyRate')).toBe(false);
+    expect(serialized.includes('defaultBillable')).toBe(false);
+
+    const { db } = await import('../db');
+    // Second select (the category list) must use an explicit column projection —
+    // never select-all — and that projection must exclude billing columns.
+    const projectionArg = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown> | undefined;
+    expect(projectionArg).toBeDefined();
+    expect(Object.keys(projectionArg!).sort()).toEqual(
+      ['color', 'defaultPriority', 'id', 'isActive', 'name', 'parentId', 'sortOrder']
+    );
+    // The WHERE must filter to active categories (isActive condition present).
+    const whereArg = vi.mocked(db.select).mock.results[1]?.value.from.mock.results[0]?.value.where.mock.calls[0]?.[0];
+    expect(JSON.stringify(whereArg)).toContain('isActive');
+  });
+
   it('partner scope: category read does NOT use the system DB context helpers', async () => {
     resetAuth({ scope: 'partner', partnerId: 'p-1' });
     dbSelectResult.mockResolvedValue([{ id: 'cat-1', name: 'Hardware', partnerId: 'p-1' }]);
