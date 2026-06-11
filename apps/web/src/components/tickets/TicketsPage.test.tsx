@@ -275,6 +275,51 @@ describe('TicketsPage', () => {
     expect(screen.getByTestId('tickets-filter-assignee')).toHaveAttribute('title', 'Tab already filters by assignee');
   });
 
+  describe('queue sort control', () => {
+    it('sort select passes sort=newest to the API and persists in the location hash', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Auto-select writes the selection hash first; sort must coexist with it.
+      await waitFor(() => {
+        expect(window.location.hash).toContain('T-2026-0001');
+      });
+
+      fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
+
+      await waitFor(() => {
+        expect(ticketFetchUrls().at(-1)).toContain('sort=newest');
+      });
+      expect(window.location.hash).toContain('sort=newest');
+      expect(window.location.hash).toContain('T-2026-0001');
+    });
+
+    it('restores sort and selection from a combined hash on load', async () => {
+      window.location.hash = '#T-2026-0002&sort=oldest';
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-risk');
+
+      expect(ticketFetchUrls().at(0)).toContain('sort=oldest');
+      expect(screen.getByTestId('ticket-sort')).toHaveValue('oldest');
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true');
+      });
+    });
+
+    it('defaults to triage and omits the sort param (server default order)', async () => {
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      expect(screen.getByTestId('ticket-sort')).toHaveValue('triage');
+      expect(ticketFetchUrls().at(0)).not.toContain('sort=');
+    });
+  });
+
   describe('bulk selection', () => {
     it('selecting two rows shows the bulk bar with "2 selected" without changing the workbench selection', async () => {
       mockListApi([healthy, atRisk, breached]);
