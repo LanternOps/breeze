@@ -61,7 +61,16 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 ] as const;
 
 /**
- * Subset of {@link DEVICE_CASCADE_DELETE_TABLES} whose rows denormalize
+ * Tables with a device_id FK to devices.id whose rows are tenant business
+ * records — preserve history, detach the device (device_id SET NULL) instead
+ * of cascade-deleting during permanent device deletion. Deviceless tickets
+ * are first-class (tickets.device_id is nullable).
+ */
+export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
+
+/**
+ * Subset of {@link DEVICE_CASCADE_DELETE_TABLES} ∪
+ * {@link DEVICE_DETACH_DEVICE_ID_TABLES} whose rows denormalize
  * `org_id` for RLS performance. When a device moves between orgs, every
  * one of these tables must have its `org_id` rewritten inside the same
  * transaction that flips `devices.org_id`, otherwise pre-existing rows
@@ -174,8 +183,9 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
-  // Portal & integrations
-  'psa_ticket_mappings', 'tickets', 'asset_checkouts',
+  // Portal & integrations (tickets are detached, not deleted —
+  // see DEVICE_DETACH_DEVICE_ID_TABLES)
+  'psa_ticket_mappings', 'asset_checkouts',
   // Filesystem
   'device_filesystem_snapshots', 'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   // Backup verification
@@ -1266,6 +1276,10 @@ coreRoutes.delete(
         await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
         for (const linkedTable of DEVICE_LINKED_DEVICE_ID_TABLES) {
           await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+        }
+        // Tenant business records (tickets): preserve history, detach the device.
+        for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
+          await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
         }
 
         const tables = DEVICE_CASCADE_DELETE_TABLES;

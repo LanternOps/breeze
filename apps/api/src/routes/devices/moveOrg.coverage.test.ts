@@ -4,6 +4,7 @@ import { PgTable } from 'drizzle-orm/pg-core';
 import * as schema from '../../db/schema';
 import {
   DEVICE_CASCADE_DELETE_TABLES,
+  DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_ORG_DENORMALIZED_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
@@ -44,18 +45,23 @@ function getColumns(table: PgTable<any>): any[] {
 
 describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
   const denormSet = new Set<string>(DEVICE_ORG_DENORMALIZED_TABLES);
-  const cascadeSet = new Set<string>(DEVICE_CASCADE_DELETE_TABLES);
+  // Device-managed tables = cascade-deleted ∪ detached (device_id SET NULL,
+  // e.g. tickets). Both kinds must keep org_id in sync on cross-org moves.
+  const managedSet = new Set<string>([
+    ...DEVICE_CASCADE_DELETE_TABLES,
+    ...DEVICE_DETACH_DEVICE_ID_TABLES,
+  ]);
 
   const allTables = Object.values(schema).filter(
     (v) => v instanceof PgTable,
   ) as PgTable<any>[];
 
-  it('includes every cascade-delete table that also has an org_id column', () => {
+  it('includes every device-managed table that also has an org_id column', () => {
     const missing: string[] = [];
 
     for (const table of allTables) {
       const name = getTableName(table);
-      if (!cascadeSet.has(name)) continue;
+      if (!managedSet.has(name)) continue;
       if (INTENTIONALLY_NO_ORG_ID.has(name)) continue;
 
       const cols = getColumns(table);
@@ -67,7 +73,7 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
 
     expect(
       missing,
-      `These tables are in DEVICE_CASCADE_DELETE_TABLES and have an org_id column ` +
+      `These tables are in DEVICE_CASCADE_DELETE_TABLES or DEVICE_DETACH_DEVICE_ID_TABLES and have an org_id column ` +
         `but are missing from DEVICE_ORG_DENORMALIZED_TABLES in core.ts. ` +
         `Add them, or — if their org_id is intentionally not denormalized for ` +
         `move purposes — add them to INTENTIONALLY_NO_ORG_ID in this test ` +
@@ -102,13 +108,15 @@ describe('DEVICE_ORG_DENORMALIZED_TABLES coverage', () => {
     ).toEqual([]);
   });
 
-  it('all listed tables are also in DEVICE_CASCADE_DELETE_TABLES', () => {
-    // Sanity: a denormalized device table that isn't cascade-deleted is
-    // a bug elsewhere; flag it here so we don't ship a half-managed table.
-    const orphans = DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => !cascadeSet.has(t));
+  it('all listed tables are also device-managed (cascade-deleted or detached)', () => {
+    // Sanity: a denormalized device table that is neither cascade-deleted
+    // nor detached on permanent delete is a bug elsewhere; flag it here so
+    // we don't ship a half-managed table.
+    const orphans = DEVICE_ORG_DENORMALIZED_TABLES.filter((t) => !managedSet.has(t));
     expect(
       orphans,
-      `These tables are in DEVICE_ORG_DENORMALIZED_TABLES but missing from DEVICE_CASCADE_DELETE_TABLES.`,
+      `These tables are in DEVICE_ORG_DENORMALIZED_TABLES but missing from both ` +
+        `DEVICE_CASCADE_DELETE_TABLES and DEVICE_DETACH_DEVICE_ID_TABLES.`,
     ).toEqual([]);
   });
 });
