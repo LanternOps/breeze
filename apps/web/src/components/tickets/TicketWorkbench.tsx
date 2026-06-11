@@ -8,7 +8,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import TicketFeed from './TicketFeed';
 import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
-import { statusConfig, priorityConfig, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
 
 interface Props {
   ticketId: string;
@@ -178,8 +178,13 @@ export default function TicketWorkbench({ ticketId, onChanged, expanded, resolve
               <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
             </>
           )}
-          <span>·</span>
-          <SlaChip ticket={ticket} />
+          {slaState(ticket).kind !== 'none' && (
+            // SlaChip renders nothing for no-SLA tickets — the separator must follow suit.
+            <>
+              <span>·</span>
+              <SlaChip ticket={ticket} />
+            </>
+          )}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <select

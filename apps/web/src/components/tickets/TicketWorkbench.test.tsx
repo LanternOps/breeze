@@ -267,7 +267,7 @@ describe('TicketWorkbench assignee picker', () => {
 
     await new Promise((r) => setTimeout(r, 50));
     expect(
-      fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST' && String(fetchMock.mock.calls[0][0]).includes('/assign'))
+      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/assign'))
     ).toHaveLength(0);
   });
 
