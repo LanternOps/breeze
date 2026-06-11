@@ -34,6 +34,9 @@ Codex template: see the SLA plan's "Codex invocation template" — identical, po
 
 ## Task R1: Grant `organizations:read` to org-scope system roles — **Claude**
 
+> **SUPERSEDED during execution (2026-06-11).** The Step-1 blast-radius audit found `organizations:read` gates a wide dormant surface for org-scope users (full org rows incl. `ssoConfig`/`billingContact` JSONB on two list routes, raw integration settings, the AI route surface, enrollment-key short codes) — granting it to the three org roles would switch all of that on at once. Implemented instead as a route-level fix: `GET /orgs/organizations` lets org-scope callers read their OWN org as a projected `{id, name, slug, status}` row without the permission (inline `requireOrgReadUnlessOwnOrg` middleware, fail-closed); partner/system unchanged. No migration, no seed change, no role grants. If org roles ever do need `organizations:read`, the audit findings below must be addressed first (column projection / serializer on the org-row routes, decision per newly-opened surface).
+
+
 The deep fix for the cold-load orgs 403: `GET /orgs/organizations` (orgs.ts:690) already supports org scope but is gated by `requirePermission('organizations','read')` (orgs.ts:28), which the seeded `Org Admin`/`Org Technician`/`Org Viewer` roles lack (`apps/api/src/db/seed.ts` SYSTEM_ROLES ~:161-240). PR #1245 shipped a client-side skip; this makes the permission real.
 
 **Files:**
