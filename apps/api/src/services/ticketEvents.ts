@@ -22,6 +22,7 @@ export type TicketEvent = TicketEventEnvelope & (
   | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
   | { type: 'ticket.commented'; payload: { commentId: string; isPublic: boolean } }
   | { type: 'ticket.updated'; payload: { changed: string[] } }
+  | { type: 'ticket.sla_breached'; payload: { target: 'response' | 'resolution'; internalNumber: string | null; subject: string; assigneeId: string | null } }
 );
 
 export type TicketEventType = TicketEvent['type'];
