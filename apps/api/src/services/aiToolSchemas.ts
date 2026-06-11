@@ -104,6 +104,29 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
   }),
 
+  // PAM Brain elevation tools (#1160). durationMinutes/limit are intentionally
+  // un-capped here — the handlers clamp them (480 / 100) so the Brain can pass a
+  // larger value without a validation failure.
+  request_elevation: z.object({
+    deviceId: uuid,
+    subjectUsername: z.string().min(1).max(255),
+    reason: z.string().min(1).max(2000),
+    durationMinutes: z.number().int().min(1).optional(),
+    subjectAdGroups: z.array(z.string().min(1).max(255)).max(200).optional(),
+  }),
+
+  revoke_elevation: z.object({
+    elevationRequestId: uuid,
+    reason: z.string().min(1).max(2000),
+  }),
+
+  get_elevation_history: z.object({
+    deviceId: uuid.optional(),
+    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
+    flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
+    limit: z.number().int().min(1).optional(),
+  }),
+
   get_ip_history: z.object({
     device_id: uuid.optional(),
     ip_address: ipAddress.optional(),
