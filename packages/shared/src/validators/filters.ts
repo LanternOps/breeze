@@ -159,10 +159,15 @@ export const createCustomFieldSchema = z.object({
     .max(100)
     .regex(/^[a-z][a-z0-9_]*$/, 'Field key must be lowercase alphanumeric with underscores'),
   type: customFieldTypeSchema,
-  options: customFieldOptionsSchema.optional(),
+  // .nullable().optional() so the create form can send explicit null
+  // for unused fields. Non-Dropdown types omit options; field types
+  // without a deviceTypes scope send null rather than leaving the key
+  // out. The update schema already accepts null for deviceTypes; this
+  // brings the create schema to the same shape.
+  options: customFieldOptionsSchema.nullable().optional(),
   required: z.boolean().default(false),
   defaultValue: z.unknown().optional(),
-  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional()
+  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()
 });
 
 export const updateCustomFieldSchema = z.object({

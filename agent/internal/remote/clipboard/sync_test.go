@@ -29,7 +29,7 @@ func (p *stubProvider) SetContent(content Content) error {
 
 func TestClipboardReceiveRejectsOversizedEnvelope(t *testing.T) {
 	provider := &stubProvider{}
-	syncer := NewClipboardSync(nil, provider)
+	syncer := NewClipboardSync(nil, provider, Policy{HostToViewer: true, ViewerToHost: true})
 
 	msg := webrtc.DataChannelMessage{
 		IsString: true,
@@ -46,7 +46,7 @@ func TestClipboardReceiveRejectsOversizedEnvelope(t *testing.T) {
 
 func TestClipboardReceiveRejectsOversizedText(t *testing.T) {
 	provider := &stubProvider{}
-	syncer := NewClipboardSync(nil, provider)
+	syncer := NewClipboardSync(nil, provider, Policy{HostToViewer: true, ViewerToHost: true})
 
 	payload, err := json.Marshal(clipboardPayload{
 		Type: ContentTypeText,
@@ -96,7 +96,7 @@ func (p *failingProvider) SetContent(_ Content) error   { return errors.New("set
 func TestClipboardReceiveSendsAckAfterSuccessfulSet(t *testing.T) {
 	sender := &mockSender{}
 	provider := &stubProvider{}
-	syncer := newClipboardSyncWithSender(sender, provider)
+	syncer := newClipboardSyncWithSender(sender, provider, Policy{HostToViewer: true, ViewerToHost: true})
 
 	text := "test ack content"
 	payload, err := json.Marshal(clipboardPayload{
@@ -150,7 +150,7 @@ func TestClipboardAckHashMatchesViewerWireContract(t *testing.T) {
 
 	sender := &mockSender{}
 	provider := &stubProvider{}
-	syncer := newClipboardSyncWithSender(sender, provider)
+	syncer := newClipboardSyncWithSender(sender, provider, Policy{HostToViewer: true, ViewerToHost: true})
 
 	payload, err := json.Marshal(clipboardPayload{Type: ContentTypeText, Text: text})
 	if err != nil {
@@ -176,7 +176,7 @@ func TestClipboardAckHashMatchesViewerWireContract(t *testing.T) {
 
 func TestClipboardReceiveNoAckOnSetContentFailure(t *testing.T) {
 	sender := &mockSender{}
-	syncer := newClipboardSyncWithSender(sender, &failingProvider{})
+	syncer := newClipboardSyncWithSender(sender, &failingProvider{}, Policy{HostToViewer: true, ViewerToHost: true})
 
 	payload, err := json.Marshal(clipboardPayload{
 		Type: ContentTypeText,

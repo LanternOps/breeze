@@ -362,7 +362,7 @@ var keyNameToKeycode = map[string]int{
 // DarwinInputHandler handles input on macOS using CGEvents (user session)
 // or IOHIDPostEvent (login window). Requires Accessibility permission.
 type DarwinInputHandler struct {
-	mouseDown      bool    // track if mouse button is held for drag events
+	mouseDown      bool // track if mouse button is held for drag events
 	mouseBtn       int
 	scaleFactor    float64 // backing scale factor (2.0 on Retina)
 	hidAvailable   bool

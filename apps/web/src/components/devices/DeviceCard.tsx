@@ -23,7 +23,8 @@ const statusColors: Record<DeviceStatus, string> = {
   maintenance: 'bg-warning',
   decommissioned: 'bg-muted-foreground',
   quarantined: 'bg-warning',
-  updating: 'bg-info'
+  updating: 'bg-info',
+  pending: 'bg-muted-foreground'
 };
 
 const osIcons: Record<OSType, React.ReactNode> = {

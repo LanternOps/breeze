@@ -44,6 +44,7 @@ export const aiSessions = pgTable('ai_sessions', {
   flaggedAt: timestamp('flagged_at'),
   flaggedBy: uuid('flagged_by').references(() => users.id),
   flagReason: text('flag_reason'),
+  delegantM365ConnectionId: uuid('delegant_m365_connection_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
@@ -90,6 +91,7 @@ export const aiToolExecutions = pgTable('ai_tool_executions', {
   commandId: uuid('command_id'),
   durationMs: integer('duration_ms'),
   errorMessage: text('error_message'),
+  delegantToolCallId: varchar('delegant_tool_call_id', { length: 64 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at')
 }, (table) => ({

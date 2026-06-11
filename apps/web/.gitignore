@@ -1,0 +1,4 @@
+# Self-hosted Monaco editor assets, copied from the monaco-editor package by
+# scripts/copy-monaco-assets.ts during predev/prebuild. Regenerated on every
+# build; never committed. See #1023.
+public/monaco/

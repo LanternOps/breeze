@@ -1,12 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   decodeIdToken,
   verifyIdTokenClaims,
+  verifyIdTokenSignature,
+  assertEmailVerified,
+  discoverOIDCConfig,
   type OIDCConfig,
   PROVIDER_PRESETS,
   SAML_PROVIDER_PRESETS,
   ALL_SSO_PRESETS
 } from './sso';
+
+vi.mock('dns/promises', () => ({
+  lookup: vi.fn()
+}));
 
 const baseConfig: OIDCConfig = {
   issuer: 'https://issuer.example.com',
@@ -120,6 +127,59 @@ describe('sso service', () => {
     });
   });
 
+  describe('id_token signature verification', () => {
+    it('refuses to verify when the provider has no JWKS URL', async () => {
+      await expect(
+        verifyIdTokenSignature('a.b.c', baseConfig, 'nonce-abc')
+      ).rejects.toThrow('no JWKS URL configured');
+    });
+
+    it('rejects an unsigned/forged token (alg=none) against a JWKS', async () => {
+      const config: OIDCConfig = { ...baseConfig, jwksUrl: 'https://issuer.example.com/jwks' };
+      const now = Math.floor(Date.now() / 1000);
+      // An alg=none token cannot satisfy the asymmetric-only JWKS verification.
+      const forged = createIdToken({
+        iss: config.issuer,
+        sub: 'user-1',
+        aud: config.clientId,
+        exp: now + 3600,
+        iat: now,
+        nonce: 'nonce-abc'
+      });
+
+      await expect(
+        verifyIdTokenSignature(forged, config, 'nonce-abc')
+      ).rejects.toThrow('ID token signature verification failed');
+    });
+  });
+
+  describe('assertEmailVerified', () => {
+    it('passes when email_verified is the boolean true', () => {
+      expect(() => assertEmailVerified({ email_verified: true })).not.toThrow();
+    });
+
+    it('passes when email_verified is the string "true"', () => {
+      expect(() => assertEmailVerified({ email_verified: 'true' })).not.toThrow();
+    });
+
+    it('rejects when email_verified is explicitly false', () => {
+      expect(() => assertEmailVerified({ email_verified: false }))
+        .toThrow(/not verified/);
+    });
+
+    it('rejects when email_verified is the string "false"', () => {
+      expect(() => assertEmailVerified({ email_verified: 'false' as unknown as boolean }))
+        .toThrow(/not verified/);
+    });
+
+    // Azure AD / Entra (and others) omit email_verified even for verified
+    // mailboxes; absent must NOT block login. Identity comes from the
+    // server-to-server userinfo call, not the id_token email, anyway.
+    it('passes when email_verified is absent (does not lock out Azure AD)', () => {
+      expect(() => assertEmailVerified({})).not.toThrow();
+    });
+  });
+
   describe('provider config', () => {
     it('should define OIDC provider presets with required fields', () => {
       for (const preset of Object.values(PROVIDER_PRESETS)) {
@@ -150,5 +210,78 @@ describe('sso service', () => {
         expect(ALL_SSO_PRESETS[key]).toBe(preset);
       }
     });
+  });
+
+  describe('discoverOIDCConfig (SSRF defenses)', () => {
+    const originalFetch = globalThis.fetch;
+    // Keep a reference to the mocked lookup
+    let lookupMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      const dns = await import('dns/promises');
+      lookupMock = dns.lookup as unknown as ReturnType<typeof vi.fn>;
+      lookupMock.mockReset();
+      // By default: fetch would succeed if we got that far. Tests that expect
+      // rejection assert that fetch is NOT called.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          issuer: 'https://issuer.example.com',
+          authorization_endpoint: 'https://issuer.example.com/auth',
+          token_endpoint: 'https://issuer.example.com/token',
+          userinfo_endpoint: 'https://issuer.example.com/userinfo',
+          jwks_uri: 'https://issuer.example.com/jwks',
+        })
+      }) as any;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('rejects hostnames that DNS-resolve to loopback (127.0.0.1)', async () => {
+      lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+      await expect(discoverOIDCConfig('https://attacker.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects hostnames that DNS-resolve to AWS metadata (169.254.169.254)', async () => {
+      lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+      await expect(discoverOIDCConfig('https://metadata-rebind.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects hostnames that resolve to RFC1918 (10.x)', async () => {
+      lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      await expect(discoverOIDCConfig('https://rebind.example.com')).rejects.toThrow(
+        /internal network addresses|must not resolve to internal/
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects IPv6 loopback resolutions', async () => {
+      lookupMock.mockResolvedValue([{ address: '::1', family: 6 }]);
+      await expect(discoverOIDCConfig('https://ipv6-loop.example.com')).rejects.toThrow();
+    });
+
+    it('rejects string-level internal URLs before DNS (localhost literal)', async () => {
+      await expect(discoverOIDCConfig('https://localhost/oidc')).rejects.toThrow(
+        /internal network addresses/
+      );
+      expect(lookupMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects HTTP (non-HTTPS) issuers', async () => {
+      await expect(discoverOIDCConfig('http://issuer.example.com')).rejects.toThrow();
+    });
+
+    // NOTE: safeFetch (urlSafety.ts) owns the DNS-rebinding defense: IP pinning,
+    // mixed-record handling, ENOTFOUND translation. Those cases are covered in
+    // urlSafety.test.ts — we only keep sso-level checks here (string literal,
+    // non-HTTPS scheme, IPv6 loopback via full integration).
   });
 });

@@ -109,22 +109,35 @@ function normalizeStoragePrefix(
     : snapshotPrefix;
 }
 
+function normalizeObjectPrefix(storagePrefix: string): string {
+  return storagePrefix.replace(/^\/+|\/+$/g, '');
+}
+
+function keyMatchesSnapshotPrefix(key: string, normalizedPrefix: string): boolean {
+  return key === normalizedPrefix || key.startsWith(`${normalizedPrefix}/`);
+}
+
 async function deleteS3Prefix(
   providerConfig: Record<string, unknown>,
   storagePrefix: string,
 ): Promise<void> {
   const { bucket, client } = buildS3StorageClient(providerConfig);
+  const normalizedPrefix = normalizeObjectPrefix(storagePrefix);
 
   let continuationToken: string | undefined;
   do {
     const listed = await client.send(new ListObjectsV2Command({
       Bucket: bucket,
-      Prefix: storagePrefix.replace(/^\/+|\/+$/g, ''),
+      Prefix: normalizedPrefix,
       ContinuationToken: continuationToken,
     }));
     const objects = (listed.Contents ?? [])
       .map((item) => item.Key)
-      .filter((key): key is string => typeof key === 'string' && key.length > 0);
+      .filter((key): key is string =>
+        typeof key === 'string' &&
+        key.length > 0 &&
+        keyMatchesSnapshotPrefix(key, normalizedPrefix)
+      );
 
     if (objects.length > 0) {
       await client.send(new DeleteObjectsCommand({
@@ -168,6 +181,7 @@ async function applyS3PrefixRetention(
   retainUntil: Date,
 ): Promise<SnapshotImmutabilityResult> {
   const { bucket, client } = buildS3StorageClient(providerConfig);
+  const normalizedPrefix = normalizeObjectPrefix(storagePrefix);
 
   let continuationToken: string | undefined;
   let objectCount = 0;
@@ -175,13 +189,17 @@ async function applyS3PrefixRetention(
   do {
     const listed = await client.send(new ListObjectsV2Command({
       Bucket: bucket,
-      Prefix: storagePrefix.replace(/^\/+|\/+$/g, ''),
+      Prefix: normalizedPrefix,
       ContinuationToken: continuationToken,
     }));
 
     const objects = (listed.Contents ?? [])
       .map((item) => item.Key)
-      .filter((key): key is string => typeof key === 'string' && key.length > 0);
+      .filter((key): key is string =>
+        typeof key === 'string' &&
+        key.length > 0 &&
+        keyMatchesSnapshotPrefix(key, normalizedPrefix)
+      );
 
     for (const key of objects) {
       await client.send(new PutObjectRetentionCommand({

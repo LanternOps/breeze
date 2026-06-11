@@ -8,10 +8,11 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
+import { decryptSnmpSecret } from '../services/snmpSecrets';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -112,7 +113,10 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     const [template] = await db
       .select({ oids: snmpTemplates.oids })
       .from(snmpTemplates)
-      .where(eq(snmpTemplates.id, device.templateId))
+      .where(and(
+        eq(snmpTemplates.id, device.templateId),
+        or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, device.orgId))!
+      ))
       .limit(1);
 
     if (template && Array.isArray(template.oids)) {
@@ -239,12 +243,12 @@ export function buildSnmpPollCommand(
       target: device.ipAddress,
       port: device.port ?? 161,
       version: device.snmpVersion ?? 'v2c',
-      community: device.community ?? 'public',
+      community: decryptSnmpSecret(device.community, { table: 'snmp_devices', column: 'community' }) ?? 'public',
       username: device.username ?? '',
       authProtocol: device.authProtocol ?? '',
-      authPassword: device.authPassword ?? '',
+      authPassword: decryptSnmpSecret(device.authPassword, { table: 'snmp_devices', column: 'auth_password' }) ?? '',
       privProtocol: device.privProtocol ?? '',
-      privPassword: device.privPassword ?? '',
+      privPassword: decryptSnmpSecret(device.privPassword, { table: 'snmp_devices', column: 'priv_password' }) ?? '',
       oids
     }
   };
@@ -258,7 +262,10 @@ export async function enqueueSnmpPoll(
   orgId: string
 ): Promise<string> {
   const queue = getSnmpQueue();
-  const stableJobId = `snmp-poll:${deviceId}`;
+  // BullMQ rejects a custom jobId containing ':' (unless it has exactly two, a
+  // legacy repeatable-job carve-out), so use '-' as the separator. A ':' here
+  // makes queue.add throw "Custom Id cannot contain :" and polling never runs.
+  const stableJobId = `snmp-poll-${deviceId}`;
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();
@@ -294,7 +301,8 @@ export async function enqueueSnmpPollResults(
   pollId?: string,
 ): Promise<string> {
   const queue = getSnmpQueue();
-  const stableJobId = pollId ? `snmp-result:${pollId}` : null;
+  // '-' separator, not ':', so BullMQ does not reject the custom jobId (see enqueueSnmpPoll).
+  const stableJobId = pollId ? `snmp-result-${pollId}` : null;
   if (stableJobId) {
     const existing = await queue.getJob(stableJobId);
     if (existing) {

@@ -8,6 +8,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import type { Baseline } from './BaselineFormModal';
@@ -76,7 +77,10 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       if (currentOrgId) params.set('orgId', currentOrgId);
       if (baseline) params.set('baselineId', baseline.id);
       const response = await fetchWithAuth(`/audit-baselines/apply-requests?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to fetch approval requests');
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(extractApiError(errBody, 'Failed to fetch approval requests'));
+      }
       const data = await response.json();
       setApprovals(Array.isArray(data.data) ? data.data : []);
     } catch (err) {
@@ -93,7 +97,10 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       const params = new URLSearchParams();
       if (currentOrgId) params.set('orgId', currentOrgId);
       const response = await fetchWithAuth(`/devices?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to fetch devices');
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(extractApiError(errBody, 'Failed to fetch devices'));
+      }
       const data = await response.json();
       const allDevices: Device[] = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
       // Filter to matching OS type
@@ -152,8 +159,8 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Dry run failed');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Dry run failed'));
       }
       const data = await response.json();
       setDryRunResult({ skipped: data.skipped ?? [] });
@@ -181,8 +188,8 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to create approval request');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to create approval request'));
       }
       setStep('requested');
       fetchApprovals();
@@ -205,8 +212,8 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to process decision');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to process decision'));
       }
       fetchApprovals();
     } catch (err) {
@@ -234,8 +241,8 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to apply baseline');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to apply baseline'));
       }
       fetchApprovals();
     } catch (err) {

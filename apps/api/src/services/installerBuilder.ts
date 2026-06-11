@@ -1,7 +1,18 @@
 import archiver from 'archiver';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { getBinarySource, getGithubAgentPkgUrl, getGithubInstallerAppUrl, getGithubRegularMsiUrl } from './binarySource';
+import {
+  getBinarySource,
+  getGithubAgentPkgUrl,
+  getGithubExpectedReleaseTag,
+  getGithubInstallerAppUrl,
+  getGithubRegularMsiUrl,
+  getGithubReleaseArtifactManifestSignatureUrl,
+  getGithubReleaseArtifactManifestUrl,
+  getGithubReleaseRepository,
+} from './binarySource';
+import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
+import { isS3Configured } from './s3Storage';
 
 // --- Enrollment key validation ---
 
@@ -116,16 +127,55 @@ if [ ! -f "$ENROLLMENT_JSON" ]; then
   exit 1
 fi
 
-# Install the PKG
-echo "Installing Breeze Agent..."
-sudo installer -pkg "$SCRIPT_DIR/breeze-agent.pkg" -target /
-
 # Read enrollment config via plutil (ships with macOS, no Xcode CLT required).
 # /usr/bin/python3 is only a stub on fresh Macs and triggers the "requires developer tools" popup.
 SERVER_URL=$(plutil -extract serverUrl raw -o - "$ENROLLMENT_JSON")
 ENROLLMENT_KEY=$(plutil -extract enrollmentKey raw -o - "$ENROLLMENT_JSON")
 ENROLLMENT_SECRET=$(plutil -extract enrollmentSecret raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
 SITE_ID=$(plutil -extract siteId raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
+SERVER_URL="\${SERVER_URL%/}"
+
+# Detect CPU architecture so Intel and Apple Silicon Macs each receive a
+# compatible binary. A single-arch bundle cannot serve both, and shipping the
+# wrong one causes "Bad CPU type in executable" on enroll (the bug this fixes).
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) echo "Error: unsupported CPU architecture: $(uname -m)"; exit 1 ;;
+esac
+
+# Download the architecture-matched installer package from the server.
+# Clean up BOTH the temp pkg and the credential file on any exit — every guard
+# below can abort under \`set -e\`, and enrollment.json holds the enrollment
+# secret, so it must never be left behind in the extracted download folder.
+PKG_URL="\${SERVER_URL}/api/v1/agents/download/darwin/\${ARCH}/pkg"
+TMPPKG_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMPPKG_DIR"; rm -f "$ENROLLMENT_JSON"' EXIT
+TMPPKG="$TMPPKG_DIR/breeze-agent.pkg"
+
+echo "Downloading Breeze Agent installer (\${ARCH})..."
+HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "$TMPPKG" "$PKG_URL" 2>/dev/null)" || true
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "Error: failed to download installer package (HTTP $HTTP_CODE) from $PKG_URL"
+  exit 1
+fi
+if [ ! -s "$TMPPKG" ]; then
+  echo "Error: downloaded installer package is empty (architecture \${ARCH} may be unavailable)"
+  exit 1
+fi
+
+# Verify the package is Apple-notarized and Developer-ID signed BEFORE installing
+# as root. The \`installer\` CLI does NOT enforce Gatekeeper/notarization on its
+# own (stapling is only checked in the Finder double-click flow), so without this
+# an MITM'd or tampered download would be installed with full root privileges.
+if ! spctl --assess --type install "$TMPPKG" >/dev/null 2>&1; then
+  echo "Error: installer package failed Gatekeeper notarization assessment. Refusing to install."
+  exit 1
+fi
+
+# Install the PKG
+echo "Installing Breeze Agent..."
+sudo installer -pkg "$TMPPKG" -target /
 
 # Build enrollment command
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
@@ -133,11 +183,16 @@ ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$SITE_ID" ] && ENROLL_ARGS+=(--site-id "$SITE_ID")
 
 echo "Enrolling agent..."
-sudo /usr/local/bin/breeze-agent enroll "${'$'}{ENROLL_ARGS[@]}"
+sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
 
-# Clean up credentials
-rm -f "$ENROLLMENT_JSON"
+# Restart the service so it picks up the new enrollment config. Surface a failure
+# rather than swallowing it — a silent kickstart failure leaves an enrolled
+# device that never checks in, with the user told everything succeeded.
+if ! sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+  echo "Note: could not restart the agent service automatically; it will start on next login or reboot."
+fi
 
+# Credentials are removed by the EXIT trap above.
 echo "Breeze agent installed and enrolled successfully."
 `;
 
@@ -148,8 +203,9 @@ interface MacosZipValues {
   siteId: string;
 }
 
+// The pkg is no longer bundled — install.sh downloads the architecture-matched
+// package at install time, so one zip works on both Intel and Apple Silicon.
 export async function buildMacosInstallerZip(
-  pkgBuffer: Buffer,
   values: MacosZipValues
 ): Promise<Buffer> {
   assertValidEnrollmentKey(values.enrollmentKey);
@@ -167,8 +223,6 @@ export async function buildMacosInstallerZip(
         console.error('[installer] Archiver warning during macOS zip build:', err);
       }
     });
-
-    archive.append(pkgBuffer, { name: 'breeze-agent.pkg' });
 
     const enrollmentJson = JSON.stringify(
       {
@@ -194,21 +248,50 @@ export async function fetchRegularMsi(): Promise<Buffer> {
     const url = getGithubRegularMsiUrl();
     const resp = await fetch(url, { redirect: 'follow' });
     if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await verifyGithubReleaseArtifactBuffer({
+      assetName: 'breeze-agent.msi',
+      assetBuffer: buffer,
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: 'windows-authenticode-required',
+    });
+    return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   return readFile(join(binaryDir, 'breeze-agent.msi'));
 }
 
-export async function fetchMacosPkg(): Promise<Buffer> {
+/**
+ * Pre-flight reachability check for the macOS installer, run at link-creation
+ * time so a broken installer fails fast for the admin instead of silently at
+ * install time on the end user's Mac. The installer downloads the arch-matched
+ * pkg at install time, so BOTH architectures are validated here (not just arm64
+ * — an amd64-only outage must not pass a probe that Intel customers then hit).
+ */
+export async function assertMacosInstallerPkgsReachable(): Promise<void> {
+  const arches = ['amd64', 'arm64'] as const;
   if (getBinarySource() === 'github') {
-    const url = getGithubAgentPkgUrl('darwin', 'arm64');
-    const resp = await fetch(url, { redirect: 'follow' });
-    if (!resp.ok) throw new Error(`Failed to fetch macOS PKG: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
+    for (const arch of arches) {
+      const url = getGithubAgentPkgUrl('darwin', arch);
+      const resp = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+      if (!resp.ok) {
+        throw new Error(`macOS ${arch} installer package not reachable: ${resp.status}`);
+      }
+    }
+    return;
   }
+  // Local mode: the /download/:os/:arch/pkg endpoint resolves S3 then disk at
+  // request time. When S3 is configured we can't verify here without duplicating
+  // that logic, so don't false-fail; otherwise confirm both arch packages exist
+  // on disk (catches the common "binaries not staged" misconfig).
+  if (isS3Configured()) return;
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent-darwin-arm64.pkg'));
+  for (const arch of arches) {
+    await stat(join(binaryDir, `breeze-agent-darwin-${arch}.pkg`));
+  }
 }
 
 /**
@@ -223,7 +306,17 @@ export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
     const resp = await fetch(url, { redirect: 'follow' });
     if (resp.status === 404) return null;
     if (!resp.ok) throw new Error(`Failed to fetch installer app zip: ${resp.status}`);
-    return Buffer.from(await resp.arrayBuffer());
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await verifyGithubReleaseArtifactBuffer({
+      assetName: 'Breeze Installer.app.zip',
+      assetBuffer: buffer,
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: 'macos-developer-id-notarization-required',
+    });
+    return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   const path = join(binaryDir, 'Breeze Installer.app.zip');

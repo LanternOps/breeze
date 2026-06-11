@@ -9,14 +9,16 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0A0A0B"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.breeze.rmm",
       "infoPlist": {
         "NSFaceIDUsageDescription": "Use Face ID to unlock the app",
-        "NSCameraUsageDescription": "Camera access for QR code scanning"
+        "NSCameraUsageDescription": "Camera access for QR code scanning",
+        "NSSpeechRecognitionUsageDescription": "Use voice to ask Breeze about your fleet.",
+        "NSMicrophoneUsageDescription": "Use voice to ask Breeze about your fleet."
       }
     },
     "android": {
@@ -24,7 +26,7 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0A0A0B"
       },
       "package": "com.breeze.rmm",
       "permissions": [
@@ -51,11 +53,19 @@
         {
           "faceIDPermission": "Allow Breeze RMM to use Face ID for authentication"
         }
-      ]
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Use voice to ask Breeze about your fleet.",
+          "speechRecognitionPermission": "Use voice to ask Breeze about your fleet."
+        }
+      ],
+      "@sentry/react-native/expo"
     ],
     "extra": {
       "eas": {
-        "projectId": "your-project-id"
+        "projectId": ""
       }
     }
   }

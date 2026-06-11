@@ -3,6 +3,7 @@ import { X, Loader2, Plus, Tag, Trash2 } from 'lucide-react';
 import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type Site = {
   id: string;
@@ -88,7 +89,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save settings');
+        throw new Error(extractApiError(data, 'Failed to save settings'));
       }
 
       onSaved();

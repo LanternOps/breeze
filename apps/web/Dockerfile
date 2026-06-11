@@ -3,8 +3,8 @@
 # ============================================
 
 # Stage 1: Base image with pnpm
-FROM node:22-alpine AS base
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+FROM node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 AS base
+RUN npm install -g pnpm@10.33.4
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
@@ -27,9 +27,11 @@ WORKDIR /app
 ARG NODE_ENV=production
 ARG PUBLIC_API_URL=
 ARG PUBLIC_APP_VERSION=0.1.0
+ARG PUBLIC_ENABLE_REGISTRATION=true
 ENV NODE_ENV=${NODE_ENV}
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 ENV PUBLIC_APP_VERSION=${PUBLIC_APP_VERSION}
+ENV PUBLIC_ENABLE_REGISTRATION=${PUBLIC_ENABLE_REGISTRATION}
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
@@ -46,7 +48,7 @@ WORKDIR /app/apps/web
 RUN pnpm build
 
 # Stage 4: Production runner
-FROM node:22-alpine AS runner
+FROM node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 AS runner
 WORKDIR /app
 
 # Install wget for healthcheck

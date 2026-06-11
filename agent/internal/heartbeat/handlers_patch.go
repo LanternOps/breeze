@@ -215,4 +215,3 @@ func rebootStateToMap(state patching.RebootState) map[string]any {
 	}
 	return stateMap
 }
-

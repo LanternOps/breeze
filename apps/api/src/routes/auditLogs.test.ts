@@ -8,24 +8,29 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
-// countRows does: db.select().from().leftJoin().where() and destructures [row]
-// queryRows does: db.select().from().leftJoin().where().orderBy().limit().offset()
-// GET /logs/:id does: db.select().from().leftJoin().where() and destructures [row]
+// countRows does: db.select().from().where() and destructures [row]
+// queryRows does: db.select().from().leftJoin(users).leftJoin(devices).where().orderBy().limit().offset()
+// GET /logs/:id does: db.select().from().leftJoin(users).leftJoin(devices).where() and destructures [row]
 // So .where() must be both iterable (as array) AND have .orderBy()
 // Returning empty array by default; countRows returns row?.count ?? 0 = 0 when empty
+const createWhereChain = () =>
+  Object.assign(Promise.resolve([]), {
+    orderBy: vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue([])
+      })
+    })
+  });
+const createJoinChain = () => {
+  const chain: any = {
+    leftJoin: vi.fn(() => chain),
+    where: vi.fn().mockReturnValue(createWhereChain())
+  };
+  return chain;
+};
 const createDbChain = () => ({
   from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(
-        Object.assign(Promise.resolve([]), {
-          orderBy: vi.fn().mockReturnValue({
-            limit: vi.fn().mockReturnValue({
-              offset: vi.fn().mockResolvedValue([])
-            })
-          })
-        })
-      )
-    }),
+    leftJoin: vi.fn(() => createJoinChain()),
     where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([{ count: 0 }]), {
       limit: vi.fn().mockResolvedValue([])
     }))
@@ -47,7 +52,8 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   auditLogs: { orgId: 'orgId', actorId: 'actorId', timestamp: 'timestamp', id: 'id' },
-  users: { id: 'id', name: 'name' }
+  users: { id: 'id', name: 'name' },
+  devices: { agentId: 'agentId', hostname: 'hostname', displayName: 'displayName', siteId: 'siteId' }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -61,9 +67,22 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'audit', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
+
+import { db } from '../db';
 
 describe('audit log routes', () => {
   let app: Hono;
@@ -122,6 +141,34 @@ describe('audit log routes', () => {
       const body = await res.json();
       expect(body.data).toEqual([]);
     });
+
+    it('accepts excludeActions on the standard query path', async () => {
+      const res = await app.request(
+        '/audit-logs/logs?action=device&excludeActions=agent.sessions.submit,mcp.tools.list'
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
+
+    it('accepts excludeActions on the LATERAL fast path (skipCount)', async () => {
+      const res = await app.request(
+        '/audit-logs/logs?limit=5&skipCount=true&excludeActions=agent.sessions.submit'
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
+
+    it('ignores empty excludeActions tokens', async () => {
+      const res = await app.request('/audit-logs/logs?excludeActions=,,%20,');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
   });
 
   describe('GET /audit-logs/logs/:id', () => {
@@ -140,6 +187,45 @@ describe('audit log routes', () => {
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error).toBe('Audit log not found');
+    });
+
+    it('returns 403 for an agent-attributed log whose device site is outside the allowlist', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{
+                log: {
+                  id: 'audit-001',
+                  timestamp: new Date('2026-05-02T12:00:00Z'),
+                  actorId: '11111111-1111-1111-1111-111111111111',
+                  actorEmail: null,
+                  actorType: 'agent',
+                  action: 'device.command',
+                  resourceType: 'device',
+                  resourceId: '22222222-2222-2222-2222-222222222222',
+                  resourceName: 'Device',
+                  result: 'success',
+                  ipAddress: null,
+                  userAgent: null,
+                  initiatedBy: 'agent',
+                  details: { rawActorId: 'agent-1' }
+                },
+                userName: null,
+                deviceHostname: 'device-1',
+                deviceDisplayName: null,
+                deviceSiteId: 'site-denied'
+              }]),
+            }),
+          }),
+        }),
+      } as never);
+
+      const res = await app.request('/audit-logs/logs/audit-001', {
+        headers: { 'x-restrict-site': 'site-allowed' },
+      });
+
+      expect(res.status).toBe(403);
     });
   });
 
@@ -168,6 +254,193 @@ describe('audit log routes', () => {
       expect(res.headers.get('content-type')).toContain('text/csv');
       const body = await res.text();
       expect(body).toContain('id,timestamp,');
+    });
+
+    it('neutralizes spreadsheet formulas in CSV cells', async () => {
+      const formulaRow = {
+        log: {
+          id: 'audit-1',
+          timestamp: new Date('2026-05-02T12:00:00Z'),
+          actorId: 'user-123',
+          actorEmail: '=cmd@example.com',
+          actorType: 'user',
+          action: 'device.update',
+          resourceType: 'device',
+          resourceId: 'device-1',
+          resourceName: '+SUM(1,1)',
+          result: 'success',
+          ipAddress: '-10.0.0.1',
+          userAgent: '@agent',
+          initiatedBy: 'user',
+          details: { hostname: '=evil' }
+        },
+        userName: '\tTech'
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([formulaRow])
+                  })
+                })
+              })
+            })
+          })
+        })
+      } as never);
+
+      const res = await app.request('/audit-logs/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'csv' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body).toContain('"\'=cmd@example.com"');
+      expect(body).toContain(`"'\tTech"`);
+      expect(body).toContain('"\'-10.0.0.1"');
+      expect(body).toContain('"\'@agent"');
+      expect(body).toContain('"{""hostname"":""=evil""}"');
+      expect(body).toContain('"\'+SUM(1,1)"');
+    });
+
+    it('omits details from CSV and JSON exports when includeDetails is false', async () => {
+      const row = {
+        log: {
+          id: 'audit-2',
+          timestamp: new Date('2026-05-02T12:00:00Z'),
+          actorId: 'user-123',
+          actorEmail: 'tech@example.com',
+          actorType: 'user',
+          action: 'device.update',
+          resourceType: 'device',
+          resourceId: 'device-1',
+          resourceName: 'host-1',
+          result: 'success',
+          ipAddress: '10.0.0.1',
+          userAgent: 'browser',
+          initiatedBy: 'user',
+          details: { secret: 'do-not-export' }
+        },
+        userName: 'Tech'
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
+                })
+              })
+            })
+          })
+        })
+      } as never);
+
+      const csvRes = await app.request('/audit-logs/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'csv', includeDetails: false })
+      });
+
+      expect(csvRes.status).toBe(200);
+      const csv = await csvRes.text();
+      expect(csv.split('\n')[0]).not.toContain('details');
+      expect(csv).not.toContain('do-not-export');
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
+                })
+              })
+            })
+          })
+        })
+      } as never);
+
+      const jsonRes = await app.request('/audit-logs/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'json', includeDetails: false })
+      });
+
+      expect(jsonRes.status).toBe(200);
+      const json = await jsonRes.json();
+      expect(json.data[0]).not.toHaveProperty('details');
+    });
+  });
+
+  describe('GET /audit-logs/export', () => {
+    it('audits GET exports and applies column controls', async () => {
+      const { writeRouteAudit } = await import('../services/auditEvents');
+      const row = {
+        log: {
+          id: 'audit-3',
+          timestamp: new Date('2026-05-02T12:00:00Z'),
+          actorId: '11111111-1111-1111-1111-111111111111',
+          actorEmail: 'tech@example.com',
+          actorType: 'user',
+          action: 'device.update',
+          resourceType: 'device',
+          resourceId: 'device-1',
+          resourceName: 'host-1',
+          result: 'success',
+          ipAddress: '10.0.0.1',
+          userAgent: 'browser',
+          initiatedBy: 'user',
+          details: { secret: 'do-not-export' }
+        },
+        userName: 'Tech'
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([row])
+                  })
+                })
+              })
+            })
+          })
+        })
+      } as never);
+
+      const res = await app.request(
+        '/audit-logs/export?columns=id,action,details&includeDetails=false&userId=11111111-1111-1111-1111-111111111111'
+      );
+
+      expect(res.status).toBe(200);
+      const csv = await res.text();
+      expect(csv.split('\n')[0]).toBe('id,action');
+      expect(csv).not.toContain('do-not-export');
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'audit_logs.export',
+          details: expect.objectContaining({
+            format: 'csv',
+            rowCount: 1,
+            includeDetails: false,
+            columns: ['id', 'action']
+          })
+        })
+      );
     });
   });
 });

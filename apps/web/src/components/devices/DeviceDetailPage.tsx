@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useEventStream } from '../../hooks/useEventStream';
 import { ArrowLeft } from 'lucide-react';
 import { showToast } from '../shared/Toast';
@@ -8,7 +8,7 @@ import ChangeSiteModal from './ChangeSiteModal';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import type { Device, DeviceStatus, OSType } from './DeviceList';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
+import { sendDeviceCommand, executeScript, toggleMaintenanceMode, decommissionDevice, clearDeviceSessions, restoreDevice, permanentDeleteDevice, sendWakeCommand, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { useAiStore } from '@/stores/aiStore';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -25,6 +25,22 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+
+  // Track every in-flight wake watcher so that navigating away aborts the
+  // long-running poll loop. Without this, watchWakeOutcome keeps polling
+  // /devices/:id for up to 4 minutes after unmount and tries to render a
+  // toast / setDevice on a dead component. (Todd's #789 review.) A Set is
+  // used because a single device-detail page can only have one wake at a
+  // time, but the abstraction matches the multi-target DevicesPage path
+  // and is cheap.
+  const wakeWatchersRef = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const watchers = wakeWatchersRef.current;
+    return () => {
+      for (const ctrl of watchers) ctrl.abort();
+      watchers.clear();
+    };
+  }, []);
 
   const fetchDevice = useCallback(async () => {
     try {
@@ -147,6 +163,52 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           await sendDeviceCommand(device.id, action);
           const label = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
           showToast({ type: 'success', message: `${label} command sent to ${device.hostname}` });
+          break;
+        }
+
+        case 'wake': {
+          try {
+            const wake = await sendWakeCommand(device.id);
+            const hostname = device.hostname;
+            showToast({
+              type: 'success',
+              message: `Wake packet sent to ${hostname} via ${wake.relay.hostname} (${wake.broadcast}). Watching for it to come online…`,
+            });
+            const wakeController = new AbortController();
+            wakeWatchersRef.current.add(wakeController);
+            void watchWakeOutcome(device.id, { signal: wakeController.signal })
+              .then(async (outcome) => {
+                if (outcome === 'online') {
+                  showToast({ type: 'success', message: `${hostname} is now online.` });
+                  await fetchDevice();
+                } else if (outcome === 'timeout') {
+                  showToast({
+                    type: 'error',
+                    message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
+                  });
+                }
+                // 'aborted' is silent — user navigated away or page reloaded.
+              })
+              .finally(() => {
+                wakeWatchersRef.current.delete(wakeController);
+              });
+          } catch (err) {
+            if (err instanceof WakeCommandError) {
+              const friendly = wakeFriendlyErrorMessage(err.code) ?? err.message;
+              showToast({ type: 'error', message: `${device.hostname}: ${friendly}` });
+            } else {
+              throw err;
+            }
+          }
+          break;
+        }
+
+        case 'refresh': {
+          await sendDeviceCommand(device.id, 'refresh_inventory');
+          showToast({
+            type: 'success',
+            message: `Inventory refresh requested for ${device.hostname}. Fresh data in 1–2 minutes.`,
+          });
           break;
         }
 

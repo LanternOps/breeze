@@ -1,16 +1,18 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, desc, inArray } from 'drizzle-orm';
+import { and, eq, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions } from '../db/schema';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 export const tunnelRoutes = new Hono();
 
@@ -22,6 +24,7 @@ tunnelRoutes.use('*', authMiddleware);
 const idParamSchema = z.object({ id: z.string().uuid() });
 const listQuerySchema = z.object({ siteId: z.string().uuid().optional().nullable() });
 const allowlistIdParamSchema = idParamSchema;
+const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().uuid(), type: z.literal('vnc') }),
@@ -147,26 +150,50 @@ async function isSourceIpAllowed(sourceIp: string, orgId: string): Promise<boole
 }
 
 function getClientIp(c: any): string {
-  return c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-    || c.req.header('x-real-ip')
-    || '127.0.0.1';
+  return getTrustedClientIp(c, '127.0.0.1');
 }
 
-async function getDeviceForTunnel(deviceId: string, auth: AuthContext) {
-  const conditions = [eq(devices.id, deviceId)];
-
-  // Scope by org for non-system users
-  if (auth.orgId) {
-    conditions.push(eq(devices.orgId, auth.orgId));
-  }
-
+async function getDeviceForTunnel(c: Context, deviceId: string, auth: AuthContext) {
   const [device] = await db
     .select()
     .from(devices)
-    .where(and(...conditions))
+    .where(eq(devices.id, deviceId))
     .limit(1);
 
+  if (!device) return null;
+  if (!auth.canAccessOrg(device.orgId)) return null;
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return 'SITE_ACCESS_DENIED' as const;
+  }
+
   return device;
+}
+
+// Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`); RLS
+// does NOT defend it. Org-scope callers are already limited to their own tunnels
+// by the userId filter, but PARTNER-scope callers with `allowedSiteIds` set would
+// otherwise see/read every org tunnel session regardless of site. These helpers
+// resolve device sites so the list can be narrowed and the detail can 403.
+async function resolveSiteAllowedDeviceIds(orgIds: string[], perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  if (orgIds.length === 0) return [];
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(orgIds.length === 1 ? eq(devices.orgId, orgIds[0]!) : inArray(devices.orgId, orgIds));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
+async function isTunnelDeviceSiteDenied(deviceId: string, perms: UserPermissions | undefined): Promise<boolean> {
+  if (!perms?.allowedSiteIds) return false;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  return !device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId);
 }
 
 async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
@@ -187,13 +214,18 @@ async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
 tunnelRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
   zValidator('json', createTunnelSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const body = c.req.valid('json');
     const sourceIp = getClientIp(c);
 
-    const device = await getDeviceForTunnel(body.deviceId, auth);
+    const device = await getDeviceForTunnel(c, body.deviceId, auth);
+    if (device === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -282,8 +314,13 @@ tunnelRoutes.post(
 tunnelRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` (only requirePermission sets it, not authMiddleware/
+  // requireScope) so the site narrowing below is live. DEVICES_READ is granted to
+  // every device-viewing role, so this adds no lockout.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const status = c.req.query('status');
 
     const conditions: ReturnType<typeof eq>[] = [];
@@ -294,6 +331,17 @@ tunnelRoutes.get(
     // Partner/system admins can see all tunnels in the org.
     if (auth.scope === 'organization') {
       conditions.push(eq(tunnelSessions.userId, auth.user.id));
+    }
+    // Site-scope (app-layer-only authz axis) narrowing. The userId filter above
+    // already bounds org-scope callers, but partner-scope callers with
+    // `allowedSiteIds` set would otherwise see every org tunnel session.
+    if (perms?.allowedSiteIds) {
+      const orgPool = auth.orgId ? [auth.orgId] : (auth.accessibleOrgIds ?? []);
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgPool, perms);
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json([]);
+      }
+      conditions.push(inArray(tunnelSessions.deviceId, allowedDeviceIds));
     }
     if (status) {
       const validStatuses = ['pending', 'connecting', 'active', 'disconnected', 'failed'] as const;
@@ -319,9 +367,13 @@ tunnelRoutes.get(
 tunnelRoutes.get(
   '/allowlist',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     if (!auth.orgId) {
       return c.json({ error: 'Org context required' }, 400);
     }
@@ -329,7 +381,15 @@ tunnelRoutes.get(
     const { siteId } = c.req.valid('query');
     const conditions: ReturnType<typeof eq>[] = [eq(tunnelAllowlists.orgId, auth.orgId)];
     if (siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       conditions.push(eq(tunnelAllowlists.siteId, siteId));
+    } else if (perms?.allowedSiteIds) {
+      conditions.push(or(
+        isNull(tunnelAllowlists.siteId),
+        inArray(tunnelAllowlists.siteId, perms.allowedSiteIds)
+      )! as ReturnType<typeof eq>);
     }
 
     const rules = await db
@@ -449,6 +509,10 @@ tunnelRoutes.delete(
 tunnelRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site-scope re-enforcement below is live (a
+  // site-restricted org user must not read a colleague's tunnel to an out-of-site
+  // device). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -470,6 +534,13 @@ tunnelRoutes.get(
 
     if (!session) {
       return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    // Site-scope (app-layer-only) re-enforcement: deny when the session's device
+    // sits outside the caller's allowed sites. Fail closed on null siteId.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (await isTunnelDeviceSiteDenied(session.deviceId, perms)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     return c.json(session);
@@ -559,10 +630,20 @@ tunnelRoutes.post(
       return c.json({ error: 'Not the session owner' }, 403);
     }
 
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Cannot mint WebSocket ticket for tunnel in current state',
+        status: session.status,
+      }, 400);
+    }
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel',
       userId: auth.user.id,
+      // Task 16: bind to issuer's trusted IP + UA.
+      ip: getTrustedClientIp(c),
+      userAgent: c.req.header('user-agent') ?? '',
     });
 
     return c.json({ ticket });
@@ -602,6 +683,13 @@ tunnelRoutes.post(
 
     if (session.userId !== auth.user.id) {
       return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Cannot mint VNC connect code for tunnel in current state',
+        status: session.status,
+      }, 400);
     }
 
     try {
@@ -659,6 +747,17 @@ vncExchangeRoutes.post(
       return c.json({ error: 'Invalid or expired VNC connect code' }, 404);
     }
 
+    if (result.type !== 'vnc') {
+      return c.json({ error: 'VNC connect code is not bound to a VNC tunnel' }, 400);
+    }
+
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(result.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Tunnel session is not available for connection',
+        status: result.status,
+      }, 400);
+    }
+
     // Build the WebSocket URL from the canonical external base URL. Using
     // c.req.url would yield an internal http://api:3001 in Caddy-fronted
     // deployments; honoring X-Forwarded-Proto doesn't help when Caddy itself
@@ -671,6 +770,10 @@ vncExchangeRoutes.post(
       sessionId: record.tunnelId,
       sessionType: 'tunnel',
       userId: record.userId,
+      // Task 16: bind to the exchanging viewer's IP + UA — they will
+      // open the WS within seconds from the same browser.
+      ip: getTrustedClientIp(c),
+      userAgent: c.req.header('user-agent') ?? '',
     });
     const wsUrl = `${wsProtocol}//${baseUrl.host}/api/v1/tunnel-ws/${record.tunnelId}/ws?ticket=${wsTicketResult.ticket}`;
 
@@ -770,6 +873,8 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
         tunnelUserId: tunnelSessions.userId,
         tunnelOrgId: tunnelSessions.orgId,
         deviceId: tunnelSessions.deviceId,
+        tunnelType: tunnelSessions.type,
+        tunnelStatus: tunnelSessions.status,
         deviceStatus: devices.status,
         agentId: devices.agentId,
         userEmail: users.email,
@@ -784,6 +889,15 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
 
   if (!bound) {
     return c.json({ error: 'Tunnel session not found' }, 404);
+  }
+  if (bound.tunnelType !== 'vnc') {
+    return c.json({ error: 'Viewer token is not bound to a VNC tunnel' }, 400);
+  }
+  if (!CONNECTABLE_TUNNEL_STATUSES.includes(bound.tunnelStatus as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+    return c.json({
+      error: 'Tunnel session is not available for upgrade',
+      status: bound.tunnelStatus,
+    }, 400);
   }
   if (bound.deviceStatus !== 'online') {
     return c.json({ error: 'Device is not online' }, 400);
@@ -931,6 +1045,9 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     sessionId: tunnel.id,
     sessionType: 'tunnel',
     userId: bound.userId,
+    // Task 16: bind to the requester's IP + UA.
+    ip: getTrustedClientIp(c),
+    userAgent: c.req.header('user-agent') ?? '',
   });
   const publicBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || '').replace(/\/$/, '');
   const baseUrl = publicBase ? new URL(publicBase) : new URL(c.req.url);

@@ -15,22 +15,38 @@
  *   - resources/read
  */
 
+import { randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { z } from 'zod';
+import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
+import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db, withSystemDbAccessContext } from '../db';
-import { devices, alerts, scripts, automations, organizations, partners } from '../db/schema';
-import { eq, and, desc, type SQL } from 'drizzle-orm';
+import { devices, alerts, scripts, automations, partners, organizations, partnerUsers } from '../db/schema';
+import { eq, and, asc, desc, inArray, isNull, getTableColumns, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
+import { siteAccessCheck } from '../middleware/auth';
+import { getUserPermissions } from '../services/permissions';
 import { writeAuditEvent } from '../services/auditEvents';
+import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
+import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import {
+  beginMcpToolExecutionLedger,
+  completeMcpToolExecutionLedger,
+  type McpToolExecutionLedgerHandle,
+} from '../services/mcpToolExecutionLedger';
+import { resolveMcpExecutionOrgId } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
-import type { BootstrapTool } from '../modules/mcpBootstrap/types';
-import { BOOTSTRAP_TOOL_NAMES, BootstrapError } from '../modules/mcpBootstrap/types';
-import { PaymentRequiredError } from '../modules/mcpBootstrap/paymentGate';
+import { getTrustedClientIp } from '../services/clientIp';
+import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/ipAllowlist';
+import { captureException } from '../services/sentry';
+import type { BootstrapTool } from '../modules/mcpInvites/types';
+import { BootstrapError } from '../modules/mcpInvites/types';
 
 export const mcpServerRoutes = new Hono();
 
@@ -60,29 +76,85 @@ function isExecuteToolAllowedInProd(toolName: string): boolean {
   return mcpExecuteToolAllowlist.has('*') || mcpExecuteToolAllowlist.has(toolName);
 }
 
-// ============================================
-// Bootstrap module (unauthenticated tools)
-// ============================================
+function shouldRequireExecuteAdminInProd(): boolean {
+  return process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', true);
+}
 
-const MCP_BOOTSTRAP_ENABLED = envFlag('MCP_BOOTSTRAP_ENABLED', false);
+const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 1024);
+
+function setWwwAuthenticate(c: Context) {
+  if (!MCP_OAUTH_ENABLED) return;
+  const resourceUrl = `${OAUTH_ISSUER}/.well-known/oauth-protected-resource`;
+  c.header('WWW-Authenticate', `Bearer realm="breeze", resource_metadata="${resourceUrl}"`);
+}
+
+function requestIp(c: Context | undefined): string | null {
+  if (!c) return null;
+  const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown');
+  return ip === 'unknown' ? null : ip;
+}
+
+async function readJsonRpcBodyWithLimit(
+  req: Request,
+  options: { clone: boolean },
+): Promise<{ body?: unknown; tooLarge?: true; parseError?: true }> {
+  const contentLength = req.headers.get('content-length');
+  if (contentLength) {
+    const parsed = Number.parseInt(contentLength, 10);
+    if (Number.isFinite(parsed) && parsed > MCP_MESSAGE_MAX_BODY_BYTES) {
+      return { tooLarge: true };
+    }
+  }
+
+  const source = options.clone ? req.clone() : req;
+  if (!source.body) {
+    return { parseError: true };
+  }
+
+  const reader = source.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let raw = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > MCP_MESSAGE_MAX_BODY_BYTES) {
+        return { tooLarge: true };
+      }
+      raw += decoder.decode(value, { stream: true });
+    }
+    raw += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    return { body: JSON.parse(raw) };
+  } catch {
+    return { parseError: true };
+  }
+}
+
+// ============================================
+// Bootstrap module (authenticated tools only)
+// ============================================
 
 type BootstrapModule = { unauthTools: BootstrapTool<any, any>[]; authTools: BootstrapTool<any, any>[] };
 let bootstrapModule: BootstrapModule | null = null;
 
-async function loadBootstrapModuleInternal(): Promise<BootstrapModule | null> {
-  if (!MCP_BOOTSTRAP_ENABLED) return null;
-  const mod = await import('../modules/mcpBootstrap');
+async function loadBootstrapModuleInternal(): Promise<BootstrapModule> {
+  const mod = await import('../modules/mcpInvites');
   return mod.initMcpBootstrap();
 }
 
 /**
  * Initialize the bootstrap module. Called from `apps/api/src/index.ts` during
- * `bootstrap()` so startup fails loudly if required envs are missing when the
- * flag is on. A flag-off call is a no-op and returns null.
- *
- * Must complete before the API begins serving requests to eliminate the
- * load-race where a cold-start first request sees `bootstrapModule === null`
- * and falls through to a 401.
+ * startup. After Phase 3, the bootstrap module only contains auth tools
+ * (send_deployment_invites, configure_defaults); the three unauth tools and
+ * the IS_HOSTED flag-gate are gone.
  */
 export async function initMcpBootstrapForStartup(): Promise<BootstrapModule | null> {
   bootstrapModule = await loadBootstrapModuleInternal();
@@ -125,6 +197,7 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
       const out: Record<string, unknown> = { type: 'string' };
       for (const check of def.checks ?? []) {
         if (check.kind === 'email') out.format = 'email';
+        if (check.kind === 'uuid') out.format = 'uuid';
         if (check.kind === 'min') out.minLength = check.value;
         if (check.kind === 'max') out.maxLength = check.value;
       }
@@ -136,6 +209,22 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
       return { type: 'number' };
     case 'ZodBoolean':
       return { type: 'boolean' };
+    case 'ZodArray': {
+      // Without this case, MCP clients (Claude.ai, ChatGPT) see `emails: {}` —
+      // an unconstrained schema interpreted as `any`, and the client coerces
+      // arrays to strings before validation. Surfaced via send_deployment_invites
+      // when its `emails: z.array(z.string().email())` declared the array shape
+      // but the converter dropped it.
+      const out: Record<string, unknown> = {
+        type: 'array',
+        items: zodToJsonSchema(def.type),
+      };
+      for (const check of def.checks ?? []) {
+        if (check.kind === 'min') out.minItems = check.value;
+        if (check.kind === 'max') out.maxItems = check.value;
+      }
+      return out;
+    }
     case 'ZodOptional':
     case 'ZodDefault':
       return zodToJsonSchema(def.innerType);
@@ -145,74 +234,37 @@ function zodToJsonSchema(schema: z.ZodSchema<any>): Record<string, unknown> {
 }
 
 /**
- * Auth middleware with bootstrap carve-out.
+ * MCP auth middleware.
  *
- * - Requests with an `X-API-Key` header go through normal API-key auth.
- * - Requests WITHOUT an API key are rejected UNLESS the bootstrap flag is on
- *   AND the request body is a JSON-RPC `tools/list` or `tools/call` for one
- *   of the unauthenticated bootstrap tools. This lets fresh MCP clients
- *   discover and invoke the three pre-activation tools without credentials.
+ * All callers must provide either an `Authorization: Bearer <token>` header
+ * (OAuth 2.1 flow, when MCP_OAUTH_ENABLED) or an `X-API-Key` header.
+ * Unauthenticated callers receive 401 + WWW-Authenticate.
+ *
+ * The bootstrap unauth carve-out (IS_HOSTED flag + create_tenant /
+ * verify_tenant / attach_payment_method) was removed in Phase 3. The new
+ * account-creation path is OAuth Create Account → /auth/register-partner.
  */
-async function mcpAuthOrBootstrapMiddleware(c: Context, next: Next) {
+async function mcpAuthMiddleware(c: Context, next: Next) {
+  const authHeader = c.req.header('Authorization') ?? '';
+  const hasBearer = MCP_OAUTH_ENABLED && authHeader.startsWith('Bearer ');
+  if (hasBearer) {
+    return bearerTokenAuthMiddleware(c, next);
+  }
+
   const hasKey = Boolean(c.req.header('X-API-Key'));
   if (hasKey) {
     return apiKeyAuthMiddleware(c, next);
   }
 
-  if (!MCP_BOOTSTRAP_ENABLED || !bootstrapModule) {
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
-      401,
-    );
-  }
-
-  // GET (SSE) with no key: allow only if bootstrap flag is on; SSE is optional
-  // transport and bootstrap clients use the plain POST flow anyway. Reject to
-  // keep the surface minimal.
-  if (c.req.method !== 'POST') {
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
-      401,
-    );
-  }
-
-  // Clone the body so downstream handlers can re-parse.
-  let body: any = null;
-  try {
-    body = await c.req.raw.clone().json();
-  } catch {
-    return c.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: invalid JSON' } },
-      400,
-    );
-  }
-
-  if (body?.method === 'initialize' || body?.method === 'notifications/initialized') {
-    return next();
-  }
-  if (body?.method === 'tools/list') {
-    return next();
-  }
-  if (
-    body?.method === 'tools/call' &&
-    typeof body?.params?.name === 'string' &&
-    (BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(body.params.name)
-  ) {
-    return next();
-  }
-
+  setWwwAuthenticate(c);
   return c.json(
-    {
-      jsonrpc: '2.0',
-      id: body?.id ?? null,
-      error: { code: -32001, message: 'Missing X-API-Key header' },
-    },
+    { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Missing X-API-Key header' } },
     401,
   );
 }
 
-// All MCP routes go through auth (with bootstrap carve-out when flag is on).
-mcpServerRoutes.use('*', mcpAuthOrBootstrapMiddleware);
+// All MCP routes require authentication.
+mcpServerRoutes.use('*', mcpAuthMiddleware);
 
 // ============================================
 // Types
@@ -232,6 +284,19 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
+type McpApiKeyContext = {
+  id: string;
+  orgId: string | null;
+  partnerId?: string | null;
+  oauthGrantId?: string | null;
+};
+
+type McpApiKeyWithAuthFields = McpApiKeyContext & {
+  scopes: string[];
+  name: string;
+  createdBy: string;
+};
+
 function buildMcpAuditAction(method: string): string {
   const normalized = method
     .toLowerCase()
@@ -249,13 +314,18 @@ const MAX_SSE_SESSIONS = 100;
 const MAX_SSE_SESSIONS_PER_KEY = envInt('MCP_MAX_SSE_SESSIONS_PER_KEY', 5);
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; apiKeyId: string; createdAt: number }>();
+function mcpPrincipalKey(apiKey: { id: string; oauthGrantId?: string | null }): string {
+  return apiKey.oauthGrantId ? `oauth-grant:${apiKey.oauthGrantId}` : apiKey.id;
+}
+
+const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; principalKey: string; createdAt: number }>();
 
 mcpServerRoutes.get(
   '/sse',
   requireApiKeyScope('ai:read'),
   async (c) => {
     const apiKey = c.get('apiKey');
+    const principalKey = mcpPrincipalKey(apiKey);
 
     // Rate limit SSE connections in production
     if (process.env.NODE_ENV === 'production') {
@@ -264,7 +334,7 @@ mcpServerRoutes.get(
         return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } }, 503);
       }
       const limit = envInt('MCP_SSE_RATE_LIMIT_PER_MINUTE', 30);
-      const rate = await rateLimiter(redis, `mcp:sse:${apiKey.id}`, limit, 60);
+      const rate = await rateLimiter(redis, `mcp:sse:${principalKey}`, limit, 60);
       if (!rate.allowed) {
         const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
         c.header('Retry-After', String(retryAfter));
@@ -286,7 +356,7 @@ mcpServerRoutes.get(
     }
 
     // Enforce per-API-key session cap to reduce blast radius of a single leaked key.
-    const perKeyCount = Array.from(sseSessionQueues.values()).filter((s) => s.apiKeyId === apiKey.id).length;
+    const perKeyCount = Array.from(sseSessionQueues.values()).filter((s) => s.principalKey === principalKey).length;
     if (perKeyCount >= MAX_SSE_SESSIONS_PER_KEY) {
       return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Too many active MCP sessions for this API key' } }, 429);
     }
@@ -294,7 +364,7 @@ mcpServerRoutes.get(
     const sessionId = crypto.randomUUID();
 
     // Initialize queue for this session with ownership info
-    sseSessionQueues.set(sessionId, { queue: [], apiKeyId: apiKey.id, createdAt: Date.now() });
+    sseSessionQueues.set(sessionId, { queue: [], principalKey, createdAt: Date.now() });
 
     return streamSSE(c, async (stream) => {
       // Send endpoint event so client knows where to POST messages
@@ -352,109 +422,344 @@ mcpServerRoutes.get(
 // HTTP POST Transport — JSON-RPC messages
 // ============================================
 
+type McpDispatchEarlyReturn = { kind: 'response'; status: number; body: unknown };
+type McpDispatchOk = {
+  kind: 'ok';
+  body: JsonRpcRequest;
+  sessionId: string | undefined;
+};
+type McpDispatchPreflight = McpDispatchEarlyReturn | McpDispatchOk;
+
+/**
+ * Shared preflight (rate limit, body parse, JSON-RPC validation, scope check)
+ * for the legacy `/message` endpoint and the Streamable HTTP `/sse` POST
+ * endpoint. Returns either an early `{ kind: 'response' }` (caller should
+ * emit it as-is) or an `{ kind: 'ok' }` with the parsed body and sessionId.
+ *
+ * sessionId source differs between transports:
+ *   - legacy: `?sessionId=` query param (set by SSE `endpoint` event)
+ *   - streamable: `Mcp-Session-Id` header (set by server on initialize)
+ */
+async function preflightMcpRequest(
+  c: Context,
+  sessionId: string | undefined,
+): Promise<McpDispatchPreflight> {
+  const apiKey = c.get('apiKey') as
+    | (McpApiKeyContext & { scopes: string[]; name?: string; createdBy?: string })
+    | undefined;
+  const principalKey = apiKey ? mcpPrincipalKey(apiKey) : null;
+
+  if (apiKey && process.env.NODE_ENV === 'production') {
+    const redis = getRedis();
+    if (!redis) {
+      return { kind: 'response', status: 503, body: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } } };
+    }
+    const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
+    const rate = await rateLimiter(redis, `mcp:msg:${principalKey}`, limit, 60);
+    if (!rate.allowed) {
+      const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
+      c.header('Retry-After', String(retryAfter));
+      return { kind: 'response', status: 429, body: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Rate limit exceeded' } } };
+    }
+  }
+
+  const parsedBody = await readJsonRpcBodyWithLimit(c.req.raw, { clone: false });
+  if (parsedBody.tooLarge) {
+    return { kind: 'response', status: 413, body: { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Request body too large' } } };
+  }
+  if (parsedBody.parseError) {
+    return { kind: 'response', status: 400, body: { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: invalid JSON' } } };
+  }
+  const body = parsedBody.body as JsonRpcRequest;
+
+  if (!body.jsonrpc || body.jsonrpc !== '2.0' || !body.method) {
+    return { kind: 'response', status: 400, body: { jsonrpc: '2.0', id: body?.id ?? null, error: { code: -32600, message: 'Invalid JSON-RPC request' } } satisfies JsonRpcResponse };
+  }
+
+  if (!apiKey || !apiKey.scopes.includes('ai:read')) {
+    return { kind: 'response', status: 403, body: { jsonrpc: '2.0', id: body.id ?? null, error: { code: -32001, message: 'API key missing required scope: ai:read' } } satisfies JsonRpcResponse };
+  }
+
+  return { kind: 'ok', body, sessionId };
+}
+
+async function buildCheckedAuthFromApiKey(
+  c: Context,
+  apiKey: McpApiKeyWithAuthFields,
+): Promise<AuthContext | Response> {
+  const auth = await buildAuthFromApiKey({
+    id: apiKey.id,
+    orgId: apiKey.orgId,
+    partnerId: apiKey.partnerId ?? null,
+    name: apiKey.name,
+    createdBy: apiKey.createdBy,
+  });
+
+  if (auth.scope === 'partner' && auth.partnerId) {
+    let decision;
+    try {
+      decision = await enforceIpAllowlist(c, {
+        partnerId: auth.partnerId,
+        isPlatformAdmin: auth.user?.isPlatformAdmin === true,
+        actorId: auth.user?.id ?? null,
+        actorEmail: auth.user?.email ?? null,
+      });
+    } catch (err) {
+      console.error('[MCP] IP allowlist check failed for partner-scoped API key:', err);
+      captureException(err, c);
+      return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+    }
+
+    if (isBlocked(decision)) {
+      return c.json(IP_NOT_ALLOWED_BODY, 403);
+    }
+  }
+
+  return auth;
+}
+
+async function dispatchAndAudit(
+  c: Context,
+  body: JsonRpcRequest,
+  sessionId: string | undefined,
+  auth: AuthContext,
+  apiKey: McpApiKeyWithAuthFields,
+): Promise<JsonRpcResponse> {
+  const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, sessionId);
+
+  // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
+  // by design (partner admins span every org). Without the fallback, every
+  // authed MCP audit event would lose org attribution.
+  const auditOrgId =
+    apiKey.orgId ??
+    (auth.partnerId ? await resolveDefaultOrgId(auth.partnerId) : null);
+  writeAuditEvent(c, {
+    orgId: auditOrgId,
+    actorType: 'api_key',
+    actorId: apiKey.id,
+    action: buildMcpAuditAction(body.method),
+    resourceType: 'mcp_request',
+    resourceId: sessionId,
+    details: {
+      method: body.method,
+      hasSession: Boolean(sessionId),
+      hasParams: Boolean(body.params),
+    },
+    result: response.error ? 'failure' : 'success',
+    errorMessage: response.error?.message,
+  });
+
+  return response;
+}
+
 mcpServerRoutes.post(
   '/message',
   async (c) => {
-    const apiKey = c.get('apiKey'); // undefined when bootstrap carve-out let us through unauthed
+    const sessionIdFromQuery = c.req.query('sessionId');
+    const pre = await preflightMcpRequest(c, sessionIdFromQuery);
+    if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
 
-    // Rate limit messages in production (only if authed — unauth bootstrap
-    // tools are individually rate-limited inside the handlers)
-    if (apiKey && process.env.NODE_ENV === 'production') {
-      const redis = getRedis();
-      if (!redis) {
-        return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } }, 503);
+    const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
+    const principalKey = mcpPrincipalKey(apiKey);
+
+    // MED-1 follow-through: the streamable POST /sse handler hardens
+    // Mcp-Session-Id binding, but /message also accepts a sessionId via the
+    // query string and used to pass it straight into dispatchAndAudit. That
+    // let an OAuth client POST /message?sessionId=<anything> and have the
+    // attacker-supplied string land in audit_logs.resource_id and the tool
+    // ledger transport_session_id — even though the response delivery path
+    // below still required principal ownership. Validate the sessionId
+    // BEFORE dispatch so the audit row never reflects a forged value.
+    let trustedSessionId: string | undefined;
+    if (pre.sessionId) {
+      if (pre.sessionId.startsWith(MCP_SERVER_SESSION_PREFIX)) {
+        // Server-minted (Streamable HTTP) id — verify ownership in Redis.
+        const redis = getRedis();
+        if (!redis) {
+          // Cannot verify; refuse to attach the id rather than fail the call
+          // outright (legacy SSE clients aren't expected here, but a missing
+          // Redis shouldn't bubble up as a hard 503 either).
+          trustedSessionId = undefined;
+        } else {
+          try {
+            const stored = await redis.get(`${MCP_SESSION_REDIS_PREFIX}${pre.sessionId}`);
+            if (stored === principalKey) {
+              trustedSessionId = pre.sessionId;
+            }
+          } catch (err) {
+            console.warn('[MCP] /message session lookup failed:', err);
+          }
+        }
+      } else {
+        // Legacy SSE sessionId (UUID from GET /sse). Only honor it if the
+        // in-memory map confirms the caller owns the stream.
+        const session = sseSessionQueues.get(pre.sessionId);
+        if (session && session.principalKey === principalKey) {
+          trustedSessionId = pre.sessionId;
+        }
       }
-      const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
-      const rate = await rateLimiter(redis, `mcp:msg:${apiKey.id}`, limit, 60);
-      if (!rate.allowed) {
-        const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
-        c.header('Retry-After', String(retryAfter));
-        return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Rate limit exceeded' } }, 429);
-      }
     }
 
-    const sessionId = c.req.query('sessionId');
+    const auth = await buildCheckedAuthFromApiKey(c, apiKey);
+    if (auth instanceof Response) return auth;
 
-    let body: JsonRpcRequest;
-    try {
-      body = await c.req.json<JsonRpcRequest>();
-    } catch {
-      return c.json({
-        jsonrpc: '2.0' as const,
-        id: null,
-        error: { code: -32700, message: 'Parse error: invalid JSON' }
-      }, 400);
-    }
+    const response = await dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey);
 
-    if (!body.jsonrpc || body.jsonrpc !== '2.0' || !body.method) {
-      return c.json({
-        jsonrpc: '2.0',
-        id: body?.id ?? null,
-        error: { code: -32600, message: 'Invalid JSON-RPC request' }
-      } satisfies JsonRpcResponse, 400);
-    }
-
-    // Unauthenticated path: only bootstrap methods (carve-out middleware
-    // guarantees we only arrive here for whitelisted methods).
-    if (!apiKey) {
-      const response = await handleJsonRpcUnauth(body, c);
-      return c.json(response);
-    }
-
-    // Authed path: enforce ai:read scope (previously done via requireApiKeyScope).
-    const hasAiRead = apiKey.scopes.includes('*') || apiKey.scopes.includes('ai:read');
-    if (!hasAiRead) {
-      return c.json(
-        {
-          jsonrpc: '2.0',
-          id: body.id ?? null,
-          error: { code: -32001, message: 'API key missing required scope: ai:read' },
-        } satisfies JsonRpcResponse,
-        403,
-      );
-    }
-
-    // Build a minimal AuthContext from the API key
-    const auth = await buildAuthFromApiKey(apiKey);
-
-    const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey.scopeState, apiKey, c);
-
-    writeAuditEvent(c, {
-      orgId: apiKey.orgId,
-      actorType: 'api_key',
-      actorId: apiKey.id,
-      action: buildMcpAuditAction(body.method),
-      resourceType: 'mcp_request',
-      resourceId: sessionId,
-      details: {
-        method: body.method,
-        hasSession: Boolean(sessionId),
-        hasParams: Boolean(body.params)
-      },
-      result: response.error ? 'failure' : 'success',
-      errorMessage: response.error?.message
-    });
-
-    // If there's an active SSE session, queue the response there (with ownership check)
-    if (sessionId) {
-      const session = sseSessionQueues.get(sessionId);
-      if (session && session.apiKeyId === apiKey.id) {
+    // Legacy SSE transport: if the request carries a verified-owned sessionId
+    // pointing at an active SSE stream, push the response into that stream
+    // and return 202. Streamable HTTP clients don't reach this branch (they
+    // POST to /sse).
+    if (trustedSessionId) {
+      const session = sseSessionQueues.get(trustedSessionId);
+      if (session && session.principalKey === principalKey) {
         session.queue.push(response);
-        // Return 202 Accepted — response will come via SSE
         return c.json({ status: 'accepted' }, 202);
       }
     }
 
-    // PAYMENT_REQUIRED (readonly-scope backstop) surfaces as HTTP 402.
-    const errData = response.error?.data as { code?: string } | undefined;
-    if (errData?.code === 'PAYMENT_REQUIRED') {
-      return c.json(response, 402);
-    }
-
-    // Otherwise return inline (stateless HTTP mode)
     return c.json(response);
   }
 );
+
+// ============================================
+// Streamable HTTP transport (MCP 2025-03-26)
+// ============================================
+// Single-URL transport: POST /sse delivers the JSON-RPC request and the
+// response comes back inline as application/json. GET /sse is left as the
+// legacy SSE handler above for backward compatibility with older clients;
+// new clients (Claude.ai, ChatGPT) only use POST. DELETE /sse terminates a
+// session (no-op here — sessions are stateless).
+//
+// Session ID, when present, comes from the `Mcp-Session-Id` request header.
+// On `initialize` we mint a server-side ID (prefixed `mcp-`), persist
+// `(sessionId → principalKey)` in Redis, and return it in the same header.
+// Subsequent calls MUST present that server-minted ID and the stored
+// principalKey must match the caller's principalKey — otherwise the request
+// is rejected. This prevents an attacker from stamping arbitrary
+// `Mcp-Session-Id` values to muddy audit triage or merge their activity
+// into another principal's session (audit finding MCP MED-1).
+//
+// The minted-session map is keyed in Redis under MCP_SESSION_PREFIX with a
+// short TTL (matches OAuth access-token lifetime plus a small buffer).
+const MCP_SESSION_REDIS_PREFIX = 'mcp-session:';
+const MCP_SERVER_SESSION_PREFIX = 'mcp-';
+const MCP_SESSION_TTL_SECONDS = envInt('MCP_SESSION_TTL_SECONDS', 11 * 60);
+
+function mintMcpSessionId(): string {
+  return `${MCP_SERVER_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
+}
+
+mcpServerRoutes.post(
+  '/sse',
+  async (c) => {
+    const sessionIdFromHeader = c.req.header('Mcp-Session-Id') || undefined;
+    // NOTE: we do NOT pass the client-supplied header into preflight as a
+    // trusted sessionId — the resolved sessionId is determined below after
+    // body parsing and after we know whether this is an `initialize` call.
+    const pre = await preflightMcpRequest(c, undefined);
+    if (pre.kind === 'response') return c.json(pre.body, pre.status as 400 | 403 | 413 | 429 | 503);
+
+    const apiKey = c.get('apiKey') as McpApiKeyWithAuthFields;
+    const principalKey = mcpPrincipalKey(apiKey);
+    const isInitialize = pre.body.method === 'initialize';
+    const redis = getRedis();
+
+    let trustedSessionId: string | undefined;
+    if (isInitialize) {
+      // Ignore any client-supplied Mcp-Session-Id on initialize. The server
+      // mints the canonical id and (best-effort) persists ownership.
+      trustedSessionId = mintMcpSessionId();
+      if (redis) {
+        try {
+          await redis.setex(
+            `${MCP_SESSION_REDIS_PREFIX}${trustedSessionId}`,
+            MCP_SESSION_TTL_SECONDS,
+            principalKey,
+          );
+        } catch (err) {
+          // If Redis is unreachable we still mint the id — subsequent calls
+          // will fail closed (no stored principal → 403), which is the
+          // correct safety behavior.
+          console.warn('[MCP] Failed to persist Mcp-Session-Id mapping:', err);
+        }
+      }
+    } else {
+      // Non-initialize: require a server-prefixed Mcp-Session-Id header.
+      if (!sessionIdFromHeader || !sessionIdFromHeader.startsWith(MCP_SERVER_SESSION_PREFIX)) {
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32600, message: 'Mcp-Session-Id header required (must be server-minted on initialize)' },
+          },
+          400,
+        );
+      }
+      // If Redis is configured, look up ownership and require principal match.
+      // If Redis is unavailable we cannot verify ownership; fail closed.
+      if (!redis) {
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32000, message: 'MCP session store unavailable' },
+          },
+          503,
+        );
+      }
+      let storedPrincipal: string | null = null;
+      try {
+        storedPrincipal = await redis.get(`${MCP_SESSION_REDIS_PREFIX}${sessionIdFromHeader}`);
+      } catch (err) {
+        console.warn('[MCP] Failed to read Mcp-Session-Id mapping:', err);
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32000, message: 'MCP session store unavailable' },
+          },
+          503,
+        );
+      }
+      if (!storedPrincipal || storedPrincipal !== principalKey) {
+        return c.json(
+          {
+            jsonrpc: '2.0',
+            id: pre.body.id ?? null,
+            error: { code: -32001, message: 'Mcp-Session-Id principal mismatch' },
+          },
+          403,
+        );
+      }
+      trustedSessionId = sessionIdFromHeader;
+    }
+
+    // Echo the server-trusted session id back to the client so they can
+    // include it on subsequent requests (and so clients can observe the
+    // server-minted value on initialize).
+    c.header('Mcp-Session-Id', trustedSessionId);
+
+    // JSON-RPC notifications (no `id`) — process for side effects, return 202
+    // with empty body per Streamable HTTP spec; do not emit a response body.
+    const auth = await buildCheckedAuthFromApiKey(c, apiKey);
+    if (auth instanceof Response) return auth;
+
+    if (pre.body.id === undefined) {
+      void dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey).catch((err) => {
+        console.error('[MCP] notification handler error:', err);
+      });
+      return c.body(null, 202);
+    }
+
+    const response = await dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey);
+    return c.json(response);
+  }
+);
+
+mcpServerRoutes.delete('/sse', (c) => {
+  // Streamable HTTP DELETE — terminate session. Stateless server, so 204.
+  return c.body(null, 204);
+});
 
 // ============================================
 // JSON-RPC Method Dispatcher
@@ -464,9 +769,9 @@ async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full' = 'full',
-  apiKey?: { id: string; orgId: string; scopeState: 'readonly' | 'full' },
+  apiKey?: McpApiKeyContext,
   c?: Context,
+  sessionId?: string,
 ): Promise<JsonRpcResponse> {
   try {
     switch (req.method) {
@@ -491,7 +796,7 @@ async function handleJsonRpc(
         return handleToolsList(req.id, scopes);
 
       case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, scopeState, apiKey, c);
+        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
 
       case 'resources/list':
         return handleResourcesList(req.id);
@@ -515,16 +820,13 @@ async function handleJsonRpc(
 
 function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse {
   const allTools = getToolDefinitions();
-  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
-  const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
-  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+  const hasExecute = scopes.includes('ai:execute');
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
-  const bootstrapNames = new Set<string>(BOOTSTRAP_TOOL_NAMES);
 
-  // Filter tools based on API key scopes; bootstrap tools are pre-activation
-  // only and must never appear in the authed list.
+  // Filter tools based on API key scopes.
   const filteredTools = allTools.filter((tool) => {
-    if (bootstrapNames.has(tool.name)) return false;
     const tier = getToolTier(tool.name);
     if (tier === undefined) return false;
 
@@ -542,7 +844,7 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     inputSchema: tool.input_schema,
   }));
 
-  // Surface bootstrap authTools (post-activation: send_deployment_invites, etc.)
+  // Surface bootstrap auth tools (send_deployment_invites, configure_defaults)
   // to authenticated callers with the matching scope. These tools live outside
   // the main aiTools registry but flow through the authed dispatch path below.
   if (bootstrapModule) {
@@ -562,106 +864,6 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
 }
 
 // ============================================
-// Unauthenticated JSON-RPC (bootstrap-only)
-// ============================================
-
-async function handleJsonRpcUnauth(
-  req: JsonRpcRequest,
-  c: Context,
-): Promise<JsonRpcResponse> {
-  try {
-    switch (req.method) {
-      case 'initialize':
-        return jsonRpcResult(req.id, {
-          protocolVersion: '2024-11-05',
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'breeze-rmm-bootstrap', version: '1.0.0' },
-        });
-      case 'notifications/initialized':
-        return jsonRpcResult(req.id, {});
-      case 'tools/list':
-        return handleBootstrapToolsList(req.id);
-      case 'tools/call':
-        return await handleBootstrapToolsCall(req.id, req.params ?? {}, c);
-      default:
-        return jsonRpcError(req.id, -32601, `Method not available pre-activation: ${req.method}`);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal error';
-    console.error('[MCP] Bootstrap JSON-RPC handler error:', err);
-    return jsonRpcError(req.id, -32000, message);
-  }
-}
-
-function handleBootstrapToolsList(id: string | number): JsonRpcResponse {
-  if (!bootstrapModule) {
-    return jsonRpcResult(id, { tools: [] });
-  }
-  return jsonRpcResult(id, {
-    tools: bootstrapModule.unauthTools.map((tool) => ({
-      name: tool.definition.name,
-      description: tool.definition.description,
-      inputSchema: zodToJsonSchema(tool.definition.inputSchema),
-    })),
-  });
-}
-
-async function handleBootstrapToolsCall(
-  id: string | number,
-  params: Record<string, unknown>,
-  c: Context,
-): Promise<JsonRpcResponse> {
-  const toolName = params.name as string;
-  const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
-
-  if (!toolName) {
-    return jsonRpcError(id, -32602, 'Missing required parameter: name');
-  }
-  if (!bootstrapModule) {
-    return jsonRpcError(id, -32601, 'Bootstrap tools are not available.');
-  }
-  const tool = bootstrapModule.unauthTools.find((t) => t.definition.name === toolName);
-  if (!tool) {
-    return jsonRpcError(id, -32601, `Unknown bootstrap tool: ${toolName}`);
-  }
-
-  const parsed = tool.definition.inputSchema.safeParse(toolInput);
-  if (!parsed.success) {
-    return jsonRpcError(id, -32602, 'Invalid arguments', parsed.error.flatten());
-  }
-
-  const ctx = {
-    ip: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
-    userAgent: c.req.header('user-agent') ?? null,
-    region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
-  };
-
-  try {
-    // Bootstrap unauth tools run BEFORE any API key is issued, so there's no
-    // request-scoped DB access context. They must write via the system context
-    // or RLS will reject the inserts (partner_activations, api_keys, partners).
-    const result = await withSystemDbAccessContext(async () =>
-      tool.handler(parsed.data, ctx),
-    );
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    });
-  } catch (err) {
-    if (err instanceof BootstrapError) {
-      return jsonRpcError(id, -32000, err.message, {
-        code: err.code,
-        remediation: err.remediation,
-      });
-    }
-    const message = err instanceof Error ? err.message : 'Tool execution failed';
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-      isError: true,
-    });
-  }
-}
-
-// ============================================
 // tools/call
 // ============================================
 
@@ -670,9 +872,9 @@ async function handleToolsCall(
   params: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full' = 'full',
-  apiKey?: { id: string; orgId: string; scopeState: 'readonly' | 'full' },
+  apiKey?: McpApiKeyContext,
   c?: Context,
+  sessionId?: string,
 ): Promise<JsonRpcResponse> {
   const toolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -681,16 +883,7 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
   }
 
-  // Bootstrap unauth tools are pre-activation only — refuse when authed.
-  if ((BOOTSTRAP_TOOL_NAMES as readonly string[]).includes(toolName)) {
-    return jsonRpcError(
-      id,
-      -32001,
-      `already_authenticated: bootstrap tool "${toolName}" is only available pre-activation.`,
-    );
-  }
-
-  // Bootstrap authTools (post-activation, e.g. send_deployment_invites) live
+  // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main aiTools registry but dispatch through this authed path.
   const bootstrapAuthTool = bootstrapModule?.authTools.find(
     (t) => t.definition.name === toolName,
@@ -702,7 +895,6 @@ async function handleToolsCall(
       toolInput,
       auth,
       scopes,
-      scopeState,
       apiKey,
       c,
     );
@@ -714,26 +906,9 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
 
-  // Readonly-scope backstop: pre-payment keys can't call tier-2+ tools.
-  // Defense-in-depth — the primary enforcement is the `requirePaymentMethod`
-  // decorator on individual bootstrap tools. Returned as a JSON-RPC error;
-  // the outer /message handler translates a PAYMENT_REQUIRED data.code into a
-  // 402 HTTP response.
-  if (scopeState === 'readonly' && tier >= 2) {
-    return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
-      code: 'PAYMENT_REQUIRED',
-      message:
-        'This action requires a payment method on file (identity verification, no charge for free tier).',
-      remediation: {
-        tool: 'attach_payment_method',
-        args: { tenant_id: auth.partnerId },
-      },
-    });
-  }
-
-  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
-  const requireExecuteAdmin = process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
-  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+  const hasExecute = scopes.includes('ai:execute');
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
@@ -785,8 +960,59 @@ async function handleToolsCall(
   // MCP server auto-executes Tier 3 tools without approval — the API key holder
   // is trusted at the scope level. Approval flow is for interactive UI only.
 
+  const executionOrgId = resolveMcpExecutionOrgId(apiKey, auth, toolInput);
+  let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
+  if (tier >= 3) {
+    if (!apiKey || !executionOrgId) {
+      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+    try {
+      ledgerHandle = await beginMcpToolExecutionLedger({
+        orgId: executionOrgId,
+        accessibleOrgIds: auth.accessibleOrgIds,
+        toolName,
+        tier,
+        toolInput,
+        transportSessionId: sessionId ?? null,
+        principal: {
+          apiKeyId: apiKey.id,
+          oauthGrantId: apiKey.oauthGrantId ?? null,
+          partnerId: auth.partnerId ?? apiKey.partnerId ?? null,
+          actorUserId: auth.user.id,
+        },
+      });
+    } catch (err) {
+      console.error('[MCP] Failed to create tool execution ledger:', toolName, err);
+      return jsonRpcError(id, -32000, 'Unable to create MCP tool execution ledger');
+    }
+  }
+
+  const startedAt = Date.now();
   try {
     const result = await executeTool(toolName, toolInput, auth);
+    const safeResult = compactToolResultForChat(toolName, result);
+    if (ledgerHandle) {
+      await completeMcpToolExecutionLedger({
+        handle: ledgerHandle,
+        status: 'success',
+        durationMs: Date.now() - startedAt,
+        result: safeResult,
+      }).catch((err) => {
+        console.error('[MCP] Failed to complete tool execution ledger:', toolName, err);
+      });
+    }
+    writeMcpToolAuditEvent(c, {
+      apiKey,
+      auth,
+      sessionId,
+      orgId: executionOrgId,
+      toolName,
+      tier,
+      toolInput,
+      durationMs: Date.now() - startedAt,
+      status: 'success',
+      result: safeResult,
+    });
 
     // If result contains imageBase64, return it as an MCP image content block
     // so Claude can actually see the screenshot (instead of raw base64 in JSON text)
@@ -810,15 +1036,88 @@ async function handleToolsCall(
     }
 
     return jsonRpcResult(id, {
-      content: [{ type: 'text', text: result }]
+      content: [{ type: 'text', text: safeResult }]
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Tool execution failed';
+    const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+    if (ledgerHandle) {
+      await completeMcpToolExecutionLedger({
+        handle: ledgerHandle,
+        status: 'failure',
+        durationMs: Date.now() - startedAt,
+        error: err,
+      }).catch((ledgerErr) => {
+        console.error('[MCP] Failed to fail tool execution ledger:', toolName, ledgerErr);
+      });
+    }
+    writeMcpToolAuditEvent(c, {
+      apiKey,
+      auth,
+      sessionId,
+      orgId: executionOrgId,
+      toolName,
+      tier,
+      toolInput,
+      durationMs: Date.now() - startedAt,
+      status: 'failure',
+      error: err,
+    });
     return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+      content: [{ type: 'text', text: safeError }],
       isError: true
     });
   }
+}
+
+function writeMcpToolAuditEvent(
+  c: Context | undefined,
+  event: {
+    apiKey?: McpApiKeyContext;
+    auth: AuthContext;
+    sessionId?: string;
+    orgId?: string | null;
+    toolName: string;
+    tier: number;
+    toolInput: Record<string, unknown>;
+    durationMs: number;
+    status: 'success' | 'failure';
+    result?: string;
+    error?: unknown;
+  },
+): void {
+  if (!c || !event.apiKey) return;
+
+  const error = event.error instanceof Error ? event.error : undefined;
+  // event.orgId is the access-checked execution org (resolveMcpExecutionOrgId).
+  // NEVER fall back to a raw client-supplied toolInput.orgId here — doing so
+  // would let a partner-scoped caller forge cross-tenant audit_logs attribution
+  // (audit rows are written under the RLS-bypassed system context).
+  const orgId = event.orgId ?? event.apiKey.orgId ?? event.auth.orgId ?? null;
+  writeAuditEvent(c, {
+    orgId,
+    actorType: 'api_key',
+    actorId: event.apiKey.id,
+    action: `mcp.tool.${event.toolName}`.slice(0, 100),
+    resourceType: 'mcp_tool_execution',
+    resourceId: event.sessionId,
+    result: event.status === 'success' ? 'success' : 'failure',
+    errorMessage: error ? redactAiToolOutputText(error.message).slice(0, 1000) : undefined,
+    details: {
+      sessionId: event.sessionId ?? null,
+      approvalId: null,
+      oauthGrantId: event.apiKey.oauthGrantId ?? null,
+      partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
+      orgId: orgId ?? null,
+      toolName: event.toolName,
+      tier: event.tier,
+      target: summarizePayload(event.toolInput, { maxStringLength: 512 }),
+      arguments: sanitizeAuditPayload(event.toolInput, { maxStringLength: 2048 }),
+      durationMs: event.durationMs,
+      ...(event.result ? { result: summarizeToolResult(event.result, { maxStringLength: 500 }) } : {}),
+      ...(error ? { errorClass: error.name } : {}),
+    },
+  });
 }
 
 // ============================================
@@ -840,27 +1139,12 @@ async function dispatchBootstrapAuthTool(
   toolInput: Record<string, unknown>,
   auth: AuthContext,
   scopes: string[],
-  scopeState: 'readonly' | 'full',
-  apiKey: { id: string; orgId: string; scopeState: 'readonly' | 'full' } | undefined,
+  apiKey: { id: string; orgId: string | null } | undefined,
   c: Context | undefined,
 ): Promise<JsonRpcResponse> {
-  // Readonly-scope backstop — authTools are tier-3 mutations.
-  if (scopeState === 'readonly') {
-    return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
-      code: 'PAYMENT_REQUIRED',
-      message:
-        'This action requires a payment method on file (identity verification, no charge for free tier).',
-      remediation: {
-        tool: 'attach_payment_method',
-        args: { tenant_id: auth.partnerId },
-      },
-    });
-  }
-
-  const hasExecute = scopes.includes('*') || scopes.includes('ai:execute');
-  const requireExecuteAdmin =
-    process.env.NODE_ENV === 'production' && envFlag('MCP_REQUIRE_EXECUTE_ADMIN', false);
-  const hasExecuteAdmin = scopes.includes('*') || scopes.includes('ai:execute_admin');
+  const hasExecute = scopes.includes('ai:execute');
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
 
   if (!hasExecute) {
     return jsonRpcError(
@@ -897,8 +1181,26 @@ async function dispatchBootstrapAuthTool(
     return jsonRpcError(
       id,
       -32603,
-      'Bootstrap authTool requires an API key with a resolvable partner.',
+      'Bootstrap authTool requires an authenticated session with a resolvable partner.',
     );
+  }
+
+  // Partner-scoped OAuth tokens correctly carry org_id=null because partner
+  // admins span every org under their partner. Bootstrap authTools (e.g.
+  // send_deployment_invites) still need a concrete orgId to write into.
+  // Fall back to the partner's first-created org — same convention used by
+  // configure_defaults / send_deployment_invites elsewhere. X-API-Key callers
+  // already have apiKey.orgId set; this block only fires for OAuth bearers.
+  let resolvedOrgId = apiKey.orgId;
+  if (!resolvedOrgId) {
+    resolvedOrgId = await resolveDefaultOrgId(auth.partnerId);
+    if (!resolvedOrgId) {
+      return jsonRpcError(
+        id,
+        -32603,
+        'Partner has no organizations — create one before calling bootstrap authTools.',
+      );
+    }
   }
 
   // Look up partner billing email (used as the admin email in invite templates).
@@ -915,15 +1217,14 @@ async function dispatchBootstrapAuthTool(
   }
 
   const bootstrapCtx = {
-    ip: c?.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    ip: requestIp(c),
     userAgent: c?.req.header('user-agent') ?? null,
     region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
     apiKey: {
       id: apiKey.id,
       partnerId: auth.partnerId,
-      defaultOrgId: apiKey.orgId,
+      defaultOrgId: resolvedOrgId,
       partnerAdminEmail,
-      scopeState: apiKey.scopeState,
     },
   };
 
@@ -933,13 +1234,6 @@ async function dispatchBootstrapAuthTool(
       content: [{ type: 'text', text: JSON.stringify(result) }],
     });
   } catch (err) {
-    if (err instanceof PaymentRequiredError) {
-      return jsonRpcError(id, -32001, 'PAYMENT_REQUIRED', {
-        code: err.code,
-        message: err.message,
-        remediation: err.remediation,
-      });
-    }
     if (err instanceof BootstrapError) {
       return jsonRpcError(id, -32000, err.message, {
         code: err.code,
@@ -992,6 +1286,32 @@ function handleResourcesList(id: string | number): JsonRpcResponse {
 // ============================================
 // resources/read
 // ============================================
+
+/**
+ * SR-008: explicit ALLOW-LIST of `devices` columns safe to serialize into the
+ * `breeze://devices/{id}` MCP resource. An allow-list (not a deny-list) is
+ * deliberate — any column added to the schema in future is excluded by
+ * default, so a newly-introduced credential/secret column cannot silently
+ * leak to an AI/MCP client. Excludes: agent/watchdog/helper token hashes and
+ * their issued/expiry timestamps, mTLS certificate material/metadata, and the
+ * internal agentId.
+ */
+export const SAFE_DEVICE_RESOURCE_FIELDS = [
+  'id', 'orgId', 'siteId', 'hostname', 'displayName',
+  'osType', 'deviceRole', 'deviceRoleSource', 'osVersion', 'osBuild',
+  'architecture', 'agentVersion', 'status', 'lastSeenAt', 'enrolledAt',
+  'enrolledBy', 'tags', 'customFields', 'managementPosture', 'tccPermissions',
+  'desktopAccess', 'lastUser', 'uptimeSeconds', 'isHeadless', 'watchdogStatus',
+  'watchdogLastSeen', 'watchdogVersion', 'quarantinedAt', 'quarantinedReason',
+  'createdAt', 'updatedAt',
+] as const;
+
+export function buildSafeDeviceProjection() {
+  const cols = getTableColumns(devices);
+  return Object.fromEntries(
+    SAFE_DEVICE_RESOURCE_FIELDS.map((field) => [field, cols[field]])
+  ) as Pick<typeof cols, (typeof SAFE_DEVICE_RESOURCE_FIELDS)[number]>;
+}
 
 /**
  * Query a table with org-scoping and return a JSON-RPC resource result.
@@ -1065,7 +1385,7 @@ async function handleResourcesRead(
         description: scripts.description,
         language: scripts.language,
         category: scripts.category
-      }, orgCond(scripts.orgId), { limit: 200 });
+      }, orgCond(scripts.orgId), { extraConditions: [isNull(scripts.deletedAt)], limit: 200 });
     }
 
     if (uri === 'breeze://automations') {
@@ -1087,7 +1407,7 @@ async function handleResourcesRead(
       if (orgFilter) conditions.push(orgFilter);
 
       const [device] = await db
-        .select()
+        .select(buildSafeDeviceProjection())
         .from(devices)
         .where(and(...conditions))
         .limit(1);
@@ -1125,50 +1445,152 @@ function jsonRpcError(id: string | number | null, code: number, message: string,
 }
 
 /**
- * Build a minimal AuthContext from an API key.
- * API keys are always org-scoped (no partner/system access).
- * Resolves the org's partnerId so partner-level users (who may lack a direct
- * organizationUsers record) can still pass RBAC checks via their partnerUsers role.
+ * Resolve the partner's default (first-created) organization id. Mirrors the
+ * convention used by configure_defaults / send_deployment_invites. Used to
+ * scope partner.* audit events so query_audit_log surfaces them for the
+ * partner's own MCP caller, and to default the bootstrap-authTool dispatch
+ * orgId for partner-scoped OAuth tokens (which intentionally have org_id=null
+ * since partner-admins span all orgs).
+ *
+ * Inlined here after activationRoutes.ts was deleted in Phase 4 — the only
+ * remaining caller is this file.
  */
-async function buildAuthFromApiKey(apiKey: { id: string; orgId: string; name: string; createdBy: string }): Promise<AuthContext> {
-  const orgId = apiKey.orgId;
-
-  // Look up the org's partner so getUserPermissions can fall back to
-  // partnerUsers. Distinguish "row not found" from "DB threw" — a thrown
-  // error means we can't safely assume partnerId is null; re-throw so the
-  // request-level error handler returns a clean 500 instead of a misleading
-  // downstream permissions error (e.g. paymentGate's "requires a resolvable
-  // partner" message, which only makes sense for the row-not-found case).
-  let partnerId: string | null = null;
+async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
   try {
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
+    const [row] = await db
+      .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.id, orgId))
+      .where(eq(organizations.partnerId, partnerId))
+      .orderBy(asc(organizations.createdAt))
       .limit(1);
-    partnerId = org?.partnerId ?? null;
+    return row?.id ?? null;
   } catch (err) {
-    console.error(
-      '[MCP] DB error resolving partnerId for org (mcp_partner_lookup_failed)',
-      { orgId, error: err instanceof Error ? err.message : String(err) },
-    );
-    throw new Error(
-      `mcp_partner_lookup_failed: failed to resolve partner for org ${orgId}`,
-    );
+    console.error('[mcpServer] failed to resolve default orgId for partner', partnerId, err);
+    return null;
+  }
+}
+
+/**
+ * Resolve the concrete org allowlist a partner-scope caller can reach.
+ * Mirrors `computeAccessibleOrgIds` in middleware/auth.ts and
+ * `resolvePartnerAccessibleOrgIds` in middleware/bearerTokenAuth.ts. Kept
+ * inline here to avoid widening auth.ts' export surface; the cost is ~25
+ * duplicated lines, intentionally accepted per CLAUDE.md.
+ *
+ * Pre-auth lookup runs under withSystemDbAccessContext because RLS GUCs for
+ * the request's real scope haven't been set yet.
+ */
+async function resolvePartnerAccessibleOrgIds(
+  partnerId: string,
+  userId: string,
+): Promise<string[]> {
+  return withSystemDbAccessContext(async () => {
+    const [membership] = await db
+      .select({ orgAccess: partnerUsers.orgAccess, orgIds: partnerUsers.orgIds })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)))
+      .limit(1);
+
+    if (!membership) return [];
+    if (membership.orgAccess === 'none') return [];
+
+    if (membership.orgAccess === 'selected') {
+      const selected = (membership.orgIds ?? []).filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (selected.length === 0) return [];
+      const rows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, partnerId), inArray(organizations.id, selected)));
+      return rows.map((r) => r.id);
+    }
+
+    const rows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId));
+    return rows.map((r) => r.id);
+  });
+}
+
+/**
+ * Build a minimal AuthContext from an API key or OAuth-backed API key context.
+ * API keys remain org-scoped; OAuth bearer tokens may be partner-scoped when
+ * they carry a partner_id without an org_id.
+ *
+ * Defense-in-depth fix (M-B1): partner-scope callers used to receive
+ * `accessibleOrgIds: null` + `orgCondition: () => undefined`, which is
+ * the "system, no filter" shape — but `canAccessOrg: () => false`
+ * contradicted that, leaving any code paths that switch on `canAccessOrg`
+ * vs `orgCondition` in inconsistent states. Now we resolve the actual
+ * partner→org list and use a proper inArray filter.
+ */
+async function buildAuthFromApiKey(apiKey: {
+  id: string;
+  orgId: string | null;
+  partnerId: string | null;
+  name: string;
+  createdBy: string;
+}): Promise<AuthContext> {
+  const user = {
+    id: apiKey.createdBy,
+    email: `apikey-${apiKey.name}@breeze.local`,
+    name: `API Key: ${apiKey.name}`,
+    isPlatformAdmin: false
+  };
+
+  if (apiKey.orgId) {
+    // A key inherits the CREATING user's access, including their site-axis
+    // restriction — it can never be broader than the user who minted it. Load
+    // the creator's allowedSiteIds for this org so the site gate (verifyDeviceAccess)
+    // applies to MCP/API-key callers exactly as it does to the JWT request path.
+    const creatorPerms = await getUserPermissions(apiKey.createdBy, {
+      partnerId: apiKey.partnerId || undefined,
+      orgId: apiKey.orgId,
+    });
+    const allowedSiteIds = creatorPerms?.allowedSiteIds;
+    return {
+      user,
+      token: {} as AuthContext['token'],
+      partnerId: apiKey.partnerId,
+      orgId: apiKey.orgId,
+      scope: 'organization',
+      accessibleOrgIds: [apiKey.orgId],
+      orgCondition: (orgIdColumn) => eq(orgIdColumn, apiKey.orgId!),
+      canAccessOrg: (checkOrgId) => checkOrgId === apiKey.orgId,
+      allowedSiteIds,
+      canAccessSite: siteAccessCheck(allowedSiteIds)
+    };
   }
 
+  // Partner-scope caller (OAuth bearer token, or API key with no orgId).
+  // Resolve the concrete org allowlist so orgCondition / canAccessOrg are
+  // consistent and defense-in-depth filtering works alongside RLS.
+  const accessibleOrgIds = apiKey.partnerId
+    ? await resolvePartnerAccessibleOrgIds(apiKey.partnerId, apiKey.createdBy)
+    : [];
+
+  const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
+    if (accessibleOrgIds.length === 0) {
+      // No accessible orgs — return an impossible condition so any query
+      // using this filter matches no rows. Same pattern as auth.ts.
+      return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
+    }
+    if (accessibleOrgIds.length === 1) {
+      return eq(orgIdColumn, accessibleOrgIds[0]);
+    }
+    return inArray(orgIdColumn, accessibleOrgIds);
+  };
+
   return {
-    user: {
-      id: apiKey.createdBy,
-      email: `apikey-${apiKey.name}@breeze.local`,
-      name: `API Key: ${apiKey.name}`
-    },
+    user,
     token: {} as AuthContext['token'],
-    partnerId,
-    orgId,
-    scope: 'organization',
-    accessibleOrgIds: [orgId],
-    orgCondition: (orgIdColumn) => eq(orgIdColumn, orgId),
-    canAccessOrg: (checkOrgId) => checkOrgId === orgId
+    partnerId: apiKey.partnerId,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds,
+    orgCondition,
+    canAccessOrg: (checkOrgId) => accessibleOrgIds.includes(checkOrgId),
   };
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { extractApiError } from '@/lib/apiError';
 import { Plus, Download, Search, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
 import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
@@ -6,6 +7,7 @@ import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
@@ -174,7 +176,7 @@ export default function ScriptsPage() {
     };
 
     if (!response.ok) {
-      throw new Error(data.error || 'Failed to execute script');
+      throw new Error(extractApiError(data, 'Failed to execute script'));
     }
 
     const candidateTimestamps = [
@@ -268,9 +270,10 @@ export default function ScriptsPage() {
   const handleImport = async (systemScript: SystemScript) => {
     setImportingId(systemScript.id);
     try {
+      const currentOrgId = useOrgStore.getState().currentOrgId;
       const response = await fetchWithAuth(`/scripts/import/${systemScript.id}`, {
         method: 'POST',
-        body: JSON.stringify({})
+        body: JSON.stringify(currentOrgId ? { orgId: currentOrgId } : {})
       });
 
       if (!response.ok) {
@@ -278,7 +281,7 @@ export default function ScriptsPage() {
         if (response.status === 409) {
           setError(`"${systemScript.name}" is already in your library`);
         } else {
-          throw new Error(data.error || 'Failed to import script');
+          throw new Error(extractApiError(data, 'Failed to import script'));
         }
         return;
       }

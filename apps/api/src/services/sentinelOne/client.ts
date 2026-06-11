@@ -1,4 +1,6 @@
 import { captureException } from '../sentry';
+import { safeFetch } from '../urlSafety';
+import { S1_HOSTNAME_ALLOWLIST } from './constants';
 
 type HttpMethod = 'GET' | 'POST';
 
@@ -71,6 +73,65 @@ interface S1ClientOptions {
 
 const DEFAULT_MAX_PAGES = 25;
 
+/**
+ * Error thrown for a non-OK SentinelOne API HTTP response.
+ *
+ * SECURITY: `.message` is deliberately body-free — it is just our own request
+ * metadata (`SentinelOne API <method> <pathname> failed (<status>)`), none of
+ * which is attacker-influenced. The raw upstream response body is preserved on
+ * `.responseBody` for SERVER-SIDE logging ONLY. It must never be persisted to a
+ * tenant-visible column (e.g. `s1_integrations.lastSyncError`, the action
+ * dispatch result surfaced via routes/AI tools): although SentinelOne's host is
+ * a fixed `.sentinelone.net` vendor host (not a tenant-controlled SSRF oracle),
+ * reflecting the upstream body back to tenants is an information-hygiene leak —
+ * the same rule we apply to {@link DnsProviderHttpError}. `truncateError`
+ * (s1Sync.ts / actions.ts) reads the body-free `.message` (and additionally
+ * redacts it defense-in-depth), so the `.responseBody` is automatically kept out
+ * of the tenant column; the server-side loggers (`logSyncFailureServerSide` in
+ * s1Sync.ts, `logActionDispatchFailureServerSide` in actions.ts) log
+ * `.responseBody` (redacted) server-side instead.
+ */
+export class SentinelOneHttpError extends Error {
+  public readonly status: number;
+  public readonly responseBody: string;
+
+  constructor(method: HttpMethod, pathname: string, status: number, responseBody: string) {
+    // Body-free message: only our own request metadata, never the upstream body.
+    super(`SentinelOne API ${method} ${pathname} failed (${status})`);
+    this.name = 'SentinelOneHttpError';
+    this.status = status;
+    this.responseBody = responseBody;
+  }
+}
+
+function normalizeManagementUrl(rawUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('SentinelOneClient: managementUrl must be a valid URL');
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('SentinelOneClient: managementUrl must use HTTPS');
+  }
+
+  // Re-assert the vendor-domain allowlist at the point of egress (the route guard
+  // also enforces it at write time). Fail closed so a token is never sent to a host
+  // outside `.sentinelone.net`, even if a future non-route caller skips the guard.
+  const host = parsed.hostname.toLowerCase();
+  if (!S1_HOSTNAME_ALLOWLIST.some((suffix) => host.endsWith(suffix))) {
+    throw new Error('SentinelOneClient: managementUrl host is not an allowed SentinelOne console');
+  }
+
+  parsed.username = '';
+  parsed.password = '';
+  parsed.hash = '';
+  parsed.search = '';
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+  return parsed.toString().replace(/\/+$/, '');
+}
+
 function parseMaxPages(raw: string | undefined): number | null {
   if (!raw) return null;
   const parsed = Number.parseInt(raw.trim(), 10);
@@ -124,7 +185,7 @@ export class SentinelOneClient {
     if (!opts.apiToken || opts.apiToken.trim().length === 0) {
       throw new Error('SentinelOneClient: apiToken is required');
     }
-    this.baseUrl = opts.managementUrl.replace(/\/+$/, '');
+    this.baseUrl = normalizeManagementUrl(opts.managementUrl);
     this.apiToken = opts.apiToken;
     this.timeoutMs = Math.max(1_000, opts.timeoutMs ?? 30_000);
     const envMaxPages = parseMaxPages(process.env.S1_SYNC_MAX_PAGES);
@@ -360,19 +421,22 @@ export class SentinelOneClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const response = await fetch(url, {
+      const response = await safeFetch(url.toString(), {
         method,
         headers: {
           Authorization: `ApiToken ${this.apiToken}`,
           'Content-Type': 'application/json'
         },
         body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal
+        signal: controller.signal,
+        timeoutMs: this.timeoutMs
       });
 
       if (!response.ok) {
         const text = await response.text().catch(() => '');
-        throw new Error(`SentinelOne API ${method} ${url.pathname} failed (${response.status}): ${text.slice(0, 500)}`);
+        // Body-free `.message` (status line); raw body kept on `.responseBody`
+        // for server-side logging only — never reflect it to the tenant.
+        throw new SentinelOneHttpError(method, url.pathname, response.status, text);
       }
 
       const payload = await response.json() as unknown;

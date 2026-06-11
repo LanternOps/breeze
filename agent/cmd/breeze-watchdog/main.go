@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -225,13 +226,27 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// Create recovery manager.
 	recovery := watchdog.NewRecoveryManager(wdCfg.MaxRecoveryAttempts, wdCfg.RecoveryCooldown)
 
+	// Persist the 24h restart history alongside the health journal so it
+	// survives watchdog restarts.
+	historyPath := filepath.Join(config.LogDir(), "watchdog-restart-history.json")
+	recovery.SetHistoryPath(historyPath)
+
+	// Verification state for the in-flight restart attempt, if any. nil =
+	// no attempt waiting on verification; non-nil = we restarted at this
+	// time and are watching for the agent's LastHeartbeat to advance past
+	// (startedAt + RestartVerificationGrace).
+	var pendingVerify *struct {
+		startedAt time.Time
+	}
+
 	// Wrap auth token in a mutable holder so IPC token updates are visible
 	// to every goroutine that reads the token (failover client, updater, etc.).
 	tokenStore := &tokenHolder{}
-	if cfg.AuthToken != "" {
-		tokenStore.token = secmem.NewSecureString(cfg.AuthToken)
-		cfg.AuthToken = "" // Clear from config struct.
+	if cfg.WatchdogAuthToken != "" {
+		tokenStore.token = secmem.NewSecureString(cfg.WatchdogAuthToken)
+		cfg.WatchdogAuthToken = "" // Clear from config struct.
 	}
+	cfg.AuthToken = "" // Watchdog must not use the normal agent credential.
 
 	// Try initial IPC connection.
 	if err := ipcClient.Connect(); err != nil {
@@ -358,34 +373,84 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery)
+			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h)
 		}
 
 		// State-driven actions after each tick.
 		switch wd.State() {
 		case watchdog.StateRecovering:
-			if recovery.CanAttempt() {
-				journal.Log(watchdog.LevelInfo, "recovery.attempt", map[string]any{
-					"attempt": recovery.Attempts() + 1,
-					"pid":     pid,
-				})
-				ok, err := recovery.Attempt(pid)
-				if ok {
-					journal.Log(watchdog.LevelInfo, "recovery.success", nil)
-					wd.HandleEvent(watchdog.EventAgentRecovered)
-				} else {
-					journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
-						"error": errStr(err),
-					})
+			// If a restart is awaiting verification, don't start another one.
+			if pendingVerify != nil {
+				elapsed := time.Since(pendingVerify.startedAt)
+				// Re-read state so we see the freshest LastHeartbeat. A
+				// transient disk error here would otherwise look like a
+				// hung verification loop with no log evidence — match the
+				// warn pattern used by the heartbeat ticker.
+				if s, err := state.Read(statePath); err == nil && s != nil {
+					agentState = s
+				} else if err != nil {
+					slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
 				}
-			} else {
+				// Success = heartbeat advanced past (startedAt + grace).
+				verifyDeadline := pendingVerify.startedAt.Add(cfg.Watchdog.RestartVerificationGrace)
+				if agentState != nil && agentState.LastHeartbeat.After(verifyDeadline) {
+					journal.Log(watchdog.LevelInfo, "recovery.verified", map[string]any{
+						"elapsed_ms":     elapsed.Milliseconds(),
+						"last_heartbeat": agentState.LastHeartbeat.Format(time.RFC3339),
+					})
+					pendingVerify = nil
+					wd.HandleEvent(watchdog.EventAgentRecovered)
+					break
+				}
+				// Timeout = give up on this attempt; let the next tick try again.
+				if elapsed > cfg.Watchdog.RestartVerificationTimeout {
+					journal.Log(watchdog.LevelWarn, "recovery.verify_timeout", map[string]any{
+						"elapsed_ms": elapsed.Milliseconds(),
+					})
+					pendingVerify = nil
+				}
+				break
+			}
+
+			// Flap-detection gate: if we've exceeded the 24h budget, jump to FAILOVER.
+			if recovery.Count24h() >= cfg.Watchdog.MaxRestartsPer24h {
+				journal.Log(watchdog.LevelError, "recovery.flap_detected", map[string]any{
+					"count_24h": recovery.Count24h(),
+				})
+				wd.HandleEvent(watchdog.EventRecoveryExhausted)
+				break
+			}
+
+			if !recovery.CanAttempt() {
 				journal.Log(watchdog.LevelError, "recovery.exhausted", map[string]any{
 					"attempts": recovery.Attempts(),
 				})
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
+				break
+			}
+
+			journal.Log(watchdog.LevelInfo, "recovery.attempt", map[string]any{
+				"attempt":   recovery.Attempts() + 1,
+				"count_24h": recovery.Count24h(),
+				"pid":       pid,
+			})
+			ok, err := recovery.Attempt(pid)
+			if ok {
+				pendingVerify = &struct{ startedAt time.Time }{startedAt: time.Now()}
+				journal.Log(watchdog.LevelInfo, "recovery.attempt_dispatched", map[string]any{
+					"attempt":   recovery.Attempts(),
+					"count_24h": recovery.Count24h(),
+				})
+			} else {
+				journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
+					"error": errStr(err),
+				})
 			}
 
 		case watchdog.StateFailover:
+			if pendingVerify != nil {
+				pendingVerify = nil
+			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
 				failoverClient = watchdog.NewFailoverClient(
 					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
@@ -393,13 +458,14 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelInfo, "failover.start", nil)
 
 				// Send initial failover heartbeat.
-				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10))
+				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
+				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 				if err != nil {
 					journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 						"error": err.Error(),
 					})
 				} else {
-					processHeartbeatResponse(resp, wd, journal, cfg, tokenStore, recovery)
+					handleInitialFailoverHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
 
@@ -411,8 +477,12 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case watchdog.StateMonitoring:
-			// Reset recovery counter when healthy.
+			// Reset per-window recovery counter when healthy. Note: restart history
+			// (24h window) is intentionally retained so flap detection stays armed.
 			recovery.Reset()
+			if pendingVerify != nil {
+				pendingVerify = nil
+			}
 			if failoverClient != nil {
 				failoverClient = nil
 			}
@@ -447,9 +517,9 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 		}
 		journal.Log(watchdog.LevelInfo, "token.updated", nil)
 		tokens.Replace(update.Token)
-		// Persist the new token. We store it via config.SetAndPersist so
-		// that the next Load() picks it up automatically.
-		if err := config.SetAndPersist("auth_token", update.Token); err != nil {
+		// Persist the new role-scoped token in secrets.yaml so that the next
+		// Load() picks it up without exposing it through agent.yaml.
+		if err := config.SetSecretAndPersist("watchdog_auth_token", update.Token); err != nil {
 			journal.Log(watchdog.LevelError, "token.persist_failed", map[string]any{
 				"error": err.Error(),
 			})
@@ -488,33 +558,44 @@ func handleFailoverPoll(
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
+	maxPer24h int,
 ) {
 	// Send failover heartbeat.
-	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10))
+	stats := currentRestartStats(recovery, maxPer24h)
+	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
 	if err != nil {
 		journal.Log(watchdog.LevelError, "failover.heartbeat_failed", map[string]any{
 			"error": err.Error(),
 		})
 		return
 	}
-	processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
 
-	// Poll for commands.
-	commands, err := fc.PollCommands()
+	// Commands targeted at the watchdog are claimed by the heartbeat (the
+	// server marks them 'sent' and returns them inline), so the poll below
+	// won't re-return them. Execute the heartbeat-delivered batch here, then
+	// the poll batch, deduped — otherwise a `restart_agent` etc. is consumed
+	// but never run (#1103).
+	// Poll for any still-pending commands. A poll failure must not drop the
+	// heartbeat-delivered batch, so fall through with an empty poll set.
+	pollCmds, err := fc.PollCommands()
 	if err != nil {
 		journal.Log(watchdog.LevelError, "failover.poll_failed", map[string]any{
 			"error": err.Error(),
 		})
-		return
+		pollCmds = nil
 	}
 
-	for _, cmd := range commands {
+	executeFailoverCommands(heartbeatCmds, pollCmds, func(cmd watchdog.FailoverCommand) {
 		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
-	}
+	})
 }
 
-// processHeartbeatResponse handles upgrade directives from the API.
-func processHeartbeatResponse(
+// handleInitialFailoverHeartbeatResponse handles the first heartbeat sent when
+// failover starts. Those heartbeat commands are already claimed server-side, so
+// execute them immediately; there is no poll batch yet on this path.
+func handleInitialFailoverHeartbeatResponse(
+	fc *watchdog.FailoverClient,
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
@@ -522,8 +603,58 @@ func processHeartbeatResponse(
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+	})
+}
+
+func processInitialFailoverHeartbeatResponse(
+	resp *watchdog.HeartbeatResponse,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+	run func(watchdog.FailoverCommand),
+) {
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	executeFailoverCommands(heartbeatCmds, nil, run)
+}
+
+// executeFailoverCommands runs the heartbeat-delivered command batch first,
+// then the poll-delivered batch, invoking run() once per unique command id.
+// The server claims+marks heartbeat commands 'sent' so the poll normally
+// won't re-return them; the dedup is defensive against any overlap. Order is
+// preserved (heartbeat batch, then poll batch). (#1103)
+func executeFailoverCommands(
+	heartbeatCmds, pollCmds []watchdog.FailoverCommand,
+	run func(watchdog.FailoverCommand),
+) {
+	seen := make(map[string]bool, len(heartbeatCmds))
+	for _, cmd := range heartbeatCmds {
+		run(cmd)
+		seen[cmd.ID] = true
+	}
+	for _, cmd := range pollCmds {
+		if seen[cmd.ID] {
+			continue
+		}
+		run(cmd)
+	}
+}
+
+// processHeartbeatResponse handles upgrade directives from the API and returns
+// any commands delivered inline with the heartbeat response.
+func processHeartbeatResponse(
+	resp *watchdog.HeartbeatResponse,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+) []watchdog.FailoverCommand {
 	if resp == nil {
-		return
+		return nil
 	}
 	if resp.UpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
@@ -537,6 +668,7 @@ func processHeartbeatResponse(
 		})
 		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
 	}
+	return resp.Commands
 }
 
 // handleFailoverCommand executes a single command from the API.
@@ -655,11 +787,12 @@ func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
-		ServerURL:      cfg.ServerURL,
-		AuthToken:      tok,
-		CurrentVersion: "", // Not tracking agent version from watchdog.
-		BinaryPath:     binaryPath,
-		BackupPath:     binaryPath + ".bak",
+		ServerURL:             cfg.ServerURL,
+		AuthToken:             tok,
+		CurrentVersion:        "", // Not tracking agent version from watchdog.
+		BinaryPath:            binaryPath,
+		BackupPath:            binaryPath + ".bak",
+		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
 		journal.Log(watchdog.LevelError, "update.agent_failed", map[string]any{
@@ -685,11 +818,13 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHol
 		return fmt.Errorf("failed to determine executable path: %w", err)
 	}
 	u := updater.New(&updater.Config{
-		ServerURL:      cfg.ServerURL,
-		AuthToken:      tok,
-		CurrentVersion: version,
-		BinaryPath:     exePath,
-		BackupPath:     exePath + ".bak",
+		ServerURL:             cfg.ServerURL,
+		AuthToken:             tok,
+		CurrentVersion:        version,
+		Component:             "watchdog",
+		BinaryPath:            exePath,
+		BackupPath:            exePath + ".bak",
+		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
 		journal.Log(watchdog.LevelError, "update.watchdog_failed", map[string]any{
@@ -786,4 +921,14 @@ func errStr(err error) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// currentRestartStats builds a RestartStats snapshot from the RecoveryManager.
+func currentRestartStats(rm *watchdog.RecoveryManager, maxPer24h int) watchdog.RestartStats {
+	count := rm.Count24h()
+	return watchdog.RestartStats{
+		Count24h:      count,
+		LastRestartAt: rm.LastRestartAt(),
+		FlapDetected:  count >= maxPer24h,
+	}
 }

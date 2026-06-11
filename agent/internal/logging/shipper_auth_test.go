@@ -15,9 +15,9 @@ type testAuthSkipper struct {
 	successes atomic.Int32
 }
 
-func (t *testAuthSkipper) ShouldSkip() bool    { return t.skip.Load() }
-func (t *testAuthSkipper) RecordAuthFailure()  { t.failures.Add(1) }
-func (t *testAuthSkipper) RecordSuccess()      { t.successes.Add(1) }
+func (t *testAuthSkipper) ShouldSkip() bool   { return t.skip.Load() }
+func (t *testAuthSkipper) RecordAuthFailure() { t.failures.Add(1) }
+func (t *testAuthSkipper) RecordSuccess()     { t.successes.Add(1) }
 
 // testTokenRevealer is a fake TokenRevealer that never reveals anything.
 type testTokenRevealer struct{}

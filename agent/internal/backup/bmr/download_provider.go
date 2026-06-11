@@ -117,21 +117,27 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 		return fmt.Errorf("bmr: invalid download url: %w", err)
 	}
 	query := requestURL.Query()
-	tokenParam := descriptor.TokenQueryParam
-	if tokenParam == "" {
-		tokenParam = "token"
-	}
 	pathParam := descriptor.PathQueryParam
 	if pathParam == "" {
 		pathParam = "path"
 	}
-	query.Set(tokenParam, p.token)
 	query.Set(pathParam, normalizedRemotePath)
 	requestURL.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(p.ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
 		return fmt.Errorf("bmr: create download request: %w", err)
+	}
+	if strings.TrimSpace(descriptor.TokenHeaderName) != "" {
+		req.Header.Set(descriptor.TokenHeaderName, formatRecoveryTokenHeader(descriptor.TokenHeaderFormat, p.token))
+	} else {
+		tokenParam := descriptor.TokenQueryParam
+		if tokenParam == "" {
+			tokenParam = "token"
+		}
+		query.Set(tokenParam, p.token)
+		requestURL.RawQuery = query.Encode()
+		req.URL = requestURL
 	}
 
 	client := &http.Client{Timeout: 30 * time.Minute}
@@ -164,6 +170,17 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 		return fmt.Errorf("bmr: close downloaded file: %w", closeErr)
 	}
 	return nil
+}
+
+func formatRecoveryTokenHeader(format, token string) string {
+	trimmed := strings.TrimSpace(format)
+	if trimmed == "" {
+		return token
+	}
+	if strings.Contains(trimmed, "<recovery-token>") {
+		return strings.ReplaceAll(trimmed, "<recovery-token>", token)
+	}
+	return trimmed + " " + token
 }
 
 func pathClean(path string) string {

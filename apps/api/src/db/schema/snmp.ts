@@ -5,6 +5,7 @@ import { alertSeverityEnum } from './alerts';
 
 export const snmpTemplates = pgTable('snmp_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
   vendor: varchar('vendor', { length: 100 }),
@@ -12,7 +13,9 @@ export const snmpTemplates = pgTable('snmp_templates', {
   oids: jsonb('oids').notNull(),
   isBuiltIn: boolean('is_built_in').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  orgIdIdx: index('snmp_templates_org_id_idx').on(table.orgId)
+}));
 
 export const snmpDevices = pgTable('snmp_devices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -22,7 +25,7 @@ export const snmpDevices = pgTable('snmp_devices', {
   ipAddress: varchar('ip_address', { length: 45 }).notNull(),
   snmpVersion: varchar('snmp_version', { length: 10 }).notNull(),
   port: integer('port').notNull().default(161),
-  community: varchar('community', { length: 100 }),
+  community: text('community'),
   authProtocol: varchar('auth_protocol', { length: 20 }),
   authPassword: text('auth_password'),
   privProtocol: varchar('priv_protocol', { length: 20 }),

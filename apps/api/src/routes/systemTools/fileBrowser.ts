@@ -4,7 +4,8 @@ import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import {
   isCommandFailure,
   mapCommandFailure,
@@ -28,7 +29,10 @@ fileBrowserRoutes.get(
     const { path } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -61,7 +65,10 @@ fileBrowserRoutes.get(
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -97,7 +104,10 @@ fileBrowserRoutes.get(
     const { path } = c.req.valid('query');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -155,7 +165,10 @@ fileBrowserRoutes.post(
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -185,7 +198,7 @@ fileBrowserRoutes.post(
         encoding: body.encoding || 'text',
         sizeBytes: body.content.length
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: isCommandFailure(result) ? auditErrorMessage(result) : undefined,
     });
@@ -227,7 +240,10 @@ fileBrowserRoutes.post(
     const { items } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -259,7 +275,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { sourcePath: item.sourcePath, destPath: item.destPath, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -290,7 +306,10 @@ fileBrowserRoutes.post(
     const { items } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -322,7 +341,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { sourcePath: item.sourcePath, destPath: item.destPath, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -353,7 +372,10 @@ fileBrowserRoutes.post(
     const { paths, permanent } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -386,7 +408,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { path, permanent, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -414,7 +436,10 @@ fileBrowserRoutes.get(
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -447,7 +472,10 @@ fileBrowserRoutes.post(
     const { trashIds } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -488,7 +516,7 @@ fileBrowserRoutes.post(
           resourceId: deviceId,
           resourceName: device.hostname ?? device.id,
           details: { trashId, restoredPath, unverified: failure?.unverified || undefined },
-          ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+          ipAddress: getTrustedClientIpOrUndefined(c),
           result: success ? 'success' : 'failure',
           errorMessage: success ? undefined : auditErrorMessage(result),
         }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));
@@ -517,7 +545,10 @@ fileBrowserRoutes.post(
     const body = c.req.valid('json');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -541,7 +572,7 @@ fileBrowserRoutes.post(
         purgeAll: !body.trashIds,
         unverified: result.status === 'timeout' ? true : undefined,
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: success ? 'success' : 'failure',
       errorMessage: success ? undefined : auditErrorMessage(result),
     }).catch(auditErr => console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr));

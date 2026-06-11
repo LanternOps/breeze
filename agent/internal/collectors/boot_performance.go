@@ -86,4 +86,3 @@ func CalculateImpactScore(cpuTimeMs int64, diskIoBytes uint64) float64 {
 	diskScore := math.Min(float64(diskIoBytes)/1073741824.0*50, 50)
 	return math.Round((cpuScore+diskScore)*10) / 10
 }
-

@@ -134,6 +134,14 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                     {user.id !== currentUserId && (
                       <>
                         <span className="text-muted-foreground">|</span>
+                        <a
+                          href={`/admin/users/${user.id}/devices`}
+                          className="text-sm font-medium text-primary hover:underline"
+                          title="Manage this user's mobile devices"
+                        >
+                          Devices
+                        </a>
+                        <span className="text-muted-foreground">|</span>
                         <button
                           type="button"
                           onClick={() => onRemove?.(user)}

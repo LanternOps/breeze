@@ -37,7 +37,7 @@ func (c *ConnectionsCollector) Collect() ([]ConnectionInfo, error) {
 		}
 
 		if info := c.mapConnection(conn, processName); info != nil {
-			connections = append(connections, *info)
+			connections = append(connections, sanitizeConnectionInfo(*info))
 		}
 	}
 

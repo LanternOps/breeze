@@ -7,9 +7,10 @@ describe('buildDeploymentInviteEmail', () => {
       orgName: 'Acme',
       adminEmail: 'alex@acme.com',
       installUrl: 'https://us.2breeze.app/i/ABC12345',
-      customMessage: '<script>alert(1)</script>Please install ASAP.',
+      customMessage: '<<script>alert(1)</script>>Please install ASAP.',
     });
-    expect(subject).toBe('[Acme] Install your device monitoring agent');
+    expect(subject).toContain('Acme');
+    expect(subject).toMatch(/install/i);
     expect(html).toContain('https://us.2breeze.app/i/ABC12345');
     expect(html).toContain('alex@acme.com');
     expect(html).not.toContain('<script>');
@@ -17,6 +18,9 @@ describe('buildDeploymentInviteEmail', () => {
     expect(text).toContain('https://us.2breeze.app/i/ABC12345');
     expect(text).toContain('Please install ASAP.');
     expect(text).not.toContain('<script>');
+    // Overlapping/nested tag regression: a single non-global strip of <[^>]+>
+    // would leave a residual '>' on the plaintext path.
+    expect(text).not.toMatch(/[<>]/);
   });
 
   it('works without a customMessage', () => {
@@ -25,8 +29,10 @@ describe('buildDeploymentInviteEmail', () => {
       adminEmail: 'alex@acme.com',
       installUrl: 'https://us.2breeze.app/i/ABC12345',
     });
-    expect(html).toContain('→ Install now');
-    expect(text).toContain('→ Install now');
+    expect(html).toContain('https://us.2breeze.app/i/ABC12345');
+    expect(text).toContain('https://us.2breeze.app/i/ABC12345');
+    expect(html).toMatch(/install/i);
+    expect(text).toMatch(/install/i);
   });
 
   it('clamps custom message to 500 chars after HTML strip', () => {

@@ -84,10 +84,10 @@ func TestRequiresElevationFalseForUnknownCommand(t *testing.T) {
 		"",
 		"unknown_command",
 		"reboot_now",
-		"REBOOT",     // case-sensitive
-		"Reboot",     // case-sensitive
+		"REBOOT",         // case-sensitive
+		"Reboot",         // case-sensitive
 		"start_service ", // trailing space
-		" reboot",       // leading space
+		" reboot",        // leading space
 	}
 
 	for _, cmd := range unknowns {

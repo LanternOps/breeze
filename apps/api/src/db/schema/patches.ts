@@ -9,7 +9,8 @@ import {
   pgEnum,
   integer,
   date,
-  uniqueIndex
+  uniqueIndex,
+  index
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
@@ -47,6 +48,23 @@ export const devicePatchStatusEnum = pgEnum('device_patch_status', [
   'skipped',
   'missing'
 ]);
+
+/**
+ * device_patches.status values that mean "the device still needs this patch
+ * installed" — the set that counts toward outstanding / "missing patch" metrics
+ * and that patch automation is allowed to act on.
+ *
+ * IMPORTANT: 'missing' is deliberately NOT in this set. Despite its name,
+ * 'missing' is a TOMBSTONE, not "a patch the device is missing". Agent scan
+ * ingestion (routes/agents/patches.ts) marks ALL of a device's existing rows
+ * 'missing' at the start of every scan, then re-inserts the rows the current
+ * scan actually reports as 'pending' / 'installed'. Rows left at 'missing' are
+ * stale records from a prior scan that the latest scan no longer reports (e.g.
+ * a package upgraded to a new externalId) — they never get cleaned up and grow
+ * unbounded. Counting them as outstanding made a fully-patched Linux box report
+ * ~960 "missing" patches in the compliance view. Only 'pending' is outstanding.
+ */
+export const OUTSTANDING_DEVICE_PATCH_STATUSES = ['pending'] as const;
 
 export const patchJobStatusEnum = pgEnum('patch_job_status', [
   'scheduled',
@@ -93,6 +111,9 @@ export const patches = pgTable('patches', {
   id: uuid('id').primaryKey().defaultRandom(),
   source: patchSourceEnum('source').notNull(),
   externalId: varchar('external_id', { length: 255 }).notNull(),
+  vendor: varchar('vendor', { length: 255 }),
+  packageId: varchar('package_id', { length: 256 }),
+  version: varchar('version', { length: 64 }),
   title: varchar('title', { length: 500 }).notNull(),
   description: text('description'),
   severity: patchSeverityEnum('severity'),
@@ -111,6 +132,7 @@ export const patches = pgTable('patches', {
   uninstallCommand: text('uninstall_command'),
   detectScript: text('detect_script'),
   metadata: jsonb('metadata'),
+  cveIds: text('cve_ids').array(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -183,7 +205,9 @@ export const devicePatches = pgTable('device_patches', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  devicePatchUnique: uniqueIndex('device_patches_device_patch_unique').on(table.deviceId, table.patchId)
+  devicePatchUnique: uniqueIndex('device_patches_device_patch_unique').on(table.deviceId, table.patchId),
+  // Backs the `patches.pending` device-filter field (#968).
+  pendingIdx: index('idx_device_patches_pending').on(table.deviceId).where(sql`status = 'pending'`)
 }));
 
 export const patchJobs = pgTable('patch_jobs', {
@@ -221,7 +245,12 @@ export const patchJobResults = pgTable('patch_job_results', {
   rebootRequired: boolean('reboot_required').notNull().default(false),
   rebootedAt: timestamp('rebooted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Backs the `system.rebootRequired` device-filter field (#968).
+  rebootPendingIdx: index('idx_patch_job_results_reboot_pending')
+    .on(table.deviceId)
+    .where(sql`reboot_required = true AND rebooted_at IS NULL`)
+}));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {
   id: uuid('id').primaryKey().defaultRandom(),

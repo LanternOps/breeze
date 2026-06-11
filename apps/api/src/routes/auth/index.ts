@@ -5,6 +5,10 @@ import { mfaRoutes } from './mfa';
 import { phoneRoutes } from './phone';
 import { passwordRoutes } from './password';
 import { inviteRoutes } from './invite';
+import { verifyEmailRoutes } from './verifyEmail';
+import { accountDeletionRoutes } from './accountDeletion';
+import { testApprovalRoutes } from './testApproval';
+import { cfAccessRedirectLoginRoutes } from './cfAccessRedirectLogin';
 
 export const authRoutes = new Hono();
 
@@ -17,4 +21,8 @@ authRoutes.route('/', mfaRoutes);
 authRoutes.route('/', phoneRoutes);
 authRoutes.route('/', passwordRoutes);
 authRoutes.route('/', inviteRoutes);
+authRoutes.route('/', verifyEmailRoutes);
+authRoutes.route('/', accountDeletionRoutes);
+authRoutes.route('/', testApprovalRoutes);
+authRoutes.route('/', cfAccessRedirectLoginRoutes);
 

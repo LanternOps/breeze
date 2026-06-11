@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, ilike, or } from 'drizzle-orm';
+import { and, ilike, isNull, or } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { alerts, devices, scripts } from '../db/schema';
@@ -58,9 +58,12 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
     ilike(devices.displayName, searchTerm),
     ilike(devices.lastUser, searchTerm)
   );
-  const scriptQuery = or(
-    ilike(scripts.name, searchTerm),
-    ilike(scripts.description, searchTerm)
+  const scriptQuery = and(
+    isNull(scripts.deletedAt),
+    or(
+      ilike(scripts.name, searchTerm),
+      ilike(scripts.description, searchTerm)
+    )
   );
   const alertQuery = or(
     ilike(alerts.title, searchTerm),

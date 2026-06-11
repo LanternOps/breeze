@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { tunnelRoutes, vncExchangeRoutes } from './tunnels';
+import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './tunnels';
 
 // --- UUID constants ---
 const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -22,7 +22,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   tunnelSessions: {},
-  tunnelAllowlists: {},
+  tunnelAllowlists: { orgId: 'tunnelAllowlists.orgId', siteId: 'tunnelAllowlists.siteId', createdAt: 'tunnelAllowlists.createdAt' },
   devices: {},
   users: {},
   remoteSessions: {},
@@ -38,10 +38,26 @@ vi.mock('../middleware/auth', () => ({
       user: { id: USER_ID, email: 'test@example.com' },
       canAccessOrg: (id: string) => id === ORG_ID,
     });
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keep it out here so a route relying on permissions
+    // for site-scoping but lacking a permission gate fails its tests (not masks).
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: ORG_ID,
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 // --- Agent WS helpers ---
@@ -88,7 +104,7 @@ vi.mock('../services/viewerTokenRevocation', () => ({
 import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
 import { createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
-import { createViewerAccessToken } from '../services/jwt';
+import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 
 // Reusable device fixture (online, agent connected)
 const onlineDevice = {
@@ -130,6 +146,17 @@ function makeSelectChain(rows: any[]) {
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue(whereResult),
+    }),
+  };
+}
+
+function makeJoinedSelectChain(rows: any[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
     }),
   };
 }
@@ -268,6 +295,170 @@ describe('Malformed UUID params and query strings', () => {
     const res = await testApp.request(`/tunnels/allowlist?siteId=${validSiteId}`, { method: 'GET' });
     expect(res.status).toBe(200);
   });
+
+  it('returns 403 when GET /allowlist filters to a site outside the allowlist', async () => {
+    const deniedSiteId = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+    const res = await app.request(`/tunnels/allowlist?siteId=${deniedSiteId}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Site-scope enforcement on tunnel session reads ──────────────────────────
+
+describe('GET /tunnels — site-scope enforcement (partner-scope callers)', () => {
+  let app: Hono;
+  const SITE_A = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+  const SITE_B = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+  const DEVICE_IN_A = 'd1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1';
+  const DEVICE_IN_B = 'd2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  // List flow when site-restricted: 1st select resolves org devices (id+siteId),
+  // 2nd select returns the (already narrowed) sessions list.
+  function rigListNarrowing(orgDevices: Array<{ id: string; siteId: string | null }>, sessions: any[]) {
+    const deviceWhere = vi.fn().mockResolvedValue(orgDevices);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: deviceWhere }),
+    } as any);
+    const listWhere = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(sessions) }),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: listWhere }),
+    } as any);
+    return { deviceWhere, listWhere };
+  }
+
+  it('narrows the session list to allowed-site devices for a site-restricted caller', async () => {
+    const { listWhere } = rigListNarrowing(
+      [
+        { id: DEVICE_IN_A, siteId: SITE_A },
+        { id: DEVICE_IN_B, siteId: SITE_B },
+      ],
+      [{ ...sessionRecord, deviceId: DEVICE_IN_A }]
+    );
+
+    const res = await app.request('/tunnels', {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].deviceId).toBe(DEVICE_IN_A);
+    expect(listWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty session list when a site-restricted caller has no in-scope devices', async () => {
+    const deviceWhere = vi.fn().mockResolvedValue([{ id: DEVICE_IN_B, siteId: SITE_B }]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: deviceWhere }),
+    } as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+    // Only the org-device narrowing select ran; the sessions query was skipped.
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not narrow the session list for an unrestricted caller', async () => {
+    const listWhere = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([sessionRecord]) }),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: listWhere }),
+    } as any);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toHaveLength(1);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /tunnels/:id — site-scope enforcement', () => {
+  let app: Hono;
+  const SITE_A = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+  const SITE_B = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+  const DEVICE_IN_B = 'd2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('returns 403 when a site-restricted caller reads a tunnel whose device is out-of-site', async () => {
+    // 1st select: tunnel session (joins userId); 2nd select: device siteId.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, deviceId: DEVICE_IN_B }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ siteId: SITE_B }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('targetHost');
+  });
+
+  it('returns 403 when a site-restricted caller reads a tunnel whose device has a null siteId', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, deviceId: DEVICE_IN_B }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ siteId: null }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns the tunnel when a site-restricted caller reads a tunnel whose device is in-site', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, deviceId: DEVICE_IN_B }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ siteId: SITE_A }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'GET',
+      headers: { 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(SESSION_ID);
+  });
+
+  it('returns the tunnel for an unrestricted caller without a device-site lookup', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).id).toBe(SESSION_ID);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── POST /tunnels/:id/connect-code ───────────────────────────────────────────
@@ -320,6 +511,18 @@ describe('POST /tunnels/:id/connect-code', () => {
 
     const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
     expect(res.status).toBe(403);
+  });
+
+  it('rejects connect codes for closed VNC tunnels', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, status: 'disconnected' }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'Cannot mint VNC connect code for tunnel in current state',
+      status: 'disconnected',
+    }));
   });
 });
 
@@ -386,5 +589,63 @@ describe('POST /vnc-exchange/:code', () => {
 
     const res = await app.request('/vnc-exchange/valid-code', { method: 'POST' });
     expect(res.status).toBe(404);
+  });
+
+  it('rejects VNC exchange when the tunnel has already closed', async () => {
+    vi.mocked(consumeVncConnectCode).mockResolvedValueOnce(vncCodeRecord);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, status: 'disconnected' }]) as any);
+
+    const res = await app.request('/vnc-exchange/closed-code', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'Tunnel session is not available for connection',
+      status: 'disconnected',
+    }));
+    expect(createViewerAccessToken).not.toHaveBeenCalled();
+  });
+});
+
+// ─── POST /vnc-viewer/upgrade-to-webrtc ──────────────────────────────────────
+
+describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+  });
+
+  it('rejects upgrade when the bound VNC tunnel has closed', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-1',
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'disconnected',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'Tunnel session is not available for upgrade',
+      status: 'disconnected',
+    }));
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });

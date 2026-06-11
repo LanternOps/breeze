@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const {
   insert,
@@ -41,7 +41,7 @@ vi.mock('../../services/sentry', () => ({
   captureException
 }));
 
-import { logSessionAudit } from './helpers';
+import { generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit } from './helpers';
 
 describe('logSessionAudit', () => {
   beforeEach(() => {
@@ -107,5 +107,64 @@ describe('logSessionAudit', () => {
     expect(errSpy).toHaveBeenCalledWith('Failed to log session audit:', expect.any(Error));
     expect(captureException).toHaveBeenCalledWith(expect.any(Error));
     errSpy.mockRestore();
+  });
+});
+
+describe('TURN credential helpers', () => {
+  const originalTurnSecret = process.env.TURN_SECRET;
+  const originalTurnHost = process.env.TURN_HOST;
+  const originalTurnTtl = process.env.TURN_CREDENTIAL_TTL_SECONDS;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.TURN_SECRET = 'test-turn-secret';
+    process.env.TURN_HOST = 'turn.example.com';
+    delete process.env.TURN_CREDENTIAL_TTL_SECONDS;
+  });
+
+  afterEach(() => {
+    if (originalTurnSecret === undefined) delete process.env.TURN_SECRET;
+    else process.env.TURN_SECRET = originalTurnSecret;
+    if (originalTurnHost === undefined) delete process.env.TURN_HOST;
+    else process.env.TURN_HOST = originalTurnHost;
+    if (originalTurnTtl === undefined) delete process.env.TURN_CREDENTIAL_TTL_SECONDS;
+    else process.env.TURN_CREDENTIAL_TTL_SECONDS = originalTurnTtl;
+  });
+
+  it('generates short-lived scoped usernames with nonce entropy', () => {
+    const scope = {
+      sessionId: '33333333-3333-4333-8333-333333333333',
+      userId: '22222222-2222-4222-8222-222222222222',
+      deviceId: '44444444-4444-4444-8444-444444444444',
+    };
+
+    const first = generateTurnCredentials(scope);
+    const second = generateTurnCredentials(scope);
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first!.ttlSeconds).toBe(600);
+    expect(first!.username).toMatch(/^\d+:breeze:22222222-222\.33333333-333\.44444444-444\./);
+    expect(second!.username).not.toBe(first!.username);
+  });
+
+  it('clamps configured TURN credential TTL to session-scale bounds', () => {
+    process.env.TURN_CREDENTIAL_TTL_SECONDS = '86400';
+    expect(getTurnCredentialTtlSeconds()).toBe(900);
+
+    process.env.TURN_CREDENTIAL_TTL_SECONDS = '30';
+    expect(getTurnCredentialTtlSeconds()).toBe(60);
+  });
+
+  it('only includes TURN credentials when a session scope is supplied', () => {
+    expect(getIceServers().some((server) => Boolean(server.username))).toBe(false);
+
+    const scoped = getIceServers({
+      sessionId: '33333333-3333-4333-8333-333333333333',
+      userId: '22222222-2222-4222-8222-222222222222',
+      deviceId: '44444444-4444-4444-8444-444444444444',
+    });
+
+    expect(scoped.some((server) => Boolean(server.username && server.credential))).toBe(true);
   });
 });

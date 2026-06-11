@@ -1,0 +1,14 @@
+---
+import AuthShellBranded from '../layouts/AuthShellBranded.astro';
+import AuthPage from '../components/auth/AuthPage';
+
+const next = Astro.url.searchParams.get('next') ?? undefined;
+---
+
+<AuthShellBranded
+  title="Sign in or create account"
+  description="Breeze RMM - Sign in or create your account"
+  tagline="Sign in or create your account to get started."
+>
+  <AuthPage client:load next={next} />
+</AuthShellBranded>

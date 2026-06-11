@@ -17,7 +17,7 @@ import {
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { captureException } from '../services/sentry';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const softwarePoliciesRoutes = new Hono();
 const requireSoftwarePolicyRead = requirePermission(
@@ -49,10 +49,29 @@ const softwareRuleSchema = z.object({
   reason: z.string().min(1).max(1000).optional(),
 });
 
-const softwareRulesSchema = z.object({
-  software: z.array(softwareRuleSchema).min(1),
-  allowUnknown: z.boolean().optional(),
+// PAM executable rule (parallel to softwareRuleSchema, consumed by the
+// PAM bridge — not the inventory matcher). sha256 regex is case-insensitive
+// for input; the DB CHECK constraint stores lowercase hex.
+export const executableRuleSchema = z.object({
+  name: z.string().min(1).max(200),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
+  signer: z.string().max(255).optional(),
+  publisher: z.string().max(255).optional(),
+  pathGlob: z.string().max(500).optional(),
 });
+
+// Both software[] and executable[] are optional, but the policy must carry
+// at least one rule in at least one of them. A PAM-only policy
+// (executable[] populated, software[] empty/absent) is valid; an inventory-
+// only policy (software[] populated, executable[] absent) is valid.
+export const softwareRulesSchema = z.object({
+  software: z.array(softwareRuleSchema).optional(),
+  executable: z.array(executableRuleSchema).optional(),
+  allowUnknown: z.boolean().optional(),
+}).refine(
+  (r) => (r.software?.length ?? 0) > 0 || (r.executable?.length ?? 0) > 0,
+  { message: 'rules must include at least one software[] or executable[] entry' }
+);
 
 const remediationOptionsSchema = z.object({
   autoUninstall: z.boolean().optional(),
@@ -145,6 +164,26 @@ async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
   return policy ?? null;
 }
 
+// Resolve the device IDs a site-restricted caller may act on within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer-only authz axis
+// — Postgres RLS does NOT defend it — so a site-restricted org user must not
+// remediate devices in sites outside their allowlist. Mirrors
+// `resolveSiteAllowedDeviceIds` in browserSecurity.ts / sentinelOne.ts.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  perms: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+    .map((d) => d.id);
+}
+
 softwarePoliciesRoutes.get(
   '/',
   requireSoftwarePolicyRead,
@@ -196,14 +235,21 @@ softwarePoliciesRoutes.post(
     const auth = c.get('auth');
     const payload = c.req.valid('json');
 
-    const resolvedOrg = resolveOrgIdForWrite(auth, payload.orgId);
+    // The frontend always sends ?orgId=<currentOrgId> on partner-scope POSTs,
+    // not in the JSON body. Reading only from payload.orgId left partner-scope
+    // users with no resolvable org (#808: "orgId is required for this scope"
+    // after the underlying 500 from #807 was fixed).
+    const resolvedOrg = resolveOrgIdForWrite(
+      auth,
+      payload.orgId ?? c.req.query('orgId') ?? undefined
+    );
     if (!resolvedOrg.orgId) {
       return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
     }
 
     const rules = normalizeSoftwarePolicyRules(payload.rules);
-    if (rules.software.length === 0) {
-      return c.json({ error: 'At least one software rule is required' }, 400);
+    if (rules.software.length === 0 && (rules.executable?.length ?? 0) === 0) {
+      return c.json({ error: 'At least one software or executable rule is required' }, 400);
     }
 
     const [policy] = await db
@@ -254,7 +300,7 @@ softwarePoliciesRoutes.post(
       details: {
         mode: policy.mode,
         enforceMode: policy.enforceMode,
-        rules: rules.software.length,
+        rules: rules.software.length + (rules.executable?.length ?? 0),
         scheduleWarning,
       },
     });
@@ -315,11 +361,22 @@ softwarePoliciesRoutes.get(
   zValidator('query', violationsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const conditions: SQL[] = [eq(softwareComplianceStatus.status, 'violation')];
     const orgCondition = auth.orgCondition(devices.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], total: 0 });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+    }
     if (query.policyId) conditions.push(eq(softwareComplianceStatus.policyId, query.policyId));
     if (query.deviceId) conditions.push(eq(softwareComplianceStatus.deviceId, query.deviceId));
 
@@ -396,8 +453,8 @@ softwarePoliciesRoutes.patch(
 
     if (payload.rules !== undefined) {
       const normalizedRules = normalizeSoftwarePolicyRules(payload.rules);
-      if (normalizedRules.software.length === 0) {
-        return c.json({ error: 'At least one software rule is required' }, 400);
+      if (normalizedRules.software.length === 0 && (normalizedRules.executable?.length ?? 0) === 0) {
+        return c.json({ error: 'At least one software or executable rule is required' }, 400);
       }
       updates.rules = normalizedRules;
     }
@@ -589,7 +646,24 @@ softwarePoliciesRoutes.post(
 
     let targetDeviceIds = parsed.data.deviceIds ?? [];
 
+    // Site is an app-layer-only authz axis (RLS does not defend it). A
+    // site-restricted org user must not remediate devices in sites outside
+    // their allowlist — whether named explicitly via body.deviceIds or
+    // selected implicitly from the policy's violations. `allowedSiteIds` is
+    // only ever set for org-scope users, so `policy.orgId` is the relevant org.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(policy.orgId, perms);
+
     if (targetDeviceIds.length > 0) {
+      // Deny the whole batch (matching sentinelOne.ts hasDeniedDeviceSite) if
+      // any explicitly-named device is out of the caller's site scope.
+      if (siteAllowedDeviceIds) {
+        const allowed = new Set(siteAllowedDeviceIds);
+        if (targetDeviceIds.some((deviceId) => !allowed.has(deviceId))) {
+          return c.json({ error: 'Access to one or more device sites denied' }, 403);
+        }
+      }
+
       const deviceConditions: SQL[] = [inArray(devices.id, targetDeviceIds)];
       const orgCondition = auth.orgCondition(devices.orgId);
       if (orgCondition) deviceConditions.push(orgCondition);
@@ -606,6 +680,13 @@ softwarePoliciesRoutes.post(
       ];
       const orgCondition = auth.orgCondition(devices.orgId);
       if (orgCondition) complianceConditions.push(orgCondition);
+      // Narrow the implicit target set to the caller's accessible devices.
+      if (siteAllowedDeviceIds) {
+        if (siteAllowedDeviceIds.length === 0) {
+          return c.json({ message: 'No matching violating devices found for remediation', queued: 0 });
+        }
+        complianceConditions.push(inArray(softwareComplianceStatus.deviceId, siteAllowedDeviceIds));
+      }
 
       const rows = await db
         .select({ deviceId: softwareComplianceStatus.deviceId })

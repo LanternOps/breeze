@@ -26,8 +26,13 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+vi.mock('../services/latestVersion', () => ({
+  getLatestVersion: vi.fn(),
+}));
+
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { getLatestVersion } from '../services/latestVersion';
 import { systemRoutes } from './system';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -64,6 +69,48 @@ describe('system routes', () => {
     vi.clearAllMocks();
     setAuth();
     app = makeApp();
+  });
+
+  // ────────────────────── GET /version ──────────────────────
+  describe('GET /version', () => {
+    it('includes version, latest, isStale, latestFetchedAt fields', async () => {
+      vi.mocked(getLatestVersion).mockResolvedValueOnce({
+        latest: '99.99.99',
+        fetchedAt: new Date('2026-05-25T00:00:00Z'),
+        source: 'github',
+      });
+      const res = await app.request('/system/version');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toHaveProperty('version');
+      expect(body).toHaveProperty('latest', '99.99.99');
+      expect(body).toHaveProperty('isStale', true);
+      expect(body).toHaveProperty('latestFetchedAt', '2026-05-25T00:00:00.000Z');
+      expect(body).toHaveProperty('latestSource', 'github');
+    });
+
+    it('returns isStale=false when running version >= latest', async () => {
+      vi.mocked(getLatestVersion).mockResolvedValueOnce({
+        latest: '0.0.1',
+        fetchedAt: new Date(),
+        source: 'github',
+      });
+      const res = await app.request('/system/version');
+      const body = await res.json();
+      expect(body.isStale).toBe(false);
+    });
+
+    it('returns isStale=false and latest=null when GitHub is unreachable', async () => {
+      vi.mocked(getLatestVersion).mockResolvedValueOnce({
+        latest: null,
+        fetchedAt: new Date(),
+        source: 'error',
+      });
+      const res = await app.request('/system/version');
+      const body = await res.json();
+      expect(body.latest).toBeNull();
+      expect(body.isStale).toBe(false);
+    });
   });
 
   // ────────────────────── GET /config-status ──────────────────────

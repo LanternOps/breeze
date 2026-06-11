@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
 import type { FilterFieldDefinition, FilterFieldCategory } from '@breeze/shared';
+import { useClickOutside } from '../../hooks/useClickOutside';
 
 interface FieldSelectorProps {
   value: string;
@@ -67,18 +68,11 @@ export function FieldSelector({
     return groups;
   }, [fields, searchQuery]);
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-        setSearchQuery('');
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  // Close dropdown when clicking outside (shared hook).
+  useClickOutside(isOpen, dropdownRef, () => {
+    setIsOpen(false);
+    setSearchQuery('');
+  });
 
   // Focus search input when dropdown opens
   useEffect(() => {

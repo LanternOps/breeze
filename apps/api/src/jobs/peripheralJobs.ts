@@ -284,7 +284,7 @@ export async function schedulePeripheralPolicyDistribution(
   reason: string = 'manual'
 ): Promise<string> {
   const queue = getPeripheralPolicyDistributionQueue();
-  const jobId = `policy-distribution:${orgId}`;
+  const jobId = `policy-distribution-${orgId}`;
   const normalizedPolicyIds = Array.from(new Set(policyIds.filter((id) => typeof id === 'string' && id.length > 0)));
 
   const existing = await queue.getJob(jobId);

@@ -13,10 +13,17 @@ on:
 
 env:
   NODE_VERSION: '22'
-  PNPM_VERSION: '9.15.0'
-  GO_VERSION: '1.25.9'
+  PNPM_VERSION: '10.33.4'
+  GO_VERSION: '1.25.11'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+
+# SR-007: least-privilege default for every job. Build jobs only need to read
+# the repo + exchange artifacts. Jobs that publish override this with their
+# own per-job `permissions:` (create-release → contents: write; GHCR pushes →
+# packages: write; Tauri/MSI signing → id-token: write).
+permissions:
+  contents: read
 
 jobs:
   build-api:
@@ -27,7 +34,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -58,7 +65,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -96,6 +103,11 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            suffix: ''
+            cgo: '0'
+            runner: ubuntu-latest
+          - goos: linux
+            goarch: arm64
             suffix: ''
             cgo: '0'
             runner: ubuntu-latest
@@ -272,16 +284,61 @@ jobs:
         env:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # Fail-fast: a non-terminating PowerShell error (e.g. a missing
+          # toolchain) otherwise lets a later `go build` proceed against
+          # stale or missing resources, and a non-zero `go build` exit code
+          # is silently ignored unless we check $LASTEXITCODE — that
+          # combination shipped a release once where the agent .exe was
+          # absent from dist\ and the installer step packaged whatever was
+          # left from a previous run.
+          $ErrorActionPreference = "Stop"
           New-Item -Path dist -ItemType Directory -Force | Out-Null
           go install github.com/tc-hib/go-winres@v0.3.3
+          $winres = "$env:USERPROFILE\go\bin\go-winres.exe"
+          # Embed VERSIONINFO + manifest + icon resources into every Windows
+          # binary we ship. Without an embedded FileVersion, MSI treats our
+          # exes as "unversioned" and applies the "preserve user-modified
+          # unversioned files" rule, which surfaces in install.log as
+          # `File: ...\breeze-agent.exe; Won't Overwrite` whenever an existing
+          # binary at the install path has been modified (#944).
+          #
+          # We use `go-winres simply` (CLI args) rather than `make` + JSON
+          # because .ico files work via --icon in simply mode but not in
+          # JSON-mode RT_GROUP_ICON entries (go-winres v0.3.x rejects them
+          # with "image: unknown format"). Each invocation is checked for
+          # $LASTEXITCODE so a tooling failure aborts the release.
           Push-Location agent\resources
-          & "$env:USERPROFILE\go\bin\go-winres.exe" make --in winres.json --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico --admin `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Agent" --file-description "Breeze RMM Agent" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-agent.exe" `
+            --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-agent failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Watchdog" --file-description "Breeze RMM Watchdog" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-watchdog.exe" `
+            --out ..\cmd\breeze-watchdog\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-watchdog failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Backup Helper" --file-description "Breeze RMM Backup Helper" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-backup.exe" `
+            --out ..\cmd\breeze-backup\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-backup failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --manifest gui --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Desktop Helper" --file-description "Breeze RMM Desktop Helper" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-desktop-helper.exe" `
+            --out ..\cmd\breeze-desktop-helper\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-desktop-helper failed with exit code $LASTEXITCODE" }
           Pop-Location
           Push-Location agent
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           $env:CGO_ENABLED = "0"
           go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-agent-windows-amd64.exe .\cmd\breeze-agent
+          if ($LASTEXITCODE -ne 0) { throw "go build breeze-agent failed with exit code $LASTEXITCODE" }
           Pop-Location
           # Build breeze-backup
           Push-Location agent
@@ -289,6 +346,7 @@ jobs:
           $env:GOARCH = "amd64"
           $env:CGO_ENABLED = "0"
           go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-backup-windows-amd64.exe .\cmd\breeze-backup
+          if ($LASTEXITCODE -ne 0) { throw "go build breeze-backup failed with exit code $LASTEXITCODE" }
           Pop-Location
           # Build breeze-watchdog
           Push-Location agent
@@ -296,6 +354,19 @@ jobs:
           $env:GOARCH = "amd64"
           $env:CGO_ENABLED = "0"
           go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-watchdog-windows-amd64.exe .\cmd\breeze-watchdog
+          if ($LASTEXITCODE -ne 0) { throw "go build breeze-watchdog failed with exit code $LASTEXITCODE" }
+          Pop-Location
+          # Build breeze-user-helper (GUI-subsystem sibling of breeze-agent).
+          # Same Go source as breeze-agent, only the -H windowsgui linker flag
+          # differs. Required by the AgentUserHelper scheduled task and the
+          # SYSTEM-context sessionbroker spawn paths so the user-helper does
+          # not surface a console window in the interactive session.
+          Push-Location agent
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "0"
+          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION -H windowsgui" -o ..\dist\breeze-user-helper-windows-amd64.exe .\cmd\breeze-agent
+          if ($LASTEXITCODE -ne 0) { throw "go build breeze-user-helper failed with exit code $LASTEXITCODE" }
           Pop-Location
 
       - name: Validate signing configuration
@@ -327,7 +398,7 @@ jobs:
           }
 
       - name: Azure Login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -335,7 +406,7 @@ jobs:
 
       - name: Sign Windows EXE (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -347,7 +418,7 @@ jobs:
 
       - name: Sign Windows EXE (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -359,7 +430,7 @@ jobs:
 
       - name: Sign backup EXE (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -371,7 +442,7 @@ jobs:
 
       - name: Sign backup EXE (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -383,7 +454,7 @@ jobs:
 
       - name: Sign watchdog executable (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -395,12 +466,36 @@ jobs:
 
       - name: Sign watchdog executable (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
           files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign user-helper EXE (stable profile)
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
+          files: ${{ github.workspace }}\dist\breeze-user-helper-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign user-helper EXE (prerelease profile)
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
+          files: ${{ github.workspace }}\dist\breeze-user-helper-windows-amd64.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -413,8 +508,9 @@ jobs:
           $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
           $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
           $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
+          $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
           $msiPath = Join-Path $root "dist\breeze-agent.msi"
-          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -OutputPath $msiPath
+          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -UserHelperExePath $userHelperExe -OutputPath $msiPath
 
       - name: Build Template MSI
         shell: pwsh
@@ -424,13 +520,14 @@ jobs:
           $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
           $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
           $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
+          $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
           $msiPath = Join-Path $root "dist\breeze-agent-template.msi"
-          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -OutputPath $msiPath -Template
+          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -UserHelperExePath $userHelperExe -OutputPath $msiPath -Template
 
       # Only sign the regular MSI — template MSI is re-signed server-side by jsign after patching
       - name: Sign MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -442,7 +539,7 @@ jobs:
 
       - name: Sign MSI (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -479,6 +576,20 @@ jobs:
         with:
           name: breeze-agent-windows-amd64
           path: dist/breeze-agent-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
+      # Issue #816: ship the user-helper as a discrete GitHub release asset
+      # so the agent's in-place auto-upgrade can fetch it directly. Pre-#816
+      # the binary was only ever bundled into the MSI installer, which meant
+      # hosts that reached new versions via auto-update never received it
+      # and the HelperLifecycleManager fell through to a
+      # `breeze-agent.exe user-helper` fallback every ~30s.
+      - name: Upload signed Windows user-helper EXE artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: breeze-user-helper-windows-amd64
+          path: dist/breeze-user-helper-windows-amd64.exe
           overwrite: true
           retention-days: 30
 
@@ -615,18 +726,13 @@ jobs:
         run: |
           for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
             ZIP_PATH="${bin}.zip"
             ditto -c -k --keepParent "$bin" "$ZIP_PATH"
 
-            echo "Submitting $(basename "$bin") for notarization..."
-            xcrun notarytool submit "$ZIP_PATH" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m
+            scripts/release/notarize-submit.sh "$ZIP_PATH"
 
             rm -f "$ZIP_PATH"
-            echo "Notarized: $(basename "$bin")"
           done
 
       - name: Upload signed darwin/amd64
@@ -716,7 +822,11 @@ jobs:
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
           if [ -z "$APPLE_INSTALLER_IDENTITY" ]; then
-            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg signing"
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::APPLE_INSTALLER_IDENTITY required for tag releases (productsign would silently skip, shipping unsigned .pkgs that fail downstream Installer.app notarization)"
+              exit 1
+            fi
+            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg signing (non-tag build)"
             exit 0
           fi
           for pkg in staging/*.pkg; do
@@ -735,19 +845,59 @@ jobs:
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
           if [ -z "$APPLE_INSTALLER_IDENTITY" ]; then
-            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg notarization"
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::APPLE_INSTALLER_IDENTITY required for tag releases (.pkgs would skip notarization and fail downstream Installer.app notarization)"
+              exit 1
+            fi
+            echo "APPLE_INSTALLER_IDENTITY not set, skipping .pkg notarization (non-tag build)"
             exit 0
           fi
           for pkg in staging/*.pkg; do
-            echo "Submitting $(basename "$pkg") for notarization..."
-            xcrun notarytool submit "$pkg" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m
-
+            scripts/release/notarize-submit.sh "$pkg"
             xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
             echo "Notarized and stapled: $(basename "$pkg")"
+          done
+
+      - name: Verify macOS signatures and notarization
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if [ "${{ vars.ENABLE_MACOS_SIGNING }}" != "true" ]; then
+            echo "::error::ENABLE_MACOS_SIGNING must be true for tag releases."
+            exit 1
+          fi
+
+          # Raw Mach-O binaries: verify signature + hardened runtime + Developer ID.
+          # Do NOT run `spctl -a -t exec` against raw command-line binaries — Gatekeeper's
+          # exec assessment is bundle-aware and rejects raw Mach-O with "the code is valid
+          # but does not seem to be an app", even when signing/notarization are correct.
+          # The user-facing assessment happens at the .pkg layer below (binaries are
+          # delivered to end users only inside notarized .pkgs).
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
+            [ -f "$bin" ] || continue
+            # The prefix glob also matches .pkg / .zip files in staging at this
+            # point in the workflow — skip them (.pkg uses productsign, .zip is
+            # the notarytool upload artifact). The .pkg loop below verifies them.
+            case "$bin" in *.pkg|*.zip) continue ;; esac
+            codesign --verify --strict --verbose=2 "$bin"
+            DETAILS=$(codesign -dvvv "$bin" 2>&1)
+            if ! grep -q 'flags=.*runtime' <<<"$DETAILS"; then
+              echo "::error::$bin missing hardened runtime flag"
+              echo "$DETAILS"
+              exit 1
+            fi
+            if ! grep -q 'Authority=Developer ID Application' <<<"$DETAILS"; then
+              echo "::error::$bin not signed by Developer ID Application"
+              echo "$DETAILS"
+              exit 1
+            fi
+          done
+
+          for pkg in staging/*.pkg; do
+            [ -f "$pkg" ] || continue
+            pkgutil --check-signature "$pkg"
+            xcrun stapler validate "$pkg"
+            spctl -a -vv -t install "$pkg"
           done
 
       - name: Upload .pkg darwin/amd64
@@ -837,11 +987,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
-          xcrun notarytool submit build/installer-notarize.zip \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+          scripts/release/notarize-submit.sh build/installer-notarize.zip
           xcrun stapler staple "build/Breeze Installer.app"
           xcrun stapler validate "build/Breeze Installer.app"
           spctl -a -t exec -vv "build/Breeze Installer.app"
@@ -890,7 +1036,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -901,10 +1047,10 @@ jobs:
           cache: 'pnpm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: apps/viewer/src-tauri -> target
 
@@ -1032,7 +1178,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1043,10 +1189,10 @@ jobs:
           cache: 'pnpm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: apps/helper/src-tauri -> target
 
@@ -1118,7 +1264,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1129,10 +1275,10 @@ jobs:
           cache: 'pnpm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: apps/viewer/src-tauri -> target
 
@@ -1206,11 +1352,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit breeze-viewer-macos.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+          "$GITHUB_WORKSPACE/scripts/release/notarize-submit.sh" breeze-viewer-macos.dmg
           xcrun stapler staple breeze-viewer-macos.dmg
           xcrun stapler validate breeze-viewer-macos.dmg
 
@@ -1254,7 +1396,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1265,10 +1407,10 @@ jobs:
           cache: 'pnpm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: apps/helper/src-tauri -> target
 
@@ -1331,11 +1473,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit breeze-helper-macos.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+          "$GITHUB_WORKSPACE/scripts/release/notarize-submit.sh" breeze-helper-macos.dmg
           xcrun stapler staple breeze-helper-macos.dmg
           xcrun stapler validate breeze-helper-macos.dmg
 
@@ -1385,7 +1523,7 @@ jobs:
           }
 
       - name: Azure Login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -1393,7 +1531,7 @@ jobs:
 
       - name: Sign viewer MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -1405,7 +1543,7 @@ jobs:
 
       - name: Sign viewer MSI (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -1417,7 +1555,7 @@ jobs:
 
       - name: Sign helper MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -1429,7 +1567,7 @@ jobs:
 
       - name: Sign helper MSI (prerelease profile)
         if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
@@ -1483,7 +1621,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1641,15 +1779,66 @@ jobs:
           path: latest.json
           retention-days: 30
 
+  release-integrity-gate:
+    name: Release Integrity Gate
+    runs-on: ubuntu-latest
+    needs: [build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
+    if: ${{ always() && !cancelled() }}
+    steps:
+      - name: Fail closed when release signing was skipped
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_RELEASE: ${{ inputs.skip_release || false }}
+          BUILD_WINDOWS_MSI_RESULT: ${{ needs.build-windows-msi.result }}
+          BUILD_MACOS_AGENT_RESULT: ${{ needs.build-macos-agent.result }}
+          BUILD_MACOS_INSTALLER_APP_RESULT: ${{ needs.build-macos-installer-app.result }}
+          SIGN_WINDOWS_TAURI_RESULT: ${{ needs.sign-windows-tauri.result }}
+          BUILD_VIEWER_MACOS_RESULT: ${{ needs.build-viewer-macos.result }}
+          BUILD_HELPER_MACOS_RESULT: ${{ needs.build-helper-macos.result }}
+          PACKAGE_WINDOWS_UPDATER_RESULT: ${{ needs.package-windows-updater.result }}
+          MERGE_VIEWER_UPDATE_MANIFEST_RESULT: ${{ needs.merge-viewer-update-manifest.result }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$SKIP_RELEASE" == "true" ]]; then
+            echo "Build-only workflow_dispatch run: release signing gate is advisory."
+            exit 0
+          fi
+
+          failed=0
+          require_success() {
+            local name="$1"
+            local result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::$name must succeed for tag release $REF_NAME; got '$result'."
+              failed=1
+            fi
+          }
+
+          require_success "build-windows-msi" "$BUILD_WINDOWS_MSI_RESULT"
+          require_success "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
+          require_success "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
+          require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
+          require_success "build-viewer-macos" "$BUILD_VIEWER_MACOS_RESULT"
+          require_success "build-helper-macos" "$BUILD_HELPER_MACOS_RESULT"
+          require_success "package-windows-updater" "$PACKAGE_WINDOWS_UPDATER_RESULT"
+          require_success "merge-viewer-update-manifest" "$MERGE_VIEWER_UPDATE_MANIFEST_RESULT"
+
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "All required signing/notarization jobs succeeded for tag release $REF_NAME."
+
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
     if: >-
       !cancelled()
       && needs.build-api.result == 'success'
       && needs.build-web.result == 'success'
       && needs.build-agent.result == 'success'
+      && needs.release-integrity-gate.result == 'success'
       && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
@@ -1671,7 +1860,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
           merge-multiple: false
 
       - name: Prepare release assets
@@ -1694,6 +1883,14 @@ jobs:
 
           # Copy desktop-helper binaries
           for dir in artifacts/breeze-desktop-helper-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+
+          # Copy user-helper binaries (Windows-only sibling of the agent that
+          # runs in interactive user sessions). See #816.
+          for dir in artifacts/breeze-user-helper-*; do
             if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
               cp "$dir"/* release-assets/
             fi
@@ -1739,12 +1936,213 @@ jobs:
             tar -czvf release-assets/breeze-web.tar.gz -C artifacts/web-dist .
           fi
 
-          # Generate checksums
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          release_dir = Path("release-assets")
+          excluded = {
+              "checksums.txt",
+              "release-artifact-manifest.json",
+              "release-artifact-manifest.json.ed25519",
+              "release-artifact-manifest.json.minisig",
+          }
+
+          # Raw Mach-O agent binaries get Developer ID + notarization but
+          # ship to users only inside the .pkg. spctl --assess --type execute
+          # is invalid against raw Mach-O, so the trust label is correct
+          # even though the end-user verifier differs (.pkg gatekeeper check).
+          DARWIN_BINARY_RE = re.compile(
+              r"^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$"
+          )
+
+          def platform_trust(name):
+              # *-template.msi is intentionally unsigned here; per-tenant
+              # property injection happens server-side and the resulting
+              # MSI is signed there.
+              if name.endswith("-template.msi"):
+                  return "release-workflow-produced"
+              if name.endswith(".msi") or name.endswith(".exe"):
+                  return "windows-authenticode-required"
+              if (
+                  name.endswith(".pkg")
+                  or name.endswith(".app.zip")
+                  or name.endswith(".dmg")
+              ):
+                  return "macos-developer-id-notarization-required"
+              if DARWIN_BINARY_RE.match(name):
+                  return "macos-developer-id-notarization-required"
+              return "release-workflow-produced"
+
+          assets = []
+          for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
+              if not path.is_file() or path.name in excluded:
+                  continue
+              assets.append({
+                  "name": path.name,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "size": path.stat().st_size,
+                  "platformTrust": platform_trust(path.name),
+              })
+
+          manifest = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "release": os.environ["GITHUB_REF_NAME"],
+              "assets": assets,
+          }
+          (release_dir / "release-artifact-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Sign release artifact manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY: ${{ secrets.RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY }}
+          RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY: ${{ secrets.RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY }}
+          RELEASE_MANIFEST_ED25519_PRIVATE_KEY: ${{ secrets.RELEASE_MANIFEST_ED25519_PRIVATE_KEY }}
+          RELEASE_MANIFEST_ED25519_PUBLIC_KEY: ${{ secrets.RELEASE_MANIFEST_ED25519_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY" ] || [ -z "$RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY" ]; then
+            echo "::error::RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY and RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY are required for tag releases."
+            exit 1
+          fi
+          if [ -z "$RELEASE_MANIFEST_ED25519_PRIVATE_KEY" ] || [ -z "$RELEASE_MANIFEST_ED25519_PUBLIC_KEY" ]; then
+            echo "::error::RELEASE_MANIFEST_ED25519_PRIVATE_KEY and RELEASE_MANIFEST_ED25519_PUBLIC_KEY are required for tag releases."
+            exit 1
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+          key_file="$RUNNER_TEMP/release-manifest.minisign.key"
+          printf '%s' "$RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY" > "$key_file"
+          unset RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY
+          chmod 600 "$key_file"
+
+          minisign -S \
+            -s "$key_file" \
+            -m release-assets/release-artifact-manifest.json \
+            -x release-assets/release-artifact-manifest.json.minisig \
+            -t "Breeze release artifact manifest ${GITHUB_REF_NAME}"
+
+          minisign -V \
+            -P "$RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY" \
+            -m release-assets/release-artifact-manifest.json \
+            -x release-assets/release-artifact-manifest.json.minisig
+
+          node <<'NODE'
+          const { createPrivateKey, createPublicKey, sign, verify } = require('node:crypto');
+          const { readFileSync, writeFileSync } = require('node:fs');
+
+          const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
+
+          function parsePrivateKey(value) {
+            const trimmed = value.trim();
+            if (trimmed.includes('BEGIN PRIVATE KEY')) {
+              return createPrivateKey(trimmed);
+            }
+            return createPrivateKey({
+              key: Buffer.from(trimmed, 'base64'),
+              format: 'der',
+              type: 'pkcs8',
+            });
+          }
+
+          function parsePublicKey(value) {
+            const trimmed = value.trim();
+            if (trimmed.includes('BEGIN PUBLIC KEY')) {
+              return createPublicKey(trimmed);
+            }
+            const decoded = Buffer.from(trimmed, 'base64');
+            if (decoded.length === 32) {
+              return createPublicKey({
+                key: Buffer.concat([spkiPrefix, decoded]),
+                format: 'der',
+                type: 'spki',
+              });
+            }
+            return createPublicKey({ key: decoded, format: 'der', type: 'spki' });
+          }
+
+          const manifest = readFileSync('release-assets/release-artifact-manifest.json');
+          const privateKey = parsePrivateKey(process.env.RELEASE_MANIFEST_ED25519_PRIVATE_KEY);
+          const publicKey = parsePublicKey(process.env.RELEASE_MANIFEST_ED25519_PUBLIC_KEY);
+          const signature = sign(null, manifest, privateKey);
+          if (!verify(null, manifest, publicKey, signature)) {
+            throw new Error('Ed25519 release manifest signature self-verification failed');
+          }
+          writeFileSync(
+            'release-assets/release-artifact-manifest.json.ed25519',
+            `${signature.toString('base64')}\n`,
+            { mode: 0o644 }
+          );
+          NODE
+
+      - name: Generate release checksums
+        run: |
           cd release-assets
           sha256sum * > checksums.txt
 
+      - name: Verify release asset integrity requirements
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          # checksums.txt is verified for existence/non-emptiness but cannot
+          # contain a SHA entry for itself: `sha256sum * > checksums.txt`
+          # expands the glob before creating the redirection target.
+          if [ ! -s "release-assets/checksums.txt" ]; then
+            echo "::error::Required asset missing or empty: checksums.txt"
+            exit 1
+          fi
+
+          # Build the asset list dynamically from release-assets/ to catch
+          # partial-upload failures (missing AppImage, DMG, signature, etc.)
+          # that a hand-curated list silently allows.
+          # ! -name '.*' mirrors `sha256sum *`'s glob (which excludes dotfiles)
+          # so the two steps see the same file set. Materialize via a tempfile
+          # so a `find` failure propagates under set -e (process substitution
+          # exit codes don't reach the parent shell).
+          assets_list=$(mktemp)
+          trap 'rm -f "$assets_list"' EXIT
+          find release-assets -mindepth 1 -maxdepth 1 -type f ! -name '.*' -print0 \
+            > "$assets_list"
+
+          asset_count=0
+          while IFS= read -r -d '' path; do
+            asset=$(basename "$path")
+            [ "$asset" = "checksums.txt" ] && continue
+            asset_count=$((asset_count + 1))
+            if [ ! -s "$path" ]; then
+              echo "::error::Required signed/notarized release asset missing or empty: $asset"
+              exit 1
+            fi
+            if ! awk -v asset="$asset" '
+              $1 ~ /^[a-f0-9]{64}$/ {
+                name=$0
+                sub(/^[a-f0-9]{64}[[:space:]]+[*]?/, "", name)
+                if (name == asset) found=1
+              }
+              END { exit found ? 0 : 1 }
+            ' release-assets/checksums.txt; then
+              echo "::error::checksums.txt missing SHA-256 entry for $asset"
+              exit 1
+            fi
+          done < "$assets_list"
+
+          if [ "$asset_count" -eq 0 ]; then
+            echo "::error::No signable artifacts found in release-assets/ (only checksums.txt or empty)"
+            exit 1
+          fi
+          echo "Verified $asset_count release assets against checksums.txt"
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: release-assets/*
           generate_release_notes: true
@@ -1819,10 +2217,10 @@ jobs:
         run: find staging -type f | sort
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1830,7 +2228,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/binaries
           tags: |
@@ -1841,7 +2239,7 @@ jobs:
             type=sha
 
       - name: Build and push binaries image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: staging/
           file: docker/Dockerfile.binaries
@@ -1873,10 +2271,10 @@ jobs:
           path: apps/api/dist
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1888,7 +2286,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api
           tags: |
@@ -1899,7 +2297,7 @@ jobs:
             type=sha
 
       - name: Build and push API image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: apps/api/Dockerfile
@@ -1933,10 +2331,10 @@ jobs:
           path: apps/web/dist
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1948,7 +2346,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/web
           tags: |
@@ -1959,7 +2357,7 @@ jobs:
             type=sha
 
       - name: Build and push Web image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: apps/web/Dockerfile
@@ -1968,5 +2366,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
+            PUBLIC_ENABLE_REGISTRATION=true
           cache-from: type=gha
           cache-to: type=gha,mode=max

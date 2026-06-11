@@ -18,6 +18,10 @@ import { compactToolResultForChat } from './aiToolOutput';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import { aiActionPlans } from '../db/schema';
+import {
+  m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
+  m365DisableUserHandler, m365ResetPasswordHandler,
+} from './aiToolsM365';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -81,8 +85,10 @@ export const TOOL_TIERS = {
   query_audit_log: 1,
   query_change_log: 1,
   network_discovery: 3,
-  take_screenshot: 2,
-  analyze_screen: 2,
+  // Screen-capture tools are Tier 3 (sensitive: may expose credentials,
+  // customer data on display, etc.). See aiToolsRemote.ts.
+  take_screenshot: 3,
+  analyze_screen: 3,
   computer_control: 3,
   // Fleet orchestration tools
   manage_deployments: 1,     // Action-level escalation in guardrails
@@ -131,6 +137,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // M365 helpdesk tools (Delegant-backed)
+  m365_lookup_user: 1,
+  m365_recent_signins: 1,
+  m365_list_group_memberships: 1,
+  m365_disable_user: 3,
+  m365_reset_password: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -244,9 +256,10 @@ function makeHandler(
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: check.error }), true, 0);
+        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
+        await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }],
+          content: [{ type: 'text' as const, text: safeError }],
           isError: true,
         };
       }
@@ -336,9 +349,10 @@ function makeHandler(
       const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
       console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
-      await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ error: message }), true, durationMs);
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
+        content: [{ type: 'text' as const, text: safeError }],
         isError: true,
       };
     }
@@ -346,9 +360,165 @@ function makeHandler(
   };
 }
 
+/**
+ * Session-aware variant of makeHandler for tools whose handler signature is
+ * `(args, auth, sessionId)` and which require an active streaming session
+ * (e.g. Microsoft 365 helpdesk tools bound to a customer tenant).
+ *
+ * CRITICAL: this mirrors makeHandler EXACTLY — the full onPreToolUse enforcement
+ * chain (TOOL_TIERS gate, guardrails, RBAC checkToolPermission, rate limits, and
+ * tier-3 approval-card creation + waitForApproval blocking poll) runs before the
+ * handler, and onPostToolUse runs after for ai_tool_executions persistence +
+ * delegant_tool_call_id correlation. The ONLY difference from makeHandler is the
+ * execute line: instead of executeTool(toolName, args, auth) it resolves the
+ * active session and calls sessionHandler(args, auth, session.breezeSessionId).
+ *
+ * The no_active_session guard runs before any enforcement (nothing to enforce
+ * if there is no session/tenant to act on).
+ */
+function makeSessionAwareHandler(
+  toolName: string,
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  sessionHandler: (args: Record<string, unknown>, auth: AuthContext, sessionId: string) => Promise<string>,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  const toolTimeout = getToolTimeout(toolName);
+
+  return async (args: Record<string, unknown>) => {
+    // See makeHandler: escape any inherited AsyncLocalStorage DB context so all
+    // DB ops (preToolUse approval writes, the tool call, postToolUse persistence)
+    // start with a clean transaction context.
+    return runOutsideDbContext(async () => {
+    const startTime = Date.now();
+
+    // Resolve the active session up front. The no_active_session guard precedes
+    // enforcement — there is no tenant/session to gate against if it's absent.
+    const session = getActiveSession?.();
+    if (!session) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no_active_session', message: 'No active session.' }) }],
+        isError: true,
+      };
+    }
+
+    // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
+    if (onPreToolUse) {
+      let check: { allowed: true } | { allowed: false; error: string };
+      try {
+        check = await onPreToolUse(toolName, args);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        check = { allowed: false, error: `Guardrails check failed: ${reason}` };
+      }
+      if (!check.allowed) {
+        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
+        await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
+        return {
+          content: [{ type: 'text' as const, text: safeError }],
+          isError: true,
+        };
+      }
+    }
+    try {
+      const auth = getAuth();
+      // Use the user's actual auth scope so RLS / DB-level tenant isolation is enforced.
+      const dbContext: DbAccessContext = {
+        scope: auth.scope as DbAccessContext['scope'],
+        orgId: auth.orgId ?? null,
+        accessibleOrgIds: auth.accessibleOrgIds ?? null,
+      };
+      const result = await withTimeout(
+        withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
+        toolTimeout,
+        toolName,
+      );
+      const compactResult = compactToolResultForChat(toolName, result);
+
+      // Detect error responses returned as JSON strings by tool handlers
+      let isToolError = false;
+      try {
+        const parsed = JSON.parse(compactResult);
+        if (parsed && typeof parsed === 'object' && 'error' in parsed && !('success' in parsed) && !('data' in parsed) && !('configured' in parsed)) {
+          isToolError = true;
+        }
+      } catch { /* not JSON, treat as success */ }
+
+      const durationMs = Date.now() - startTime;
+      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      const durationMs = Date.now() - startTime;
+      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
+      return {
+        content: [{ type: 'text' as const, text: safeError }],
+        isError: true,
+      };
+    }
+    }); // end runOutsideDbContext
+  };
+}
+
+// Exported for unit tests that lock in the enforcement ordering.
+export const __test__ = { makeSessionAwareHandler };
+
 // ============================================
 // SDK MCP Server Factory
 // ============================================
+
+/**
+ * The Microsoft 365 helpdesk tool definitions, gated on the Delegant
+ * integration being configured. Returns [] (so the tools are NOT advertised to
+ * the model) on instances where DELEGANT_BASE_URL is unset/blank — without a
+ * configured Delegant endpoint + a seeded customer connection the tools can
+ * only ever no-op with `no_customer_selected`, so there's no reason to surface
+ * them. Read from process.env at call time so it tracks runtime config.
+ */
+export function m365ToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!(process.env.DELEGANT_BASE_URL ?? '').trim()) return [];
+  return [
+    tool(
+      'm365_lookup_user',
+      'Look up a Microsoft 365 user (profile, account status, assigned licenses) on the customer tenant selected for this session.',
+      { userIdentifier: z.string() },
+      makeSessionAwareHandler('m365_lookup_user', getAuth, getActiveSession, m365LookupUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_recent_signins',
+      "Read recent sign-in activity for a Microsoft 365 user on the customer tenant selected for this session. Useful for can't-log-in and lockout triage.",
+      { userIdentifier: z.string() },
+      makeSessionAwareHandler('m365_recent_signins', getAuth, getActiveSession, m365RecentSigninsHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_list_group_memberships',
+      'List the groups in the customer tenant selected for this session.',
+      {},
+      makeSessionAwareHandler('m365_list_group_memberships', getAuth, getActiveSession, m365ListGroupMembershipsHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_disable_user',
+      'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
+      { userIdentifier: z.string(), reason: z.string() },
+      makeSessionAwareHandler('m365_disable_user', getAuth, getActiveSession, m365DisableUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_reset_password',
+      'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
+      { userIdentifier: z.string(), reason: z.string() },
+      makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
+    ),
+  ];
+}
 
 /**
  * Creates an SDK MCP server instance with all Breeze tools.
@@ -1445,6 +1615,15 @@ export function createBreezeMcpServer(
         };
       }
     ),
+
+    // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
+    // to the active AI session). Only advertised when the Delegant integration
+    // is configured — see m365ToolDefinitions. Routed through
+    // makeSessionAwareHandler so they get the SAME enforcement as every other
+    // tool: onPreToolUse (TOOL_TIERS gate, guardrails, RBAC, rate limits, tier-3
+    // approval) and onPostToolUse (ai_tool_executions persistence +
+    // delegant_tool_call_id correlation).
+    ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
   ];
 
   return createSdkMcpServer({

@@ -1,7 +1,8 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned']);
+export type PartnerStatus = typeof partnerStatusEnum.enumValues[number];
 export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited']);
 export const orgTypeEnum = pgEnum('org_type', ['customer', 'internal']);
 export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned']);
@@ -45,7 +46,9 @@ export const organizations = pgTable('organizations', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at')
-});
+}, (table) => ({
+  orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId)
+}));
 
 export const sites = pgTable('sites', {
   id: uuid('id').primaryKey().defaultRandom(),

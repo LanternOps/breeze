@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +39,10 @@ func watchdogDownloadURL(version, goos, goarch string) string {
 		watchdogReleasesBase, version, goos, goarch, ext)
 }
 
+func watchdogChecksumsURL(version string) string {
+	return fmt.Sprintf("%s/v%s/checksums.txt", watchdogReleasesBase, version)
+}
+
 // locateSiblingWatchdog checks for the watchdog binary in the same directory
 // as the agent binary. Returns (path, true) if found.
 func locateSiblingWatchdog(agentPath string) (string, bool) {
@@ -48,7 +55,7 @@ func locateSiblingWatchdog(agentPath string) (string, bool) {
 }
 
 const (
-	watchdogMinSize       = 1 * 1024 * 1024 // 1 MB sanity check (real binary is several MB)
+	watchdogMinSize         = 1 * 1024 * 1024 // 1 MB sanity check (real binary is several MB)
 	watchdogDownloadTimeout = 60 * time.Second
 )
 
@@ -56,7 +63,66 @@ const (
 // The file is streamed to a sibling temp file and atomically renamed on success,
 // so a partial download never leaves a broken binary behind. On unix the file is
 // marked executable (0755).
-func downloadWatchdog(url, destPath string) error {
+func fetchWatchdogChecksum(checksumsURL, assetName string) (string, error) {
+	client := &http.Client{Timeout: watchdogDownloadTimeout}
+	resp, err := client.Get(checksumsURL)
+	if err != nil {
+		return "", fmt.Errorf("http get %s: %w", checksumsURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("http get %s: status %d", checksumsURL, resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		checksum := strings.ToLower(fields[0])
+		name := strings.TrimPrefix(fields[1], "*")
+		if name == assetName && len(checksum) == 64 {
+			if _, err := hex.DecodeString(checksum); err != nil {
+				return "", fmt.Errorf("invalid checksum for %s in %s: %w", assetName, checksumsURL, err)
+			}
+			return checksum, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read %s: %w", checksumsURL, err)
+	}
+	return "", fmt.Errorf("checksum for %s not found in %s", assetName, checksumsURL)
+}
+
+func verifyFileSHA256(path, expected string) error {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if len(expected) != 64 {
+		return fmt.Errorf("expected checksum must be 64 hex characters")
+	}
+	if _, err := hex.DecodeString(expected); err != nil {
+		return fmt.Errorf("expected checksum is not valid hex: %w", err)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open downloaded file: %w", err)
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return fmt.Errorf("hash downloaded file: %w", err)
+	}
+	actual := hex.EncodeToString(hash.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+func downloadWatchdog(url, destPath, expectedSHA256 string) error {
 	client := &http.Client{Timeout: watchdogDownloadTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -87,6 +153,10 @@ func downloadWatchdog(url, destPath string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("downloaded body too small (%d bytes); URL likely returned an error page", n)
 	}
+	if err := verifyFileSHA256(tmpPath, expectedSHA256); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("verify checksum: %w", err)
+	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
@@ -105,6 +175,9 @@ type bootstrapOptions struct {
 
 	// urlOverride, if non-empty, replaces the full download URL. Test-only.
 	urlOverride string
+
+	// checksumOverride, if non-empty, replaces checksums.txt lookup. Test-only.
+	checksumOverride string
 }
 
 // bootstrapWatchdog resolves a watchdog binary (sibling first, GitHub download
@@ -121,9 +194,21 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 		if url == "" {
 			url = watchdogDownloadURL(opts.version, opts.goos, opts.goarch)
 		}
+		checksum := opts.checksumOverride
+		if checksum == "" {
+			if opts.urlOverride != "" {
+				return fmt.Errorf("watchdog checksum required when urlOverride is set")
+			}
+			assetName := filepath.Base(url)
+			var err error
+			checksum, err = fetchWatchdogChecksum(watchdogChecksumsURL(opts.version), assetName)
+			if err != nil {
+				return fmt.Errorf("fetch watchdog checksum: %w", err)
+			}
+		}
 		watchdogPath = filepath.Join(filepath.Dir(opts.agentPath), watchdogBinaryName(opts.goos))
 		fmt.Fprintf(os.Stderr, "Downloading watchdog from %s ...\n", url)
-		if err := downloadWatchdog(url, watchdogPath); err != nil {
+		if err := downloadWatchdog(url, watchdogPath, checksum); err != nil {
 			return fmt.Errorf("download watchdog: %w", err)
 		}
 	}

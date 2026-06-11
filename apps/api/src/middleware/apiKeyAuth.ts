@@ -1,21 +1,23 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { apiKeys, organizations } from '../db/schema';
+import { apiKeys } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
+import { getActiveOrgTenant } from '../services/tenantStatus';
+import { getTrustedClientIp } from '../services/clientIp';
 
 export interface ApiKeyContext {
   apiKey: {
     id: string;
-    orgId: string;
+    orgId: string | null;
+    partnerId: string | null;
     name: string;
     keyPrefix: string;
     scopes: string[];
     rateLimit: number;
     createdBy: string;
-    scopeState: 'readonly' | 'full';
   };
   orgId: string;
 }
@@ -32,6 +34,34 @@ function hashApiKey(key: string): string {
   // for one-way lookup and never persist the plaintext key.
   // lgtm[js/insufficient-password-hash]
   return createHash('sha256').update(key).digest('hex');
+}
+
+function envInt(name: string, fallback: number): number {
+  const raw = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+async function enforcePreLookupProbeRateLimit(c: Context): Promise<void> {
+  const limit = envInt('API_KEY_PRELOOKUP_RATE_LIMIT', 300);
+  const windowSeconds = envInt('API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS', 60);
+  const clientIp = getTrustedClientIp(c, 'unknown');
+  const rateCheck = await rateLimiter(getRedis(), `api_key_probe:${clientIp}`, limit, windowSeconds);
+
+  if (!rateCheck.allowed) {
+    c.header('X-RateLimit-Limit', String(limit));
+    c.header('X-RateLimit-Remaining', '0');
+    c.header('X-RateLimit-Reset', String(Math.ceil(rateCheck.resetAt.getTime() / 1000)));
+    c.header('Retry-After', String(Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000))));
+
+    throw new HTTPException(429, {
+      message: 'Too many API key authentication attempts',
+      cause: {
+        limit,
+        remaining: 0,
+        resetAt: rateCheck.resetAt.toISOString()
+      }
+    });
+  }
 }
 
 /**
@@ -53,7 +83,10 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Missing X-API-Key header' });
   }
 
-  // Validate key format
+  await enforcePreLookupProbeRateLimit(c);
+
+  // Validate key format after the probe limiter so malformed brute-force
+  // attempts cannot bypass the pre-lookup throttle.
   if (!apiKeyHeader.startsWith('brz_')) {
     throw new HTTPException(401, { message: 'Invalid API key format' });
   }
@@ -77,7 +110,6 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         usageCount: apiKeys.usageCount,
         status: apiKeys.status,
         createdBy: apiKeys.createdBy,
-        scopeState: apiKeys.scopeState,
         source: apiKeys.source
       })
       .from(apiKeys)
@@ -106,6 +138,11 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     });
 
     throw new HTTPException(401, { message: 'API key has expired' });
+  }
+
+  const ownerTenant = await getActiveOrgTenant(apiKey.orgId);
+  if (!ownerTenant) {
+    throw new HTTPException(401, { message: 'API key owner is not active' });
   }
 
   // Check rate limits (requests per hour)
@@ -149,36 +186,28 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     console.error('Failed to update API key usage stats:', err);
   });
 
-  // Resolve the owning partner for this API key's org ONLY for MCP-provisioning
-  // keys. Those keys route through paymentGate, which reads the partners table
-  // (partner-axis RLS) — without the allowlist entry breeze_has_partner_access()
-  // short-circuits to false and the authed caller sees zero rows.
+  // Resolve the owning partner for MCP-provisioning keys only. These keys
+  // operate in the partner-axis RLS context (e.g. reading partner rows during
+  // OAuth bearer token flows). Without the partner ID in accessiblePartnerIds,
+  // breeze_has_partner_access() short-circuits to false and the caller sees
+  // zero rows from partner-scoped tables.
   //
   // Every other API key type has no legitimate need to read partner rows, so
   // we skip the round-trip and keep accessiblePartnerIds empty. This also
   // avoids a per-request DB hit on the hot agent-authed path.
   const isMcpProvisioningKey = apiKey.source === 'mcp_provisioning';
-  const resolvedPartnerId = isMcpProvisioningKey
-    ? await withSystemDbAccessContext(async () => {
-        const [row] = await db
-          .select({ partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, apiKey.orgId))
-          .limit(1);
-        return row?.partnerId ?? null;
-      })
-    : null;
+  const resolvedPartnerId = isMcpProvisioningKey ? ownerTenant.partnerId : null;
 
   // Set API key context for route handlers
   c.set('apiKey', {
     id: apiKey.id,
     orgId: apiKey.orgId,
+    partnerId: resolvedPartnerId,
     name: apiKey.name,
     keyPrefix: apiKey.keyPrefix,
     scopes: apiKey.scopes || [],
     rateLimit: apiKey.rateLimit,
     createdBy: apiKey.createdBy,
-    scopeState: (apiKey.scopeState === 'readonly' ? 'readonly' : 'full')
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 
@@ -224,10 +253,10 @@ export function requireApiKeyScope(...requiredScopes: string[]) {
       });
     }
 
-    // Check if API key has any of the required scopes
-    // Also check for wildcard scope '*' which grants all access
-    const hasWildcard = apiKey.scopes.includes('*');
-    const hasRequiredScope = hasWildcard || requiredScopes.some(scope => apiKey.scopes.includes(scope));
+    // Check if API key has any of the required scopes. Wildcard scopes are
+    // intentionally not honored; create/update rejects them and old rows should
+    // not retain blanket access.
+    const hasRequiredScope = requiredScopes.some(scope => apiKey.scopes.includes(scope));
 
     if (!hasRequiredScope) {
       throw new HTTPException(403, {
@@ -240,28 +269,3 @@ export function requireApiKeyScope(...requiredScopes: string[]) {
   };
 }
 
-/**
- * Middleware that accepts either JWT auth or API key auth.
- * Useful for endpoints that can be accessed by both users and automated systems.
- *
- * Usage: Use with authMiddleware for combined auth:
- *   app.use('*', eitherAuth)
- *
- * After this middleware, check c.get('auth') for user auth or c.get('apiKey') for API key auth.
- */
-export async function eitherAuthMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header('Authorization');
-  const apiKeyHeader = c.req.header('X-API-Key');
-
-  if (!authHeader && !apiKeyHeader) {
-    throw new HTTPException(401, { message: 'Authentication required. Provide either Authorization header or X-API-Key header.' });
-  }
-
-  // Prefer API key if both are provided (API keys are more specific)
-  if (apiKeyHeader) {
-    return apiKeyAuthMiddleware(c, next);
-  }
-
-  // Fall through to the next middleware (should be authMiddleware for JWT)
-  await next();
-}

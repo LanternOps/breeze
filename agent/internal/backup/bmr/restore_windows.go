@@ -71,7 +71,7 @@ func (r *windowsRestorer) importRegistryHives(stagingDir string) error {
 		"HKLM\\SYSTEM":   "registry_SYSTEM",
 		"HKLM\\SOFTWARE": "registry_SOFTWARE",
 		"HKLM\\SAM":      "registry_SAM",
-		"HKLM\\SECURITY":  "registry_SECURITY",
+		"HKLM\\SECURITY": "registry_SECURITY",
 	}
 	for regKey, fileName := range hives {
 		hivePath := filepath.Join(stagingDir, fileName)

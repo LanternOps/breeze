@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { createHmac } from 'crypto';
 import { automationRoutes, automationWebhookRoutes } from './automations';
 
 vi.mock('../jobs/automationWorker', () => ({
   enqueueAutomationRun: vi.fn(async () => ({ enqueued: true, jobId: 'job-1' }))
+}));
+
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => null)
 }));
 
 vi.mock('../services/automationRuntime', () => ({
@@ -28,6 +33,11 @@ vi.mock('../services/automationRuntime', () => ({
   normalizeAutomationTrigger: vi.fn((trigger) => trigger),
   normalizeNotificationTargets: vi.fn((targets) => targets ?? {}),
   withWebhookDefaults: vi.fn((trigger) => trigger),
+  checkAutomationTargetsWithinSiteScope: vi.fn(async () => ({
+    ok: true,
+    outOfScopeDeviceIds: [],
+    unbounded: false,
+  })),
 }));
 
 vi.mock('../db', () => ({
@@ -62,12 +72,21 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   automations: {},
   automationRuns: {},
+  configurationPolicies: {},
   policies: {},
   policyCompliance: {},
   organizations: {},
   devices: {},
   scripts: {}
 }));
+
+vi.mock('../services/auditEvents', () => ({
+  ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
+  writeRouteAudit: vi.fn(),
+  writeAuditEvent: vi.fn(),
+}));
+
+const mockState: { permissions: any } = { permissions: undefined };
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -80,6 +99,7 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['org-123'],
       canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
+    c.set('permissions', mockState.permissions);
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
@@ -88,16 +108,28 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { getRedis } from '../services/redis';
+import { writeAuditEvent } from '../services/auditEvents';
+import { checkAutomationTargetsWithinSiteScope, createAutomationRunRecord } from '../services/automationRuntime';
 
 describe('automations routes', () => {
   let app: Hono;
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    app = new Hono();
-    app.route('/automations/webhooks', automationWebhookRoutes);
-    app.route('/automations', automationRoutes);
-  });
+	  beforeEach(() => {
+	    vi.clearAllMocks();
+	    mockState.permissions = undefined;
+	    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+	      ok: true,
+	      outOfScopeDeviceIds: [],
+	      unbounded: false,
+	    } as any);
+	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
+	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LOCAL_REPLAY_FALLBACK;
+	    vi.mocked(getRedis).mockReturnValue(null);
+	    app = new Hono();
+	    app.route('/automations/webhooks', automationWebhookRoutes);
+	    app.route('/automations', automationRoutes);
+	  });
 
   it('should list automations with pagination', async () => {
     vi.mocked(db.select)
@@ -215,6 +247,45 @@ describe('automations routes', () => {
     expect(body.trigger.type).toBe('manual');
   });
 
+  it('encrypts and redacts webhook automation trigger secrets on create', async () => {
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((values: any) => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: values.id,
+          name: values.name,
+          orgId: values.orgId,
+          trigger: values.trigger,
+          enabled: true,
+          notificationTargets: {},
+          createdAt: new Date(),
+          updatedAt: new Date()
+        }]))
+      }))
+    } as any);
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Webhook Automation',
+        trigger: { type: 'webhook', secret: 'webhook-secret' },
+        actions: [{ type: 'execute_command', command: 'echo ok' }]
+      })
+    });
+
+    expect(res.status).toBe(201);
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0][0];
+    expect(insertValues.trigger.secret).not.toBe('webhook-secret');
+    expect(String(insertValues.trigger.secret)).toMatch(/^enc:v1:/);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('webhook-secret');
+    expect(body.trigger.secret).toEqual({
+      redacted: true,
+      hasSecret: true,
+      masked: '********'
+    });
+  });
+
   it('should update automation enabled state', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -252,6 +323,68 @@ describe('automations routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.enabled).toBe(false);
+  });
+
+  it('rejects an UPDATE from a site-restricted caller when the new target set escapes their sites', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            enabled: true, conditions: [], trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    // Post-update target set resolves outside the caller's allowlist.
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false, outOfScopeDeviceIds: ['dev-out-of-site'], unbounded: false,
+    } as any);
+
+    const res = await app.request('/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ trigger: { type: 'all' } }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(checkAutomationTargetsWithinSiteScope)).toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('allows an UPDATE from a site-restricted caller when targets stay in scope', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            enabled: true, conditions: [], trigger: { type: 'manual' },
+          }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'auto-1', enabled: false, trigger: { type: 'manual' } }]),
+        }),
+      }),
+    } as any);
+    // Default beforeEach mock already returns ok:true, but set it explicitly.
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true, outOfScopeDeviceIds: [], unbounded: false,
+    } as any);
+
+    const res = await app.request('/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.update)).toHaveBeenCalled();
   });
 
   it('should delete an automation', async () => {
@@ -336,10 +469,167 @@ describe('automations routes', () => {
     expect(res.status).toBe(400);
   });
 
-  it('should trigger automation via webhook when secret matches', async () => {
+  // ============================================
+  // Site-scope enforcement (tenant isolation)
+  // ============================================
+
+  it('rejects create from a site-restricted caller when target set is unbounded (all-org)', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false,
+      outOfScopeDeviceIds: [],
+      unbounded: true,
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'auto-x', name: 'x', orgId: 'org-123', trigger: { type: 'manual' } }])
+      })
+    } as any);
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'All-org reboot',
+        trigger: { type: 'manual' },
+        conditions: { type: 'all' },
+        actions: [{ type: 'run_script', scriptId: 'script-1' }]
+      })
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(checkAutomationTargetsWithinSiteScope)).toHaveBeenCalled();
+    // Must not have written the automation.
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('allows create from a site-restricted caller when targets are within an allowed site', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true,
+      outOfScopeDeviceIds: [],
+      unbounded: false,
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'auto-ok',
+          name: 'Scoped reboot',
+          orgId: 'org-123',
+          trigger: { type: 'manual' },
+          enabled: true
+        }])
+      })
+    } as any);
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Scoped reboot',
+        trigger: { type: 'manual', deviceIds: ['device-in-allowed-site'] },
+        conditions: { type: 'devices', deviceIds: ['device-in-allowed-site'] },
+        actions: [{ type: 'run_script', scriptId: 'script-1' }]
+      })
+    });
+
+    expect(res.status).toBe(201);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  it('rejects trigger from a site-restricted caller when resolved targets escape the allowlist', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: false,
+      outOfScopeDeviceIds: ['device-elsewhere'],
+      unbounded: false,
+    } as any);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Automation One',
+            orgId: 'org-123',
+            enabled: true,
+            runCount: 0,
+            trigger: { type: 'manual' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/auto-1/trigger', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(createAutomationRunRecord)).not.toHaveBeenCalled();
+  });
+
+  it('allows trigger from a site-restricted caller when all targets are in scope', async () => {
+    mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
+      ok: true,
+      outOfScopeDeviceIds: [],
+      unbounded: false,
+    } as any);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Automation One',
+            orgId: 'org-123',
+            enabled: true,
+            runCount: 0,
+            trigger: { type: 'manual' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/auto-1/run', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createAutomationRunRecord)).toHaveBeenCalled();
+  });
+
+  it('does not gate an unrestricted caller (no allowedSiteIds) on trigger', async () => {
+    mockState.permissions = undefined; // unrestricted org admin / partner / system
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Automation One',
+            orgId: 'org-123',
+            enabled: true,
+            runCount: 0,
+            trigger: { type: 'manual' }
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request('/automations/auto-1/trigger', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    // Helper still consulted (it short-circuits internally for unrestricted callers).
+    expect(vi.mocked(createAutomationRunRecord)).toHaveBeenCalled();
+  });
+
+	  it('should trigger automation via webhook when signed payload is valid', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
             id: 'auto-1',
             name: 'Webhook Automation',
@@ -349,26 +639,339 @@ describe('automations routes', () => {
             actions: [{ type: 'execute_command', command: 'echo ok' }]
           }])
         })
-      })
-    } as any);
+	      })
+	    } as any);
+	    const rawBody = JSON.stringify({ ping: true });
+	    const timestamp = String(Math.floor(Date.now() / 1000));
+	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
 
-    const res = await app.request('/automations/webhooks/auto-1', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-automation-secret': 'secret-123'
-      },
-      body: JSON.stringify({ ping: true })
-    });
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': timestamp,
+	        'x-breeze-signature': signature,
+	        'x-breeze-event-id': 'event-valid-1',
+	      },
+	      body: rawBody
+	    });
 
-    expect(res.status).toBe(202);
+	    expect(res.status).toBe(202);
     const body = await res.json();
     expect(body.accepted).toBe(true);
-    expect(body.run.id).toBe('run-1');
-  });
+	    expect(body.run.id).toBe('run-1');
+	  });
 
-  it('should reject webhook trigger when secret is invalid', async () => {
-    vi.mocked(db.select).mockReturnValue({
+	  it('rejects automation webhook when signed body is modified', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+	    const signedBody = JSON.stringify({ ping: true });
+	    const sentBody = JSON.stringify({ ping: false });
+	    const timestamp = String(Math.floor(Date.now() / 1000));
+	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${signedBody}`).digest('hex')}`;
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': timestamp,
+	        'x-breeze-signature': signature,
+	        'x-breeze-event-id': 'event-mutated-1',
+	      },
+	      body: sentBody
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('rejects automation webhook when signature is missing', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': String(Math.floor(Date.now() / 1000)),
+	        'x-breeze-event-id': 'event-missing-signature-1',
+	      },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(401);
+	    await expect(res.json()).resolves.toMatchObject({
+	      error: 'Missing webhook signature',
+	    });
+	  });
+
+	  it('rejects stale signed automation webhooks', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+	    const rawBody = JSON.stringify({ ping: true });
+	    const timestamp = String(Math.floor((Date.now() - 10 * 60 * 1000) / 1000));
+	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': timestamp,
+	        'x-breeze-signature': signature,
+	        'x-breeze-event-id': 'event-stale-1',
+	      },
+	      body: rawBody
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('rejects duplicate signed automation webhook deliveries', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+	    const rawBody = JSON.stringify({ ping: true, id: 'dup' });
+	    const timestamp = String(Math.floor(Date.now() / 1000));
+	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+	    const request = () => app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': timestamp,
+	        'x-breeze-signature': signature,
+	        'x-breeze-event-id': 'event-duplicate-1',
+	      },
+	      body: rawBody
+	    });
+
+	    expect((await request()).status).toBe(202);
+	    expect((await request()).status).toBe(409);
+	  });
+
+	  it('rejects webhook automations without a configured signing secret', async () => {
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook' }
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	      },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(403);
+	  });
+
+	  it('stores signed automation webhook replay nonces in Redis when available', async () => {
+	    const redis = {
+	      set: vi.fn()
+	        .mockResolvedValueOnce('OK')
+	        .mockResolvedValueOnce(null)
+	    };
+	    vi.mocked(getRedis).mockReturnValue(redis as any);
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+	    const rawBody = JSON.stringify({ ping: true, id: 'redis-dup' });
+	    const timestamp = String(Math.floor(Date.now() / 1000));
+	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+	    const request = () => app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-breeze-timestamp': timestamp,
+	        'x-breeze-signature': signature,
+	        'x-breeze-event-id': 'event-redis-duplicate-1',
+	      },
+	      body: rawBody
+	    });
+
+	    expect((await request()).status).toBe(202);
+	    expect((await request()).status).toBe(409);
+	    expect(redis.set).toHaveBeenCalledWith(
+	      expect.stringMatching(/^automation-webhook-replay:auto-1:/),
+	      '1',
+	      'PX',
+	      5 * 60 * 1000,
+	      'NX',
+	    );
+	  });
+
+	  it('rejects header-secret-only request by default (HMAC-only)', async () => {
+	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' },
+	            actions: [{ type: 'execute_command', command: 'echo ok' }]
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-automation-secret': 'secret-123'
+	      },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('accepts header-secret when explicitly enabled (legacy escape hatch)', async () => {
+	    process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET = 'true';
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' },
+	            actions: [{ type: 'execute_command', command: 'echo ok' }]
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1', {
+	      method: 'POST',
+	      headers: {
+	        'Content-Type': 'application/json',
+	        'x-automation-secret': 'secret-123'
+	      },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(202);
+	  });
+
+	  it('rejects ?secret= query path unconditionally (even when ALLOW_LEGACY_SECRET=true)', async () => {
+	    process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET = 'true';
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1?secret=secret-123', {
+	      method: 'POST',
+	      headers: { 'Content-Type': 'application/json' },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('rejects ?secret= query path when ALLOW_LEGACY_SECRET is not set (default)', async () => {
+	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
+	    vi.mocked(db.select).mockReturnValue({
+	      from: vi.fn().mockReturnValue({
+	        where: vi.fn().mockReturnValue({
+	          limit: vi.fn().mockResolvedValue([{
+	            id: 'auto-1',
+	            name: 'Webhook Automation',
+	            orgId: 'org-123',
+	            enabled: true,
+	            trigger: { type: 'webhook', secret: 'secret-123' }
+	          }])
+	        })
+	      })
+	    } as any);
+
+	    const res = await app.request('/automations/webhooks/auto-1?secret=secret-123', {
+	      method: 'POST',
+	      headers: { 'Content-Type': 'application/json' },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(401);
+	  });
+
+	  it('should reject webhook trigger when secret is invalid', async () => {
+	    process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET = 'true';
+	    vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
@@ -392,5 +995,223 @@ describe('automations routes', () => {
     });
 
     expect(res.status).toBe(401);
+  });
+
+  // ============================================
+  // F3 (IDOR): config-policy run cross-tenant access
+  // ============================================
+
+  it('returns 404 for a config-policy run whose org the caller cannot access', async () => {
+    // First select: the run (automationId null, configPolicyId set).
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-cp-1',
+              automationId: null,
+              configPolicyId: 'policy-1',
+              configItemName: 'Patch Policy',
+              status: 'running',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      // Second select: the config policy resolving to org-OTHER (not accessible).
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: 'org-OTHER' }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-cp-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Automation run not found');
+    // Must not leak any of the config-policy run details.
+    expect(JSON.stringify(body)).not.toContain('policy-1');
+    expect(JSON.stringify(body)).not.toContain('Patch Policy');
+  });
+
+  it('returns 200 for a config-policy run whose org the caller can access', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-cp-1',
+              automationId: null,
+              configPolicyId: 'policy-1',
+              configItemName: 'Patch Policy',
+              status: 'running',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: 'org-123' }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-cp-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('run-cp-1');
+    expect(body.configPolicyId).toBe('policy-1');
+    expect(body.configItemName).toBe('Patch Policy');
+    expect(body.automation).toBeNull();
+  });
+
+  it('returns 404 for an automation-backed run whose org the caller cannot access', async () => {
+    // First select: the run (automationId set).
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-ab-1',
+              automationId: 'auto-OTHER',
+              configPolicyId: null,
+              status: 'running',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      // Second select (getAutomationWithOrgCheck): the automation resolving to org-OTHER.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'auto-OTHER',
+              name: 'Other Tenant Automation',
+              orgId: 'org-OTHER',
+            }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-ab-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('Automation run not found');
+    // Must not leak the automation name or the owning org id.
+    expect(JSON.stringify(body)).not.toContain('Other Tenant Automation');
+    expect(JSON.stringify(body)).not.toContain('org-OTHER');
+  });
+
+  it('returns 200 for an automation-backed run whose org the caller can access', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'run-ab-1',
+              automationId: 'auto-1',
+              configPolicyId: null,
+              status: 'completed',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'auto-1',
+              name: 'Automation One',
+              orgId: 'org-123',
+            }])
+          })
+        })
+      } as any);
+
+    const res = await app.request('/automations/runs/run-ab-1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('run-ab-1');
+    expect(body.status).toBe('success');
+    expect(body.automation).toEqual({
+      id: 'auto-1',
+      name: 'Automation One',
+      orgId: 'org-123',
+    });
+  });
+
+  // ============================================
+  // F8 (audit): webhook-triggered run must be audited
+  // ============================================
+
+  it('writes an audit event when a signed webhook creates a run', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'auto-1',
+            name: 'Webhook Automation',
+            orgId: 'org-123',
+            enabled: true,
+            trigger: { type: 'webhook', secret: 'secret-123' },
+            actions: [{ type: 'execute_command', command: 'echo ok' }]
+          }])
+        })
+      })
+    } as any);
+    const rawBody = JSON.stringify({ ping: true });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+
+    const res = await app.request('/automations/webhooks/auto-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-timestamp': timestamp,
+        'x-breeze-signature': signature,
+        'x-breeze-event-id': 'event-audit-1',
+      },
+      body: rawBody
+    });
+
+    expect(res.status).toBe(202);
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-123',
+        action: 'automation.trigger.webhook',
+        resourceType: 'automation',
+        resourceId: 'auto-1',
+        resourceName: 'Webhook Automation',
+        actorType: 'system',
+        details: expect.objectContaining({
+          runId: 'run-1',
+          devicesTargeted: 2,
+        }),
+      }),
+    );
   });
 });

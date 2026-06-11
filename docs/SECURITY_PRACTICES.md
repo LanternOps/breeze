@@ -110,6 +110,21 @@ breeze.accessible_org_ids = comma-separated list or '*'
 
 These variables are set via `set_config()` within the request transaction context using Node.js `AsyncLocalStorage`. Queries that don't have proper context set will fail — there is no default permissive state.
 
+As of v0.65.0, every tenant-scoped table is configured with `FORCE ROW LEVEL SECURITY` in addition to having policies enabled. PostgreSQL evaluates RLS policies for *all* roles — including the table owner — eliminating the residual risk that an operator-mode connection (migrations, maintenance, or a custom deployment running the API as a privileged role) could accidentally bypass tenant isolation. The application connects as the unprivileged `breeze_app` role for all request-path queries, and FORCE RLS now enforces the same policy evaluation even when administrative roles touch the data. The migration that applies FORCE RLS to all currently-discovered tenant tables is `apps/api/migrations/2026-05-03-tenant-rls-force-and-invites.sql`; the contract test `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` keeps coverage from regressing as new tables are added.
+
+### Platform Admin
+
+Platform admin is a separate authorization axis from the partner/organization RBAC system. The `users.is_platform_admin` boolean flag gates the cross-tenant `/admin/*` endpoints (audit forensic queries, abuse response, partner suspension) which need to operate above any single tenant's scope.
+
+| Property | Implementation |
+|---|---|
+| **Schema** | `users.is_platform_admin` boolean column (defaults to `false`) |
+| **Bootstrap** | `BREEZE_PLATFORM_ADMINS` env var — comma-separated email allowlist, applied on API startup |
+| **Middleware** | `platformAdminMiddleware` (`apps/api/src/middleware/platformAdmin.ts`) — runs `authMiddleware` then enforces `isPlatformAdmin === true`, fails closed with 403 |
+| **Audit** | Every authorized request is recorded as `platform_admin.<route>` in `audit_logs`, including method, path, actor, and trusted client IP |
+
+Platform admin is intentionally orthogonal to roles: a platform admin must still hold the appropriate organization or partner role to act on tenant-scoped data via normal endpoints. The flag only unlocks the cross-tenant administrative surface.
+
 ### Role-Based Access Control
 
 | Component | Description |
@@ -142,6 +157,8 @@ The agent runs on customer endpoints with elevated privileges. Its security is p
 - **Hashing**: SHA-256 hash stored in `devices.agentTokenHash` — plaintext never persisted server-side
 - **Validation**: Every agent REST request and WebSocket connection validates the bearer token against the stored hash
 - **Status checks**: Decommissioned and quarantined devices are rejected with 403
+
+When a device record exists in the database but has no token hash — the case for legacy devices enrolled before the v0.62 token-hash migration — the API returns a structured `{ code: "re_enrollment_required" }` signal on both the WebSocket auth path and HTTP 401 responses (`apps/api/src/middleware/agentAuth.ts`, `apps/api/src/routes/agentWs.ts`). The agent treats this as a non-fault terminal state: it stops retrying with the orphaned credential and prompts the operator to re-enroll the device, rather than silently failing in a reconnect loop or appearing healthy while unable to receive commands. This makes upgrade behavior explicit and auditable.
 
 ### Config File Permissions
 
@@ -239,12 +256,44 @@ Breeze includes policy-driven USB/peripheral controls for data-exfiltration resi
 
 ### Secret Encryption Details
 
-Secrets encrypted at rest use the format: `enc:v1:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}`
+Breeze uses versioned, prefixed ciphertext formats so that the storage format is self-describing and rotation is a per-row operation, never a global re-encrypt-or-fail event.
 
-- 12-byte random IV generated per encryption (never reused)
-- GCM authentication tag prevents tampering
-- `isEncryptedSecret()` check prevents double-encryption
-- Key hierarchy: dedicated `APP_ENCRYPTION_KEY` in production, with fallback chain for development
+#### Application secrets — `enc:v1:` / `enc:v2:`
+
+| Format | Purpose |
+|---|---|
+| `enc:v1:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}` | Single-key AES-256-GCM under `APP_ENCRYPTION_KEY` |
+| `enc:v2:{keyId}:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}` | Keyring-aware AES-256-GCM, key resolved from `APP_ENCRYPTION_KEYRING` JSON or the active `APP_ENCRYPTION_KEY_ID` |
+
+- AES-256-GCM with a fresh 12-byte random IV per operation (never reused)
+- GCM authentication tag rejects any tampered ciphertext on decrypt
+- `isEncryptedSecret()` guard prevents double-encryption when the same value is rewritten
+- Active key may carry an `APP_ENCRYPTION_KEY_ID` so future writes are tagged with `enc:v2:`; the keyring lets multiple key versions coexist while migration runs
+
+**Dual-decrypt fallback chain (v0.65.0).** Earlier versions of Breeze derived the secret-encryption key from `JWT_SECRET` (and at one point `SESSION_SECRET`). v0.65.0 made `APP_ENCRYPTION_KEY` mandatory in production but adds a read-only fallback chain so existing rows decrypt transparently after upgrade: a primary-key decrypt failure on an `enc:v1:` row triggers a retry against any `JWT_SECRET` / `SESSION_SECRET` values present in the environment. Successful fallback decryption emits a one-time `[secretCrypto] Decrypted enc:v1: row with legacy fallback key` warning so operators can run `scripts/re-encrypt-secrets.ts` to re-encrypt the row under the dedicated key. New writes always use the active `APP_ENCRYPTION_KEY` — the legacy keys are never used for encryption.
+
+#### MFA secrets — `mfa:v1:`
+
+TOTP shared secrets are encrypted under a dedicated key, isolated from the general application-secrets key:
+
+- Format: `mfa:v1:{base64url(iv)}.{base64url(authTag)}.{base64url(ciphertext)}`
+- Algorithm: AES-256-GCM with `MFA_ENCRYPTION_KEY` (SHA-256 derived)
+- Backwards-compatible read: rows still in the legacy `enc:v1:` format are decrypted via `decryptSecret()` and surfaced for in-place migration to `mfa:v1:` (`decryptMfaTotpSecretForMigration` returns both plaintext and a re-encrypted blob), so existing TOTP setups survive the upgrade without forcing every user to re-enroll MFA
+
+Isolating the MFA key means an exposure of `APP_ENCRYPTION_KEY` does not also expose every TOTP shared secret, and rotating one key does not require touching the other.
+
+#### Pepper system — enrollment keys & MFA recovery codes
+
+Enrollment keys and MFA recovery codes are SHA-256 hashed with a server-side pepper before storage, so a database snapshot alone cannot be brute-forced:
+
+- **Enrollment keys**: peppered with `ENROLLMENT_KEY_PEPPER` (`apps/api/src/services/enrollmentKeySecurity.ts`)
+- **MFA recovery codes**: peppered with `MFA_RECOVERY_CODE_PEPPER`
+
+Each pepper has a **primary + legacy fallback list**: new writes use the primary value, but lookups also try every legacy pepper in the candidate list (e.g. older deployments that derived the pepper from `APP_ENCRYPTION_KEY` / `JWT_SECRET` before dedicated peppers were required). This lets operators promote a fresh dedicated pepper to primary without invalidating any existing enrollment keys or recovery codes already in the database.
+
+#### Rotation
+
+Encryption-at-rest rotation procedures (key generation, keyring rollout, re-encryption batch jobs, and verification) are documented in [SECRET_ROTATION.md](SECRET_ROTATION.md).
 
 ---
 
@@ -270,6 +319,37 @@ Breeze uses Redis-backed sliding window rate limiting. The implementation is **f
 - **Atomicity**: `MULTI` pipeline for race-condition-free counting
 - **Auto-cleanup**: Keys expire after the window elapses
 - **Response**: Standard `X-RateLimit-*` headers and `429` with `Retry-After`
+
+### Abuse Controls
+
+Beyond per-endpoint rate limiting, v0.65.0 introduces platform-admin-only abuse controls and a hardened email-verification flow. The supporting schema lives in `apps/api/migrations/2026-05-04-anti-abuse-foundation.sql`.
+
+#### Partner suspension for abuse
+
+`POST /admin/partners/:id/suspend-for-abuse` — gated by `platformAdminMiddleware`, requires a written reason (≥10 chars) — performs a single transactional sweep that:
+
+1. Sets the partner's status to `suspended`
+2. Queues a `self_uninstall` command for every device under the partner (multi-row INSERT)
+3. Cancels any other pending or in-flight commands for those devices
+4. Deletes all sessions for users in the partner (excluding the calling platform admin if they happen to be a member, so the responder stays signed in)
+5. Disables every non-platform-admin user belonging to the partner
+6. Revokes every API key belonging to organizations under the partner
+7. Outside the transaction, blanket-revokes JWTs for every affected user via Redis (`revokeAllUserTokens`)
+
+Step 7 is **fail-closed**: if any Redis revocation rejects, the endpoint returns HTTP 500 with `tokenRevocationFailed: true` and a list of the failures, and the audit log is written with `result: 'failure'`. The DB-level suspend has already committed at that point, so the partner is suspended and devices are queued for uninstall — but the operator is loudly told that some existing JWTs may continue to authenticate until natural expiry, so they can flush Redis manually and re-run the call. An unsuspend endpoint (`POST /admin/partners/:id/unsuspend`) is provided for reversible cases; it preserves the activation gate (only flips to `active` if a payment method was attached, otherwise returns the partner to `pending`) and re-enables disabled users. Uninstalled devices are not auto-restored — re-enrollment is required.
+
+#### Email verification on signup
+
+New partner signups must verify their email address before the account is fully activated. Verification tokens have explicit terminal states beyond a binary used/unused flag:
+
+| State | Meaning | Returned to user |
+|---|---|---|
+| `consumed` | Token was previously redeemed successfully | `400 consumed` |
+| `superseded` | A newer verification email was issued; this token is dead-on-arrival | `400 superseded` |
+| `expired` | TTL elapsed before the user clicked | `400 expired` |
+| `invalid` | Token does not exist or fails structural validation | `400 invalid` |
+
+Distinguishing `superseded` from `consumed` matters: when a user clicks **Resend verification**, every still-open token for that user is marked `superseded` (`invalidateOpenTokens`) and a fresh one is issued. Old links stop working immediately, and clicking a stale email reports `superseded` rather than the misleading `consumed` — which would suggest the user (or someone else) had already verified via that link. The resend endpoint enforces a 1-per-minute debounce plus a 5-per-hour abuse cap per user.
 
 ---
 
@@ -345,6 +425,8 @@ Every security-relevant operation is recorded in the `audit_logs` table:
 | `userAgent` | Client identifier |
 | `details` | JSONB metadata (command type, exit codes, etc.) |
 | `errorMessage` | Failure reason (if applicable) |
+
+Client IPs in audit logs are derived via `getTrustedClientIp()`, which only honors `CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP` headers when the immediate TCP peer matches a CIDR in `TRUSTED_PROXY_CIDRS`. Forwarded headers from untrusted hops are ignored entirely, and in production with proxy-header trust enabled but no CIDRs configured, the trust list defaults to loopback only — never silently honoring arbitrary upstreams. This makes audit IP attribution accurate even behind multi-layer proxies (Cloudflare → Caddy → API) and prevents a malicious client from spoofing forwarded headers to forge the recorded source IP.
 
 ### Retention
 
@@ -463,10 +545,15 @@ All scanners run in CI and **block merges** on failure.
 
 | Secret | Purpose | Minimum Strength |
 |---|---|---|
-| `JWT_SECRET` | Token signing | 32+ characters |
-| `APP_ENCRYPTION_KEY` | AES-256-GCM encryption | 32-byte hex |
-| `MFA_ENCRYPTION_KEY` | MFA secret encryption | 32-byte hex |
-| `AGENT_ENROLLMENT_SECRET` | Agent enrollment | 32-byte hex |
+| `JWT_SECRET` | Access/refresh token signing (HS256) | 32+ characters |
+| `SESSION_SECRET` | Session token signing | 32+ characters |
+| `APP_ENCRYPTION_KEY` | AES-256-GCM encryption for application secrets (`enc:v1:`/`enc:v2:`) | 32-byte hex |
+| `MFA_ENCRYPTION_KEY` | AES-256-GCM encryption for TOTP shared secrets (`mfa:v1:`) | 32-byte hex |
+| `ENROLLMENT_KEY_PEPPER` | Server-side pepper for SHA-256 enrollment-key hashes | 32+ characters |
+| `MFA_RECOVERY_CODE_PEPPER` | Server-side pepper for SHA-256 recovery-code hashes | 32+ characters |
+| `AGENT_ENROLLMENT_SECRET` | Shared secret presented at agent enrollment | 32-byte hex |
+| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | Base64 SPKI Ed25519 key(s) used to verify signed agent release manifests; **required when `BINARY_SOURCE=github` in production** — the API config validator refuses to boot without it | base64 SPKI |
+| `BREEZE_PLATFORM_ADMINS` | Optional. Comma-separated email allowlist applied on startup to bootstrap `users.is_platform_admin`. Without it, no user has cross-tenant admin access. | n/a |
 
 ### Production Enforcement
 
@@ -476,6 +563,16 @@ Breeze validates environment configuration on startup:
 - Requires explicit `CORS_ALLOWED_ORIGINS` (no wildcards)
 - Enforces minimum secret strength
 - Logs warnings for non-critical misconfigurations
+
+#### Migration / deprecation gates
+
+A small set of environment flags exist as one-release migration aids during cross-cutting hardening waves. Each flag has a forward-looking default; operators are expected to retire them within one release of upgrading.
+
+| Flag | Behavior | Status |
+|---|---|---|
+| `ENROLLMENT_SECRET_ENFORCEMENT_MODE` | When set to `warn`, the enrollment endpoint logs a warning instead of rejecting requests that lack a configured `AGENT_ENROLLMENT_SECRET` (or per-key secret). Default is `enforce`. Use only for the single release immediately following the upgrade, then remove. | Deprecation aid — to be removed after operators migrate |
+| `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` | Defaults to `false`. Inbound automation webhooks require HMAC signing (`x-breeze-signature` + `x-breeze-timestamp`). Set to `true` as a short-term emergency rollback while migrating legacy `x-automation-secret` / `x-webhook-secret` senders; the flag will be removed in a future release. The `?secret=` query-string path has been removed entirely — no flag re-enables it. | HMAC-only by default; legacy header is opt-in escape hatch |
+| `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` | Defaults to `false`: the SSO exchange endpoint delivers the refresh token only via the HttpOnly `breeze_refresh_token` cookie. Set to `true` to also include `refreshToken` in the JSON body for legacy external SSO clients that read it directly. The flag (and the JSON field) will be removed entirely after the Sunset date (2026-08-01). | Opt-in only; removal scheduled |
 
 ### Secret Rotation
 
@@ -500,8 +597,10 @@ The following are always hashed or encrypted before persistence:
 - Session tokens (SHA-256)
 - API keys (SHA-256)
 - Agent auth tokens (SHA-256)
-- Enrollment keys (SHA-256 with pepper)
-- MFA secrets (AES-256-GCM)
+- Enrollment keys (SHA-256 with `ENROLLMENT_KEY_PEPPER`)
+- MFA recovery codes (SHA-256 with `MFA_RECOVERY_CODE_PEPPER`)
+- MFA TOTP secrets (AES-256-GCM under `MFA_ENCRYPTION_KEY`, `mfa:v1:` format)
+- Application secrets — SSO client secrets, webhook signing keys, integration credentials (AES-256-GCM under `APP_ENCRYPTION_KEY`, `enc:v1:`/`enc:v2:` format)
 
 ---
 
@@ -627,6 +726,6 @@ Breeze's security controls align with SOC 2 Trust Service Criteria:
 
 ---
 
-*Last updated: February 2026*
+*Last updated: May 2026 (v0.65.0 cross-cutting hardening release)*
 
 *For questions about Breeze security practices, contact [security@lanternops.io](mailto:security@lanternops.io).*

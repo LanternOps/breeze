@@ -1,13 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { localVaults } from '../../db/schema';
+import { devices, localVaults } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -20,6 +20,22 @@ export const vaultRoutes = new Hono();
 
 const vaultIdParam = z.object({ id: z.string().uuid() });
 
+async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: UserPermissions | undefined): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
+}
+
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
 // GET /vault — list vaults for org (optional ?deviceId filter)
 vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', vaultListSchema), async (c) => {
   const auth = c.get('auth');
@@ -29,10 +45,20 @@ vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIO
   }
 
   const { deviceId } = c.req.valid('query');
+  const permissions = c.get('permissions') as UserPermissions | undefined;
 
   const conditions = [eq(localVaults.orgId, orgId)];
   if (deviceId) {
+    if (await isDeviceSiteDenied(orgId, deviceId, permissions)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
     conditions.push(eq(localVaults.deviceId, deviceId));
+  } else if (permissions?.allowedSiteIds) {
+    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, permissions);
+    if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+      return c.json({ data: [] });
+    }
+    conditions.push(inArray(localVaults.deviceId, allowedDeviceIds));
   }
 
   const rows = await db
@@ -57,6 +83,9 @@ vaultRoutes.post(
   }
 
   const payload = c.req.valid('json');
+  if (await isDeviceSiteDenied(orgId, payload.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
   const now = new Date();
 
   const [row] = await db
@@ -203,6 +232,10 @@ vaultRoutes.post(
       return c.json({ error: 'Vault is inactive' }, 400);
     }
 
+    if (await isDeviceSiteDenied(orgId, vault.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     // Update sync status to pending
     await db
       .update(localVaults)
@@ -266,6 +299,13 @@ vaultRoutes.get('/:id/status', requirePermission(PERMISSIONS.ORGS_READ.resource,
 
   if (!vault) {
     return c.json({ error: 'Vault not found' }, 404);
+  }
+
+  // Site-scope is an app-layer-only authz axis; RLS does not defend it. The vault
+  // is resolved scoped only to orgId, so re-enforce the source device's site here
+  // (mirrors the LIST + sync paths). Fail closed on null/out-of-site siteId.
+  if (await isDeviceSiteDenied(orgId, vault.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   return c.json({

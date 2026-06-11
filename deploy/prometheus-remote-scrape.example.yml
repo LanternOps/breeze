@@ -1,0 +1,119 @@
+# Breeze RMM — Remote Prometheus scrape config (multi-region droplets)
+#
+# Example template — replace the placeholder regions, IPs, and domain below with
+# your own. The `eu`/`us` job names and region labels are illustrative.
+#
+# Paste these jobs into the scrape_configs: section of the prometheus.yml on
+# your REMOTE Prometheus host (the one that already pages you by email).
+#
+# The Breeze API exposes Prometheus metrics at:
+#     GET /metrics/scrape   (Bearer auth via METRICS_SCRAPE_TOKEN)
+# Each droplet should have METRICS_SCRAPE_TOKEN set in /opt/breeze/.env and
+# mapped into the api service so the endpoint authenticates.
+#
+# IMPORTANT — reachability: the api container publishes 3001 on the Docker
+# network only (no host port bind). A remote Prometheus cannot reach it until
+# you do ONE of:
+#   (A) Tailscale path (recommended): install Tailscale on each droplet, join
+#       the same tailnet as Prometheus, publish 3001 to the Tailscale IP, and
+#       restrict with a tailnet ACL. Then use the TAILSCALE jobs below.
+#   (B) Public-edge path: scrape through https://<region>.your-domain.example.com and gate
+#       with METRICS_SCRAPE_IP_ALLOWLIST + a WAF exception. See the bottom block.
+#
+# After editing prometheus.yml on the remote host:
+#   promtool check config /etc/prometheus/prometheus.yml
+#   curl -X POST http://localhost:9090/-/reload      # hot reload, no restart
+#
+# Also copy the alert rules to the remote host (rule evaluation runs there):
+#   scp monitoring/rules/breeze-rules.yml \
+#       prom-host:/etc/prometheus/rules/breeze-rules.yml
+#   # prometheus.yml must contain:  rule_files: ['/etc/prometheus/rules/*.yml']
+
+# ===========================================================================
+# (A) TAILSCALE PATH (recommended) — plain http over the encrypted tailnet.
+#     Replace <EU_TAILSCALE_IP> / <US_TAILSCALE_IP> with the output of
+#     `tailscale ip -4` on each droplet after it joins the tailnet.
+# ===========================================================================
+scrape_configs:
+  - job_name: 'breeze-api-eu'
+    metrics_path: /metrics/scrape
+    scheme: http
+    static_configs:
+      - targets: ['<EU_TAILSCALE_IP>:3001']
+        labels:
+          region: 'eu'
+          service: 'breeze-api'
+    authorization:
+      type: Bearer
+      # The EU droplet's METRICS_SCRAPE_TOKEN (from /opt/breeze/.env).
+      credentials_file: /etc/prometheus/secrets/breeze_metrics_token_eu
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(:\d+)?'
+        replacement: '${1}'
+
+  - job_name: 'breeze-api-us'
+    metrics_path: /metrics/scrape
+    scheme: http
+    static_configs:
+      - targets: ['<US_TAILSCALE_IP>:3001']
+        labels:
+          region: 'us'
+          service: 'breeze-api'
+    authorization:
+      type: Bearer
+      # The US droplet's METRICS_SCRAPE_TOKEN (from /opt/breeze/.env).
+      credentials_file: /etc/prometheus/secrets/breeze_metrics_token_us
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(:\d+)?'
+        replacement: '${1}'
+
+# If EU and US share the same token you can point both jobs at a single
+# credentials_file. They currently each have their own 32-char token, so keep
+# two files unless you deliberately unify them.
+
+# ===========================================================================
+# Droplet-side change required for the Tailscale path
+# ---------------------------------------------------------------------------
+# Today the api service has `ports: ['3001']` (Docker-network only). To expose
+# it on the Tailscale interface ONLY (not the public IP), bind-publish to the
+# droplet's Tailscale IP in /opt/breeze/docker-compose.yml:
+#
+#   api:
+#     ports:
+#       - '<DROPLET_TAILSCALE_IP>:3001:3001'   # tailnet-only, not 0.0.0.0
+#
+# Then: docker compose up -d api
+# Verify from the Prometheus host: curl -H "Authorization: Bearer <token>" \
+#   http://<DROPLET_TAILSCALE_IP>:3001/metrics/scrape | head
+# Lock down further with a tailnet ACL allowing only the Prometheus node ->
+# tag:breeze-api:3001.
+
+# ===========================================================================
+# (B) PUBLIC-EDGE FALLBACK (if you do NOT put the droplets on Tailscale)
+# ---------------------------------------------------------------------------
+# Scrape through the existing HTTPS edge. No droplet port change, but:
+#   - Set METRICS_SCRAPE_IP_ALLOWLIST on each droplet to the Prometheus egress
+#     IP (and ensure TRUST_PROXY_HEADERS + TRUSTED_PROXY_CIDRS are correct so
+#     the API sees the real client IP, not Caddy/Cloudflare).
+#   - Confirm /metrics/scrape is NOT behind the auth-redirect WAF rule.
+#
+#   - job_name: 'breeze-api-eu'
+#     metrics_path: /metrics/scrape
+#     scheme: https
+#     static_configs:
+#       - targets: ['eu.your-domain.example.com']
+#         labels: { region: 'eu', service: 'breeze-api' }
+#     authorization:
+#       type: Bearer
+#       credentials_file: /etc/prometheus/secrets/breeze_metrics_token_eu
+#     scrape_interval: 15s
+#     scrape_timeout: 10s
+#   # ...and a matching breeze-api-us job targeting us.your-domain.example.com

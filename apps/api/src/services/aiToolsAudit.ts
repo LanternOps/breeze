@@ -24,6 +24,10 @@ async function verifyDeviceAccess(
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+  // Site axis: deny devices outside the caller's site allowlist (no-op when unrestricted).
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { error: 'Device not found or access denied' };
+  }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
 }
@@ -97,6 +101,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_change_log',
       description: 'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, and user account changes.',

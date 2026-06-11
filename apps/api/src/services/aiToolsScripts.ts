@@ -8,7 +8,7 @@
  * - run_script (Tier 3): Execute a script on one or more devices
  * - manage_services (Tier 3): List, start, stop, or restart system services
  * - list_scripts (Tier 1): Search and filter scripts in the org library
- * - get_script_details (Tier 1): Get full script details with content/versions/stats
+ * - get_script_details (Tier 1): Get script metadata with optional content/versions/stats
  * - list_script_templates (Tier 1): Browse available script templates
  * - get_script_execution_history (Tier 1): Get past execution results for a script
  * - search_script_library (Tier 1): Search scripts and templates together
@@ -25,7 +25,7 @@ import {
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, isNull, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
@@ -56,6 +56,10 @@ async function verifyDeviceAccess(
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+  // Site axis: deny devices outside the caller's site allowlist (no-op when unrestricted).
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { error: 'Device not found or access denied' };
+  }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
 }
@@ -71,6 +75,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
       description: 'Execute a system command on a device. Requires user approval. Use for process management, service control, file operations, etc.',
@@ -118,6 +123,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
       description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval.',
@@ -137,7 +143,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const results: Record<string, unknown> = {};
 
       // Resolve script content upfront so the agent receives the full payload
-      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string)];
+      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
       if (orgCond) scriptConditions.push(orgCond);
 
@@ -191,6 +197,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_services',
       description: 'List, start, stop, or restart system services on a device.',
@@ -236,6 +243,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_processes',
       description: 'List running processes on a device with CPU and memory usage, or terminate a process.',
@@ -320,7 +328,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      const conditions: SQL[] = [];
+      const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
       if (orgCondition) conditions.push(orgCondition);
 
@@ -361,12 +369,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'get_script_details',
-      description: 'Get full script details including content, parameters, version history, and execution statistics.',
+      description: 'Get script details including parameters, version history, and execution statistics. Script content is omitted unless explicitly requested and may be minimized in AI transcripts.',
       input_schema: {
         type: 'object' as const,
         properties: {
           scriptId: { type: 'string', description: 'UUID of the script' },
-          includeContent: { type: 'boolean', description: 'Include the script content (default true)' },
+          includeContent: { type: 'boolean', description: 'Include the script content (default false)' },
           includeVersionHistory: { type: 'boolean', description: 'Include version history (default false)' },
           includeExecutionStats: { type: 'boolean', description: 'Include execution statistics (default false)' },
         },
@@ -375,12 +383,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const scriptId = input.scriptId as string;
-      const includeContent = (input.includeContent as boolean) ?? true;
+      const includeContent = (input.includeContent as boolean) ?? false;
       const includeVersionHistory = (input.includeVersionHistory as boolean) ?? false;
       const includeExecutionStats = (input.includeExecutionStats as boolean) ?? false;
 
       // Query script with org scoping
-      const conditions: SQL[] = [eq(scripts.id, scriptId)];
+      const conditions: SQL[] = [eq(scripts.id, scriptId), isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
       if (orgCond) conditions.push(orgCond);
 
@@ -521,7 +529,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       // Verify the script belongs to the user's org before returning execution data
-      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string)];
+      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
       if (orgCondition) scriptConditions.push(orgCondition);
 
@@ -584,7 +592,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const includeTemplates = (input.includeTemplates as boolean) ?? false;
 
       // Query org scripts
-      const conditions: SQL[] = [];
+      const conditions: SQL[] = [isNull(scripts.deletedAt)];
       const orgCond = auth.orgCondition(scripts.orgId);
       if (orgCond) conditions.push(orgCond);
 
@@ -686,6 +694,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_scheduled_tasks',
       description: 'List, run, enable, disable, or delete Windows scheduled tasks on a device.',
@@ -746,6 +755,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'registry_operations',
       description: 'Read or modify Windows registry keys and values on a device.',

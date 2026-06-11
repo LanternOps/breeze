@@ -89,7 +89,7 @@ func TestRecoveringToMonitoring(t *testing.T) {
 
 func TestFailoverToMonitoring(t *testing.T) {
 	w := NewWatchdog(DefaultTestConfig())
-	w.HandleEvent(EventAgentNotFound)    // CONNECTING → RECOVERING
+	w.HandleEvent(EventAgentNotFound)     // CONNECTING → RECOVERING
 	w.HandleEvent(EventRecoveryExhausted) // RECOVERING → FAILOVER
 	next, ok := w.HandleEvent(EventAgentRecovered)
 	if !ok {
@@ -102,7 +102,7 @@ func TestFailoverToMonitoring(t *testing.T) {
 
 func TestStandbyToFailover(t *testing.T) {
 	w := NewWatchdog(DefaultTestConfig())
-	w.HandleEvent(EventIPCConnected)  // CONNECTING → MONITORING
+	w.HandleEvent(EventIPCConnected)   // CONNECTING → MONITORING
 	w.HandleEvent(EventShutdownIntent) // MONITORING → STANDBY
 	next, ok := w.HandleEvent(EventStandbyTimeout)
 	if !ok {
@@ -115,7 +115,7 @@ func TestStandbyToFailover(t *testing.T) {
 
 func TestStandbyToMonitoring(t *testing.T) {
 	w := NewWatchdog(DefaultTestConfig())
-	w.HandleEvent(EventIPCConnected)  // CONNECTING → MONITORING
+	w.HandleEvent(EventIPCConnected)   // CONNECTING → MONITORING
 	w.HandleEvent(EventShutdownIntent) // MONITORING → STANDBY
 	next, ok := w.HandleEvent(EventAgentRecovered)
 	if !ok {

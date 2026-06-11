@@ -17,10 +17,28 @@ import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
-const MAX_REAP_PER_RUN = 200;
+// Per-run cap (env-tunable). Was a hardcoded 200 which silently truncated the
+// reaper above ~200 stale items per type — see scaling audit 2026-05-17. The
+// per-row update logic still runs sequentially inside JS to preserve metrics
+// and propagation side-effects; this just lets us cover more rows per cycle.
+//
+// `STALE_REAPER_MAX_PER_RUN=0` means UNLIMITED (matches the convention
+// `alertWorker` + `offlineDetector` adopt in this PR). Passing `.limit(0)`
+// to drizzle disables the limit clause is NOT a Postgres semantic —
+// `.limit(0)` returns zero rows, which would silently disable the
+// reaper. Normalize to `Number.MAX_SAFE_INTEGER` so the consistent
+// "cap=0 == unlimited" knob actually behaves that way here.
+const RAW_MAX_REAP = Number(process.env.STALE_REAPER_MAX_PER_RUN ?? '5000');
+const MAX_REAP_PER_RUN =
+  Number.isFinite(RAW_MAX_REAP) && RAW_MAX_REAP > 0
+    ? RAW_MAX_REAP
+    : RAW_MAX_REAP === 0
+      ? Number.MAX_SAFE_INTEGER
+      : 5000; // negative / NaN fall back to default rather than disabling the reaper
 const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
 
 // Backup-related command types — used to guard backup-specific Prometheus metrics
@@ -511,6 +529,20 @@ async function reapStaleRemoteSessions(): Promise<number> {
       ),
     )
     .returning({ id: remoteSessions.id });
+
+  // Revoke viewer tokens for every session we just force-disconnected so a
+  // lingering (up to 2h) viewer token can't resurrect it via /viewer/offer (#5).
+  // The agent's max-session-duration timer is the authoritative teardown for the
+  // live peer-to-peer stream of a zombie session (when a max-session-duration
+  // policy is set; default 8h) (#2).
+  const reapedIds = [...pendingResult, ...activeResult].map((r) => r.id);
+  await Promise.all(
+    reapedIds.map((id) =>
+      revokeViewerSession(id).catch((err) =>
+        console.warn('[reaper] viewer revoke failed', id, err)
+      )
+    )
+  );
 
   return pendingResult.length + activeResult.length;
 }

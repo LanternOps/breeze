@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, ilike, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
 import {
@@ -20,9 +20,9 @@ import {
   parseHuntressWebhookPayload,
   verifyHuntressWebhookSignature,
 } from '../services/huntressClient';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { captureException } from '../services/sentry';
 import { escapeLike } from '../utils/sql';
 import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
@@ -116,6 +116,7 @@ async function resolveWebhookIntegration(params: {
   | {
     id: string;
     orgId: string;
+    accountId: string | null;
     webhookSecretEncrypted: string | null;
     isActive: boolean;
   }
@@ -127,6 +128,7 @@ async function resolveWebhookIntegration(params: {
         .select({
           id: huntressIntegrations.id,
           orgId: huntressIntegrations.orgId,
+          accountId: huntressIntegrations.accountId,
           webhookSecretEncrypted: huntressIntegrations.webhookSecretEncrypted,
           isActive: huntressIntegrations.isActive,
         })
@@ -137,6 +139,9 @@ async function resolveWebhookIntegration(params: {
     });
     if (!row || !row.isActive) {
       return { error: 'No active Huntress integration found for webhook payload', status: 404 };
+    }
+    if (row.accountId && params.accountId && row.accountId !== params.accountId) {
+      return { error: 'Webhook account does not match the selected Huntress integration', status: 409 };
     }
     return row;
   }
@@ -189,7 +194,7 @@ huntressRoutes.post('/webhook', async (c) => {
     return c.json({ error: 'Webhook secret not configured for this integration. Configure a webhook secret to enable webhook ingestion.' }, 403);
   }
 
-  const webhookSecret = decryptSecret(integration.webhookSecretEncrypted);
+  const webhookSecret = decryptForColumn('huntress_integrations', 'webhook_secret_encrypted', integration.webhookSecretEncrypted);
   if (!webhookSecret) {
     return c.json({ error: 'Webhook secret is not configured correctly' }, 401);
   }
@@ -281,7 +286,7 @@ huntressRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, body.orgId);
+    const orgResult = resolveOrgId(auth, body.orgId ?? requestedOrgId(c));
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
@@ -595,6 +600,9 @@ huntressRoutes.get(
 huntressRoutes.get(
   '/incidents',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` in context (the site-scope narrowing below depends
+  // on it) and gates device-telemetry reads behind DEVICES_READ.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listIncidentsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -618,6 +626,37 @@ huntressRoutes.get(
     }
     const orgCondition = auth.orgCondition(huntressIncidents.orgId);
     if (orgCondition) conditions.push(orgCondition);
+
+    // Site is an app-layer-only authz axis — Postgres RLS does NOT defend it.
+    // A site-restricted caller (org user with `permissions.allowedSiteIds`)
+    // must not read incident detail/hostnames for devices in sites outside
+    // their allowlist. `deviceId` is NULLABLE (provider-level incidents are not
+    // device-bound), so we keep null-device rows visible and only exclude rows
+    // attributed to foreign-site devices. Mirrors browserSecurity.ts (PR #864/#868).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, orgResult.orgId));
+      const allowedDeviceIds = orgDevices
+        .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+        .map((d) => d.id);
+
+      if (query.deviceId && !allowedDeviceIds.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+
+      // Keep provider-level (null-device) rows; exclude foreign-site devices.
+      // With an empty allowedDeviceIds, `inArray(..., [])` matches nothing, so
+      // only the null-device branch remains — exactly the intended behavior.
+      conditions.push(
+        or(
+          isNull(huntressIncidents.deviceId),
+          inArray(huntressIncidents.deviceId, allowedDeviceIds)
+        )!
+      );
+    }
 
     const where = and(...conditions);
 

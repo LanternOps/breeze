@@ -60,13 +60,14 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed_${key}`),
+  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed_${key}`]),
 }));
 
 vi.mock('../services/installerBuilder', () => ({
   buildMacosInstallerZip: vi.fn(async () => Buffer.from('fake-zip')),
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from('fake-windows-zip')),
   fetchRegularMsi: vi.fn(async () => Buffer.alloc(2048, 0xbb)),
-  fetchMacosPkg: vi.fn(async () => Buffer.alloc(2048, 0xcc)),
+  assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   // Plan C — returns null so macOS tests fall through to the legacy pkg path.
   fetchMacosInstallerAppZip: vi.fn(async () => null),
 }));
@@ -488,6 +489,40 @@ describe('enrollment key routes — installer download', () => {
           name: 'Test Key (installer x5)',
         })
       );
+    });
+
+    it('child key honors the ttlMinutes query param (per-link picker)', async () => {
+      const parentKey = makeEnrollmentKey(); // parent: 1h remaining
+      mockSelectFromWhereLimit([parentKey]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      const ttlMinutes = 43200; // 30 days
+      const before = Date.now();
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?ttlMinutes=${ttlMinutes}`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+      const after = Date.now();
+
+      expect(res.status).toBe(200);
+      const valuesFn = vi.mocked(db.insert).mock.results[0]!.value.values;
+      const insertedRow = valuesFn.mock.calls[0]![0] as { expiresAt: Date };
+      const childExpiryMs = insertedRow.expiresAt.getTime();
+      const ttlMs = ttlMinutes * 60 * 1000;
+      // Fresh window from mint time = the admin's choice, not the 24h
+      // CHILD_ENROLLMENT_KEY_TTL_MINUTES default, not the parent's 1h.
+      expect(childExpiryMs).toBeGreaterThanOrEqual(before + ttlMs - 50);
+      expect(childExpiryMs).toBeLessThanOrEqual(after + ttlMs + 50);
+    });
+
+    it('returns 400 for ttlMinutes above the 525_600 cap', async () => {
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?ttlMinutes=525601`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+      expect(res.status).toBe(400);
     });
 
     // Query-param validation is enforced by the Hono zValidator middleware

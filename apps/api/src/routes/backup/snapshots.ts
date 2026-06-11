@@ -1,16 +1,16 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { backupConfigs, backupSnapshotFiles, backupSnapshots } from '../../db/schema';
+import { backupConfigs, backupSnapshotFiles, backupSnapshots, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   applyBackupSnapshotImmutability,
   checkBackupProviderCapabilities,
 } from '../../services/backupSnapshotStorage';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   snapshotImmutabilityApplySchema,
@@ -22,6 +22,28 @@ import type { SnapshotTreeItem } from './types';
 export const snapshotsRoutes = new Hono();
 
 const snapshotIdParamSchema = z.object({ id: z.string().uuid() });
+
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
+// Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`); RLS
+// does NOT defend it. The by-id snapshot reads (`GET /:id`, `/:id/browse`) resolve
+// a snapshot scoped only to orgId, so a site-restricted caller who enumerates a
+// snapshot UUID for an out-of-site device (same org) could read its metadata and
+// browse its file manifest. Resolve the snapshot's source device site and deny
+// when out-of-scope. Fail closed: a missing device row or null siteId = deny.
+async function isSnapshotDeviceSiteDenied(orgId: string, deviceId: string, perms: UserPermissions | undefined): Promise<boolean> {
+  if (!perms?.allowedSiteIds) return false;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  return !device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId);
+}
 type SnapshotProtectionState = {
   legalHold: boolean;
   legalHoldReason: string | null;
@@ -202,10 +224,21 @@ snapshotsRoutes.get(
     }
 
     const query = c.req.valid('query');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const conditions = [eq(backupSnapshots.orgId, orgId)];
 
     if (query.deviceId) {
       conditions.push(eq(backupSnapshots.deviceId, query.deviceId));
+    }
+    if (perms?.allowedSiteIds) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({ data: [] });
+      }
+      conditions.push(inArray(backupSnapshots.deviceId, allowedDeviceIds));
     }
     if (query.configId) {
       conditions.push(eq(backupSnapshots.configId, query.configId));
@@ -243,6 +276,12 @@ snapshotsRoutes.get('/snapshots/:id', requirePermission(PERMISSIONS.BACKUP_READ.
   if (!row) {
     return c.json({ error: 'Snapshot not found' }, 404);
   }
+
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (await isSnapshotDeviceSiteDenied(orgId, row.deviceId, perms)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
   return c.json(toSnapshotResponse(row));
 });
 
@@ -267,6 +306,11 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
 
   if (!row) {
     return c.json({ error: 'Snapshot not found' }, 404);
+  }
+
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (await isSnapshotDeviceSiteDenied(orgId, row.deviceId, perms)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   const files = await db

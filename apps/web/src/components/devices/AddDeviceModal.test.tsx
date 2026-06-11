@@ -176,6 +176,38 @@ describe('AddDeviceModal', () => {
     expect(String(createCall[0])).toBe('/enrollment-keys');
     const createBody = JSON.parse((createCall[1] as RequestInit).body as string);
     expect(createBody.siteId).toBe('site-aaa-111');
+    // ttlMinutes drives the *child* key now, not the transient parent —
+    // the parent POST must NOT carry it (PR #739 review finding #1).
+    expect(createBody.ttlMinutes).toBeUndefined();
+
+    // Default 24h (1440) flows to the installer (child) download URL.
+    const dlCall = fetchWithAuthMock.mock.calls[1];
+    expect(String(dlCall[0])).toContain('ttlMinutes=1440');
+  });
+
+  it('sends the selected expiry to the installer download URL', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') {
+        return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
+      }
+      if (url.startsWith('/enrollment-keys/key-123/installer/')) {
+        return makeJsonResponse(null, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId('link-ttl'), { target: { value: '10080' } });
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+
+    const dlCall = fetchWithAuthMock.mock.calls[1];
+    expect(String(dlCall[0])).toContain('ttlMinutes=10080');
   });
 
   it('generates a public link on button click', async () => {
@@ -186,7 +218,7 @@ describe('AddDeviceModal', () => {
       }
       if (url === '/enrollment-keys/key-456/installer-link') {
         return makeJsonResponse({
-          url: 'https://api.example.com/api/v1/enrollment-keys/public-download/windows?token=abc123',
+          url: 'https://api.example.com/api/v1/enrollment-keys/public-download/windows?h=dlh_abc123',
           expiresAt: '2026-04-14T00:00:00Z',
           maxUsage: 1,
           platform: 'windows',
@@ -198,6 +230,7 @@ describe('AddDeviceModal', () => {
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
+    fireEvent.change(screen.getByTestId('link-ttl'), { target: { value: '43200' } });
     fireEvent.click(screen.getByText('Generate Link'));
 
     await waitFor(() => {
@@ -205,6 +238,15 @@ describe('AddDeviceModal', () => {
     });
 
     expect(screen.getByText(/Valid for 1 download/)).toBeDefined();
+
+    // ttlMinutes goes on the installer-link (child) body, not the parent POST.
+    const createCall = fetchWithAuthMock.mock.calls[0];
+    expect(JSON.parse((createCall[1] as RequestInit).body as string).ttlMinutes)
+      .toBeUndefined();
+    const linkCall = fetchWithAuthMock.mock.calls[1];
+    expect(String(linkCall[0])).toBe('/enrollment-keys/key-456/installer-link');
+    expect(JSON.parse((linkCall[1] as RequestInit).body as string).ttlMinutes)
+      .toBe(43200);
   });
 
   it('copies generated link to clipboard', async () => {
@@ -215,7 +257,7 @@ describe('AddDeviceModal', () => {
       }
       if (url.includes('/installer-link')) {
         return makeJsonResponse({
-          url: 'https://api.example.com/public-download/windows?token=abc',
+          url: 'https://api.example.com/public-download/windows?h=dlh_abc',
           expiresAt: null,
           maxUsage: 1,
           platform: 'windows',
@@ -307,11 +349,73 @@ describe('AddDeviceModal', () => {
     fireEvent.click(screen.getByText('CLI Commands'));
 
     await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/onboarding-token', { method: 'POST' });
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/devices/onboarding-token',
+        // #1108: the request now carries a device count → maxUsage.
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 1 }) })
+      );
     });
 
     await waitFor(() => {
       expect(screen.getByText('test-token-xyz')).toBeDefined();
     });
+  });
+
+  it('requests a multi-use token after the operator raises the device count (#1108)', async () => {
+    // Initial single-device fetch on tab open.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'token-single', maxUsage: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    await waitFor(() => {
+      expect(screen.getByText('token-single')).toBeDefined();
+    });
+
+    // Operator bumps the count and regenerates → server returns a 5-use token.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'token-multi', maxUsage: 5, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+    );
+
+    const countInput = screen.getByLabelText('Number of devices') as HTMLInputElement;
+    fireEvent.change(countInput, { target: { value: '5' } });
+    fireEvent.click(screen.getByText('Generate new token'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
+        '/devices/onboarding-token',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 5 }) })
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('token-multi')).toBeDefined();
+      expect(screen.getByText(/Valid for 5 device enrollments/)).toBeDefined();
+    });
+  });
+
+  it('shows the real token expiry instead of a hard-coded "24 hours" (#1108)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        token: 'token-exp',
+        maxUsage: 1,
+        // ~1 hour out → formatTokenExpiry renders "in about 1 hour".
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    await waitFor(() => {
+      expect(screen.getByText('token-exp')).toBeDefined();
+    });
+
+    // The corrected, server-derived copy is shown…
+    expect(screen.getByText(/expires in about 1 hour/)).toBeDefined();
+    // …and the old misleading hard-coded string is gone.
+    expect(screen.queryByText(/expires in 24 hours/)).toBeNull();
   });
 });

@@ -21,7 +21,7 @@ import { writeFile, unlink, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -32,18 +32,38 @@ const requireSoftwareExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.res
 // Helpers
 // ---------------------------------------------------------------------------
 
+type ResolveScopedOrgIdResult =
+  | { orgId: string }
+  | { error: string; status: 400 | 403 };
+
 function resolveScopedOrgId(
   auth: {
     scope: 'system' | 'partner' | 'organization';
     orgId?: string | null;
     accessibleOrgIds?: string[] | null;
+  },
+  requestedOrgId?: string,
+): ResolveScopedOrgIdResult {
+  if (requestedOrgId) {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (auth.scope === 'organization') {
+      if (auth.orgId && requestedOrgId !== auth.orgId) {
+        return { error: 'Access to this organization denied', status: 403 };
+      }
+      return { orgId: requestedOrgId };
+    }
+    if (!accessibleOrgIds.includes(requestedOrgId)) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { orgId: requestedOrgId };
   }
-) {
-  if (auth.orgId) return auth.orgId;
+
+  if (auth.orgId) return { orgId: auth.orgId };
   if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    return auth.accessibleOrgIds[0] ?? null;
+    const single = auth.accessibleOrgIds[0];
+    if (single) return { orgId: single };
   }
-  return null;
+  return { error: 'orgId is required for this scope', status: 400 };
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -157,6 +177,7 @@ async function getDeploymentStatusMap(deploymentIds: string[]) {
 
 async function resolveSoftwareTargetDeviceIds(
   orgId: string,
+  permissions: UserPermissions | undefined,
   payload: {
     targetType: 'devices' | 'groups' | 'sites' | 'all' | 'filter';
     targetIds?: string[];
@@ -183,8 +204,38 @@ async function resolveSoftwareTargetDeviceIds(
   if (deviceIds.length === 0) {
     return {
       error: 'No devices resolved for the selected target scope',
+      status: 400 as const,
       deviceIds,
     };
+  }
+
+  if (permissions?.allowedSiteIds) {
+    const rows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), inArray(devices.id, deviceIds)));
+
+    const allowedIds = rows
+      .filter((device) => typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId))
+      .map((device) => device.id);
+
+    if (payload.targetType === 'devices' && allowedIds.length !== deviceIds.length) {
+      return {
+        error: 'Access to one or more device sites denied',
+        status: 403 as const,
+        deviceIds: [] as string[],
+      };
+    }
+
+    if (allowedIds.length === 0) {
+      return {
+        error: 'No devices resolved for the selected target scope',
+        status: 400 as const,
+        deviceIds: allowedIds,
+      };
+    }
+
+    return { deviceIds: allowedIds };
   }
 
   return { deviceIds };
@@ -238,7 +289,8 @@ const createCatalogSchema = z.object({
   description: z.string().max(2000).optional(),
   iconUrl: z.string().url().optional(),
   websiteUrl: z.string().url().optional(),
-  isManaged: z.boolean().optional()
+  isManaged: z.boolean().optional(),
+  orgId: z.string().uuid().optional()
 });
 
 const updateCatalogSchema = z.object({
@@ -318,8 +370,9 @@ softwareRoutes.get(
   zValidator('query', listCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -366,10 +419,11 @@ softwareRoutes.post(
   zValidator('json', createCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
-
     const payload = c.req.valid('json');
+    const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
     const [item] = await db.insert(softwareCatalog).values({
       orgId,
       name: payload.name,
@@ -402,8 +456,9 @@ softwareRoutes.get(
   zValidator('query', catalogSearchSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const query = c.req.valid('query');
     const term = `%${query.q}%`;
@@ -432,8 +487,9 @@ softwareRoutes.get(
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [item] = await db.select().from(softwareCatalog)
@@ -457,8 +513,9 @@ softwareRoutes.patch(
   zValidator('json', updateCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
@@ -494,8 +551,9 @@ softwareRoutes.delete(
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [existing] = await db.select().from(softwareCatalog)
@@ -530,8 +588,9 @@ softwareRoutes.get(
   zValidator('param', versionParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
@@ -556,8 +615,9 @@ softwareRoutes.post(
   zValidator('json', createVersionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
@@ -572,7 +632,7 @@ softwareRoutes.post(
       releaseNotes: payload.releaseNotes ?? null,
       downloadUrl: payload.downloadUrl ?? null,
       checksum: payload.checksum ?? null,
-      fileSize: payload.fileSize != null ? BigInt(payload.fileSize) : null,
+      fileSize: payload.fileSize ?? null,
       supportedOs: payload.supportedOs ?? null,
       architecture: payload.architecture ?? null,
       silentInstallArgs: payload.silentInstallArgs ?? null,
@@ -606,8 +666,9 @@ softwareRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     if (!isS3Configured()) {
       return c.json({ error: 'S3 storage is not configured' }, 503);
@@ -689,7 +750,7 @@ softwareRoutes.post(
         fileType,
         originalFileName,
         checksum,
-        fileSize: BigInt(buffer.length),
+        fileSize: buffer.length,
         supportedOs,
         architecture,
         silentInstallArgs,
@@ -728,8 +789,9 @@ softwareRoutes.post(
   zValidator('param', versionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id, versionId } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
@@ -771,8 +833,9 @@ softwareRoutes.get(
   requireSoftwareRead,
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const catalogId = c.req.param('id')!;
     const versionId = c.req.param('versionId')!;
@@ -811,8 +874,9 @@ softwareRoutes.get(
   zValidator('query', listDeploymentsSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -846,8 +910,9 @@ softwareRoutes.post(
   zValidator('json', createDeploymentSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const payload = c.req.valid('json');
 
@@ -860,9 +925,9 @@ softwareRoutes.post(
       .where(and(eq(softwareCatalog.id, versionRecord.catalogId), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found or access denied' }, 404);
 
-    const resolvedTargets = await resolveSoftwareTargetDeviceIds(orgId, payload);
+    const resolvedTargets = await resolveSoftwareTargetDeviceIds(orgId, c.get('permissions') as UserPermissions | undefined, payload);
     if (resolvedTargets.error) {
-      const status = payload.targetType === 'sites' ? 400 : 400;
+      const status = resolvedTargets.status ?? 400;
       return c.json({ error: resolvedTargets.error }, status);
     }
     const targetDeviceIds = resolvedTargets.deviceIds;
@@ -961,20 +1026,37 @@ softwareRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireSoftwareExecute,
   requireMfa(),
+  zValidator(
+    'json',
+    z.object({
+      softwareId: z.string().uuid(),
+      version: z.string().min(1).max(64),
+      targets: z
+        .object({
+          deviceIds: z.array(z.string().uuid()).max(1000).optional(),
+          siteIds: z.array(z.string().uuid()).max(100).optional(),
+          deviceGroupIds: z.array(z.string().uuid()).max(100).optional(),
+        })
+        .optional(),
+      configuration: z
+        .object({
+          scheduleType: z.enum(['immediate', 'scheduled', 'maintenance_window']).optional(),
+        })
+        .partial()
+        .optional(),
+    })
+  ),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const softwareId = body.softwareId;
     const version = body.version;
     const deviceIds = body.targets?.deviceIds ?? [];
     const scheduleType = body.configuration?.scheduleType ?? 'immediate';
-
-    if (!softwareId || !version) {
-      return c.json({ error: 'softwareId and version are required' }, 400);
-    }
 
     // Look up the catalog item + version
     const [catalogItem] = await db.select().from(softwareCatalog)
@@ -986,13 +1068,26 @@ softwareRoutes.post(
 
     if (!versionRecord) return c.json({ error: 'Version not found' }, 404);
 
-    const resolvedDeviceIds = await resolveDeploymentTargets({
+    let resolvedDeviceIds = await resolveDeploymentTargets({
       orgId,
       targetConfig: {
         type: 'devices',
         deviceIds: Array.isArray(deviceIds) ? deviceIds : [],
       },
     });
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds && resolvedDeviceIds.length > 0) {
+      const rows = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(and(eq(devices.orgId, orgId), inArray(devices.id, resolvedDeviceIds)));
+      resolvedDeviceIds = rows
+        .filter((device) => typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId))
+        .map((device) => device.id);
+      if (resolvedDeviceIds.length !== deviceIds.length) {
+        return c.json({ error: 'Access to one or more device sites denied' }, 403);
+      }
+    }
     if (resolvedDeviceIds.length === 0) {
       return c.json({ error: 'No devices resolved for the selected targets' }, 400);
     }
@@ -1077,8 +1172,9 @@ softwareRoutes.get(
   zValidator('param', deploymentIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
@@ -1106,8 +1202,9 @@ softwareRoutes.post(
   zValidator('json', cancelDeploymentSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
@@ -1144,8 +1241,9 @@ softwareRoutes.get(
   zValidator('param', deploymentIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
@@ -1171,21 +1269,38 @@ softwareRoutes.get(
   zValidator('query', listInventorySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const query = c.req.valid('query');
 
-    // Get devices for org, then filter inventory
-    const orgDevices = await db.select({ id: devices.id }).from(devices)
+    // Get devices for org, narrowed by the caller's site allowlist when set.
+    // Site is an app-layer concept only — RLS doesn't defend it — so a
+    // partner-scope user restricted to one site must not see inventory for
+    // devices in other sites within the same org. See PR #864/#868.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const orgDevices = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
       .where(eq(devices.orgId, orgId));
-    const orgDeviceIds = orgDevices.map(d => d.id);
+    const allowedDeviceIds = orgDevices
+      .filter((device) => !permissions?.allowedSiteIds
+        || (typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId)))
+      .map((device) => device.id);
 
-    if (orgDeviceIds.length === 0) {
+    if (allowedDeviceIds.length === 0) {
       return c.json({ data: [], total: 0 });
     }
 
-    const conditions = [inArray(softwareInventory.deviceId, orgDeviceIds)];
+    // If caller filtered to a specific deviceId, verify it's in the allowed set
+    // — otherwise return 403 (do NOT silently return empty, which would be
+    // ambiguous with "device exists but has no inventory rows").
+    if (query.deviceId && !allowedDeviceIds.includes(query.deviceId)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+
+    const conditions = [inArray(softwareInventory.deviceId, allowedDeviceIds)];
     if (query.deviceId) {
       conditions.push(eq(softwareInventory.deviceId, query.deviceId));
     }
@@ -1209,15 +1324,24 @@ softwareRoutes.get(
   zValidator('param', inventoryParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth);
-    if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
 
     const { deviceId } = c.req.valid('param');
 
-    // Verify device belongs to org
-    const [device] = await db.select().from(devices)
+    // Verify device belongs to org AND caller's site allowlist (when set).
+    const [device] = await db.select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
       .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)));
     if (!device) return c.json({ error: 'Device not found' }, 404);
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      if (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
 
     const items = await db.select().from(softwareInventory)
       .where(eq(softwareInventory.deviceId, deviceId))

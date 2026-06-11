@@ -51,6 +51,9 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	if provider == nil {
 		return fail("backup not configured")
 	}
+	if err := applyCommandStorageEncryption(provider, payload); err != nil {
+		return fail(err.Error())
+	}
 
 	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-mssql-*")
 	if err != nil {
@@ -211,6 +214,13 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 	if mgr == nil {
 		return fail("backup not configured")
 	}
+	provider := mgr.GetProvider()
+	if provider == nil {
+		return fail("backup not configured")
+	}
+	if err := applyCommandStorageEncryption(provider, payload); err != nil {
+		return fail(err.Error())
+	}
 
 	stagingDir, err := os.MkdirTemp(mgr.GetStagingDir(), "breeze-hyperv-*")
 	if err != nil {
@@ -227,7 +237,6 @@ func execHypervBackup(payload json.RawMessage, mgr *backup.BackupManager) backup
 		return fail(err.Error())
 	}
 
-	provider := mgr.GetProvider()
 	snapshotID := newHypervSnapshotID(p.VMName)
 	prefix := path.Join("snapshots", snapshotID)
 

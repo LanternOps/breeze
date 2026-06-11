@@ -7,6 +7,32 @@
 
 import { captureException } from './sentry';
 
+// ── Tenant id validation ─────────────────────────────────────────────────────
+
+/**
+ * Entra (Azure AD) tenant ids are GUIDs. Microsoft's admin-consent callback
+ * returns the concrete tenant GUID in `?tenant=`, and the client-credentials
+ * flow used here requires a concrete tenant — the well-known aliases
+ * `common` / `organizations` / `consumers` are NOT valid for this grant, so we
+ * deliberately accept GUIDs only.
+ */
+export const M365_TENANT_ID_REGEX =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * A tenant id that has passed `M365_TENANT_ID_REGEX`. The brand makes
+ * "validated → trusted" a type-level fact: a value can only acquire this type
+ * by flowing through `isM365TenantId` (or an explicit, audited cast), so the
+ * token-URL builder can require it as a precondition rather than re-validating
+ * by convention.
+ */
+export type M365TenantId = string & { readonly __brand: 'M365TenantId' };
+
+/** Type guard: true (and narrows) iff `x` is a canonical Entra tenant GUID. */
+export function isM365TenantId(x: string): x is M365TenantId {
+  return M365_TENANT_ID_REGEX.test(x);
+}
+
 // ── Platform config ────────────────────────────────────────────────────────
 
 export interface C2cM365PlatformConfig {
@@ -70,11 +96,21 @@ export interface TokenResult {
  * Uses the platform app credentials + customer tenant ID.
  */
 export async function acquireClientCredentialsToken(params: {
-  tenantId: string;
+  tenantId: M365TenantId;
   clientId: string;
   clientSecret: string;
   scope?: string;
 }): Promise<TokenResult> {
+  // Defense-in-depth assertion: the `M365TenantId` brand already guarantees a
+  // validated GUID, so this only fires for a caller that bypassed the type with
+  // a cast. tenantId is tenant-controlled (admin-consent callback / stored
+  // connection); the host is a hard-coded literal and encodeURIComponent keeps
+  // tenantId inside its path segment (no authority/path break-out), but we still
+  // fail closed before building a URL from anything that isn't an Entra GUID.
+  if (!M365_TENANT_ID_REGEX.test(params.tenantId)) {
+    throw new Error('Invalid M365 tenant id');
+  }
+
   const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(params.tenantId)}/oauth2/v2.0/token`;
 
   const body = new URLSearchParams({
@@ -88,6 +124,9 @@ export async function acquireClientCredentialsToken(params: {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
+    // undici's fetch follows redirects by default; the token endpoint never
+    // legitimately redirects, so refuse to chase one off-host.
+    redirect: 'error',
   });
 
   if (!res.ok) {
@@ -126,6 +165,9 @@ export async function testGraphAccess(
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/organization', {
       headers: { Authorization: `Bearer ${accessToken}` },
+      // Don't follow a redirect off graph.microsoft.com while carrying the
+      // bearer token in the Authorization header.
+      redirect: 'error',
     });
 
     if (!res.ok) {
@@ -178,6 +220,14 @@ export async function ensureFreshToken(params: {
       accessToken: params.currentToken!,
       expiresIn: Math.floor((params.tokenExpiresAt!.getTime() - Date.now()) / 1000),
     };
+  }
+
+  // params.tenantId comes from a stored connection row (plain string). Narrow
+  // it to the branded type before handing it to the token-URL builder; this
+  // keeps a non-GUID stored tenantId from ever reaching a fetch (fails closed
+  // with the same message as the in-builder assertion).
+  if (!isM365TenantId(params.tenantId)) {
+    throw new Error('Invalid M365 tenant id');
   }
 
   return acquireClientCredentialsToken({

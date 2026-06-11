@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
@@ -216,7 +217,7 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
-	userHelperCmd.Flags().StringVar(&helperRole, "role", "system", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
+	userHelperCmd.Flags().StringVar(&helperRole, "role", "user", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
 	rootCmd.AddCommand(startCmd)
@@ -229,6 +230,24 @@ func init() {
 }
 
 func main() {
+	// Initialize Sentry as early as possible so panics during cobra
+	// command dispatch are still captured. Init is best-effort: when
+	// BREEZE_SENTRY_DSN is unset (self-host without telemetry), Init is
+	// a no-op and the agent runs unchanged. Any init error is logged
+	// and ignored — Sentry MUST NOT block agent startup.
+	if err := observability.Init(version); err != nil {
+		fmt.Fprintf(os.Stderr, "sentry init failed: %v\n", err)
+	}
+	defer observability.Flush(2 * time.Second)
+
+	// Smoke-test hook for staging verification of the Sentry pipeline.
+	// Operators set BREEZE_SMOKE_PANIC=1 on a staging agent to confirm a
+	// panic event reaches the configured DSN. The deferred Flush above
+	// ensures the event is transmitted before exit.
+	if os.Getenv("BREEZE_SMOKE_PANIC") == "1" {
+		panic("sentry-go-smoke: BREEZE_SMOKE_PANIC=1")
+	}
+
 	if filepath.Base(os.Args[0]) == "breeze-desktop-helper" {
 		for i := 1; i < len(os.Args)-1; i++ {
 			if os.Args[i] == "--context" {
@@ -283,6 +302,23 @@ type agentComponents struct {
 	hb          *heartbeat.Heartbeat
 	wsClient    *websocket.Client
 	secureToken *secmem.SecureString
+
+	// etwluaCancel cancels the ETW LUA subscriber goroutine and tears
+	// down the Breeze-LUA-Discovery real-time ETW session. nil on
+	// non-Windows or when ETW init was skipped/failed.
+	etwluaCancel context.CancelFunc
+	// etwluaDone closes after the ETW subscriber goroutine has fully
+	// exited. Always non-nil (closed immediately when nothing was
+	// started) so callers don't need a nil check.
+	etwluaDone <-chan struct{}
+
+	// supervisorCancel cancels long-lived supervisory goroutines started in
+	// startAgent (currently: the Windows watchdog supervisor). nil on
+	// platforms or run modes where no supervisor was started.
+	supervisorCancel context.CancelFunc
+	// supervisorDone closes after the supervisor goroutine has fully
+	// exited. nil when supervisorCancel is nil.
+	supervisorDone <-chan struct{}
 }
 
 // shutdownAgent gracefully stops all agent components.
@@ -294,6 +330,33 @@ type agentComponents struct {
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
+	}
+
+	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
+	// session is closed before any later teardown can time out and
+	// orphan it. Otherwise Breeze-LUA-Discovery stays registered with
+	// the kernel and the next agent restart hits the
+	// "two callers on the same machine would conflict" failure from
+	// NewETWSubscriber's doc comment.
+	if comps.etwluaCancel != nil {
+		comps.etwluaCancel()
+		if comps.etwluaDone != nil {
+			runWithTimeout("etwlua stop", 2*time.Second, func() {
+				<-comps.etwluaDone
+			})
+		}
+	}
+
+	// Cancel the watchdog supervisor BEFORE we tell the watchdog the agent
+	// is intentionally stopping. Otherwise the supervisor could race
+	// in-flight and re-start a watchdog the SCM is mid-stop on.
+	if comps.supervisorCancel != nil {
+		comps.supervisorCancel()
+		if comps.supervisorDone != nil {
+			runWithTimeout("watchdog supervisor stop", 2*time.Second, func() {
+				<-comps.supervisorDone
+			})
+		}
 	}
 
 	// Write stopping state so the watchdog knows shutdown is intentional.
@@ -371,6 +434,26 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	config.FixConfigPermissions()
 
 	initLogging(cfg)
+
+	// Record this process's live PID immediately, before any startup step that
+	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
+	// leaves agent.state holding a prior run's dead PID, and the watchdog reads
+	// that stale PID forever — reporting check.process_gone on a process that
+	// is actually alive-but-wedged, and force-killing the wrong (dead) PID
+	// instead of the live one. Status flips to StatusRunning at the end of
+	// startup (below). Fields mirror that running-state write; LastHeartbeat
+	// stays zero (watchdog treats zero as a startup grace period) exactly as
+	// the running-state write does until the first heartbeat records it.
+	// See #1029.
+	startupStatePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(startupStatePath, &state.AgentState{
+		Status:    state.StatusStarting,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write startup state file", "error", err.Error())
+	}
 
 	// Auto-clear Safe Mode BCD flag on startup to prevent reboot loops.
 	// If the agent triggered a safe mode reboot, the safeboot BCD entry
@@ -522,6 +605,16 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	hb.SetWebSocketClient(wsClient)
 	go wsClient.Start()
 
+	// PAM Track 3: subscribe to Microsoft-Windows-LUA ETW provider for
+	// UAC consent discovery. Windows-only; no-op stub on other platforms
+	// (see etwlua_start_other.go). ctx scoped to the agent process so
+	// shutdownAgent can tear down the ETW session cleanly.
+	// context.Background() (the old call) never cancels — defer
+	// sub.Stop() at etwlua.Start exit-path never fires and the real-time
+	// ETW session leaks across agent restarts (PR #959 review, blocker 1).
+	etwCtx, etwCancel := context.WithCancel(context.Background())
+	etwluaDone := startETWLua(etwCtx, hb)
+
 	log.Info("agent is running")
 
 	// Write state file so the watchdog can detect a running agent.
@@ -538,10 +631,29 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Tell the heartbeat where the state file is so it can update after each heartbeat.
 	hb.SetStatePath(statePath)
 
+	// Mutual supervision: on Windows, when running as the SCM service this
+	// agent process supervises BreezeWatchdog the same way BreezeWatchdog
+	// supervises us. On macOS/Linux the OS service managers (launchd
+	// KeepAlive, systemd Restart=always) already do this — and although
+	// LaunchDaemons report cfg.IsService=true via service_unix.go:21-26,
+	// startWatchdogSupervisor is a no-op stub on non-Windows builds, so
+	// gating on cfg.IsService here is safe across platforms.
+	var supervisorCancel context.CancelFunc
+	var supervisorDone <-chan struct{}
+	if cfg.IsService {
+		supCtx, supCancel := context.WithCancel(context.Background())
+		supervisorCancel = supCancel
+		supervisorDone = startWatchdogSupervisor(supCtx)
+	}
+
 	return &agentComponents{
-		hb:          hb,
-		wsClient:    wsClient,
-		secureToken: secureToken,
+		hb:               hb,
+		wsClient:         wsClient,
+		secureToken:      secureToken,
+		etwluaCancel:     etwCancel,
+		etwluaDone:       etwluaDone,
+		supervisorCancel: supervisorCancel,
+		supervisorDone:   supervisorDone,
 	}, nil
 }
 
@@ -585,6 +697,11 @@ func retryTCCGrant() {
 		log.Debug("retrying TCC permission auto-grant")
 		if attemptTCCGrant() {
 			log.Info("TCC permissions all granted, stopping retries")
+			// The user just granted Full Disk Access, letting us write the
+			// Screen Recording + Accessibility grants. Already-running desktop
+			// helpers cached the old (denied) state — kickstart them so the new
+			// permissions take effect without the user manually restarting.
+			heartbeat.KickstartDesktopHelpers()
 			return
 		}
 	}
@@ -595,8 +712,9 @@ func retryTCCGrant() {
 // - Receiving pending commands from the server via heartbeat response
 // - Executing commands and reporting results back to the server
 func runAgent() {
-	// Self-heal launchd plists on macOS (fixes KeepAlive config from older installs).
-	healLaunchdPlistsIfNeeded()
+	// Self-heal the installed service unit from older installs (launchd plists on
+	// macOS; systemd unit on Linux) after a binary-only auto-update.
+	reconcileServiceUnitIfNeeded()
 
 	// On Windows, if launched by the SCM, run under the service framework
 	// so we report Running/Stopped status back to the SCM correctly. The
@@ -813,7 +931,13 @@ func enrollDevice(enrollmentKey string) {
 			err)
 	}
 
-	client := api.NewClient(cfg.ServerURL, "", "")
+	// Carry any existing device token into the enroll client. On a fresh
+	// enroll cfg.AuthToken is empty (no-op); on `--force` re-enroll it holds
+	// the token loaded from secrets.yaml, which Enroll presents as
+	// x-agent-reenrollment-token so the server re-enrolls the existing device
+	// row instead of 409-ing on a hostname collision with the agent's own
+	// active row (e.g. after a rename/re-image). See #1028.
+	client := api.NewClient(cfg.ServerURL, cfg.AuthToken, cfg.AgentID)
 
 	secret := enrollmentSecret
 	if secret == "" {
@@ -865,6 +989,8 @@ func enrollDevice(enrollmentKey string) {
 
 	cfg.AgentID = enrollResp.AgentID
 	cfg.AuthToken = enrollResp.AuthToken
+	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
+	cfg.HelperAuthToken = enrollResp.HelperAuthToken
 	cfg.OrgID = enrollResp.OrgID
 	cfg.SiteID = enrollResp.SiteID
 
@@ -885,6 +1011,36 @@ func enrollDevice(enrollmentKey string) {
 		enrollLog.Info("mTLS certificate issued", "expiresAt", enrollResp.Mtls.ExpiresAt)
 		if !quietEnroll {
 			fmt.Printf("mTLS certificate issued (expires: %s)\n", enrollResp.Mtls.ExpiresAt)
+		}
+	}
+
+	// Pin per-deployment manifest trust keys delivered at enrollment (#625).
+	// Self-host (BINARY_SOURCE=local) deployments sign update manifests with
+	// a per-deployment Ed25519 key whose public half is delivered here.
+	//
+	// Enrollment is fresh-trust: no existing pin to defend against rotation, so
+	// we set the pinned set directly. Subsequent updates flow through
+	// config.PinManifestKeys (TOFU). See #625.
+	if len(enrollResp.ManifestTrustKeys) > 0 {
+		pinned := make([]string, 0, len(enrollResp.ManifestTrustKeys))
+		for _, k := range enrollResp.ManifestTrustKeys {
+			if k.KeyID == "" || k.PublicKeyB64 == "" {
+				continue
+			}
+			pinned = append(pinned, k.KeyID+":"+k.PublicKeyB64)
+		}
+		if len(pinned) == 0 {
+			// All entries malformed — preserve any pre-existing pinned set rather
+			// than silently destroying trust state.
+			enrollLog.Warn("enrollment response delivered manifest trust keys but all entries were malformed; not overwriting existing pinned set",
+				"received", len(enrollResp.ManifestTrustKeys))
+		} else {
+			if dropped := len(enrollResp.ManifestTrustKeys) - len(pinned); dropped > 0 {
+				enrollLog.Warn("dropped malformed manifest trust keys from enrollment",
+					"received", len(enrollResp.ManifestTrustKeys), "kept", len(pinned), "dropped", dropped)
+			}
+			cfg.PinnedManifestPubKeys = pinned
+			enrollLog.Info("pinned manifest trust keys from enrollment", "count", len(pinned))
 		}
 	}
 
@@ -1014,10 +1170,30 @@ func runUserHelper() {
 }
 
 func runDesktopHelper() {
-	runHelperProcess("desktop helper", ipc.HelperRoleSystem, desktopContext, ipc.HelperBinaryDesktopHelper)
+	runHelperProcess("desktop helper", desktopHelperRole(), desktopContext, ipc.HelperBinaryDesktopHelper)
+}
+
+func desktopHelperRole() string {
+	if runtime.GOOS == "darwin" {
+		return ipc.HelperRoleUser
+	}
+	return ipc.HelperRoleSystem
 }
 
 func runHelperProcess(name, role, context, binaryKind string) {
+	// Detach any inherited console immediately. This runs at the top of
+	// every helper role — user-helper, desktop-helper, and any future
+	// helper subcommand routed through runHelperProcess — because all of
+	// them risk inheriting a console window when the parent path uses the
+	// legacy console-subsystem breeze-agent.exe (e.g. operators running
+	// the helper manually from cmd.exe, or partially-upgraded installs
+	// where the new MSI hasn't repointed the scheduled task at
+	// breeze-user-helper.exe yet). The GUI-subsystem sibling built per
+	// agent/Makefile build-windows-user-helper has no console to free, so
+	// the call is a documented no-op there. Cross-platform stub on
+	// macOS/Linux.
+	detachHelperConsole()
+
 	// Log to file in the same logs folder as the main agent
 	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
 	os.MkdirAll(logDir, 0700)
@@ -1042,8 +1218,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	}
 	logging.Init("text", "info", output)
 
-	// Load agent config for IPC socket path and log shipping credentials.
-	// The helper runs as SYSTEM so it can read agent.yaml.
+	// Load agent config for IPC socket path and helper-scoped log shipping credentials.
 	cfg, _ := config.Load(cfgFile)
 	if cfg == nil {
 		cfg = config.Default()
@@ -1055,9 +1230,10 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	}
 
 	// Ship helper logs to the API under the same agent identity
-	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
-		helperToken := secmem.NewSecureString(cfg.AuthToken)
-		cfg.AuthToken = "" // Clear plaintext from config struct
+	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
+		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
+		cfg.AuthToken = ""
+		cfg.HelperAuthToken = ""
 		helperAuthMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
 			ServerURL:    cfg.ServerURL,
@@ -1254,16 +1430,16 @@ func runHelperProcess(name, role, context, binaryKind string) {
 // stuck). Call reset() when the condition clears (e.g. connection has been
 // stably authenticated).
 type helperWarnLimiter struct {
-	mu                   sync.Mutex
-	limit                int
-	window               time.Duration
-	lastMsg              string
-	firstSeenAt          time.Time
-	count                int // total emissions (incl. suppressed) in this window
-	warnsEmitted         int // warn-level emissions in this window
-	suppressed           int // warnings suppressed since last info emission
-	suppressedSinceInfo  int // count since last INFO — reset on each INFO emit
-	lastInfoEmit         time.Time
+	mu                  sync.Mutex
+	limit               int
+	window              time.Duration
+	lastMsg             string
+	firstSeenAt         time.Time
+	count               int // total emissions (incl. suppressed) in this window
+	warnsEmitted        int // warn-level emissions in this window
+	suppressed          int // warnings suppressed since last info emission
+	suppressedSinceInfo int // count since last INFO — reset on each INFO emit
+	lastInfoEmit        time.Time
 }
 
 // infoInterval is the sub-window cadence for INFO summaries emitted while

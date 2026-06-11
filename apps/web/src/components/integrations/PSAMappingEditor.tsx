@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Save } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type MappingRow = {
   id: string;
@@ -71,7 +72,8 @@ export default function PSAMappingEditor() {
         return;
       }
       if (!response.ok) {
-        throw new Error('Failed to load PSA mappings');
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, 'Failed to load PSA mappings'));
       }
       const data = await response.json();
       const savedMappings = data.mappings ?? data.data ?? data ?? [];
@@ -106,8 +108,8 @@ export default function PSAMappingEditor() {
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save PSA mappings');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to save PSA mappings'));
       }
 
       setSuccess('PSA mappings saved successfully.');

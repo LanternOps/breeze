@@ -12,6 +12,26 @@ DAEMON_PLIST="/Library/LaunchDaemons/com.breeze.agent.plist"
 DESKTOP_USER_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
 DESKTOP_LOGINWINDOW_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
 
+ensure_breeze_group() {
+    if dscl . -read /Groups/breeze &>/dev/null; then
+        dscl . -read /Groups/breeze PrimaryGroupID &>/dev/null
+        return
+    fi
+
+    gid=350
+    while [ "$gid" -le 499 ]; do
+        if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
+            dscl . -create /Groups/breeze
+            dscl . -create /Groups/breeze PrimaryGroupID "$gid"
+            return
+        fi
+        gid=$((gid + 1))
+    done
+
+    echo "No free local system GID available for breeze group" >&2
+    exit 1
+}
+
 # Create directories
 mkdir -p "$CONFIG_DIR"
 chmod 0700 "$CONFIG_DIR"
@@ -45,11 +65,8 @@ if [ -f "$WATCHDOG_PLIST" ]; then
         launchctl load "$WATCHDOG_PLIST" 2>/dev/null || true
 fi
 
-# Create breeze group for IPC socket access (best-effort)
-if ! dscl . -read /Groups/breeze &>/dev/null; then
-    dscl . -create /Groups/breeze 2>/dev/null || true
-    dscl . -create /Groups/breeze PrimaryGroupID 399 2>/dev/null || true
-fi
+# Create breeze group for IPC socket access.
+ensure_breeze_group
 
 # Stop existing service if running
 launchctl bootout system/com.breeze.agent 2>/dev/null || true

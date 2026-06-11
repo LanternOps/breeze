@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { waitForApproval } from './aiAgent';
 
 // ============================================
 // Mocks
@@ -12,6 +14,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     update: vi.fn(),
+    insert: vi.fn(),
+    select: vi.fn(),
   },
 }));
 
@@ -19,11 +23,16 @@ vi.mock('../db/schema', () => ({
   aiSessions: { id: 'id', status: 'status', orgId: 'orgId' },
   aiMessages: {},
   aiToolExecutions: {},
+  aiActionPlans: {},
+  devices: {},
+  deviceSessions: {},
+  approvalRequests: { id: 'id' },
 }));
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ _eq: args })),
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
+  isNull: vi.fn((...args: unknown[]) => ({ _isNull: args })),
 }));
 
 const mockGetSession = vi.fn();
@@ -63,8 +72,31 @@ vi.mock('./auditEvents', () => ({
 }));
 
 vi.mock('./aiAgentSdkTools', () => ({
-  TOOL_TIERS: { query_devices: 1, execute_command: 3 },
+  TOOL_TIERS: { query_devices: 1, take_screenshot: 2, execute_command: 3 },
   BREEZE_MCP_TOOL_NAMES: [],
+}));
+
+const mockGetUserPushTokens = vi.fn();
+const mockSendExpoPush = vi.fn();
+const mockBuildApprovalPush = vi.fn((..._args: unknown[]) => ({
+  title: 'Approval requested',
+  body: 'Breeze AI: Execute command',
+  data: { type: 'approval', approvalId: 'x' },
+  sound: 'default' as const,
+  priority: 'high' as const,
+  channelId: 'approvals',
+  ttl: 60,
+}));
+vi.mock('./expoPush', () => ({
+  getUserPushTokens: (...args: unknown[]) => mockGetUserPushTokens(...args),
+  sendExpoPush: (...args: unknown[]) => mockSendExpoPush(...args),
+  buildApprovalPush: (...args: unknown[]) => mockBuildApprovalPush(...args),
+}));
+
+const mockDecideHelperToolAction = vi.fn();
+vi.mock('./pamToolActionGovernance', () => ({
+  decideHelperToolAction: (...args: unknown[]) => mockDecideHelperToolAction(...args),
+  mirrorElevationDecisionToExecution: vi.fn(),
 }));
 
 // ============================================
@@ -105,6 +137,38 @@ function makeSession(overrides?: Record<string, unknown>) {
     lastActivityAt: new Date(),
     ...overrides,
   };
+}
+
+function mockInsertValues() {
+  const values = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(db.insert).mockReturnValue({ values } as any);
+  return values;
+}
+
+function mockInsertReturning(row: Record<string, unknown>) {
+  const returning = vi.fn().mockResolvedValue([row]);
+  const values = vi.fn().mockReturnValue({ returning });
+  vi.mocked(db.insert).mockReturnValue({ values } as any);
+  return { values, returning };
+}
+
+function makeActiveSession(overrides: Record<string, unknown> = {}) {
+  return {
+    breezeSessionId: 'session-1',
+    orgId: 'org-1',
+    auth: makeAuth({ scope: 'organization' }),
+    approvalMode: 'per_step',
+    isPaused: false,
+    eventBus: { publish: vi.fn() },
+    abortController: new AbortController(),
+    activePlanId: null,
+    approvedPlanSteps: new Map(),
+    currentPlanStepIndex: 0,
+    toolUseIdQueue: ['tool-use-1'],
+    auditSnapshot: null,
+    allowedTools: undefined,
+    ...overrides,
+  } as any;
 }
 
 // ============================================
@@ -391,6 +455,397 @@ describe('runPreFlightChecks', () => {
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBe(25.0);
     }
+  });
+});
+
+// ============================================
+// createSessionPreToolUse
+// ============================================
+
+describe('createSessionPreToolUse', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockSendExpoPush.mockResolvedValue([]);
+  });
+
+  it('auto-approve allows Tier 2 tools and creates an executing audit record', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      description: 'Take screenshot',
+    } as any);
+    const values = mockInsertValues();
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'device-1' });
+
+    expect(result).toEqual({ allowed: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'take_screenshot',
+      status: 'executing',
+    }));
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  it('keeps Tier 3 tools pending under auto-approve', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    const { values } = mockInsertReturning({ id: 'exec-1' });
+    mockGetUserPushTokens.mockResolvedValue([]);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', {});
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'execute_command',
+      status: 'pending',
+    }));
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'approval_required',
+      executionId: 'exec-1',
+      toolName: 'execute_command',
+    }));
+    expect(waitForApproval).toHaveBeenCalledWith('exec-1', 300_000, expect.any(AbortSignal));
+  });
+
+  it('inserts a linked approval_requests row and emits approvalRequestId on per-step approval', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command on host-1',
+    } as any);
+    const { values } = mockInsertReturning({ id: 'exec-1' });
+    mockGetUserPushTokens.mockResolvedValue(['ExponentPushToken[abc]']);
+    mockSendExpoPush.mockResolvedValue([{ status: 'ok' }]);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(result).toEqual({ allowed: true });
+
+    // Both inserts fire: ai_tool_executions THEN approval_requests.
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'execute_command',
+      status: 'pending',
+    }));
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      executionId: 'exec-1',
+      requestingClientLabel: 'Breeze AI',
+      actionToolName: 'execute_command',
+      riskTier: 'high',
+      status: 'pending',
+    }));
+
+    // Push dispatched (best-effort).
+    expect(mockGetUserPushTokens).toHaveBeenCalledWith('user-1');
+    expect(mockSendExpoPush).toHaveBeenCalled();
+
+    // SSE event includes BOTH executionId and approvalRequestId.
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'approval_required',
+      executionId: 'exec-1',
+      approvalRequestId: 'exec-1',
+      toolName: 'execute_command',
+      description: 'Execute command on host-1',
+    }));
+  });
+
+  it('maps tier 2 → medium and tier 3 → high in approval_requests', async () => {
+    // Tier 2 in per_step mode also requires approval.
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      description: 'Take screenshot',
+    } as any);
+    const { values } = mockInsertReturning({ id: 'exec-2' });
+    mockGetUserPushTokens.mockResolvedValue([]);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+
+    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-2',
+      riskTier: 'medium',
+    }));
+  });
+
+  it('blocks tools outside the session allowlist before approval handling', async () => {
+    const session = makeActiveSession({
+      approvalMode: 'auto_approve',
+      allowedTools: ['mcp__breeze__query_devices'],
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', {});
+
+    expect(result).toEqual({
+      allowed: false,
+      error: "Tool 'execute_command' is not allowed for this session",
+    });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  describe('helper sessions (PAM governance, Phase 1)', () => {
+    function makeHelperSession(overrides: Record<string, unknown> = {}) {
+      return makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: 'device-7',
+          user: { id: 'device-7', email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+        approvalMode: 'per_step',
+        ...overrides,
+      });
+    }
+
+    it('routes tier-2 tools through PAM governance, skipping the approval_requests bridge and push', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      const { values } = mockInsertReturning({ id: 'exec-h1' });
+      mockDecideHelperToolAction.mockResolvedValue('pending');
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeHelperSession();
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'forged' });
+
+      expect(result).toEqual({ allowed: true });
+      // Only the ai_tool_executions insert — NO approval_requests row.
+      expect(values).toHaveBeenCalledTimes(1);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-1',
+        toolName: 'take_screenshot',
+        status: 'pending',
+      }));
+      expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+      expect(mockSendExpoPush).not.toHaveBeenCalled();
+
+      expect(mockDecideHelperToolAction).toHaveBeenCalledWith({
+        orgId: 'org-1',
+        deviceId: 'device-7',
+        executionId: 'exec-h1',
+        toolName: 'take_screenshot',
+        toolInput: { deviceId: 'forged' },
+        riskTier: 2,
+        subjectUsername: 'HOST-01',
+      });
+
+      // SSE event marks the approval as admin-side.
+      expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-h1',
+        requiresAdminApproval: true,
+      }));
+
+      expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal));
+      // Marked executing after approval.
+      expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
+    });
+
+    it('policy auto-deny short-circuits without waiting', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-h2' });
+      mockDecideHelperToolAction.mockResolvedValue('denied');
+      const session = makeHelperSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'This action was denied by organization policy',
+      });
+      expect(waitForApproval).not.toHaveBeenCalled();
+    });
+
+    it('rejection or timeout after pending decision denies the tool', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-h3' });
+      mockDecideHelperToolAction.mockResolvedValue('pending');
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeHelperSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Tool execution was rejected or timed out awaiting administrator approval',
+      });
+    });
+
+    it('auto_approve session mode cannot bypass PAM for helper sessions', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      const { values } = mockInsertReturning({ id: 'exec-h4' });
+      mockDecideHelperToolAction.mockResolvedValue('auto_approved');
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeHelperSession({ approvalMode: 'auto_approve' });
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', {});
+
+      expect(result).toEqual({ allowed: true });
+      // Went through governance, not the auto-approve 'executing' fast path.
+      expect(mockDecideHelperToolAction).toHaveBeenCalled();
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' }));
+      expect(waitForApproval).toHaveBeenCalled();
+    });
+  });
+
+  it('matches session allowlists across MCP server prefixes', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      description: 'Execute allowed custom tool',
+    } as any);
+    const values = mockInsertValues();
+    const session = makeActiveSession({
+      approvalMode: 'auto_approve',
+      allowedTools: ['mcp__script_builder__take_screenshot'],
+    });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', {});
+
+    expect(result).toEqual({ allowed: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'take_screenshot',
+      status: 'executing',
+    }));
+  });
+});
+
+// ============================================
+// createSessionPostToolUse
+// ============================================
+
+describe('createSessionPostToolUse', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 1,
+      requiresApproval: false,
+    } as any);
+    mockInsertValues();
+  });
+
+  it('sanitizes tool output before SSE, message persistence, and execution persistence', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'device-1' }, JSON.stringify({
+      status: 'completed',
+      stdout: 'token=abc123 password=hunter2',
+      secret: 'raw-secret',
+    }), false, 12);
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'tool_result',
+      output: expect.objectContaining({
+        stdout: expect.stringContaining('[REDACTED]'),
+      }),
+    }));
+    const insertedPayloads = vi.mocked(db.insert).mock.results
+      .map((result) => (result.value as any)?.values?.mock?.calls?.[0]?.[0])
+      .filter(Boolean);
+    expect(JSON.stringify(insertedPayloads)).not.toContain('abc123');
+    expect(JSON.stringify(insertedPayloads)).not.toContain('hunter2');
+    expect(JSON.stringify(insertedPayloads)).not.toContain('raw-secret');
+  });
+
+  it('persists delegantToolCallId on the inserted execution row (tier < 2)', async () => {
+    const session = makeActiveSession();
+    const values = mockInsertValues();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('m365_lookup_user', { userIdentifier: 'u1' }, JSON.stringify({
+      message: 'M365 user profile: {"id":"u1"}',
+      delegantToolCallId: 'tc-123',
+    }), false, 12);
+
+    // Two inserts fire (aiMessages then aiToolExecutions); the execution row is
+    // the one carrying toolInput.
+    const execInsert = values.mock.calls
+      .map((c) => c[0])
+      .find((v) => v && typeof v === 'object' && 'toolInput' in v);
+    expect(execInsert).toBeDefined();
+    expect((execInsert as any).delegantToolCallId).toBe('tc-123');
+  });
+
+  it('omits delegantToolCallId for non-M365 tool output (no key present)', async () => {
+    const session = makeActiveSession();
+    const values = mockInsertValues();
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'device-1' }, JSON.stringify({
+      status: 'completed',
+    }), false, 12);
+
+    const execInsert = values.mock.calls
+      .map((c) => c[0])
+      .find((v) => v && typeof v === 'object' && 'toolInput' in v);
+    expect(execInsert).toBeDefined();
+    expect((execInsert as any).delegantToolCallId).toBeUndefined();
+  });
+
+  it('persists delegantToolCallId on the updated execution row (tier >= 2)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+    } as any);
+    const session = makeActiveSession();
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    const callback = createSessionPostToolUse(session);
+
+    await callback('m365_reset_password', { userIdentifier: 'u1', reason: 'forgot' }, JSON.stringify({
+      message: 'Reset the password for u1.',
+      delegantToolCallId: 'tc-456',
+    }), false, 12);
+
+    const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
+    expect(setCall).toBeDefined();
+    expect((setCall![0] as any).delegantToolCallId).toBe('tc-456');
   });
 });
 

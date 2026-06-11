@@ -211,6 +211,9 @@ var (
 	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
 	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
 	watchdogHelperScopes = []string{"watchdog"}
+	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
+	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
+	assistHelperScopes = []string{ipc.ScopeAssist}
 )
 
 // MessageHandler is called when a user helper sends a message that isn't
@@ -219,6 +222,10 @@ type MessageHandler func(session *Session, env *ipc.Envelope)
 
 // SessionClosedHandler is called after a helper session has been removed.
 type SessionClosedHandler func(session *Session)
+
+// SessionAuthenticatedHandler is called after a helper session has been
+// successfully authenticated and registered.
+type SessionAuthenticatedHandler func(session *Session)
 
 // sessionSnapshot is an immutable point-in-time view of the broker's session
 // maps. It is stored via an atomic.Pointer so lock-free readers (FindCapableSession,
@@ -263,7 +270,20 @@ type Broker struct {
 
 	onMessage       MessageHandler
 	onSessionClosed SessionClosedHandler
+	onSessionAuthed SessionAuthenticatedHandler
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries
+
+	// consoleSessionIDFn returns the active console (physical-monitor) Windows
+	// session id. It is the injectable seam that makes the assist/user
+	// console-session binding (#1009) unit-testable on non-Windows hosts: the
+	// platform-specific WTSGetActiveConsoleSessionId lookup lives behind the
+	// build-tagged GetConsoleSessionID(), which this defaults to in New().
+	consoleSessionIDFn func() string
+
+	// goos is the effective OS for console-session-binding decisions. Defaults
+	// to runtime.GOOS in New(); tests override it to drive the Windows
+	// multi-user code path on a darwin host.
+	goos string
 }
 
 // New creates a new session broker.
@@ -273,9 +293,11 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		rateLimiter:  ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
 		startTime:    time.Now(),
 		sessions:     make(map[string]*Session),
-		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
-		onMessage:    onMessage,
+		byIdentity:         make(map[string][]*Session),
+		staleHelpers:       make(map[string][]int),
+		onMessage:          onMessage,
+		consoleSessionIDFn: GetConsoleSessionID,
+		goos:               runtime.GOOS,
 	}
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
@@ -332,6 +354,24 @@ func (b *Broker) SetSessionClosedHandler(handler SessionClosedHandler) {
 	b.mu.Lock()
 	b.onSessionClosed = handler
 	b.mu.Unlock()
+}
+
+// SetSessionAuthenticatedHandler registers a callback invoked (in a goroutine)
+// after each helper session has been authenticated and registered.
+func (b *Broker) SetSessionAuthenticatedHandler(handler SessionAuthenticatedHandler) {
+	b.mu.Lock()
+	b.onSessionAuthed = handler
+	b.mu.Unlock()
+}
+
+// fireSessionAuthenticated invokes the on-authenticated handler if set.
+func (b *Broker) fireSessionAuthenticated(session *Session) {
+	b.mu.RLock()
+	handler := b.onSessionAuthed
+	b.mu.RUnlock()
+	if handler != nil {
+		handler(session)
+	}
 }
 
 // SetConsoleUser updates the current macOS console user. When set to
@@ -502,6 +542,120 @@ func (b *Broker) PreferredSessionWithScope(scope string) *Session {
 	var best *Session
 	for _, s := range b.sessions {
 		if !s.HasScope(scope) {
+			continue
+		}
+		if best == nil {
+			best = s
+			continue
+		}
+		if s.HelperRole == ipc.HelperRoleUser && best.HelperRole != ipc.HelperRoleUser {
+			best = s
+			continue
+		}
+		if s.HelperRole != ipc.HelperRoleUser && best.HelperRole == ipc.HelperRoleUser {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
+// ConsoleSessionID returns the active console (physical-monitor) Windows
+// session id via the injectable seam (defaults to GetConsoleSessionID()). On
+// non-Windows hosts GetConsoleSessionID() returns "1".
+func (b *Broker) ConsoleSessionID() string {
+	var id string
+	if b.consoleSessionIDFn != nil {
+		id = b.consoleSessionIDFn()
+	} else {
+		id = GetConsoleSessionID()
+	}
+	// "0" is both the services/SYSTEM session (Session 0 isolation reserves it —
+	// no non-SYSTEM interactive user is ever legitimately there since Vista) and
+	// the sentinel GetConsoleSessionID() returns when WTSGetActiveConsoleSessionId
+	// fails or no session is attached (the API returns 0xFFFFFFFF). Either way it
+	// is not a valid interactive console session, so normalize it to "" — every
+	// consumer treats "" as "unknown → fail closed" for the assist/user binding,
+	// rather than admitting a peer that happens to report session 0 (#1009).
+	if id == "0" {
+		return ""
+	}
+	return id
+}
+
+// SetConsoleSessionIDFunc overrides the active-console-session lookup. Used by
+// tests to drive the assist/user console-session binding (#1009) deterministically
+// on non-Windows hosts.
+func (b *Broker) SetConsoleSessionIDFunc(fn func() string) {
+	b.mu.Lock()
+	b.consoleSessionIDFn = fn
+	b.mu.Unlock()
+}
+
+// SetGOOSForTest overrides the effective OS used for console-session-binding
+// decisions, letting tests drive the Windows multi-user code path on darwin.
+func (b *Broker) SetGOOSForTest(goos string) {
+	b.mu.Lock()
+	b.goos = goos
+	b.mu.Unlock()
+}
+
+// effectiveGOOS returns the OS used for console-session-binding decisions,
+// defaulting to runtime.GOOS for Broker fixtures constructed without New().
+func (b *Broker) effectiveGOOS() string {
+	if b.goos != "" {
+		return b.goos
+	}
+	return runtime.GOOS
+}
+
+// SessionInConsoleSession reports whether the given session is bound to the
+// active console session. Used to gate delivery of the device helper token so a
+// co-logged-in non-console assist helper can never receive it (#1009).
+//
+// The console-session binding is a Windows multi-user (RDS/terminal-server)
+// concept, so on non-Windows it always returns true (single interactive session
+// — no cross-user boundary to enforce here).
+func (b *Broker) SessionInConsoleSession(s *Session) bool {
+	if s == nil {
+		return false
+	}
+	if b.effectiveGOOS() != "windows" {
+		return true
+	}
+	return s.WinSessionID == b.ConsoleSessionID()
+}
+
+// PreferredRunAsUserSession returns the run_as_user helper to target for the
+// current host. On Windows it is constrained to the active console session so a
+// co-logged-in user's helper can never intercept a run_as_user script meant for
+// the console operator (#1009).
+func (b *Broker) PreferredRunAsUserSession() *Session {
+	return b.preferredRunAsUserSessionForOS(b.effectiveGOOS())
+}
+
+// preferredRunAsUserSessionForOS is the goos-parameterized core of
+// PreferredRunAsUserSession, kept separate so the console-session filter is
+// unit-testable on non-Windows hosts.
+func (b *Broker) preferredRunAsUserSessionForOS(goos string) *Session {
+	if goos != "windows" {
+		// Non-Windows: single interactive session; preserve prior behavior.
+		return b.PreferredSessionWithScope("run_as_user")
+	}
+
+	consoleSession := b.ConsoleSessionID()
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var best *Session
+	for _, s := range b.sessions {
+		if !s.HasScope("run_as_user") {
+			continue
+		}
+		if s.WinSessionID != consoleSession {
 			continue
 		}
 		if best == nil {
@@ -1166,7 +1320,38 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	// Step 7: Verify binary path and hash from kernel-resolved peer metadata.
+	// Do not trust authReq.BinaryHash: any local peer can self-report it.
+	if strings.TrimSpace(creds.BinaryPath) == "" {
+		log.Warn("rejecting helper connection: peer binary path unresolved",
+			"identity", identityKey,
+			"pid", creds.PID,
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "peer binary path unresolved",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+	if !b.verifyBinaryPath(creds.BinaryPath) {
+		log.Warn("binary path mismatch",
+			"identity", identityKey,
+			"pid", creds.PID,
+			"path", creds.BinaryPath,
+			"allowed", b.allowedHelperPaths(),
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "binary path mismatch",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+
+	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
 	if len(b.selfHashes) == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
@@ -1180,7 +1365,23 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
-	hashVerified := b.isAllowedBinaryHash(authReq.BinaryHash)
+	peerHash, err := hashFileSHA256(creds.BinaryPath)
+	if err != nil {
+		log.Warn("failed to hash peer binary",
+			"identity", identityKey,
+			"pid", creds.PID,
+			"path", creds.BinaryPath,
+			"error", err.Error(),
+		)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "peer binary hash unavailable",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+	hashVerified := b.isAllowedBinaryHash(peerHash)
 	if !hashVerified {
 		allowed := make([]string, 0, len(b.selfHashes))
 		for h := range b.selfHashes {
@@ -1189,7 +1390,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		log.Warn("binary hash mismatch",
 			"identity", identityKey,
 			"expected", allowed,
-			"got", authReq.BinaryHash,
+			"got", peerHash,
 		)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
@@ -1198,21 +1399,6 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		})
 		conn.Close()
 		return
-	}
-
-	// Step 8: Verify binary path (defense in depth). If the hash already
-	// matched the allowlist (step 7), the binary is trusted regardless of path
-	// — on Windows, CreateProcessAsUser can report paths that don't match after
-	// normalization (8.3 short names, drive letter case, etc.), and the hash
-	// is the authoritative identity check. Log the path mismatch at DEBUG for
-	// future investigation, but do not reject; a hash-verified helper is safe.
-	if !b.verifyBinaryPath(creds.BinaryPath) {
-		log.Debug("binary path mismatch but hash verified; accepting",
-			"identity", identityKey,
-			"pid", creds.PID,
-			"path", creds.BinaryPath,
-			"allowed", b.allowedHelperPaths(),
-		)
 	}
 
 	// Step 9: Reject duplicate session IDs
@@ -1243,74 +1429,54 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	if helperRole == "" {
 		helperRole = ipc.HelperRoleSystem
 	}
+	switch helperRole {
+	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, ipc.HelperRoleAssist, backupipc.HelperRoleBackup:
+	default:
+		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "unknown helper role",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+
+	// Kernel-verify the peer's Windows session id (from peer PID, via
+	// ProcessIdToSessionId) BEFORE the role gate so the gate can bind the
+	// assist/user roles to the active console session. On non-Windows / failure
+	// this is "" and the console binding is inert (Unix path returns early).
+	verifiedWinSession := ""
+	if vsid := peerWinSessionID(creds.PID); vsid != 0 {
+		verifiedWinSession = fmt.Sprintf("%d", vsid)
+	}
+	consoleWinSession := b.ConsoleSessionID()
 
 	// Step 10: Validate role matches peer identity to prevent privilege escalation.
-	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user helpers
-	// must NOT run as SYSTEM. This prevents a non-SYSTEM process from claiming
-	// system role to get desktop scopes, or SYSTEM from claiming user role.
-	// The watchdog must also run as root/SYSTEM.
-	const systemSID = "S-1-5-18"
-	if runtime.GOOS == "windows" {
-		if helperRole == ipc.HelperRoleSystem && creds.SID != systemSID {
-			log.Warn("role/identity mismatch: non-SYSTEM process claiming system role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "system role requires SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if helperRole == ipc.HelperRoleUser && creds.SID == systemSID {
-			log.Warn("role/identity mismatch: SYSTEM process claiming user role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "user role requires non-SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-		if helperRole == ipc.HelperRoleWatchdog && creds.SID != systemSID {
-			log.Warn("role/identity mismatch: non-SYSTEM process claiming watchdog role",
-				"sid", creds.SID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "watchdog role requires SYSTEM identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
-	} else {
-		// Unix: watchdog must run as root (UID 0).
-		if helperRole == ipc.HelperRoleWatchdog && creds.UID != 0 {
-			log.Warn("role/identity mismatch: non-root process claiming watchdog role",
-				"uid", creds.UID, "pid", creds.PID)
-			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-				Accepted:  false,
-				Reason:    "watchdog role requires root identity",
-				Permanent: true,
-			})
-			conn.Close()
-			return
-		}
+	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user/assist
+	// helpers must NOT run as SYSTEM. This prevents a non-SYSTEM process from
+	// claiming system role to get desktop scopes, or SYSTEM from claiming user
+	// role. The watchdog must also run as root/SYSTEM. Additionally, assist/user
+	// are bound to the active console session so a co-logged-in user on a
+	// multi-user host can't register them from another session (#1009). The
+	// decision is factored into roleIdentityRejection so the gate can be
+	// unit-tested with an injected peer-cred SID/UID and session ids (none of
+	// which can be faked over a pipe).
+	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, verifiedWinSession, consoleWinSession, runtime.GOOS); rejected {
+		log.Warn("role/identity mismatch",
+			"reason", reason, "role", helperRole, "sid", creds.SID, "uid", creds.UID,
+			"peerWinSession", verifiedWinSession, "consoleWinSession", consoleWinSession,
+			"pid", creds.PID, "binaryKind", authReq.BinaryKind)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    reason,
+			Permanent: true,
+		})
+		conn.Close()
+		return
 	}
 
-	var scopes []string
-	switch helperRole {
-	case ipc.HelperRoleUser:
-		scopes = userHelperScopes
-	case backupipc.HelperRoleBackup:
-		scopes = backupHelperScopes
-	case ipc.HelperRoleWatchdog:
-		scopes = watchdogHelperScopes
-	default:
-		helperRole = ipc.HelperRoleSystem
-		scopes = systemHelperScopes
-	}
+	scopes := b.scopesForRole(helperRole, authReq.BinaryKind, runtime.GOOS, creds.BinaryPath)
 
 	// Send auth response
 	authResp := ipc.AuthResponse{
@@ -1340,14 +1506,16 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	session.DesktopContext = authReq.DesktopContext
 
-	// Use kernel-verified Windows session ID (from peer PID) instead of
-	// trusting the self-reported value, preventing session-jumping attacks.
-	if verifiedSID := peerWinSessionID(creds.PID); verifiedSID != 0 {
-		session.WinSessionID = fmt.Sprintf("%d", verifiedSID)
-		if verifiedSID != authReq.WinSessionID {
+	// Use the kernel-verified Windows session ID (computed above from the peer
+	// PID) instead of trusting the self-reported value, preventing
+	// session-jumping attacks. Falls back to the self-reported value only when
+	// the kernel lookup failed (verifiedWinSession == "").
+	if verifiedWinSession != "" {
+		session.WinSessionID = verifiedWinSession
+		if verifiedWinSession != fmt.Sprintf("%d", authReq.WinSessionID) {
 			log.Warn("WinSessionID mismatch — using kernel-verified value",
 				"reported", authReq.WinSessionID,
-				"verified", verifiedSID,
+				"verified", verifiedWinSession,
 				"pid", creds.PID,
 			)
 		}
@@ -1407,6 +1575,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"binaryKind", session.BinaryKind,
 		"desktopContext", session.DesktopContext,
 	)
+
+	// Notify the on-authenticated handler now that the session is fully
+	// registered (admitted, appended, scopes assigned). Fired outside the
+	// broker mutex and in a goroutine so a slow handler (e.g. one that pushes
+	// the helper token over IPC) can't block the accept loop or hold b.mu.
+	go b.fireSessionAuthenticated(session)
 
 	// Keepalive: send periodic pings and close the session if pongs stop
 	// arriving. Without this, a wedged helper (e.g. a capture process killed
@@ -1529,24 +1703,144 @@ func (b *Broker) CloseSessionsByDesktopContext(ctx string) int {
 // setupSocket is implemented in broker_windows.go and broker_unix.go.
 
 func (b *Broker) verifyBinaryPath(peerPath string) bool {
+	ok := binaryPathMatchesAllowed(peerPath, b.allowedHelperPaths())
+	if ok {
+		return true
+	}
+	log.Debug("verifyBinaryPath: no match",
+		"peer", filepath.Clean(peerPath),
+		"allowed", b.allowedHelperPaths(),
+	)
+	return false
+}
+
+func binaryPathMatchesAllowed(peerPath string, allowed []string) bool {
 	peerResolved, err := filepath.EvalSymlinks(peerPath)
 	if err != nil {
-		// Peer path might not be resolvable if the process has exited
-		peerResolved = peerPath
+		return false
 	}
 	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
-	allowed := b.allowedHelperPaths()
 	for _, candidate := range allowed {
-		if normalizeBinaryPath(filepath.Clean(candidate)) == peerResolved {
+		resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			resolvedCandidate = candidate
+		}
+		if normalizeBinaryPath(filepath.Clean(resolvedCandidate)) == peerResolved {
 			return true
 		}
 	}
-	// Log the mismatch at DEBUG so investigators can see exactly which
-	// paths the broker considered trusted. Cheap and load-bearing.
-	log.Debug("verifyBinaryPath: no match",
-		"peer", peerResolved,
-		"allowed", allowed,
-	)
+	return false
+}
+
+// scopesForRole maps a validated helper role to its allowed scopes.
+// systemSID is the well-known Windows Local System account SID.
+const systemSID = "S-1-5-18"
+
+// roleIdentityRejection reports whether a helper claiming helperRole from the
+// given kernel-verified peer identity (SID on Windows, UID on Unix) must be
+// rejected, and the rejection reason. All role/identity mismatches are
+// permanent. It returns ("", false) when the role/identity pairing is allowed.
+//
+// peerWinSession is the kernel-verified Windows session id of the peer (from
+// ProcessIdToSessionId) and consoleWinSession is the active console session id.
+// On Windows the assist/user roles are additionally bound to the active console
+// session: a co-logged-in non-SYSTEM user on a multi-user host (RDS/terminal
+// server) running the genuine allowlisted Helper from a NON-console session must
+// not be able to register as assist/user — otherwise it would obtain the device
+// helper token and intercept run_as_user scripts meant for the console operator
+// (#1009). The SYSTEM-capture gate is unchanged (still SID-only). The console
+// binding does not apply on Unix (single interactive session; the macOS desktop
+// helper authenticates as user-role from the GUI/loginwindow session).
+//
+// Pure and OS-parameterized so the privilege-escalation gate can be unit-tested
+// with an injected SID/UID and session ids — a real peer-cred SID and
+// kernel-verified session id can't be forged over a named pipe / Unix socket,
+// so end-to-end pipe tests can only exercise the current test process's own
+// identity.
+func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
+	if goos == "windows" {
+		switch {
+		case role == ipc.HelperRoleSystem && sid != systemSID:
+			return "system role requires SYSTEM identity", true
+		case role == ipc.HelperRoleUser && sid == systemSID:
+			return "user role requires non-SYSTEM identity", true
+		case role == ipc.HelperRoleAssist && sid == systemSID:
+			return "assist role requires non-SYSTEM identity", true
+		case role == ipc.HelperRoleWatchdog && sid != systemSID:
+			return "watchdog role requires SYSTEM identity", true
+		}
+		// Positive console-session assertion for the cross-user roles. An unknown
+		// console session — "" (lookup failed) or "0" (the Session-0 services
+		// sentinel / WTS-failure value; Broker.ConsoleSessionID normalizes it to
+		// "", but the raw value is rejected here too so this pure gate is correct
+		// in isolation) — is treated as "no match" so we fail closed rather than
+		// admit an arbitrary session.
+		consoleUnknown := consoleWinSession == "" || consoleWinSession == "0"
+		switch role {
+		case ipc.HelperRoleAssist:
+			if consoleUnknown || peerWinSession != consoleWinSession {
+				return "assist role requires the active console session", true
+			}
+		case ipc.HelperRoleUser:
+			if consoleUnknown || peerWinSession != consoleWinSession {
+				return "user role requires the active console session", true
+			}
+		}
+		return "", false
+	}
+	// Unix: watchdog and system-role helpers must run as root. The macOS
+	// desktop helper runs in the GUI user/loginwindow session, so it must
+	// authenticate as user-role and receives only desktop scope. The assist
+	// helper is Windows-only; on Unix it would receive only the inert "assist"
+	// scope, so no identity gate is required here.
+	switch {
+	case role == ipc.HelperRoleWatchdog && uid != 0:
+		return "watchdog role requires root identity", true
+	case role == ipc.HelperRoleSystem && uid != 0:
+		return "system role requires root identity", true
+	}
+	return "", false
+}
+
+func (b *Broker) scopesForRole(role, binaryKind, goos, peerPath string) []string {
+	switch role {
+	case ipc.HelperRoleUser:
+		if goos == "darwin" &&
+			binaryKind == ipc.HelperBinaryDesktopHelper &&
+			b.isDesktopHelperPeerPath(peerPath) {
+			return []string{"desktop"}
+		}
+		return userHelperScopes
+	case backupipc.HelperRoleBackup:
+		return backupHelperScopes
+	case ipc.HelperRoleWatchdog:
+		return watchdogHelperScopes
+	case ipc.HelperRoleAssist:
+		return assistHelperScopes
+	case ipc.HelperRoleSystem:
+		return systemHelperScopes
+	}
+	return nil
+}
+
+func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
+	peerResolved, err := filepath.EvalSymlinks(peerPath)
+	if err != nil {
+		return false
+	}
+	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
+	for _, candidate := range b.allowedHelperPaths() {
+		if !strings.Contains(filepath.Base(candidate), "breeze-desktop-helper") {
+			continue
+		}
+		resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			resolvedCandidate = candidate
+		}
+		if normalizeBinaryPath(filepath.Clean(resolvedCandidate)) == peerResolved {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1576,6 +1870,7 @@ func (b *Broker) allowedHelperPaths() []string {
 		filepath.Join(dir, "breeze-desktop-helper"),
 		filepath.Join(dir, "breeze-watchdog"),
 		filepath.Join(dir, "breeze-desktop-helper.exe"),
+		filepath.Join(dir, UserHelperBinaryName),
 		filepath.Join(dir, "breeze-watchdog.exe"),
 	}
 	if runtime.GOOS != "windows" {
@@ -1585,6 +1880,8 @@ func (b *Broker) allowedHelperPaths() []string {
 			"/usr/local/bin/breeze-watchdog",
 		)
 	}
+	// Allowlist the Breeze Assist helper binary so it can connect over IPC.
+	paths = append(paths, assistHelperBinaryPaths(dir)...)
 	seen := make(map[string]struct{}, len(paths))
 	out := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -1601,16 +1898,87 @@ func (b *Broker) allowedHelperPaths() []string {
 	return out
 }
 
+// assistHelperBinaryPaths returns candidate install paths for the Breeze Assist
+// helper, derived from the agent install dir. Used so RefreshAllowedHashes
+// allowlists the genuine breeze-helper binary's SHA-256. Non-existent paths are
+// skipped silently by computeAllowedHashes, so listing all platform candidates
+// is safe even when the helper is not installed.
+func assistHelperBinaryPaths(agentDir string) []string {
+	return assistHelperBinaryPathsForOS(agentDir, runtime.GOOS, os.Getenv("ProgramFiles"))
+}
+
+// assistHelperBinaryPathsForOS is the OS-parameterized core, exported-for-test
+// so the Windows path (which can't run on the CI host) is verified directly.
+//
+// IMPORTANT: the Helper MSI installs to "<ProgramFiles>\Breeze Helper\"
+// (Tauri productName "Breeze Helper"), NOT the agent's install dir. An earlier
+// version allowlisted only "<agentDir>\breeze-helper.exe", which never matches
+// the real install location, so the genuine Helper's hash was never added to
+// the allowlist and the assist IPC session was rejected on Windows. We now
+// cover the real install path (ProgramFiles + agent-dir sibling) plus the
+// legacy colocated path; missing candidates are skipped by computeAllowedHashes.
+func assistHelperBinaryPathsForOS(agentDir, goos, programFiles string) []string {
+	switch goos {
+	case "windows":
+		paths := []string{
+			// Sibling of the agent dir, e.g. C:\Program Files\Breeze ->
+			// C:\Program Files\Breeze Helper. Robust to ProgramFiles localization.
+			filepath.Join(filepath.Dir(agentDir), "Breeze Helper", "breeze-helper.exe"),
+			filepath.Join(agentDir, "breeze-helper.exe"), // legacy/colocated
+		}
+		if programFiles != "" {
+			paths = append(paths, filepath.Join(programFiles, "Breeze Helper", "breeze-helper.exe"))
+		}
+		return paths
+	case "darwin":
+		return []string{
+			"/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper",
+			filepath.Join(agentDir, "breeze-helper"),
+		}
+	default:
+		return []string{filepath.Join(agentDir, "breeze-helper")}
+	}
+}
+
 // RefreshAllowedHashes recomputes the helper binary hash allowlist from the
 // binaries currently present on disk. Call this after a dev push that
 // replaces a helper binary so the next connection from the newly spawned
 // helper (which will hash to a new value) is accepted.
-func (b *Broker) RefreshAllowedHashes() {
+// RefreshAllowedHashes recomputes the helper binary hash allowlist from
+// disk and atomically swaps the broker's selfHashes map.
+//
+// Returns the count of successfully-hashed binaries and a non-nil error if
+// the recompute produced zero hashes (every allowed path failed to hash,
+// usually because the helper binaries are missing or unreadable). Callers
+// that just installed a binary should treat a zero-count refresh as a fatal
+// dev-update outcome — the next helper spawn will be rejected at the IPC
+// handshake because no hash in the new map matches the peer.
+func (b *Broker) RefreshAllowedHashes() (int, error) {
 	newHashes := b.computeAllowedHashes()
 	b.mu.Lock()
 	b.selfHashes = newHashes
 	b.mu.Unlock()
 	log.Info("refreshed helper binary hash allowlist", "count", len(newHashes))
+	if len(newHashes) == 0 {
+		return 0, fmt.Errorf("no helper binary hashes could be computed; all helper connections will be rejected")
+	}
+	return len(newHashes), nil
+}
+
+// HashAndVerifyAllowed hashes the binary at path and reports whether the
+// resulting hash is in the broker's current selfHashes allowlist. Used by
+// dev-update handlers to verify that a freshly-installed binary will be
+// accepted at the next helper-spawn IPC handshake. Returns the computed hash
+// for diagnostic logging.
+func (b *Broker) HashAndVerifyAllowed(path string) (string, bool, error) {
+	sum, err := hashFileSHA256(path)
+	if err != nil {
+		return "", false, fmt.Errorf("hash %s: %w", path, err)
+	}
+	b.mu.RLock()
+	_, ok := b.selfHashes[sum]
+	b.mu.RUnlock()
+	return sum, ok, nil
 }
 
 func (b *Broker) computeAllowedHashes() map[string]struct{} {

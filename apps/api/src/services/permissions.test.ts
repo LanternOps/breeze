@@ -1,14 +1,62 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn()
+  }
+}));
+
+vi.mock('../db/schema', () => ({
+  roles: {},
+  permissions: {
+    id: 'permissions.id',
+    resource: 'permissions.resource',
+    action: 'permissions.action'
+  },
+  rolePermissions: {
+    roleId: 'rolePermissions.roleId',
+    permissionId: 'rolePermissions.permissionId'
+  },
+  partnerUsers: {
+    userId: 'partnerUsers.userId',
+    partnerId: 'partnerUsers.partnerId',
+    roleId: 'partnerUsers.roleId',
+    orgAccess: 'partnerUsers.orgAccess',
+    orgIds: 'partnerUsers.orgIds'
+  },
+  organizationUsers: {
+    userId: 'organizationUsers.userId',
+    orgId: 'organizationUsers.orgId',
+    roleId: 'organizationUsers.roleId',
+    siteIds: 'organizationUsers.siteIds'
+  }
+}));
+
+vi.mock('./redis', () => ({
+  getRedis: vi.fn(() => null)
+}));
+
 import {
+  getUserPermissions,
   hasPermission,
   canAccessOrg,
   canAccessSite,
   clearPermissionCache,
+  isAssignablePermission,
+  isKnownPermission,
   PERMISSIONS,
   type UserPermissions
 } from './permissions';
+import { db } from '../db';
+import { getRedis } from './redis';
 
 describe('permissions service', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(getRedis).mockReturnValue(null);
+    await clearPermissionCache();
+  });
+
   describe('hasPermission', () => {
     it('should return true for exact permission match', () => {
       const userPerms: UserPermissions = {
@@ -285,12 +333,68 @@ describe('permissions service', () => {
   });
 
   describe('clearPermissionCache', () => {
-    it('should not throw when clearing cache', () => {
-      expect(() => clearPermissionCache()).not.toThrow();
+    it('should not throw when clearing cache', async () => {
+      await expect(clearPermissionCache()).resolves.toBeUndefined();
     });
 
-    it('should not throw when clearing cache for specific user', () => {
-      expect(() => clearPermissionCache('user-123')).not.toThrow();
+    it('should not throw when clearing cache for specific user', async () => {
+      await expect(clearPermissionCache('user-123')).resolves.toBeUndefined();
+    });
+
+    it('bumps shared Redis user versions so stale entries are rejected across API instances', async () => {
+      const redis = {
+        mget: vi.fn()
+          .mockResolvedValueOnce(['0', '0'])
+          .mockResolvedValueOnce(['0', '0'])
+          .mockResolvedValueOnce(['0', '1']),
+        incr: vi.fn().mockResolvedValue(1)
+      };
+      vi.mocked(getRedis).mockReturnValue(redis as any);
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-reader', siteIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: 'devices', action: 'read' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-writer', siteIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: 'devices', action: 'write' }])
+            })
+          })
+        } as any);
+
+      const first = await getUserPermissions('user-123', { orgId: 'org-123' });
+      const second = await getUserPermissions('user-123', { orgId: 'org-123' });
+
+      expect(first?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(second?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+
+      const third = await getUserPermissions('user-123', { orgId: 'org-123' });
+
+      expect(third?.permissions).toEqual([{ resource: 'devices', action: 'write' }]);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+
+      await clearPermissionCache('user-123');
+      expect(redis.incr).toHaveBeenCalledWith('permission-cache:user-version:user-123');
     });
   });
 
@@ -311,6 +415,13 @@ describe('permissions service', () => {
       expect(PERMISSIONS.USERS_WRITE).toEqual({ resource: 'users', action: 'write' });
       expect(PERMISSIONS.USERS_DELETE).toEqual({ resource: 'users', action: 'delete' });
       expect(PERMISSIONS.USERS_INVITE).toEqual({ resource: 'users', action: 'invite' });
+    });
+
+    it('exposes a known-permission allowlist that excludes wildcard from custom assignment', () => {
+      expect(isKnownPermission(PERMISSIONS.ADMIN_ALL)).toBe(true);
+      expect(isAssignablePermission(PERMISSIONS.ADMIN_ALL)).toBe(false);
+      expect(isAssignablePermission(PERMISSIONS.DEVICES_READ)).toBe(true);
+      expect(isKnownPermission({ resource: 'not-real', action: 'write' })).toBe(false);
     });
   });
 });

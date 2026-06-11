@@ -9,9 +9,12 @@ import PatchComplianceView from './PatchComplianceView';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
+import SourceFilterChips from './SourceFilterChips';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { normalizePatch, normalizeRing } from './patchHelpers';
+import { extractApiError } from '@/lib/apiError';
+import { showToast } from '../shared/Toast';
 
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
@@ -56,9 +59,9 @@ export default function PatchesPage() {
   const [patches, setPatches] = useState<Patch[]>([]);
   const [patchesLoading, setPatchesLoading] = useState(true);
   const [patchesError, setPatchesError] = useState<string>();
+  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
-  const [scanError, setScanError] = useState<string>();
-  const [scanSuccess, setScanSuccess] = useState<string>();
 
   const tabs = useMemo(
     () => [
@@ -126,6 +129,11 @@ export default function PatchesPage() {
         ? patchData.map((patch: Record<string, unknown>, index: number) => normalizePatch(patch, index))
         : [];
       setPatches(normalized);
+      if (data && typeof data.counts === 'object' && data.counts !== null) {
+        setSourceCounts(data.counts as Record<string, number>);
+      } else {
+        setSourceCounts({});
+      }
     } catch (err) {
       setPatchesError(err instanceof Error ? err.message : 'Failed to fetch patches');
     } finally {
@@ -157,7 +165,12 @@ export default function PatchesPage() {
     setSelectedPatch(null);
   };
 
+  // NOTE: bulk-approve/decline and update-ring mutations intentionally use the inline bulkError/ringsError
+  // feedback pattern (aggregate/partial-success semantics + PatchList-owned error UI) rather than
+  // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
+  // See spec 2026-05-15-ws-a-action-feedback-design.md (targeted scope; sweeping migration is a non-goal).
   const handleBulkApprove = async (patchIds: string[]) => {
+    // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
     const response = await fetchWithAuth('/patches/bulk-approve', {
       method: 'POST',
       body: JSON.stringify({
@@ -188,6 +201,7 @@ export default function PatchesPage() {
   const handleBulkDecline = async (patchIds: string[]) => {
     const failed: string[] = [];
     for (const id of patchIds) {
+      // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
       const response = await fetchWithAuth(`/patches/${id}/decline`, {
         method: 'POST',
         body: JSON.stringify({ ringId: selectedRingId ?? undefined })
@@ -207,10 +221,8 @@ export default function PatchesPage() {
   };
 
   const handleScan = async () => {
+    setScanLoading(true);
     try {
-      setScanLoading(true);
-      setScanError(undefined);
-      setScanSuccess(undefined);
       const ids = new Set<string>();
       let page = 1;
       let totalPages = 1;
@@ -241,23 +253,78 @@ export default function PatchesPage() {
       const deviceIds = [...ids];
       if (deviceIds.length === 0) throw new Error('No devices available for scanning');
 
-      const response = await fetchWithAuth('/patches/scan', {
+      // /patches/scan is an AGGREGATE / partial-success endpoint: a body
+      // `success:false` can still mean "most devices were queued", and skipped
+      // (missing / inaccessible) devices do NOT flip `success` at all. runAction's
+      // binary failure gate would either hide skipped devices behind a clean
+      // success toast (false negative) or collapse a partial result into a
+      // generic "Patch scan failed". Handle the per-device breakdown explicitly
+      // so the user always sees the true outcome. Documented runAction exception
+      // — see runActionAllowlist.ts / no-silent-mutations.test.ts.
+      // runaction-exempt: aggregate/partial-success — explicit breakdown toast below
+      const scanRes = await fetchWithAuth('/patches/scan', {
         method: 'POST',
-        body: JSON.stringify({ deviceIds })
+        body: JSON.stringify({ deviceIds }),
       });
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error('Failed to start patch scan');
+      if (scanRes.status === 401) { void navigateTo('/login', { replace: true }); return; }
+
+      const scanBody = (await scanRes.json().catch(() => null)) as {
+        queuedCommandIds?: string[];
+        dispatchedCommandIds?: string[];
+        failedDeviceIds?: string[];
+        skipped?: { missingDeviceIds?: string[]; inaccessibleDeviceIds?: string[] };
+      } | null;
+
+      if (!scanRes.ok || !scanBody) {
+        showToast({ message: extractApiError(scanBody, 'Patch scan failed'), type: 'error' });
+        return;
       }
-      const body = await response.json().catch(() => ({}));
-      const dispatched = Array.isArray(body?.dispatchedCommandIds) ? body.dispatchedCommandIds.length : 0;
-      const queued = Array.isArray(body?.queuedCommandIds) ? body.queuedCommandIds.length : deviceIds.length;
-      setScanSuccess(
-        `Patch scan queued for ${queued} devices${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`
-      );
+
+      const requested = deviceIds.length;
+      const queued = Array.isArray(scanBody.queuedCommandIds) ? scanBody.queuedCommandIds.length : 0;
+      const dispatched = Array.isArray(scanBody.dispatchedCommandIds) ? scanBody.dispatchedCommandIds.length : 0;
+      const failed = Array.isArray(scanBody.failedDeviceIds) ? scanBody.failedDeviceIds.length : 0;
+      const skipped =
+        (scanBody.skipped?.missingDeviceIds?.length ?? 0) +
+        (scanBody.skipped?.inaccessibleDeviceIds?.length ?? 0);
+      const noun = (n: number) => (n === 1 ? 'device' : 'devices');
+      const shortfall = [
+        failed > 0 ? `${failed} failed to queue` : null,
+        skipped > 0 ? `${skipped} skipped (no access / not found)` : null,
+      ].filter(Boolean).join(', ');
+
+      if (queued === 0) {
+        // Nothing was queued — a genuine failure even though HTTP is 200.
+        showToast({
+          message: `Patch scan failed: 0 of ${requested} ${noun(requested)} queued${shortfall ? ` (${shortfall})` : ''}.`,
+          type: 'error',
+        });
+        return;
+      }
+
+      if (shortfall) {
+        // Partial — be explicit about what did NOT happen. The toast component
+        // has no "warning" variant; use error styling so a partial run is not
+        // mistaken for a clean success.
+        showToast({
+          message: `Patch scan queued for ${queued} of ${requested} ${noun(requested)} — ${shortfall}.`,
+          type: 'error',
+        });
+      } else {
+        showToast({
+          message: `Patch scan queued for ${queued} ${noun(queued)}${dispatched > 0 ? `, ${dispatched} dispatched immediately` : ''}.`,
+          type: 'success',
+        });
+      }
       await fetchPatches();
     } catch (err) {
-      setScanError(err instanceof Error ? err.message : 'Failed to start patch scan');
+      // Pre-scan errors only (device-list fetch failure, no devices). The scan
+      // call above surfaces its own outcome and never throws; a 401 from the
+      // device-paging GET already redirected and returned before reaching here.
+      showToast({
+        message: err instanceof Error ? err.message : 'Patch scan failed',
+        type: 'error',
+      });
     } finally {
       setScanLoading(false);
     }
@@ -268,6 +335,7 @@ export default function PatchesPage() {
     const isEditing = !!editingRing;
     try {
       const url = isEditing ? `/update-rings/${editingRing.id}` : '/update-rings';
+      // runaction-exempt: inline ringsError UI (see NOTE above)
       const response = await fetchWithAuth(url, {
         method: isEditing ? 'PATCH' : 'POST',
         body: JSON.stringify({
@@ -296,6 +364,7 @@ export default function PatchesPage() {
 
   const handleRingDelete = async (ring: UpdateRingItem) => {
     try {
+      // runaction-exempt: inline ringsError UI (see NOTE above)
       const response = await fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
@@ -344,26 +413,6 @@ export default function PatchesPage() {
           )}
         </div>
       </div>
-
-      {scanError && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <span>{scanError}</span>
-            <button
-              type="button"
-              onClick={handleScan}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
-            >
-              Retry scan
-            </button>
-          </div>
-        </div>
-      )}
-      {scanSuccess && (
-        <div className="rounded-lg border border-success/40 bg-success/10 p-4 text-sm text-success">
-          {scanSuccess}
-        </div>
-      )}
 
       {/* Tabs */}
       <div className="border-b">
@@ -439,15 +488,22 @@ export default function PatchesPage() {
 
       {/* Patches tab */}
       {activeTab === 'patches' && (
-        <PatchList
-          patches={patches}
-          loading={patchesLoading}
-          error={patchesError}
-          onRetry={fetchPatches}
-          onReview={handleReview}
-          onBulkApprove={handleBulkApprove}
-          onBulkDecline={handleBulkDecline}
-        />
+        <>
+          <SourceFilterChips
+            counts={sourceCounts}
+            value={sourceFilter}
+            onChange={setSourceFilter}
+          />
+          <PatchList
+            patches={sourceFilter === 'all' ? patches : patches.filter((p) => p.source === sourceFilter)}
+            loading={patchesLoading}
+            error={patchesError}
+            onRetry={fetchPatches}
+            onReview={handleReview}
+            onBulkApprove={handleBulkApprove}
+            onBulkDecline={handleBulkDecline}
+          />
+        </>
       )}
 
       {/* Compliance tab — merged device view with summary */}

@@ -55,7 +55,7 @@ Partner (MSP) → Organization (Customer) → Site (Location) → Device Group �
 - **Web**: Vitest + jsdom — `apps/web/vitest.config.ts`
 - **Agent**: Go standard `testing` package — `go test -race ./...`
 - **Shared**: Vitest — `packages/shared/vitest.config.ts`
-- **E2E**: YAML-driven runner — `e2e-tests/run.ts` with `e2e-tests/tests/*.yaml`
+- **E2E**: Playwright Test (TypeScript), `data-testid` based — `e2e-tests/playwright.config.ts`, specs under `e2e-tests/tests/*.spec.ts`, Page Objects under `e2e-tests/pages/`. Tests query DOM via `data-testid` attributes only (not text/role/CSS) — see `e2e-tests/README.md` for the convention.
 
 ### Test File Placement
 - Place test files **alongside source files**, not in separate directories
@@ -116,7 +116,7 @@ cd agent && go test -race ./...
 cd agent && go test -race ./internal/discovery/...
 
 # E2E
-cd e2e-tests && npx tsx run.ts --mode live
+cd e2e-tests && pnpm test
 ```
 
 ---
@@ -239,9 +239,8 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.ghcr up -d
 # Local build mode (native arm64)
 docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build up --build -d
 
-# Or symlink whichever mode you want as default:
-ln -sf docker-compose.override.yml.dev docker-compose.override.yml
-docker compose up --build -d
+# Do not create a root docker-compose.override.yml for shared commits;
+# Docker Compose auto-loads that filename and can weaken production defaults.
 ```
 
 ### PR Merge Process

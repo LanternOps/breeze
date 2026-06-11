@@ -8,6 +8,7 @@
 import { db } from '../../db';
 import { userNotifications, organizationUsers, users, partnerUsers, organizations } from '../../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
+import { toSafeRelativePath } from '@breeze/shared';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -113,7 +114,9 @@ export async function sendInAppNotification(payload: InAppNotificationPayload): 
     }
 
     // Build notification link
-    const link = payload.link || `/alerts/${payload.alertId}`;
+    // Defense-in-depth: a caller-supplied link must be a safe same-origin
+    // relative path, else it collapses to the alert URL (mirrors getSafeNext).
+    const link = toSafeRelativePath(payload.link, `/alerts/${payload.alertId}`);
 
     // Build metadata
     const metadata = {
@@ -168,7 +171,9 @@ export async function sendInAppNotificationToUsers(
   }
 
   try {
-    const link = payload.link || `/alerts/${payload.alertId}`;
+    // Defense-in-depth: a caller-supplied link must be a safe same-origin
+    // relative path, else it collapses to the alert URL (mirrors getSafeNext).
+    const link = toSafeRelativePath(payload.link, `/alerts/${payload.alertId}`);
 
     const metadata = {
       alertId: payload.alertId,

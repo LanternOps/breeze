@@ -51,6 +51,7 @@ vi.mock('../../db/schema', () => ({
     hostname: 'devices.hostname',
     osType: 'devices.os_type',
     status: 'devices.status',
+    siteId: 'devices.site_id',
   },
   backupJobs: {
     id: 'backup_jobs.id',
@@ -359,6 +360,7 @@ describe('mssql routes', () => {
         backupFileName: 'AppDb_full_20260331.bak',
       },
     }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID, siteId: null }]));
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ valid: true }),

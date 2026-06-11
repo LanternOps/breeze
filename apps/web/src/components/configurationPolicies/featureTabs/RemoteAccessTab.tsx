@@ -9,6 +9,13 @@ type RemoteAccessSettings = {
   webrtcDesktop: boolean;
   vncRelay: boolean;
   remoteTools: boolean;
+  // Clipboard sync over the WebRTC desktop channel, gated per direction and
+  // enforced agent-side. host→viewer is the data-egress direction (off by
+  // default on hosted SaaS); viewer→host is operator-initiated paste (on by
+  // default). Defaulted here to the self-hosted bidirectional behavior; the
+  // API applies its own IS_HOSTED-keyed defaults when no policy is configured.
+  clipboardHostToViewer: boolean;
+  clipboardViewerToHost: boolean;
   enableProxy: boolean;
   defaultAllowedPorts: number[];
   autoEnableProxy: boolean;
@@ -21,6 +28,8 @@ const defaults: RemoteAccessSettings = {
   webrtcDesktop: true,
   vncRelay: false,
   remoteTools: true,
+  clipboardHostToViewer: true,
+  clipboardViewerToHost: true,
   enableProxy: false,
   defaultAllowedPorts: [80, 443, 8080, 8443],
   autoEnableProxy: false,
@@ -134,6 +143,18 @@ export default function RemoteAccessTab({ policyId, existingLink, onLinkChanged,
             onChange={(v) => update('vncRelay', v)}
           />
           <ToggleRow label="Remote System Tools" description="Allow remote process manager, services, registry, terminal, and file browser." checked={settings.remoteTools} onChange={(v) => update('remoteTools', v)} />
+          <ToggleRow
+            label="Clipboard: remote → viewer (copy from remote)"
+            description="Stream the remote machine's clipboard to the operator's viewer. This is the data-egress direction — whatever the end user copies (passwords, MFA codes, secrets) reaches the operator. Off by default on hosted Breeze."
+            checked={settings.clipboardHostToViewer}
+            onChange={(v) => update('clipboardHostToViewer', v)}
+          />
+          <ToggleRow
+            label="Clipboard: viewer → remote (paste to remote)"
+            description="Allow the operator to paste their local clipboard into the remote machine. Operator-initiated and lower risk."
+            checked={settings.clipboardViewerToHost}
+            onChange={(v) => update('clipboardViewerToHost', v)}
+          />
         </div>
 
         {/* Limits */}

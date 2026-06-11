@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
@@ -7,7 +7,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 
@@ -24,6 +24,17 @@ function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
 
 function mapDispatchErrorStatus(error: string): number {
   return error.startsWith('Device is ') ? 409 : 502;
+}
+
+function isDeviceSiteDenied(c: Context, siteId: string | null | undefined): boolean {
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  return Boolean(permissions?.allowedSiteIds && (typeof siteId !== 'string' || !canAccessSite(permissions, siteId)));
+}
+
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
 }
 
 function dispatchFailureReason(error: string): string {
@@ -67,7 +78,7 @@ async function removeQueuedRestoreDispatch(commandId: string | null | undefined)
 
 restoreRoutes.get(
   '/restore',
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   zValidator('query', restoreListSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -77,10 +88,22 @@ restoreRoutes.get(
     }
 
     const query = c.req.valid('query');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const conditions = [eq(restoreJobs.orgId, orgId)];
 
     if (query.deviceId) {
       conditions.push(eq(restoreJobs.deviceId, query.deviceId));
+    }
+
+    if (perms?.allowedSiteIds) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({ data: [] });
+      }
+      conditions.push(inArray(restoreJobs.deviceId, allowedDeviceIds));
     }
     if (query.snapshotId) {
       conditions.push(eq(restoreJobs.snapshotId, query.snapshotId));
@@ -114,7 +137,7 @@ restoreRoutes.get(
 
 restoreRoutes.get(
   '/restore/:id',
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -140,6 +163,7 @@ restoreRoutes.get(
 restoreRoutes.post(
   '/restore',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', restoreSchema),
@@ -188,13 +212,16 @@ restoreRoutes.post(
     const now = new Date();
     const targetDeviceId = payload.deviceId ?? snapshot.deviceId;
     const [targetDevice] = await db
-      .select({ id: devices.id, status: devices.status })
+      .select({ id: devices.id, status: devices.status, siteId: devices.siteId })
       .from(devices)
       .where(and(eq(devices.id, targetDeviceId), eq(devices.orgId, orgId)))
       .limit(1);
 
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
+    }
+    if (isDeviceSiteDenied(c, targetDevice.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (targetDevice.status !== 'online') {
@@ -336,6 +363,7 @@ restoreRoutes.post(
 restoreRoutes.post(
   '/restore/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   async (c) => {
@@ -354,6 +382,9 @@ restoreRoutes.post(
 
     if (!current) {
       return c.json({ error: 'Restore job not found' }, 404);
+    }
+    if (await isDeviceSiteDenied(c, current.deviceId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (current.status !== 'pending' && current.status !== 'running') {

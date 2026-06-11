@@ -22,6 +22,14 @@ vi.mock('../../db/schema', () => ({
     previousTokenHash: 'previousTokenHash',
     previousTokenExpiresAt: 'previousTokenExpiresAt',
     tokenIssuedAt: 'tokenIssuedAt',
+    watchdogTokenHash: 'watchdogTokenHash',
+    watchdogTokenIssuedAt: 'watchdogTokenIssuedAt',
+    previousWatchdogTokenHash: 'previousWatchdogTokenHash',
+    previousWatchdogTokenExpiresAt: 'previousWatchdogTokenExpiresAt',
+    helperTokenHash: 'helperTokenHash',
+    helperTokenIssuedAt: 'helperTokenIssuedAt',
+    previousHelperTokenHash: 'previousHelperTokenHash',
+    previousHelperTokenExpiresAt: 'previousHelperTokenExpiresAt',
     updatedAt: 'updatedAt',
   },
 }));
@@ -47,6 +55,7 @@ function buildApp(): Hono {
       orgId: 'org-1',
       agentId: 'agent-123',
       siteId: 'site-1',
+      role: 'agent',
     });
     await next();
   });
@@ -69,6 +78,8 @@ describe('agent token rotation route', () => {
               orgId: 'org-1',
               hostname: 'host-1',
               agentTokenHash: 'old-token-hash',
+              watchdogTokenHash: 'old-watchdog-token-hash',
+              helperTokenHash: 'old-helper-token-hash',
             },
           ]),
         })),
@@ -87,6 +98,11 @@ describe('agent token rotation route', () => {
   });
 
   it('rotates the token and returns the new plaintext token', async () => {
+    vi.mocked(generateApiKey)
+      .mockReturnValueOnce('brz_rotated_agent_token')
+      .mockReturnValueOnce('brz_rotated_watchdog_token')
+      .mockReturnValueOnce('brz_rotated_helper_token');
+
     const set = vi.fn(() => ({
       where: vi.fn().mockResolvedValue(undefined),
     }));
@@ -98,16 +114,26 @@ describe('agent token rotation route', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      authToken: 'brz_rotated_token',
+      authToken: 'brz_rotated_agent_token',
+      watchdogAuthToken: 'brz_rotated_watchdog_token',
+      helperAuthToken: 'brz_rotated_helper_token',
       rotatedAt: '2026-03-31T18:45:00.000Z',
     });
 
-    expect(generateApiKey).toHaveBeenCalledTimes(1);
+    expect(generateApiKey).toHaveBeenCalledTimes(3);
     expect(set).toHaveBeenCalledWith({
       previousTokenHash: 'old-token-hash',
       previousTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
-      agentTokenHash: createHash('sha256').update('brz_rotated_token').digest('hex'),
+      agentTokenHash: createHash('sha256').update('brz_rotated_agent_token').digest('hex'),
       tokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
+      previousWatchdogTokenHash: 'old-watchdog-token-hash',
+      previousWatchdogTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
+      watchdogTokenHash: createHash('sha256').update('brz_rotated_watchdog_token').digest('hex'),
+      watchdogTokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
+      previousHelperTokenHash: 'old-helper-token-hash',
+      previousHelperTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
+      helperTokenHash: createHash('sha256').update('brz_rotated_helper_token').digest('hex'),
+      helperTokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
       updatedAt: new Date('2026-03-31T18:45:00.000Z'),
     });
 

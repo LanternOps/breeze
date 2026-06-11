@@ -26,6 +26,9 @@
     "db:generate": {
       "cache": false
     },
+    "db:check-drift": {
+      "cache": false
+    },
     "db:push": {
       "cache": false
     },

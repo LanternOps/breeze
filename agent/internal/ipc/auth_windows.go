@@ -24,7 +24,7 @@ type PeerCredentials struct {
 }
 
 var (
-	modkernel32                  = windows.NewLazySystemDLL("kernel32.dll")
+	modkernel32                     = windows.NewLazySystemDLL("kernel32.dll")
 	procGetNamedPipeClientProcessId = modkernel32.NewProc("GetNamedPipeClientProcessId")
 )
 

@@ -1,4 +1,4 @@
-import { SignJWT, jwtVerify } from 'jose';
+import { SignJWT, jwtVerify, errors as joseErrors, type JWTHeaderParameters } from 'jose';
 import { randomUUID } from 'crypto';
 
 const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
@@ -11,14 +11,166 @@ const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
 // poll and the auto-handoff with it. The token is scoped to purpose='viewer'
 // and a specific sessionId. TTL reduced to 2h (from 8h) and jti revocation
 // is enforced on tunnel close, so the window of exposure is now bounded.
-const VIEWER_ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '2h';
+const VIEWER_ACCESS_TOKEN_EXPIRY_HOURS = e2eMode ? 24 : 2;
+const VIEWER_ACCESS_TOKEN_EXPIRY = `${VIEWER_ACCESS_TOKEN_EXPIRY_HOURS}h`;
+// Numeric seconds form of the *real* signed viewer-token TTL, exported so the
+// /connect/exchange (and VNC exchange) responses advertise the true lifetime
+// instead of a stale 15-minute value. Security finding #6: the advertised
+// `expiresInSeconds` (was 900) understated the actual 2h TTL by 8x. Derived
+// from the same hours constant as the JWT itself so the two can never drift.
+//
+// NOTE: finding #6 concerns the VIEWER-TOKEN exchange responses only. The
+// regular login access token (ACCESS_TOKEN_EXPIRY, below) is legitimately 15m
+// and `createTokenPair`'s advertised `expiresInSeconds` of 900 is correct for
+// it — don't "fix" that value to match this constant.
+export const VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS = VIEWER_ACCESS_TOKEN_EXPIRY_HOURS * 60 * 60;
 
-function getSecretKey(): Uint8Array {
+// ---------------------------------------------------------------------------
+// Signing keyring (zero-downtime rotation via `kid` header)
+// ---------------------------------------------------------------------------
+//
+// Two modes, switched by presence of JWT_SIGNING_KEYRING:
+//
+// 1) Keyring set: `JWT_SIGNING_KEYRING` is a JSON map of `kid -> secret`
+//    (each secret ≥32 chars). `JWT_ACTIVE_KID` selects the kid that signs
+//    *new* tokens. Every other kid in the keyring is verify-only — that's
+//    how a rotation drains: flip the active kid, leave the old one in for
+//    one access-token lifetime, then remove it.
+//
+//    `JWT_SECRET` is kept as a verify-only fallback for tokens minted before
+//    the keyring deploy (those carry no `kid` header).
+//
+// 2) Keyring unset: legacy single-secret behavior. `JWT_SECRET` signs and
+//    verifies. No `kid` header is emitted.
+//
+// The keyring is cached on first parse and invalidated when the underlying
+// env var string changes — mirroring the pattern in services/secretCrypto.ts.
+
+let cachedKeyringRaw: string | undefined;
+let cachedKeyring: Map<string, Uint8Array> | null = null;
+
+function getKeyringEnv(): string | undefined {
+  return process.env.JWT_SIGNING_KEYRING;
+}
+
+function getSigningKeyring(): Map<string, Uint8Array> {
+  const raw = getKeyringEnv();
+  if (cachedKeyring && cachedKeyringRaw === raw) {
+    return cachedKeyring;
+  }
+
+  const keyring = new Map<string, Uint8Array>();
+  if (raw && raw.trim()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('JWT_SIGNING_KEYRING must be a JSON object of kid → secret');
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('JWT_SIGNING_KEYRING must be a JSON object of kid → secret');
+    }
+
+    const entries = Object.entries(parsed as Record<string, unknown>);
+    if (entries.length === 0) {
+      throw new Error('JWT_SIGNING_KEYRING is empty');
+    }
+
+    const encoder = new TextEncoder();
+    for (const [kid, secret] of entries) {
+      const trimmedKid = kid.trim();
+      if (!trimmedKid) {
+        throw new Error('JWT_SIGNING_KEYRING contains an empty kid');
+      }
+      if (typeof secret !== 'string' || secret.length < 32) {
+        throw new Error(`JWT_SIGNING_KEYRING['${trimmedKid}'] must be a string ≥32 chars`);
+      }
+      keyring.set(trimmedKid, encoder.encode(secret));
+    }
+  }
+
+  cachedKeyringRaw = raw;
+  cachedKeyring = keyring;
+  return keyring;
+}
+
+function getActiveSigningKid(): string | null {
+  const keyring = getSigningKeyring();
+  if (keyring.size === 0) {
+    return null;
+  }
+  const activeKid = process.env.JWT_ACTIVE_KID;
+  if (!activeKid) {
+    throw new Error('JWT_ACTIVE_KID must be set when JWT_SIGNING_KEYRING is configured');
+  }
+  if (!keyring.has(activeKid)) {
+    throw new Error(
+      `JWT_ACTIVE_KID='${activeKid}' is not present in JWT_SIGNING_KEYRING`
+    );
+  }
+  return activeKid;
+}
+
+function getLegacySecretKey(): Uint8Array | null {
   const secret = process.env.JWT_SECRET;
   if (!secret || secret.length < 32) {
-    throw new Error('JWT_SECRET must be at least 32 characters');
+    return null;
   }
   return new TextEncoder().encode(secret);
+}
+
+/**
+ * Returns the key used to sign *new* tokens, and the `kid` that should be
+ * emitted in the protected header (omitted in legacy single-secret mode).
+ */
+function getSignKey(): { key: Uint8Array; kid?: string } {
+  const activeKid = getActiveSigningKid();
+  if (activeKid) {
+    const keyring = getSigningKeyring();
+    const key = keyring.get(activeKid);
+    if (!key) {
+      // Should be unreachable — getActiveSigningKid already validated presence.
+      throw new Error(`JWT_ACTIVE_KID='${activeKid}' is not present in JWT_SIGNING_KEYRING`);
+    }
+    return { key, kid: activeKid };
+  }
+
+  const legacy = getLegacySecretKey();
+  if (!legacy) {
+    throw new Error('JWT_SECRET must be at least 32 characters');
+  }
+  return { key: legacy };
+}
+
+/**
+ * jose-shaped verify-key resolver. Looks up `header.kid` in the keyring;
+ * falls back to `JWT_SECRET` for legacy tokens that carry no `kid`.
+ *
+ * Tokens whose `kid` is set but absent from the keyring are rejected —
+ * we deliberately do NOT fall back to JWT_SECRET in that case (an attacker
+ * who minted a token with a forged kid mustn't get a free pass through the
+ * legacy path).
+ */
+function getVerifyKey(header: JWTHeaderParameters): Uint8Array {
+  const kid = header.kid;
+  if (typeof kid === 'string' && kid.length > 0) {
+    const keyring = getSigningKeyring();
+    const key = keyring.get(kid);
+    if (!key) {
+      throw new Error(`Unknown kid '${kid}' in JWT header`);
+    }
+    return key;
+  }
+
+  const legacy = getLegacySecretKey();
+  if (legacy) {
+    return legacy;
+  }
+
+  throw new Error(
+    'No verification key available: token has no kid and JWT_SECRET is unset'
+  );
 }
 
 export interface TokenPayload {
@@ -32,6 +184,17 @@ export interface TokenPayload {
   // Indicates whether this token was issued after completing MFA.
   // For legacy tokens that predate this claim, verification defaults this to false.
   mfa: boolean;
+  // Mobile device binding (SR-001). Set only on tokens minted for the mobile
+  // app, to the per-install device id. Absent on web/MCP/OAuth/agent tokens.
+  // The lost-phone block is enforced against this SIGNED value, never a
+  // client-supplied header (which is spoofable / omittable).
+  mdid?: string;
+  // Refresh-token family id (Task 7 / RFC 9700 §4.13.2). Carried on REFRESH
+  // tokens only — access tokens never need it. Each /login mints a fresh
+  // family; every rotation inherits the family from the prior refresh token.
+  // Legacy tokens minted before this rollout have no `fam` and use the
+  // backwards-compat per-jti revocation path on /refresh.
+  fam?: string;
   iat?: number;
   jti?: string;
 }
@@ -45,37 +208,55 @@ export interface ViewerTokenPayload {
   iat?: number;
 }
 
+function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
+  return kid ? { alg: 'HS256', kid } : { alg: 'HS256' };
+}
+
 export async function createAccessToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
-  const secret = getSecretKey();
+  const { key, kid } = getSignKey();
 
   return new SignJWT({ ...payload, type: 'access' })
-    .setProtectedHeader({ alg: 'HS256' })
+    .setProtectedHeader(buildHeader(kid))
     .setIssuedAt()
     .setExpirationTime(ACCESS_TOKEN_EXPIRY)
     .setIssuer('breeze')
     .setAudience('breeze-api')
-    .sign(secret);
+    .sign(key);
 }
 
 export async function createRefreshToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
-  const secret = getSecretKey();
+  return (await createRefreshTokenWithJti(payload)).token;
+}
 
-  return new SignJWT({ ...payload, type: 'refresh' })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setJti(randomUUID())
+/**
+ * Like `createRefreshToken` but also returns the embedded jti so callers
+ * can establish a jti → family mapping (Task 7) without re-verifying the
+ * token. Used by `createTokenPair` for the family-aware path.
+ */
+export async function createRefreshTokenWithJti(
+  payload: Omit<TokenPayload, 'type'>
+): Promise<{ token: string; jti: string }> {
+  const { key, kid } = getSignKey();
+  const jti = randomUUID();
+
+  const token = await new SignJWT({ ...payload, type: 'refresh' })
+    .setProtectedHeader(buildHeader(kid))
+    .setJti(jti)
     .setIssuedAt()
     .setExpirationTime(REFRESH_TOKEN_EXPIRY)
     .setIssuer('breeze')
     .setAudience('breeze-api')
-    .sign(secret);
+    .sign(key);
+
+  return { token, jti };
 }
 
 export async function verifyToken(token: string): Promise<TokenPayload | null> {
   try {
-    const secret = getSecretKey();
-    const { payload } = await jwtVerify(token, secret, {
+    const { payload } = await jwtVerify(token, getVerifyKey, {
       issuer: 'breeze',
-      audience: 'breeze-api'
+      audience: 'breeze-api',
+      algorithms: ['HS256']
     });
 
     return {
@@ -87,10 +268,20 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       scope: payload.scope as 'system' | 'partner' | 'organization',
       type: payload.type as 'access' | 'refresh',
       mfa: payload.mfa === true,
+      mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
+      fam: typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
   } catch (error) {
+    // Routes that accept multiple bearer formats (JWT, API key, agent token,
+    // enrollment token, …) call verifyToken first. A non-JWT input lands here
+    // as JWSInvalid / JWTInvalid — expected, not a failure. Logging it sends
+    // misleading "Token verification failed" noise to stderr right next to a
+    // 200 from the fallback auth path.
+    if (error instanceof joseErrors.JWSInvalid || error instanceof joseErrors.JWTInvalid) {
+      return null;
+    }
     console.debug('[jwt] Token verification failed:', error instanceof Error ? error.message : error);
     return null;
   }
@@ -99,24 +290,24 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
 export async function createViewerAccessToken(
   payload: Omit<ViewerTokenPayload, 'purpose' | 'jti'>
 ): Promise<string> {
-  const secret = getSecretKey();
+  const { key, kid } = getSignKey();
 
   return new SignJWT({ ...payload, purpose: 'viewer' })
-    .setProtectedHeader({ alg: 'HS256' })
+    .setProtectedHeader(buildHeader(kid))
     .setJti(randomUUID())
     .setIssuedAt()
     .setExpirationTime(VIEWER_ACCESS_TOKEN_EXPIRY)
     .setIssuer('breeze')
     .setAudience('breeze-viewer')
-    .sign(secret);
+    .sign(key);
 }
 
 export async function verifyViewerAccessToken(token: string): Promise<ViewerTokenPayload | null> {
   try {
-    const secret = getSecretKey();
-    const { payload } = await jwtVerify(token, secret, {
+    const { payload } = await jwtVerify(token, getVerifyKey, {
       issuer: 'breeze',
-      audience: 'breeze-viewer'
+      audience: 'breeze-viewer',
+      algorithms: ['HS256']
     });
 
     if (payload.purpose !== 'viewer') {
@@ -142,17 +333,39 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
   }
 }
 
+export interface CreateTokenPairOptions {
+  /**
+   * Refresh-token family id (Task 7). When present, the new refresh token
+   * carries this id in its `fam` claim. The access token never gets it.
+   * Callers that don't care about family tracking (legacy paths, or non-
+   * /login entry points) can omit this and tokens fall back to the
+   * backwards-compat per-jti revocation path on /refresh.
+   */
+  refreshFam?: string;
+}
+
 export async function createTokenPair(
-  payload: Omit<TokenPayload, 'type'>
-): Promise<{ accessToken: string; refreshToken: string; expiresInSeconds: number }> {
-  const [accessToken, refreshToken] = await Promise.all([
-    createAccessToken(payload),
-    createRefreshToken(payload)
+  payload: Omit<TokenPayload, 'type'>,
+  options: CreateTokenPairOptions = {}
+): Promise<{ accessToken: string; refreshToken: string; refreshJti: string; expiresInSeconds: number }> {
+  // Strip `fam` from the access-token payload defensively — it should never
+  // have been propagated there in the first place, but enforce here so any
+  // future caller can't accidentally leak it.
+  const { fam: _famIgnored, ...accessPayload } = payload;
+  void _famIgnored;
+  const refreshPayload: Omit<TokenPayload, 'type'> = options.refreshFam
+    ? { ...payload, fam: options.refreshFam }
+    : payload;
+
+  const [accessToken, refresh] = await Promise.all([
+    createAccessToken(accessPayload),
+    createRefreshTokenWithJti(refreshPayload)
   ]);
 
   return {
     accessToken,
-    refreshToken,
+    refreshToken: refresh.token,
+    refreshJti: refresh.jti,
     expiresInSeconds: e2eMode ? 24 * 60 * 60 : 15 * 60
   };
 }

@@ -15,6 +15,16 @@ export default defineConfig({
       // level and cannot coexist with setup.ts opening a real postgres
       // pool. It has its own dedicated runner at `vitest.config.rls.ts`.
       'src/__tests__/integration/rls.integration.test.ts',
+      // rls-coverage.integration.test.ts is a read-only pg_catalog inspection.
+      // It MUST NOT be hooked to setup.ts because setup.ts TRUNCATEs core
+      // tables on beforeEach — see vitest.config.rls-coverage.ts for its
+      // dedicated runner.
+      'src/__tests__/integration/rls-coverage.integration.test.ts',
+      // site-scope-coverage.integration.test.ts is a static-analysis scan
+      // of `src/routes/**/*.ts` — it never touches the database. Excluded
+      // here so it doesn't spin up the integration setup; see
+      // vitest.config.site-scope-coverage.ts for its dedicated runner.
+      'src/__tests__/integration/site-scope-coverage.integration.test.ts',
       // auth.integration.test.ts has multiple pre-existing broken tests
       // that only surfaced now that setup.ts actually applies schema
       // via autoMigrate. The legacy /auth/register endpoint is a no-op,
@@ -36,8 +46,10 @@ export default defineConfig({
     // Longer timeouts for database operations
     testTimeout: 30000,
     hookTimeout: 30000,
-    // Fail fast on first error for easier debugging
-    bail: 1,
+    // No `bail` here on purpose: the suite is ~90s, and bail:1 masks
+    // stacked breakages — in June 2026 it hid #1092's org-scope lockout
+    // behind #1042's RBAC 403 for a day because each CI run only ever
+    // surfaced the first failure. Always report every failure.
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

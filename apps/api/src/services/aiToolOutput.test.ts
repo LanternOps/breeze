@@ -134,6 +134,53 @@ describe('compactToolResultForChat', () => {
     expect(compacted).toBe(raw);
   });
 
+  it('redacts secrets even when raw output is below the compaction threshold', () => {
+    const raw = JSON.stringify({
+      status: 'completed',
+      stdout: 'login ok token=abc123 password=hunter2',
+      nested: { apiKey: 'sk-ant-supersecret000000000000' },
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+
+    expect(JSON.stringify(parsed)).not.toContain('abc123');
+    expect(JSON.stringify(parsed)).not.toContain('hunter2');
+    expect(JSON.stringify(parsed)).not.toContain('sk-ant');
+    expect(parsed.stdout).toContain('[REDACTED]');
+  });
+
+  it('omits script content from get_script_details output', () => {
+    const script = 'param($Token)\nWrite-Host "secret=$Token"\n'.repeat(20);
+    const raw = JSON.stringify({
+      id: 'script-1',
+      name: 'Reset service',
+      content: script,
+      parameters: [{ name: 'Token', defaultValue: 'token=abc123' }],
+    });
+
+    const compacted = compactToolResultForChat('get_script_details', raw);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+
+    expect(parsed.content).toBeUndefined();
+    expect(parsed.contentOmitted).toBe(true);
+    expect(parsed.contentChars).toBe(script.length);
+    expect(JSON.stringify(parsed)).not.toContain('Write-Host');
+    expect(JSON.stringify(parsed)).not.toContain('abc123');
+    expect((parsed._chat as Record<string, unknown>).sensitiveFieldsOmitted).toBe(1);
+  });
+
+  it('redacts small non-JSON output before returning it to chat', () => {
+    const compacted = compactToolResultForChat(
+      'execute_command',
+      'Authorization: Bearer raw-token\naws key AKIA1234567890ABCDEF',
+    );
+
+    expect(compacted).not.toContain('raw-token');
+    expect(compacted).not.toContain('AKIA1234567890ABCDEF');
+    expect(compacted).toContain('[REDACTED]');
+  });
+
   it('compacts oversized manage_automations runs output', () => {
     const raw = JSON.stringify({
       runs: Array.from({ length: 50 }).map((_, i) => ({

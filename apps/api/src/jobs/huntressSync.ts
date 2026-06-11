@@ -662,14 +662,24 @@ async function syncIntegrationById(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {
-      await db
-        .update(huntressIntegrations)
-        .set({
-          lastSyncStatus: 'error',
-          lastSyncError: `${source}: ${message}`.slice(0, 2000),
-          updatedAt: new Date(),
-        })
-        .where(eq(huntressIntegrations.id, integrationId));
+      // The whole sync job runs inside one withSystemDbAccessContext transaction.
+      // Re-throwing below rolls that transaction back, so recording the failure on
+      // the job's own connection would be undone and the row would keep its stale
+      // status. Escape the current context (runOutsideDbContext) and open a fresh
+      // transaction (runWithSystemDbAccess) so the 'error' status commits and
+      // survives the rollback.
+      await dbModule.runOutsideDbContext(() =>
+        runWithSystemDbAccess(() =>
+          db
+            .update(huntressIntegrations)
+            .set({
+              lastSyncStatus: 'error',
+              lastSyncError: `${source}: ${message}`.slice(0, 2000),
+              updatedAt: new Date(),
+            })
+            .where(eq(huntressIntegrations.id, integrationId))
+        )
+      );
     } catch (dbErr) {
       console.error(`[HuntressSync] Failed to record sync error for integration ${integrationId}:`, dbErr);
       captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
@@ -753,6 +763,7 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
     integration: {
       id: string;
       orgId: string;
+      accountId: string | null;
       webhookSecretEncrypted: string | null;
     };
   }
@@ -762,6 +773,7 @@ export async function findHuntressIntegrationByAccount(accountId: string): Promi
       .select({
         id: huntressIntegrations.id,
         orgId: huntressIntegrations.orgId,
+        accountId: huntressIntegrations.accountId,
         webhookSecretEncrypted: huntressIntegrations.webhookSecretEncrypted,
       })
       .from(huntressIntegrations)

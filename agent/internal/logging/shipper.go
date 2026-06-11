@@ -243,10 +243,19 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", s.serverURL, s.agentID)
 
+	// nextSleepOverride, if non-zero, replaces the default fixed-jitter sleep
+	// for the next retry. Set when the server sends Retry-After on 429/503.
+	var nextSleepOverride time.Duration
+
 	for attempt := 0; attempt <= shipRetryCount; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(rand.Intn(int(shipRetryBackoff / 2)))
-			time.Sleep(shipRetryBackoff + jitter)
+			if nextSleepOverride > 0 {
+				time.Sleep(nextSleepOverride)
+				nextSleepOverride = 0
+			} else {
+				jitter := time.Duration(rand.Intn(int(shipRetryBackoff / 2)))
+				time.Sleep(shipRetryBackoff + jitter)
+			}
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -275,8 +284,27 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			return
 		}
 
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			// 429/503: retryable, and may carry Retry-After.
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			if ra := parseRetryAfter(resp.Header, time.Now()); ra > 0 {
+				nextSleepOverride = ra
+			}
+			resp.Body.Close()
+			cancel()
+			if attempt < shipRetryCount {
+				fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (attempt %d/%d, next sleep %v): %s\n",
+					resp.StatusCode, attempt+1, shipRetryCount+1, nextSleepOverride, string(body))
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (giving up after %d attempts): %s\n",
+				resp.StatusCode, shipRetryCount+1, string(body))
+			s.droppedCount.Add(int64(len(entries)))
+			return
+		}
+
 		if resp.StatusCode >= 500 {
-			// Server error: retry if we have attempts left
+			// Other 5xx: retry without Retry-After awareness.
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			cancel()

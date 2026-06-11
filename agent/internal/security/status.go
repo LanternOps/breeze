@@ -1162,41 +1162,100 @@ func getFirewallStatusDarwin() (bool, error) {
 	return false, fmt.Errorf("unable to determine firewall state")
 }
 
+// firewallStatusFromCommand runs a probe command and returns its trimmed
+// stdout regardless of exit code. Many firewall query tools (firewall-cmd,
+// systemctl is-active) exit non-zero when the firewall is inactive while
+// still writing a useful state name to stdout — the regular runCommand
+// helper discards that output, so we use a dedicated path here.
+// firewallStatusFromCommand runs `name args...` with a timeout and returns
+// (stdout, zeroExit, ok). `zeroExit` is true only when the process completed
+// with exit code 0; `ok` is false when the run hit the deadline so the caller
+// has no usable output. Splitting these lets callers distinguish "the daemon
+// says inactive" (zeroExit=true, stdout="inactive") from "the bus/permissions
+// failed and the daemon may not be the one in charge" (zeroExit=false, stdout
+// might still contain a matching-looking string but is ambiguous).
+func firewallStatusFromCommand(timeout time.Duration, name string, args ...string) (stdout string, zeroExit bool, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", false, false
+	}
+	return strings.TrimSpace(string(output)), err == nil, true
+}
+
+// interpretFirewallState maps the (trimmed) stdout of a firewall-state probe
+// to (enabled, known). `known=false` means the output was not a recognized
+// state from this tool — caller should fall through to the next probe rather
+// than trust the parse. Pure function modulo `strings.Contains` so the
+// state-string mapping is testable without a subprocess.
+//
+// ufw is intentionally permissive (multiline output, substring match). The
+// other two tools have stable single-token outputs (`running`/`not running`
+// for firewall-cmd, `active`/`inactive`/`failed` for systemctl is-active);
+// any deviation is treated as unknown so a D-Bus error message trimmed into
+// `state` does not get matched as `"not running"`.
+func interpretFirewallState(tool, state string) (enabled bool, known bool) {
+	state = strings.TrimSpace(state)
+	switch tool {
+	case "ufw":
+		if strings.Contains(state, "Status: active") {
+			return true, true
+		}
+		if strings.Contains(state, "Status: inactive") {
+			return false, true
+		}
+	case "firewall-cmd":
+		if state == "running" {
+			return true, true
+		}
+		if state == "not running" {
+			return false, true
+		}
+	case "systemctl":
+		if state == "active" {
+			return true, true
+		}
+		if state == "inactive" || state == "failed" {
+			return false, true
+		}
+	}
+	return false, false
+}
+
 func getFirewallStatusLinux() (bool, error) {
 	if hasCommand("ufw") {
 		output, err := runCommand(5*time.Second, "ufw", "status")
 		if err == nil {
-			if strings.Contains(output, "Status: active") {
-				return true, nil
-			}
-			if strings.Contains(output, "Status: inactive") {
-				return false, nil
+			if enabled, known := interpretFirewallState("ufw", output); known {
+				return enabled, nil
 			}
 		}
 	}
 
+	// firewall-cmd / systemctl probe a different daemon (firewalld) than ufw.
+	// On a host where ufw is the ACTIVE firewall but firewalld is installed
+	// + masked (a common Ubuntu/Debian shape), `firewall-cmd --state` exits
+	// non-zero and prints "not running" or a D-Bus failure on stdout. The
+	// previous version trusted that text regardless of exit code, which
+	// silently reported the host as firewall=disabled — strictly worse than
+	// the WARN it replaced because FirewallEnabled feeds security posture
+	// (status.go's posture computation). We now only trust a recognized state
+	// when the tool ALSO exited 0; non-zero exit → unknown → fall through.
 	if hasCommand("firewall-cmd") {
-		output, err := runCommand(5*time.Second, "firewall-cmd", "--state")
-		if err == nil {
-			state := strings.TrimSpace(output)
-			if state == "running" {
-				return true, nil
-			}
-			if state == "not running" {
-				return false, nil
+		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "firewall-cmd", "--state"); ok && zeroExit {
+			if enabled, known := interpretFirewallState("firewall-cmd", stdout); known {
+				return enabled, nil
 			}
 		}
 	}
 
 	if hasCommand("systemctl") {
-		output, err := runCommand(5*time.Second, "systemctl", "is-active", "firewalld")
-		if err == nil {
-			state := strings.TrimSpace(output)
-			if state == "active" {
-				return true, nil
-			}
-			if state == "inactive" || state == "failed" {
-				return false, nil
+		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "systemctl", "is-active", "firewalld"); ok && zeroExit {
+			if enabled, known := interpretFirewallState("systemctl", stdout); known {
+				return enabled, nil
 			}
 		}
 	}

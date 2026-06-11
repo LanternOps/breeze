@@ -69,7 +69,7 @@ complianceRoutes.get(
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
 
-    const statuses = (await listStatusRows(auth)).map(toStatusResponse);
+    const statuses = (await listStatusRows(auth, query.orgId)).map(toStatusResponse);
 
     let devicesData = statuses.map((status) => ({
       deviceId: status.deviceId,
@@ -124,7 +124,7 @@ complianceRoutes.get(
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
 
-    const statuses = (await listStatusRows(auth)).map(toStatusResponse);
+    const statuses = (await listStatusRows(auth, query.orgId)).map(toStatusResponse);
 
     const methodByOs: Record<'windows' | 'macos' | 'linux', string> = {
       windows: 'bitlocker',
@@ -198,7 +198,7 @@ complianceRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
-    const statusRows = await listStatusRows(auth);
+    const statusRows = await listStatusRows(auth, query.orgId);
 
     let devicesData = statusRows.map((row) => {
       const policy = parsePasswordPolicySummary(row.passwordPolicySummary);
@@ -266,7 +266,7 @@ complianceRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit } = getPagination(query);
-    const statusRows = await listStatusRows(auth);
+    const statusRows = await listStatusRows(auth, query.orgId);
 
     let rows = statusRows.map((row) => {
       const parsed = parseLocalAdminSummary(row.localAdminSummary);

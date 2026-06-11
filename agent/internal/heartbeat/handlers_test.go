@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
@@ -21,8 +22,9 @@ var allCommandTypes = []string{
 	tools.CmdRegistryKeys, tools.CmdRegistryValues, tools.CmdRegistryGet,
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
-	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode,
-	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall,
+	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdWakeOnLan,
+	tools.CmdRefreshInventory,
+	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall, tools.CmdSoftwareUpdate,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,
 	tools.CmdCollectAuditPolicy, tools.CmdApplyAuditPolicyBaseline,
@@ -89,6 +91,9 @@ var allCommandTypes = []string{
 	// handlers.go — log shipping
 	tools.CmdSetLogLevel,
 
+	// handlers_autoupdate.go
+	tools.CmdSetAutoUpdate,
+
 	// handlers_devupdate.go init()
 	tools.CmdDevUpdate,
 
@@ -112,6 +117,9 @@ var allCommandTypes = []string{
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
+
+	// handlers_actuate.go init() — PAM Track 5
+	tools.CmdActuateElevation,
 }
 
 func TestHandlerRegistryCompleteness(t *testing.T) {
@@ -142,6 +150,34 @@ func TestDispatchUnknownCommandReturnsFalse(t *testing.T) {
 	})
 	if handled {
 		t.Fatal("dispatchCommand should return false for unknown command type")
+	}
+}
+
+func TestHandleRefreshInventoryDispatchesSendInventory(t *testing.T) {
+	var called int
+	h := &Heartbeat{
+		sendInventoryFn: func() { called++ },
+	}
+
+	result := handleRefreshInventory(h, Command{ID: "test-refresh-1", Type: tools.CmdRefreshInventory})
+
+	if called != 1 {
+		t.Fatalf("sendInventoryFn called %d times, want 1", called)
+	}
+	if result.Status != "completed" {
+		t.Errorf("result.Status = %q, want %q", result.Status, "completed")
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("result.ExitCode = %d, want 0", result.ExitCode)
+	}
+	var payload struct {
+		Dispatched []string `json:"dispatched"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, result.Stdout)
+	}
+	if len(payload.Dispatched) != 12 {
+		t.Errorf("dispatched len = %d, want 12 (one per send*Inventory collector)", len(payload.Dispatched))
 	}
 }
 

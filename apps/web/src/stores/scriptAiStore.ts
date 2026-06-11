@@ -8,6 +8,7 @@
 
 import { create } from 'zustand';
 import { fetchWithAuth } from './auth';
+import { extractApiError } from '@/lib/apiError';
 import type {
   AiStreamEvent,
   ScriptBuilderContext,
@@ -195,8 +196,8 @@ export const useScriptAiStore = create<ScriptAiState>()(
           body: JSON.stringify({ context }),
         });
         if (!res.ok) {
-          const data = await res.json().catch(() => ({ error: 'Failed to create session' }));
-          throw new Error(data.error || 'Failed to create session');
+          const data = await res.json().catch(() => null);
+          throw new Error(extractApiError(data, 'Failed to create session'));
         }
         const data = await res.json();
         set({
@@ -272,18 +273,18 @@ export const useScriptAiStore = create<ScriptAiState>()(
         );
 
         if (!res.ok) {
-          const data = await res.json().catch(() => ({ error: 'Failed to send message' }));
+          const data = await res.json().catch(() => null);
 
           // Conflict — remove optimistic message
           if (res.status === 409) {
             set((s) => ({
               messages: s.messages.filter((m) => m.id !== userMsgId),
-              error: data.error || 'Another response is still in progress.',
+              error: extractApiError(data, 'Another response is still in progress.'),
             }));
             return;
           }
 
-          throw new Error(data.error || 'Failed to send message');
+          throw new Error(extractApiError(data, 'Failed to send message'));
         }
 
         // Process SSE stream
@@ -367,8 +368,8 @@ export const useScriptAiStore = create<ScriptAiState>()(
           }
         );
         if (!res.ok) {
-          const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-          set({ error: data.error || 'Failed to process approval. It may have timed out.' });
+          const data = await res.json().catch(() => null);
+          set({ error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
           return;
         }
         set({ pendingApproval: null });

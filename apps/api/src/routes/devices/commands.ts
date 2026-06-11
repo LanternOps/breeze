@@ -1,23 +1,28 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
 import { eq, sql, desc, and } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
+import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 export const commandsRoutes = new Hono();
 
 commandsRoutes.use('*', authMiddleware);
 
-function hasScriptId(payload: unknown): boolean {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return false;
-  }
-  return typeof (payload as Record<string, unknown>).scriptId === 'string';
+const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
+
+function canAccessDeviceSite(device: { siteId?: string | null }, userPerms: UserPermissions | undefined): boolean {
+  if (!userPerms?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(userPerms, device.siteId);
 }
 
 // POST /devices/bulk/commands - Queue a command for multiple devices
@@ -31,9 +36,91 @@ commandsRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Validate payload based on command type
-    if (data.type === 'script' && !hasScriptId(data.payload)) {
-      return c.json({ error: 'Script commands require a scriptId in payload' }, 400);
+    if (data.type === 'script') {
+      return c.json({ error: 'Script commands must be executed through the scripts endpoint' }, 400);
+    }
+
+    const deviceIds = [...new Set(data.deviceIds)];
+
+    // Wake-on-LAN takes a separate path from the generic device_commands
+    // insertion: each device needs a relay picked on its LAN, the command
+    // row is addressed to that relay (not the offline target), and the
+    // dispatch result includes per-device failure codes (NO_RELAY,
+    // NO_MACS, etc.) that the UI surfaces in a grouped summary. See
+    // services/wakeOnLan.ts + Discussion #694.
+    if (data.type === 'wake') {
+      const bulkId = randomUUID();
+      const succeeded: Array<{
+        deviceId: string;
+        commandId: string;
+        wakeAttemptId: string;
+        relayDeviceId: string;
+        relayHostname: string;
+        broadcast: string;
+      }> = [];
+      const failed: Array<{
+        deviceId: string;
+        code: WakeFailureCode | 'DECOMMISSIONED' | 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED';
+        message: string;
+      }> = [];
+      const ipAddress = getTrustedClientIpOrUndefined(c);
+      const userAgent = c.req.header('user-agent');
+
+      // Inline worker pool. dispatchWake does 5-7 DB selects + 2 inserts +
+      // 1 update + 1 WS write per device (no locks/transactions per
+      // services/wakeOnLan.ts). Concurrency 8 caps overlap on the
+      // breeze_app pool (~10-20 conns) and keeps wall time on a 500-device
+      // bulk well under Cloudflare's ~100s proxy timeout. Avoided a
+      // p-limit dependency by inlining — the loop is trivial.
+      const CONCURRENCY = 8;
+      const queue = [...deviceIds];
+      async function worker(): Promise<void> {
+        for (;;) {
+          const deviceId = queue.shift();
+          if (!deviceId) return;
+          // Per-device authorization — org filtering happens in
+          // getDeviceWithOrgCheck and site filtering happens immediately
+          // below. dispatchWake itself does NOT independently authorize the
+          // caller, so these gates must run before the wake dispatches.
+          const device = await getDeviceWithOrgCheck(deviceId, auth);
+          if (!device) {
+            failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
+            continue;
+          }
+          if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+            failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
+            continue;
+          }
+          if (device.status === 'decommissioned') {
+            failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot wake a decommissioned device.' });
+            continue;
+          }
+          const result = await dispatchWake(deviceId, auth.user.id, {
+            ipAddress,
+            userAgent,
+            bulkId,
+          });
+          if (result.ok) {
+            succeeded.push({
+              deviceId,
+              commandId: result.commandId,
+              wakeAttemptId: result.wakeAttemptId,
+              relayDeviceId: result.relayDeviceId,
+              relayHostname: result.relayHostname,
+              broadcast: result.broadcast,
+            });
+          } else {
+            failed.push({ deviceId, code: result.code, message: result.message });
+          }
+        }
+      }
+      const workers = Array.from(
+        { length: Math.min(CONCURRENCY, deviceIds.length) },
+        () => worker(),
+      );
+      await Promise.all(workers);
+
+      return c.json({ bulkId, succeeded, failed }, 202);
     }
 
     const commandList: Array<{
@@ -43,29 +130,92 @@ commandsRoutes.post(
       status: string;
       createdAt: Date;
     }> = [];
-    const failed: string[] = [];
-    const deviceIds = [...new Set(data.deviceIds)];
+    // Typed per-device failures so the caller can distinguish "device gone"
+    // from "site denied" from "decommissioned" from "insert failed". Matches
+    // the wake worker shape above so the UI can render one summary toast.
+    type BulkFailureCode =
+      | 'TARGET_NOT_FOUND'
+      | 'SITE_ACCESS_DENIED'
+      | 'DECOMMISSIONED'
+      | 'INSERT_FAILED';
+    const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
+    // Devices that completed successfully on a prior call and would queue
+    // a duplicate now (currently only the refresh_inventory dedup path).
+    // Surfaced separately from `failed` so the caller can say "N queued,
+    // M already pending" without misreporting deduped devices as failures.
+    const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
 
     for (const deviceId of deviceIds) {
       const device = await getDeviceWithOrgCheck(deviceId, auth);
-      if (!device || device.status === 'decommissioned') {
-        failed.push(deviceId);
+      if (!device) {
+        failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
+        continue;
+      }
+      // Site denial must win over device-state denials: returning
+      // `DECOMMISSIONED` to a site-restricted caller would confirm the
+      // device exists, is in a reachable org, and is decommissioned.
+      // Keep this in the same order as the wake/single/maintenance paths.
+      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+        failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
+        continue;
+      }
+      if (device.status === 'decommissioned') {
+        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
         continue;
       }
 
-      const [command] = await db
-        .insert(deviceCommands)
-        .values({
+      // Same dedup #856 added to /:id/commands. The bulk path was missed
+      // — caught by @xxiaoxiong on #831. Record into `skipped` (not
+      // `failed`) so the caller can show an accurate "N queued, M already
+      // pending" without misreporting it as an error.
+      if (data.type === 'refresh_inventory') {
+        const [existingPending] = await db
+          .select({ id: deviceCommands.id })
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.type, 'refresh_inventory'),
+              eq(deviceCommands.status, 'pending'),
+            ),
+          )
+          .limit(1);
+        if (existingPending) {
+          skipped.push({ deviceId, code: 'ALREADY_PENDING', commandId: existingPending.id });
+          continue;
+        }
+      }
+
+      // Wrap the insert so a constraint violation, pool exhaustion, or
+      // other postgres error on one device records as INSERT_FAILED for
+      // that device instead of throwing out of the whole loop and
+      // 500-ing the entire batch (losing every prior success).
+      let command: typeof deviceCommands.$inferSelect | undefined;
+      try {
+        [command] = await db
+          .insert(deviceCommands)
+          .values({
+            deviceId,
+            type: data.type,
+            payload: data.payload || {},
+            status: 'pending',
+            createdBy: auth.user.id
+          })
+          .returning();
+      } catch (err) {
+        failed.push({
           deviceId,
-          type: data.type,
-          payload: data.payload || {},
-          status: 'pending',
-          createdBy: auth.user.id
-        })
-        .returning();
+          code: 'INSERT_FAILED',
+          message: err instanceof Error ? err.message : 'Failed to queue command.',
+        });
+        continue;
+      }
 
       if (!command) {
-        failed.push(deviceId);
+        // `returning()` on a successful insert always yields ≥1 row, so
+        // this branch is defensive against a future driver change rather
+        // than a path that fires in practice.
+        failed.push({ deviceId, code: 'INSERT_FAILED', message: 'Failed to queue command.' });
         continue;
       }
 
@@ -85,13 +235,13 @@ commandsRoutes.post(
         resourceName: data.type,
         details: {
           deviceId,
-          commandType: data.type,
+          ...commandAuditDetails(command.id, data.type, data.payload || {}),
           bulk: true
         }
       });
     }
 
-    return c.json({ commands: commandList, failed }, 201);
+    return c.json({ commands: commandList, failed, skipped }, 201);
   }
 );
 
@@ -107,9 +257,16 @@ commandsRoutes.post(
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
+    if (data.type === 'script') {
+      return c.json({ error: 'Script commands must be executed through the scripts endpoint' }, 400);
+    }
+
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Don't allow commands to decommissioned devices
@@ -117,9 +274,58 @@ commandsRoutes.post(
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
     }
 
-    // Validate payload based on command type
-    if (data.type === 'script' && !hasScriptId(data.payload)) {
-      return c.json({ error: 'Script commands require a scriptId in payload' }, 400);
+    // Dedup refresh_inventory: each click fans out ~12 collectors on the
+    // agent, and the API returns 201 as soon as the row is inserted, so a
+    // fast clicker could queue an unbounded backlog. Reject when a pending
+    // refresh_inventory already exists for this device. Other commands
+    // are self-limiting (reboot/shutdown — the device goes away) or rare
+    // (containment, evidence collection) so this guard is scoped narrowly.
+    // (#830)
+    if (data.type === 'refresh_inventory') {
+      const [existingPending] = await db
+        .select({ id: deviceCommands.id })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.type, 'refresh_inventory'),
+            eq(deviceCommands.status, 'pending'),
+          ),
+        )
+        .limit(1);
+      if (existingPending) {
+        return c.json(
+          {
+            error: 'An inventory refresh is already pending for this device',
+            code: 'ALREADY_PENDING',
+            commandId: existingPending.id,
+          },
+          409,
+        );
+      }
+    }
+
+    // Wake-on-LAN takes a separate path: the command row must be addressed to
+    // an online relay agent on the target's LAN, not the offline target.
+    if (data.type === 'wake') {
+      const wake = await dispatchWake(deviceId, auth.user.id, {
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header('user-agent'),
+      });
+      if (!wake.ok) {
+        return c.json({ error: wake.message, code: wake.code }, 412);
+      }
+      return c.json({
+        id: wake.commandId,
+        deviceId,
+        type: 'wake_on_lan',
+        status: 'sent',
+        wakeAttemptId: wake.wakeAttemptId,
+        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
+        network: wake.network,
+        broadcast: wake.broadcast,
+        macs: wake.macs,
+      }, 202);
     }
 
     const [command] = await db
@@ -145,7 +351,7 @@ commandsRoutes.post(
       resourceName: data.type,
       details: {
         deviceId,
-        commandType: data.type
+        ...commandAuditDetails(command.id, data.type, data.payload || {})
       }
     });
 
@@ -173,6 +379,9 @@ commandsRoutes.post(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (device.status === 'decommissioned') {
@@ -208,10 +417,75 @@ commandsRoutes.post(
   }
 );
 
+
+// POST /devices/:id/auto-update - Set auto_update configuration
+commandsRoutes.post(
+  '/:id/auto-update',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('json', z.object({ enabled: z.boolean() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+    const data = c.req.valid('json');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    // Site denial must win over device-state denials — see bulk-generic
+    // for rationale.
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (device.status === 'decommissioned') {
+      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: COMMAND_SET_AUTO_UPDATE,
+        payload: { enabled: data.enabled },
+        status: 'pending',
+        createdBy: auth.user.id
+      })
+      .returning();
+
+    if (!command) {
+      return c.json({ error: 'Failed to queue command' }, 500);
+    }
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.auto_update.set',
+      resourceType: 'device_command',
+      resourceId: command.id,
+      resourceName: 'set_auto_update',
+      details: {
+        deviceId,
+        enabled: data.enabled,
+        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled })
+      }
+    });
+
+    return c.json({
+      id: command.id,
+      deviceId: command.deviceId,
+      type: command.type,
+      status: command.status,
+      createdAt: command.createdAt
+    }, 201);
+  }
+);
+
 // GET /devices/:id/commands - Get command history
 commandsRoutes.get(
   '/:id/commands',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -221,6 +495,9 @@ commandsRoutes.get(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const countResult = await db
@@ -238,7 +515,7 @@ commandsRoutes.get(
       .offset(pagination.offset);
 
     return c.json({
-      data: commands,
+      data: commands.map((command) => sanitizeCommandForHistory(command)),
       pagination: {
         page: pagination.page,
         limit: pagination.limit,
@@ -252,6 +529,7 @@ commandsRoutes.get(
 commandsRoutes.get(
   '/:id/commands/:commandId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -260,6 +538,9 @@ commandsRoutes.get(
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const [command] = await db
@@ -277,6 +558,6 @@ commandsRoutes.get(
       return c.json({ error: 'Command not found' }, 404);
     }
 
-    return c.json({ data: command });
+    return c.json({ data: sanitizeCommandForHistory(command) });
   }
 );

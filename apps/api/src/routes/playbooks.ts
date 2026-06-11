@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, sql, SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   devices,
@@ -13,7 +13,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { checkPlaybookRequiredPermissions } from '../services/playbookPermissions';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 const executionStatusSchema = z.enum([
   'pending',
@@ -132,6 +132,7 @@ playbookRoutes.get(
   zValidator('query', listExecutionsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const limit = query.limit ?? 50;
 
@@ -141,6 +142,25 @@ playbookRoutes.get(
     if (query.deviceId) conditions.push(eq(playbookExecutions.deviceId, query.deviceId));
     if (query.playbookId) conditions.push(eq(playbookExecutions.playbookId, query.playbookId));
     if (query.status) conditions.push(eq(playbookExecutions.status, query.status));
+    if (perms?.allowedSiteIds) {
+      if (query.deviceId) {
+        const deviceConditions: SQL[] = [eq(devices.id, query.deviceId)];
+        const deviceOrgCond = auth.orgCondition(devices.orgId);
+        if (deviceOrgCond) deviceConditions.push(deviceOrgCond);
+        const [device] = await db
+          .select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(...deviceConditions))
+          .limit(1);
+        if (!device || typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId)) {
+          return c.json({ error: 'Device not found or access denied' }, 403);
+        }
+      }
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ executions: [] });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+    }
 
     const executions = await db
       .select({
@@ -175,6 +195,7 @@ playbookRoutes.get(
   async (c) => {
     const { id } = c.req.valid('param');
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
     const conditions: SQL[] = [eq(playbookExecutions.id, id)];
     const orgCond = auth.orgCondition(playbookExecutions.orgId);
@@ -194,6 +215,14 @@ playbookRoutes.get(
 
     if (!execution) {
       return c.json({ error: 'Execution not found' }, 404);
+    }
+    if (
+      perms?.allowedSiteIds &&
+      (!execution.device ||
+        typeof execution.device.siteId !== 'string' ||
+        !canAccessSite(perms, execution.device.siteId))
+    ) {
+      return c.json({ error: 'Execution not found or access denied' }, 403);
     }
 
     return c.json(execution);

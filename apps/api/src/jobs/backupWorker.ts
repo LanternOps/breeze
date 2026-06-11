@@ -34,6 +34,7 @@ import {
   cleanupExpiredSnapshots,
 } from './backupRetention';
 import * as backupEnqueue from './backupEnqueue';
+import { resolveBackupStorageEncryptionPlan } from '../services/backupEncryption';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
@@ -434,6 +435,20 @@ async function processDispatchBackup(
   }
 
   const providerConfig = config.providerConfig as Record<string, unknown>;
+  const encryptionPlan = resolveBackupStorageEncryptionPlan({
+    encryption: config.encryption,
+    provider: config.provider,
+    providerConfig,
+  });
+  if (encryptionPlan.required && encryptionPlan.status === 'unsupported') {
+    await markJobFailed(data.jobId, encryptionPlan.reason);
+    return { dispatched: false };
+  }
+
+  const commandProviderConfig =
+    encryptionPlan.required && encryptionPlan.status === 'enforced'
+      ? { ...providerConfig, ...encryptionPlan.providerConfigPatch }
+      : providerConfig;
   let sentCount = 0;
   const failedTargets: string[] = [];
 
@@ -481,7 +496,17 @@ async function processDispatchBackup(
         jobId: commandJobId,
         configId: data.configId,
         provider: config.provider,
-        providerConfig,
+        providerConfig: commandProviderConfig,
+        storageEncryption: encryptionPlan.required
+          ? {
+              required: true,
+              mode: encryptionPlan.mode,
+              keyReference: encryptionPlan.keyReference,
+            }
+          : {
+              required: false,
+              mode: 'disabled',
+            },
         ...target.payload,
       },
     };

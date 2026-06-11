@@ -15,6 +15,10 @@ import {
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { authMiddleware } from '../../middleware/auth';
+import {
+  getPasswordResetEligibility,
+  getPasswordResetEligibilityForUser,
+} from '../../services/passwordResetEligibility';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { ENABLE_2FA, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema } from './schemas';
@@ -24,10 +28,41 @@ import {
   resolveUserAuditOrgId,
   writeAuthAudit
 } from './helpers';
+import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const passwordRoutes = new Hono();
+
+async function consumePasswordResetToken(
+  redis: ReturnType<typeof getRedis>,
+  tokenHash: string,
+): Promise<string | null> {
+  if (!redis) return null;
+
+  const key = `reset:${tokenHash}`;
+  const redisWithGetDel = redis as typeof redis & {
+    getdel?: (key: string) => Promise<string | null>;
+    eval?: (script: string, keyCount: number, ...keys: string[]) => Promise<unknown>;
+  };
+
+  if (typeof redisWithGetDel.getdel === 'function') {
+    return redisWithGetDel.getdel(key);
+  }
+
+  if (typeof redisWithGetDel.eval === 'function') {
+    const raw = await redisWithGetDel.eval(`
+      local value = redis.call('GET', KEYS[1])
+      if value then
+        redis.call('DEL', KEYS[1])
+      end
+      return value
+    `, 1, key);
+    return typeof raw === 'string' ? raw : null;
+  }
+
+  throw new Error('Redis client does not support atomic password reset token consumption');
+}
 
 // Forgot password
 passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema), async (c) => {
@@ -52,22 +87,20 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
     return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' });
   }
 
-  // Find user (don't reveal if exists). Pre-auth, system-scope wrap.
-  const [user] = await withSystemDbAccessContext(async () =>
-    db
-      .select({ id: users.id, email: users.email })
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1)
-  );
+  // Centralized policy — same helper used by /reset-password so the two
+  // phases of the flow share one definition of "eligible". `pending`
+  // partners are eligible here (closes #719); `suspended` / `churned` /
+  // disabled users are not, but the response is always a generic 200 to
+  // defeat email-enumeration.
+  const eligibility = await getPasswordResetEligibility(normalizedEmail);
 
-  if (user) {
+  if (eligibility.allowed && eligibility.userId && eligibility.email) {
     // Generate reset token
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
 
     // Store token with 1 hour expiry
-    await redis.setex(`reset:${tokenHash}`, 3600, user.id);
+    await redis.setex(`reset:${tokenHash}`, 3600, eligibility.userId);
 
     const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
     const resetUrl = `${appBaseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
@@ -75,7 +108,7 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
     if (emailService) {
       try {
         await emailService.sendPasswordReset({
-          to: user.email,
+          to: eligibility.email,
           resetUrl
         });
       } catch (error) {
@@ -85,9 +118,25 @@ passwordRoutes.post('/forgot-password', zValidator('json', forgotPasswordSchema)
       console.warn('[Auth] Email service not configured; password reset email was not sent');
     }
 
-  } else {
-    // Log when password reset cannot be processed (user not found is expected, but Redis unavailability would be caught above)
+    writeAuthAudit(c, {
+      action: 'user.password.reset.requested',
+      result: 'success',
+      userId: eligibility.userId,
+      email: eligibility.email,
+    });
+  } else if (eligibility.reason === 'unknown_user') {
+    // Expected — keep response indistinguishable to defeat enumeration.
     console.warn('[auth] Password reset requested for non-existent account');
+  } else if (eligibility.userId) {
+    // Known user, blocked for policy reasons (SSO required / tenant
+    // inactive / user disabled). Log the denial for ops visibility.
+    writeAuthAudit(c, {
+      action: 'user.password.reset.requested',
+      result: 'denied',
+      reason: eligibility.reason,
+      userId: eligibility.userId,
+      email: eligibility.email,
+    });
   }
 
   // Always return success
@@ -109,27 +158,60 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
     return c.json({ error: 'Password reset unavailable. Please try again later.' }, 503);
   }
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const userId = await redis.get(`reset:${tokenHash}`);
+  const userId = await consumePasswordResetToken(redis, tokenHash);
 
   if (!userId) {
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+
+  // Re-evaluate eligibility at consumption time — if the partner was
+  // suspended between issuing the token and the user clicking the reset
+  // link, we must not let the reset complete. Same policy helper as
+  // /forgot-password so the two phases of the flow can't drift (#719).
+  const eligibility = await getPasswordResetEligibilityForUser(userId);
+  if (!eligibility.allowed) {
+    if (eligibility.reason === 'sso_required') {
+      writeAuthAudit(c, {
+        action: 'user.password.reset',
+        result: 'denied',
+        reason: 'sso_required',
+        userId,
+      });
+      return c.json({ error: 'Password reset is disabled because your organization requires SSO.' }, 403);
+    }
+
+    writeAuthAudit(c, {
+      action: 'user.password.reset',
+      result: 'denied',
+      reason: eligibility.reason,
+      userId,
+    });
+    // For all other ineligible reasons (tenant_inactive, user_disabled,
+    // unknown_user) surface the same generic error as an expired token
+    // — never leak partner-status to the client.
     return c.json({ error: 'Invalid or expired reset token' }, 400);
   }
 
   // Hash new password
   const passwordHash = await hashPassword(password);
 
-  // Update password
-  await db
-    .update(users)
-    .set({
-      passwordHash,
-      passwordChangedAt: new Date(),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, userId));
-
-  // Invalidate reset token
-  await redis.del(`reset:${tokenHash}`);
+  // Pre-auth path: no session means RLS context is empty, and the
+  // breeze_user_isolation_update policy on `users` requires partner/org
+  // /self context. Without the system-scope wrap, Drizzle issues an
+  // UPDATE that matches zero rows and silently returns success — the
+  // password never changes, the next login fails, and we ship a broken
+  // reset flow. Wrap so RLS is bypassed for this trusted token-gated
+  // path. Same fix needed in accept-invite (see invite.ts).
+  await withSystemDbAccessContext(async () =>
+    db
+      .update(users)
+      .set({
+        passwordHash,
+        passwordChangedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, userId))
+  );
 
   // Invalidate all sessions — best-effort; password is already changed above
   await invalidateAllUserSessions(userId);
@@ -155,6 +237,19 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
 passwordRoutes.post('/change-password', authMiddleware, zValidator('json', changePasswordSchema), async (c) => {
   const auth = c.get('auth');
   const { currentPassword, newPassword } = c.req.valid('json');
+
+  try {
+    await assertPasswordAuthAllowedBySso({
+      scope: auth.scope,
+      orgId: auth.orgId
+    });
+  } catch (error) {
+    if (!(error instanceof SsoPasswordAuthRequiredError)) throw error;
+    return c.json({
+      error: 'Password changes are disabled because your organization requires SSO.',
+      message: 'Password changes are disabled because your organization requires SSO.'
+    }, 403);
+  }
 
   const [user] = await db
     .select({ passwordHash: users.passwordHash })

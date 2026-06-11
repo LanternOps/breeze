@@ -10,7 +10,7 @@
  */
 
 import { db, withDbAccessContext } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
@@ -21,10 +21,53 @@ import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
+import { compactToolResultForChat } from './aiToolOutput';
+import { buildApprovalPush, getUserPushTokens, sendExpoPush } from './expoPush';
+import { decideHelperToolAction } from './pamToolActionGovernance';
+import { loadSession, loadConnection } from './m365Helpers';
+import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
-const MCP_PREFIX = 'mcp__breeze__';
+
+function stripMcpPrefix(toolName: string): string {
+  if (!toolName.startsWith('mcp__')) return toolName;
+  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
+  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
+}
+
+/**
+ * Human-readable verbs for the two M365 mutation tools that hit per-step
+ * approval. The three read tools are tier 1 and never create an approval card,
+ * so they are intentionally absent.
+ */
+const M365_VERB: Record<string, string> = {
+  m365_reset_password: 'Reset M365 password for',
+  m365_disable_user: 'Disable M365 sign-in for',
+};
+
+/**
+ * Build an enriched approval-card risk summary for M365 mutation tools,
+ * surfacing the customer tenant, target user, and the operator's reason.
+ * Returns null for non-M365 tools or when no connection is available, so the
+ * caller can fall back to the default guardrail description.
+ */
+export function buildM365RiskSummary(
+  toolName: string,
+  input: Record<string, unknown>,
+  conn: Pick<DelegantM365ConnectionRow, 'customerDisplayName'> | null,
+): string | null {
+  const verb = M365_VERB[stripMcpPrefix(toolName)] ?? M365_VERB[toolName];
+  if (!verb || !conn) return null;
+  const user = String(input.userIdentifier ?? 'a user');
+  const reason = input.reason ? ` Reason: ${String(input.reason)}.` : '';
+  return `${verb} ${user} on ${conn.customerDisplayName}.${reason}`;
+}
+
+function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
+  const bareToolName = stripMcpPrefix(toolName);
+  return allowedTools.some((allowedTool) => stripMcpPrefix(allowedTool) === bareToolName);
+}
 
 // ============================================
 // Pre-flight checks
@@ -181,6 +224,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
+    if (session.allowedTools && !isAllowedForSession(toolName, session.allowedTools)) {
+      return { allowed: false, error: `Tool '${toolName}' is not allowed for this session` };
+    }
+
     // Guardrails (tier check + action-based escalation)
     const guardrailCheck = checkGuardrails(toolName, input);
 
@@ -217,11 +264,97 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // wrapped in withDbAccessContext({scope:'organization', orgId: session.orgId, ...})
     // to set the correct PostgreSQL GUCs under RLS.
     if (guardrailCheck.tier >= 2) {
+      // Helper sessions: PAM governs (Phase 1, security finding A). This
+      // branch precedes the auto_approve/plan shortcuts on purpose — a
+      // helper token must never self-relax the approval gate. The
+      // approval_requests/mobile bridge is skipped: the synthetic helper
+      // "user" id is a device id (no users-FK row, no mobile owner).
+      // Approval happens via POST /pam/elevation-requests/:id/respond
+      // (separate identity), which mirrors onto this execution row.
+      if (session.auth.helperDeviceId) {
+        const helperDeviceId = session.auth.helperDeviceId;
+        let helperExec: { id: string } | undefined;
+        try {
+          const [row] = await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .insert(aiToolExecutions)
+                .values({
+                  sessionId: session.breezeSessionId,
+                  toolName,
+                  toolInput: input,
+                  status: 'pending',
+                })
+                .returning()
+          );
+          helperExec = row;
+        } catch (err) {
+          console.error('[AI-SDK] Failed to create helper approval record:', toolName, err);
+          return { allowed: false, error: 'Failed to create approval record' };
+        }
+        if (!helperExec) {
+          return { allowed: false, error: 'Failed to create approval record' };
+        }
+
+        session.eventBus.publish({
+          type: 'approval_required',
+          executionId: helperExec.id,
+          toolName,
+          input,
+          description: guardrailCheck.description ?? `Execute ${toolName}`,
+          requiresAdminApproval: true,
+        });
+
+        const decision = await decideHelperToolAction({
+          orgId: session.orgId,
+          deviceId: helperDeviceId,
+          executionId: helperExec.id,
+          toolName: stripMcpPrefix(toolName),
+          toolInput: input as Record<string, unknown>,
+          riskTier: guardrailCheck.tier,
+          subjectUsername: session.auth.user.name ?? 'helper',
+        });
+
+        if (decision === 'denied') {
+          return { allowed: false, error: 'This action was denied by organization policy' };
+        }
+
+        // Block until PAM decides (an auto-approved elevation has already
+        // flipped the row, so this returns on the first poll).
+        const approved = await waitForApproval(
+          helperExec.id,
+          300_000,
+          session.abortController.signal,
+        );
+        if (!approved) {
+          return {
+            allowed: false,
+            error: 'Tool execution was rejected or timed out awaiting administrator approval',
+          };
+        }
+
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .update(aiToolExecutions)
+                .set({ status: 'executing' })
+                .where(eq(aiToolExecutions.id, helperExec!.id))
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to update helper approval to executing:', helperExec.id, err);
+        }
+        return { allowed: true };
+      }
+
       // Determine effective approval mode (pause overrides to per_step)
       const effectiveMode: AiApprovalMode = session.isPaused ? 'per_step' : session.approvalMode;
 
-      // Auto-approve mode: skip approval dialog, just create audit record
-      if (effectiveMode === 'auto_approve') {
+      // Auto-approve mode only skips approval for Tier 2 tools. Tier 3+
+      // tools still require an explicit per-step approval.
+      if (effectiveMode === 'auto_approve' && guardrailCheck.tier === 2) {
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -353,13 +486,114 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         }
       }
 
+      // Bridge to mobile-readable approval_requests row.
+      // Mobile clients read from /api/v1/mobile/approvals/* (NEVER from
+      // ai_tool_executions). The approve/deny route handlers resolve the
+      // execution_id back to the SDK's waitForApproval() poll.
+      //
+      // Tier → riskTier mapping (documented in the spec):
+      //   Tier 2 → 'medium' (auto-approve still mutates; per_step shows mobile)
+      //   Tier 3 → 'high'   (destructive — execute_command, run_script, …)
+      //   Tier 4 → 'critical' (blocked at guardrail layer; never reaches here)
+      // We don't have a separate "destructive" tier today, so Tier 3 is the
+      // ceiling that actually fires. Pick 'high' as the safe default for
+      // anything unexpected.
+      const description = guardrailCheck.description ?? `Execute ${toolName}`;
+      const riskTier: 'medium' | 'high' | 'critical' =
+        guardrailCheck.tier >= 4 ? 'critical' : guardrailCheck.tier >= 3 ? 'high' : 'medium';
+      const actionLabel = description;
+      // For M365 mutation tools, enrich the approval card with the customer
+      // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
+      // the default description rather than throwing into the approval path.
+      let m365Summary: string | null = null;
+      try {
+        const sessRow = await loadSession(session.breezeSessionId);
+        if (sessRow?.delegantM365ConnectionId) {
+          const conn = await loadConnection(sessRow.delegantM365ConnectionId);
+          m365Summary = buildM365RiskSummary(toolName, input as Record<string, unknown>, conn);
+        }
+      } catch { /* non-fatal: fall back to default description */ }
+      const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
+      const expiresAt = new Date(Date.now() + 300_000); // matches waitForApproval timeout
+
+      let approvalRequestId: string | undefined;
+      try {
+        const [approvalRow] = await withDbAccessContext(
+          {
+            scope: 'organization',
+            orgId: session.orgId,
+            accessibleOrgIds: [session.orgId],
+            userId: session.auth.user.id,
+          },
+          () =>
+            db
+              .insert(approvalRequests)
+              .values({
+                userId: session.auth.user.id,
+                executionId: approvalExec!.id,
+                requestingClientLabel: 'Breeze AI',
+                requestingMachineLabel: null,
+                actionLabel,
+                actionToolName: stripMcpPrefix(toolName),
+                actionArguments: input as Record<string, unknown>,
+                riskTier,
+                riskSummary,
+                status: 'pending',
+                // The chat session's originating OAuth client is not yet
+                // tracked on aiSessions; until that lands, the AI-agent
+                // path can't be a self-loop with the mobile push target.
+                // (deriveIsRecursive() with a null requestingClientId
+                // returns false — explicit here for documentation.)
+                isRecursive: false,
+                expiresAt,
+              })
+              .returning({ id: approvalRequests.id })
+        );
+        approvalRequestId = approvalRow?.id;
+      } catch (err) {
+        console.error('[AI-SDK] Failed to create mobile approval_request row:', err);
+        // Non-fatal: SSE approval flow still works for in-app web UI even
+        // without the mobile-readable row. The approve/deny handler simply
+        // won't have an executionId to resolve back to.
+      }
+
+      // Best-effort push notification to the user's mobile device(s).
+      if (approvalRequestId) {
+        try {
+          const tokens = await withDbAccessContext(
+            {
+              scope: 'organization',
+              orgId: session.orgId,
+              accessibleOrgIds: [session.orgId],
+              userId: session.auth.user.id,
+            },
+            () => getUserPushTokens(session.auth.user.id),
+          );
+          if (tokens.length > 0) {
+            await sendExpoPush(
+              tokens.map((to) => ({
+                to,
+                ...buildApprovalPush({
+                  approvalId: approvalRequestId!,
+                  actionLabel,
+                  requestingClientLabel: 'Breeze AI',
+                }),
+              })),
+            );
+          }
+        } catch (err) {
+          console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
+        }
+      }
+
       // Emit approval_required event via session event bus → UI shows Approve/Reject
       session.eventBus.publish({
         type: 'approval_required',
         executionId: approvalExec.id,
+        approvalRequestId,
         toolName,
         input,
-        description: guardrailCheck.description ?? `Execute ${toolName}`,
+        description,
         deviceContext,
       });
 
@@ -407,7 +641,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     if (!toolUseId) {
       console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
     }
-    const parsedOutput = safeParseJson(output);
+    const safeOutput = compactToolResultForChat(toolName, output);
+    const parsedOutput = safeParseJson(safeOutput);
     const sessionId = session.breezeSessionId;
     const orgId = session.auth.orgId ?? undefined;
     const guardrailCheck = checkGuardrails(toolName, input);
@@ -481,7 +716,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               toolInput: input,
               toolOutput: parsedOutput,
               status: isError ? 'failed' : 'completed',
-              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+              errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
+              delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
               durationMs,
               completedAt: new Date(),
             })
@@ -499,7 +735,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               .set({
                 status: isError ? 'failed' : 'completed',
                 toolOutput: parsedOutput,
-                errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 1000)) : undefined,
+                errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
+                delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
                 durationMs,
                 completedAt: new Date(),
               })
@@ -520,7 +757,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       try {
         const errorMsg = (typeof parsedOutput.error === 'string'
           ? parsedOutput.error
-          : output).slice(0, 500);
+          : safeOutput).slice(0, 500);
         await withDbAccessContext(
           { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
           () =>
@@ -576,7 +813,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         actorId: session.auth.user.id,
         actorEmail: session.auth.user.email,
         initiatedBy: 'ai',
-        ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : output.slice(0, 500) } : {}),
+        ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 500) } : {}),
         details: {
           sessionId,
           toolInput: input,

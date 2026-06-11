@@ -17,7 +17,8 @@ import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
 import { publishEvent } from '../services/eventBus';
 import { resolveSensitiveDataKeySelection } from '../services/sensitiveDataKeys';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { writeRouteAudit } from '../services/auditEvents';
 import {
   recordSensitiveDataRemediationDecision,
   recordSensitiveDataScanQueued
@@ -146,6 +147,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function asIso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
+}
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
 }
 
 function normalizeDetectionClasses(input: unknown): Array<typeof dataTypeValues[number]> {
@@ -294,13 +300,21 @@ sensitiveDataRoutes.post(
         id: devices.id,
         orgId: devices.orgId,
         hostname: devices.hostname,
-        status: devices.status
+        status: devices.status,
+        siteId: devices.siteId
       })
       .from(devices)
       .where(and(...deviceConditions));
 
     if (availableDevices.length === 0) {
       return c.json({ error: 'No accessible devices found for scan request' }, 404);
+    }
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const siteDeniedDeviceIds = availableDevices
+      .filter((device) => !canAccessDeviceSite(device, permissions))
+      .map((device) => device.id);
+    if (siteDeniedDeviceIds.length > 0) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     const byId = new Map(availableDevices.map((device) => [device.id, device]));
@@ -362,7 +376,19 @@ sensitiveDataRoutes.get(
   '/scans',
   requireScope('organization', 'partner', 'system'),
   requireSensitiveDataRead,
-  zValidator('query', z.object({ limit: z.coerce.number().int().min(1).max(200).optional() }).strict().optional()),
+  zValidator(
+    'query',
+    z
+      .object({
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+        // Frontend always sends ?orgId=<currentOrgId> for partner-scope context;
+        // we accept it so the strict() schema doesn't ZodError. Org scoping is
+        // enforced by `auth.orgCondition(...)` below, not by this field.
+        orgId: z.string().uuid().optional(),
+      })
+      .strict()
+      .optional()
+  ),
   async (c) => {
     const auth = c.get('auth');
     const limit = Number(c.req.query('limit') ?? 50);
@@ -370,6 +396,8 @@ sensitiveDataRoutes.get(
     const conditions: SQL[] = [];
     const orgCondition = auth.orgCondition(sensitiveDataScans.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -384,6 +412,7 @@ sensitiveDataRoutes.get(
         summary: sensitiveDataScans.summary,
         createdAt: sensitiveDataScans.createdAt,
         deviceName: devices.hostname,
+        deviceSiteId: devices.siteId,
       })
       .from(sensitiveDataScans)
       .innerJoin(devices, eq(devices.id, sensitiveDataScans.deviceId))
@@ -432,7 +461,8 @@ sensitiveDataRoutes.get(
         completedAt: sensitiveDataScans.completedAt,
         summary: sensitiveDataScans.summary,
         createdAt: sensitiveDataScans.createdAt,
-        deviceName: devices.hostname
+        deviceName: devices.hostname,
+        deviceSiteId: devices.siteId
       })
       .from(sensitiveDataScans)
       .innerJoin(devices, eq(devices.id, sensitiveDataScans.deviceId))
@@ -440,6 +470,9 @@ sensitiveDataRoutes.get(
       .limit(1);
 
     if (!scan) return c.json({ error: 'Scan not found' }, 404);
+    if (!canAccessDeviceSite({ siteId: scan.deviceSiteId }, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const summaryCounters = parseSummaryCounters(scan.summary);
     if (summaryCounters) {
@@ -516,12 +549,15 @@ sensitiveDataRoutes.get(
     if (query.dataType) conditions.push(eq(sensitiveDataFindings.dataType, query.dataType));
     if (query.deviceId) conditions.push(eq(sensitiveDataFindings.deviceId, query.deviceId));
     if (query.scanId) conditions.push(eq(sensitiveDataFindings.scanId, query.scanId));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [row] = await db
       .select({ count: sql<number>`count(*)` })
       .from(sensitiveDataFindings)
+      .innerJoin(devices, eq(devices.id, sensitiveDataFindings.deviceId))
       .where(whereClause);
     const count = row?.count ?? 0;
 
@@ -741,6 +777,24 @@ sensitiveDataRoutes.post(
       }
 
       recordSensitiveDataRemediationDecision(payload.action, findings.length);
+
+      const auditAction = payload.action === 'accept_risk'
+        ? 'sensitive_data.finding.accept_risk'
+        : payload.action === 'false_positive'
+          ? 'sensitive_data.finding.false_positive'
+          : 'sensitive_data.finding.mark_remediated';
+      const flippedFindingIds = findings.map((finding) => finding.id);
+      writeRouteAudit(c, {
+        orgId: findings[0]?.orgId,
+        action: auditAction,
+        resourceType: 'sensitive_data_finding',
+        details: {
+          action: payload.action,
+          findingIds: flippedFindingIds,
+          count: flippedFindingIds.length,
+        },
+      });
+
       return c.json({
         data: {
           updated: findings.length,
@@ -809,6 +863,17 @@ sensitiveDataRoutes.post(
       recordSensitiveDataRemediationDecision('queue_failed', failed.length);
     }
 
+    writeRouteAudit(c, {
+      orgId: findings[0]?.orgId,
+      action: 'sensitive_data.finding.remediate',
+      resourceType: 'sensitive_data_finding',
+      details: {
+        action: payload.action,
+        queued: queued.length,
+        failed: failed.length,
+      },
+    });
+
     return c.json({
       data: {
         queued,
@@ -874,6 +939,14 @@ sensitiveDataRoutes.post(
 
     if (!policy) return c.json({ error: 'Failed to create policy' }, 500);
 
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'sensitive_data_policy.create',
+      resourceType: 'sensitive_data_policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+    });
+
     return c.json({
       data: {
         ...policy,
@@ -923,6 +996,15 @@ sensitiveDataRoutes.put(
 
     if (!updated) return c.json({ error: 'Failed to update policy' }, 500);
 
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'sensitive_data_policy.update',
+      resourceType: 'sensitive_data_policy',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: { changedFields: Object.keys(payload) },
+    });
+
     return c.json({
       data: {
         ...updated,
@@ -948,7 +1030,11 @@ sensitiveDataRoutes.delete(
     if (orgCondition) conditions.push(orgCondition);
 
     const [existing] = await db
-      .select({ id: sensitiveDataPolicies.id })
+      .select({
+        id: sensitiveDataPolicies.id,
+        name: sensitiveDataPolicies.name,
+        orgId: sensitiveDataPolicies.orgId
+      })
       .from(sensitiveDataPolicies)
       .where(and(...conditions))
       .limit(1);
@@ -956,6 +1042,15 @@ sensitiveDataRoutes.delete(
     if (!existing) return c.json({ error: 'Policy not found' }, 404);
 
     await db.delete(sensitiveDataPolicies).where(eq(sensitiveDataPolicies.id, id));
+
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'sensitive_data_policy.delete',
+      resourceType: 'sensitive_data_policy',
+      resourceId: existing.id,
+      resourceName: existing.name,
+    });
+
     return c.json({ success: true });
   }
 );

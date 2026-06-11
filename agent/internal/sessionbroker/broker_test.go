@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -601,8 +603,8 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 
 	b := &Broker{
 		sessions: map[string]*Session{
-			sess1.SessionID:    sess1,
-			sess2.SessionID:    sess2,
+			sess1.SessionID:     sess1,
+			sess2.SessionID:     sess2,
 			loginSess.SessionID: loginSess,
 		},
 		byIdentity:   make(map[string][]*Session),
@@ -865,4 +867,99 @@ func TestTimedRWMutexWarnsOnSlowAcquire(t *testing.T) {
 	if !strings.Contains(output, "waited_ms=") {
 		t.Fatalf("expected waited_ms field, got:\n%s", output)
 	}
+}
+
+func TestAssistScopesConstant(t *testing.T) {
+	if len(assistHelperScopes) != 1 || assistHelperScopes[0] != "assist" {
+		t.Fatalf("assistHelperScopes = %v, want [\"assist\"]", assistHelperScopes)
+	}
+	for _, s := range assistHelperScopes {
+		switch s {
+		case "desktop", "clipboard", "run_as_user", "notify", "tray":
+			t.Fatalf("assist scope must not include %q", s)
+		}
+	}
+}
+
+func TestScopesForRoleAssist(t *testing.T) {
+	b := &Broker{}
+	got := b.scopesForRole(ipc.HelperRoleAssist, ipc.HelperBinaryAssistHelper, "darwin", "/x")
+	if len(got) != 1 || got[0] != "assist" {
+		t.Fatalf("scopesForRole(assist) = %v, want [assist]", got)
+	}
+}
+
+func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
+	paths := assistHelperBinaryPaths("/opt/breeze")
+	found := false
+	for _, p := range paths {
+		base := filepath.Base(p)
+		if base == "breeze-helper" || base == "breeze-helper.exe" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("assistHelperBinaryPaths(%q) = %v, missing breeze-helper binary", "/opt/breeze", paths)
+	}
+
+	// On non-windows platforms the agent-dir-relative path must be present so
+	// the hash allowlist covers helpers installed alongside the agent.
+	if runtime.GOOS != "windows" {
+		want := filepath.Join("/opt/breeze", "breeze-helper")
+		has := false
+		for _, p := range paths {
+			if p == want {
+				has = true
+			}
+		}
+		if !has {
+			t.Fatalf("assistHelperBinaryPaths missing agent-dir path %q; got %v", want, paths)
+		}
+	}
+
+	if runtime.GOOS == "darwin" {
+		want := "/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper"
+		has := false
+		for _, p := range paths {
+			if p == want {
+				has = true
+			}
+		}
+		if !has {
+			t.Fatalf("darwin paths %v missing %q", paths, want)
+		}
+	}
+}
+
+// TestAssistHelperBinaryPathsWindowsRealInstallPath guards the regression where
+// the Windows allowlist used the agent dir instead of the Helper MSI's real
+// "<ProgramFiles>\Breeze Helper\" install location, causing the broker to reject
+// the genuine Helper on Windows. Runs on any host via the OS-parameterized core.
+func TestAssistHelperBinaryPathsWindowsRealInstallPath(t *testing.T) {
+	paths := assistHelperBinaryPathsForOS(`C:\Program Files\Breeze`, "windows", `C:\Program Files`)
+	// At least one candidate must point at the "Breeze Helper" install dir
+	// (not the agent's "Breeze" dir) and be the breeze-helper.exe binary.
+	found := false
+	for _, p := range paths {
+		if strings.Contains(p, "Breeze Helper") && strings.HasSuffix(p, "breeze-helper.exe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("windows assist paths %v missing a 'Breeze Helper\\breeze-helper.exe' candidate", paths)
+	}
+}
+
+func TestSetSessionAuthenticatedHandler(t *testing.T) {
+	b := New("/tmp/does-not-matter.sock", func(*Session, *ipc.Envelope) {})
+	var got *Session
+	b.SetSessionAuthenticatedHandler(func(s *Session) { got = s })
+	sess := &Session{}
+	b.fireSessionAuthenticated(sess)
+	if got != sess {
+		t.Fatalf("handler not invoked with the session")
+	}
+	// Nil handler must be a no-op (no panic).
+	b2 := New("/tmp/x.sock", func(*Session, *ipc.Envelope) {})
+	b2.fireSessionAuthenticated(&Session{})
 }

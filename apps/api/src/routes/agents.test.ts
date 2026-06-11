@@ -24,6 +24,14 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
+// Enrollment now gates on tenant status; default to an active tenant so these
+// existing enroll tests exercise the success path. Suspended-tenant gating is
+// covered in routes/agents/enrollment.test.ts. agentAuth (the other
+// tenantStatus consumer) is mocked separately below, so getActiveOrgTenant is
+// the only export reachable here.
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
+}));
 vi.mock('../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
@@ -122,6 +130,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
+  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed-${key}`]),
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
 }));
 
@@ -164,7 +173,8 @@ vi.mock('../services/commandQueue', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 vi.mock('../middleware/agentAuth', () => ({
@@ -173,7 +183,8 @@ vi.mock('../middleware/agentAuth', () => ({
       deviceId: 'device-123',
       agentId: 'agent-123',
       orgId: 'org-123',
-      siteId: 'site-123'
+      siteId: 'site-123',
+      role: 'agent'
     });
     return next();
   }),
@@ -206,6 +217,18 @@ describe('agent routes', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  describe('GET /agents/install.sh', () => {
+    it('requires Linux agent checksum metadata verification before install', async () => {
+      const res = await app.request('/agents/install.sh');
+
+      expect(res.status).toBe(200);
+      const script = await res.text();
+      expect(script).toContain('/api/v1/agent-versions/latest?platform=${OS}&arch=${ARCH}&component=agent');
+      expect(script).toContain('verify_sha256 "$TMPFILE" "$EXPECTED_SHA256"');
+      expect(script).toContain('Refusing to install without a trusted checksum');
+    });
   });
 
   describe('POST /agents/enroll', () => {
@@ -304,7 +327,10 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([])
+              // #946: in-tx consume-key UPDATE must return one row to indicate
+              // a successful claim. An empty array triggers the race-lost
+              // sentinel and rolls back the device INSERT.
+              returning: vi.fn().mockResolvedValue([{ id: 'key-123' }])
             })
           })
         })
@@ -427,7 +453,10 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([])
+              // #946: in-tx consume-key UPDATE must return one row to indicate
+              // a successful claim. An empty array triggers the race-lost
+              // sentinel and rolls back the device INSERT.
+              returning: vi.fn().mockResolvedValue([{ id: 'key-123' }])
             })
           })
         })
@@ -527,7 +556,10 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([])
+              // #946: in-tx consume-key UPDATE must return one row to indicate
+              // a successful claim. An empty array triggers the race-lost
+              // sentinel and rolls back the device INSERT.
+              returning: vi.fn().mockResolvedValue([{ id: 'key-123' }])
             })
           })
         })
@@ -640,6 +672,37 @@ describe('agent routes', () => {
   });
 
   describe('POST /agents/:id/heartbeat', () => {
+    it('rejects client-asserted watchdog role when authenticated as normal agent', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'device-123',
+              agentId: 'agent-123',
+              orgId: 'org-123'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/agent-123/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: 'watchdog',
+          status: 'ok',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(401);
+      const body = await res.json() as { code?: string; expected?: string; declared?: string };
+      expect(body.code).toBe('re_enrollment_required');
+      expect(body.expected).toBe('agent');
+      expect(body.declared).toBe('watchdog');
+      expect(claimPendingCommandsForDevice).not.toHaveBeenCalled();
+    });
+
     it('should return pending commands and store metrics', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -727,7 +790,8 @@ describe('agent routes', () => {
               {
                 rules: [
                   { type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Zeta', registryValueName: 'Enabled' },
-                  { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' }
+                  { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' },
+                  { type: 'config_check', configFilePath: '/etc/breeze/agent.yaml', configKey: 'auth_token' }
                 ]
               },
               {

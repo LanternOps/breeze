@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
-import { eq, and, lt, inArray, or } from 'drizzle-orm';
+import { eq, and, lt, gt, asc, inArray, or } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert } from '../services/alertService';
@@ -91,7 +91,7 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
  * Process detect-offline job
  * Finds devices that haven't sent heartbeats within threshold
  */
-async function processDetectOffline(data: DetectOfflineJobData): Promise<{
+export async function processDetectOffline(data: DetectOfflineJobData): Promise<{
   detected: number;
   durationMs: number;
 }> {
@@ -99,46 +99,67 @@ async function processDetectOffline(data: DetectOfflineJobData): Promise<{
   const thresholdMinutes = data.thresholdMinutes || DEFAULT_OFFLINE_THRESHOLD_MINUTES;
   const thresholdTime = new Date(Date.now() - thresholdMinutes * 60 * 1000);
 
-  // Find devices that are marked online but haven't been seen recently
-  const staleDevices = await db
-    .select({
-      id: devices.id,
-      orgId: devices.orgId,
-      hostname: devices.hostname,
-      displayName: devices.displayName,
-      lastSeenAt: devices.lastSeenAt
-    })
-    .from(devices)
-    .where(
-      and(
-        or(eq(devices.status, 'online'), eq(devices.status, 'updating')),
-        lt(devices.lastSeenAt, thresholdTime)
-      )
-    )
-    .limit(100);
+  // Env tunables — same shape as alertWorker. cap=0 means unlimited per run.
+  const cap = Number(process.env.OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN ?? '5000');
+  const chunkSize = Math.max(1, Number(process.env.OFFLINE_DETECTOR_CHUNK_SIZE ?? '500'));
 
-  if (staleDevices.length === 0) {
-    return { detected: 0, durationMs: Date.now() - startTime };
+  const queue = getOfflineQueue();
+  let totalDetected = 0;
+  let cursor: string | null = null;
+
+  while (true) {
+    const remaining = cap > 0 ? Math.max(0, cap - totalDetected) : chunkSize;
+    if (cap > 0 && remaining === 0) {
+      console.warn(`[OfflineDetector] Hit OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN=${cap}; remainder will be picked up next run`);
+      break;
+    }
+
+    const limit = Math.min(chunkSize, remaining || chunkSize);
+
+    const conditions = [
+      or(eq(devices.status, 'online'), eq(devices.status, 'updating')),
+      lt(devices.lastSeenAt, thresholdTime)
+    ];
+    if (cursor) conditions.push(gt(devices.id, cursor));
+
+    const chunk = await db
+      .select({
+        id: devices.id,
+        orgId: devices.orgId,
+        hostname: devices.hostname,
+        displayName: devices.displayName,
+        lastSeenAt: devices.lastSeenAt
+      })
+      .from(devices)
+      .where(and(...conditions))
+      .orderBy(asc(devices.id))
+      .limit(limit);
+
+    if (chunk.length === 0) break;
+
+    const jobs = chunk.map(device => ({
+      name: 'mark-offline',
+      data: {
+        type: 'mark-offline' as const,
+        deviceId: device.id,
+        orgId: device.orgId,
+        lastSeenAt: device.lastSeenAt?.toISOString() || ''
+      }
+    }));
+
+    await queue.addBulk(jobs);
+    totalDetected += jobs.length;
+    cursor = chunk[chunk.length - 1]!.id;
+
+    if (chunk.length < limit) break;
   }
 
-  // Queue individual mark-offline jobs
-  const queue = getOfflineQueue();
-  const jobs = staleDevices.map(device => ({
-    name: 'mark-offline',
-    data: {
-      type: 'mark-offline' as const,
-      deviceId: device.id,
-      orgId: device.orgId,
-      lastSeenAt: device.lastSeenAt?.toISOString() || ''
-    }
-  }));
-
-  await queue.addBulk(jobs);
-
-  console.log(`[OfflineDetector] Detected ${staleDevices.length} stale devices`);
+  if (totalDetected > 0) {
+    console.log(`[OfflineDetector] Detected ${totalDetected} stale devices`);
+  }
 
   return {
-    detected: staleDevices.length,
+    detected: totalDetected,
     durationMs: Date.now() - startTime
   };
 }

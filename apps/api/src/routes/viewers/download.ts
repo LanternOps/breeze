@@ -57,10 +57,11 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
       console.error(`[viewer-download] Failed to read installer ${filename}:`, err);
       return c.json({ error: 'Internal server error', message: 'Failed to read installer file' }, 500);
     }
+    console.warn('[viewer-download] Local installer missing', { filename });
     return c.json(
       {
         error: 'Installer not found',
-        message: `Viewer installer "${filename}" is not available. Ensure the installer has been built and placed in the configured VIEWER_BINARY_DIR (${viewerDir}).`,
+        message: `Viewer installer "${filename}" is not available.`,
       },
       404
     );

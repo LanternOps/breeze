@@ -38,7 +38,7 @@ func (c *ConnectionsCollector) Collect() ([]ConnectionInfo, error) {
 			}
 		}
 
-		connections = append(connections, ConnectionInfo{
+		connections = append(connections, sanitizeConnectionInfo(ConnectionInfo{
 			Protocol:    protocol,
 			LocalAddr:   conn.Laddr.IP,
 			LocalPort:   int(conn.Laddr.Port),
@@ -47,7 +47,7 @@ func (c *ConnectionsCollector) Collect() ([]ConnectionInfo, error) {
 			State:       conn.Status,
 			Pid:         int(conn.Pid),
 			ProcessName: processName,
-		})
+		}))
 	}
 
 	return connections, nil

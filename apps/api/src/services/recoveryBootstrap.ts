@@ -90,12 +90,15 @@ export function buildRecoveryDownloadDescriptor(args: {
 }) {
   const serverUrl = resolveServerUrl(args.requestUrl);
   const expiresAt = computeRecoveryDownloadExpiry(args.authenticatedAt, args.tokenExpiresAt);
+  const advertiseQueryToken =
+    process.env.BMR_RECOVERY_ADVERTISE_QUERY_TOKEN === '1' ||
+    process.env.BMR_RECOVERY_ADVERTISE_QUERY_TOKEN === 'true';
 
   return {
     type: 'breeze_proxy',
     method: 'GET',
     url: `${serverUrl}/api/v1/backup/bmr/recover/download`,
-    tokenQueryParam: 'token',
+    ...(advertiseQueryToken ? { tokenQueryParam: 'token' } : {}),
     tokenHeaderName: 'authorization',
     tokenHeaderFormat: 'Bearer <recovery-token>',
     pathQueryParam: 'path',

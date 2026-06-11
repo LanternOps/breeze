@@ -17,13 +17,13 @@ var (
 
 // SQLInstance describes a discovered SQL Server instance.
 type SQLInstance struct {
-	Name      string        `json:"name"`      // e.g. "MSSQLSERVER" or "SQLEXPRESS"
+	Name      string        `json:"name"` // e.g. "MSSQLSERVER" or "SQLEXPRESS"
 	Version   string        `json:"version"`
 	Edition   string        `json:"edition"`
 	Port      int           `json:"port"`
-	AuthType  string        `json:"authType"`  // windows, sql, mixed
+	AuthType  string        `json:"authType"` // windows, sql, mixed
 	Databases []SQLDatabase `json:"databases"`
-	Status    string        `json:"status"`    // online, offline, unknown
+	Status    string        `json:"status"` // online, offline, unknown
 }
 
 // SQLDatabase describes a database within a SQL Server instance.

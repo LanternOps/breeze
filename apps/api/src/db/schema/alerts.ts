@@ -11,13 +11,15 @@ import {
   index,
   numeric
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
 export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', 'medium', 'low', 'info']);
 export const alertStatusEnum = pgEnum('alert_status', ['active', 'acknowledged', 'resolved', 'suppressed']);
-export const notificationChannelTypeEnum = pgEnum('notification_channel_type', ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms']);
+export const notificationChannelTypeEnum = pgEnum('notification_channel_type', NOTIFICATION_CHANNEL_TYPES);
 
 export const alertTemplates = pgTable('alert_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -73,7 +75,12 @@ export const alerts = pgTable('alerts', {
   resolutionNote: text('resolution_note'),
   suppressedUntil: timestamp('suppressed_until'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Backs the `alerts.critical` device-filter field (#968).
+  activeCriticalIdx: index('idx_alerts_active_critical')
+    .on(table.deviceId)
+    .where(sql`status = 'active' AND severity = 'critical'`)
+}));
 
 export const alertCorrelations = pgTable('alert_correlations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -96,6 +103,11 @@ export const notificationChannels = pgTable('notification_channels', {
   config: jsonb('config').notNull(),
   templates: jsonb('templates').default({}),
   enabled: boolean('enabled').notNull().default(true),
+  lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
+  lastTestStatus: varchar('last_test_status', { length: 16 }),
+  // Feature #4: per-channel sliding-window throttle. NULL = unlimited.
+  throttleMaxPerWindow: integer('throttle_max_per_window'),
+  throttleWindowSeconds: integer('throttle_window_seconds').default(3600),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

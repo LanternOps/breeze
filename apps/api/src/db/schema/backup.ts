@@ -71,7 +71,7 @@ export const backupConfigs = pgTable(
     providerCapabilities: jsonb('provider_capabilities'),
     providerCapabilitiesCheckedAt: timestamp('provider_capabilities_checked_at'),
     compression: boolean('compression').notNull().default(true),
-    encryption: boolean('encryption').notNull().default(true),
+    encryption: boolean('encryption').notNull().default(false),
     encryptionKey: text('encryption_key'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').defaultNow().notNull(),

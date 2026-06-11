@@ -22,10 +22,9 @@ final class InstallController: ObservableObject {
     }
 
     private func bootstrap() async {
-        let bundleName = Bundle.main.bundleURL.lastPathComponent
         let parsed: FilenameTokenParser.Result
         do {
-            parsed = try FilenameTokenParser.parse(bundleName: bundleName)
+            parsed = try FilenameTokenParser.load(bundleURL: Bundle.main.bundleURL)
         } catch {
             state = .error(
                 message: "This installer needs its original filename. Please re-download from your Breeze web console.",

@@ -21,7 +21,15 @@ const EVENT_TYPE_RE = /^(\*|[a-z]+\.\*|[a-z]+\.[a-z_]+)$/;
 
 interface TicketRecord {
   userId: string;
-  orgId: string;
+  // The full set of orgs this ticket grants access to. Always populated.
+  // For org-scoped users this is a single id; for partner-scoped users
+  // it can be the full accessible-orgs set so a single connection
+  // receives events across all of them.
+  orgIds: string[];
+  // Legacy field — kept so older serialised records (in Redis or
+  // in-memory across a deploy) still parse cleanly. New writes always
+  // populate orgIds.
+  orgId?: string;
   expiresAt: number;
 }
 
@@ -47,13 +55,24 @@ function purgeExpired(): void {
 // Ticket creation
 // ---------------------------------------------------------------------------
 
-export async function createEventWsTicket(userId: string, orgId: string): Promise<{ ticket: string; expiresInSeconds: number }> {
+export async function createEventWsTicket(
+  userId: string,
+  orgIdOrIds: string | string[],
+): Promise<{ ticket: string; expiresInSeconds: number }> {
   purgeExpired();
+
+  const orgIds = Array.isArray(orgIdOrIds) ? [...new Set(orgIdOrIds)] : [orgIdOrIds];
+  if (orgIds.length === 0) {
+    throw new Error('createEventWsTicket requires at least one orgId');
+  }
 
   const ticket = randomBytes(32).toString('base64url');
   const record: TicketRecord = {
     userId,
-    orgId,
+    orgIds,
+    // Populate the legacy field for forward compat with any reader that
+    // hasn't been redeployed yet. Pick the first id deterministically.
+    orgId: orgIds[0],
     expiresAt: Date.now() + TICKET_TTL_MS,
   };
 
@@ -86,7 +105,18 @@ const CONSUME_LUA = `
   return v
 `;
 
-export async function consumeTicket(ticket: string): Promise<{ userId: string; orgId: string } | null> {
+function normaliseTicketRecord(record: TicketRecord): { userId: string; orgIds: string[] } | null {
+  // Backward-compat: an older record might only carry orgId.
+  const ids = record.orgIds && record.orgIds.length > 0
+    ? record.orgIds
+    : record.orgId
+      ? [record.orgId]
+      : [];
+  if (ids.length === 0) return null;
+  return { userId: record.userId, orgIds: ids };
+}
+
+export async function consumeTicket(ticket: string): Promise<{ userId: string; orgIds: string[] } | null> {
   if (shouldUseRedis()) {
     const redis = getRedis();
     if (!redis) {
@@ -107,7 +137,7 @@ export async function consumeTicket(ticket: string): Promise<{ userId: string; o
     }
 
     if (isExpired(record.expiresAt)) return null;
-    return { userId: record.userId, orgId: record.orgId };
+    return normaliseTicketRecord(record);
   }
 
   // In-memory path (development)
@@ -115,7 +145,7 @@ export async function consumeTicket(ticket: string): Promise<{ userId: string; o
   if (!record) return null;
   ticketStore.delete(ticket); // one-time semantics
   if (isExpired(record.expiresAt)) return null;
-  return { userId: record.userId, orgId: record.orgId };
+  return normaliseTicketRecord(record);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,22 +190,27 @@ export function createEventWsTicketRoute(): Hono {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    // Resolve orgId for partner/system users who pass it as a query param
+    // Resolve orgId for partner/system users who pass it as a query param.
+    // When `allOrgs=1` is passed (or no specific org is requested), partner-
+    // scoped users get a ticket scoped to ALL their accessible orgs so a
+    // single connection can receive events for the full set without the
+    // client needing to multiplex tickets.
     const requestedOrgId = c.req.query('orgId') ?? undefined;
+    const allOrgs = c.req.query('allOrgs') === '1';
     const orgAccess = await resolveOrgAccess(auth, requestedOrgId);
 
-    let orgId: string;
+    let orgIds: string[];
     if (auth.orgId) {
-      orgId = auth.orgId;
+      orgIds = [auth.orgId];
     } else if (orgAccess.type === 'single') {
-      orgId = orgAccess.orgId;
+      orgIds = [orgAccess.orgId];
     } else if (orgAccess.type === 'multiple' && orgAccess.orgIds.length > 0) {
-      orgId = orgAccess.orgIds[0]!;
+      orgIds = allOrgs ? orgAccess.orgIds : [orgAccess.orgIds[0]!];
     } else {
       return c.json({ error: 'Organization context required — select an org first' }, 400);
     }
 
-    const result = await createEventWsTicket(auth.user.id, orgId);
+    const result = await createEventWsTicket(auth.user.id, orgIds);
     return c.json(result);
   });
 
@@ -206,7 +241,7 @@ export function createEventWsRoutes(upgradeWebSocket: Function): Hono {
 
 function createEventWsHandlers(ticket: string | undefined) {
   let client: ClientEntry | null = null;
-  let orgId: string | null = null;
+  let registeredOrgIds: string[] = [];
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   function resetIdleTimer(ws: WSContext) {
@@ -222,10 +257,13 @@ function createEventWsHandlers(ticket: string | undefined) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
-    if (client && orgId) {
-      getEventDispatcher().unregister(orgId, client);
+    if (client && registeredOrgIds.length > 0) {
+      const dispatcher = getEventDispatcher();
+      for (const id of registeredOrgIds) {
+        dispatcher.unregister(id, client);
+      }
       client = null;
-      orgId = null;
+      registeredOrgIds = [];
     }
   }
 
@@ -245,17 +283,20 @@ function createEventWsHandlers(ticket: string | undefined) {
           return;
         }
 
-        orgId = identity.orgId;
+        registeredOrgIds = identity.orgIds;
         client = {
           ws,
           userId: identity.userId,
           subscribedTypes: new Set<string>(),
         };
 
-        getEventDispatcher().register(orgId, client);
+        const dispatcher = getEventDispatcher();
+        for (const id of registeredOrgIds) {
+          dispatcher.register(id, client);
+        }
         resetIdleTimer(ws);
 
-        sendJson(ws, { type: 'connected', userId: identity.userId });
+        sendJson(ws, { type: 'connected', userId: identity.userId, orgIds: registeredOrgIds });
       } catch (err) {
         console.error('[EventWs] onOpen error:', err);
         sendJson(ws, { type: 'error', message: 'Internal error' });

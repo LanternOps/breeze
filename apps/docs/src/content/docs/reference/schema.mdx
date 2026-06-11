@@ -22,16 +22,25 @@ The central table for managed endpoints:
 | `orgId` | UUID | FK → organizations |
 | `siteId` | UUID | FK → sites |
 | `agentId` | varchar(64) | Unique agent identifier |
-| `agentTokenHash` | varchar(64) | SHA-256 hash of the agent bearer token (nullable for pre-migration devices) |
+| `agentTokenHash` | varchar(64) | SHA-256 hash of the main agent bearer token (nullable for pre-migration devices) |
+| `watchdogTokenHash` | varchar(64) | SHA-256 hash of the companion watchdog token |
+| `helperTokenHash` | varchar(64) | SHA-256 hash of the user-helper token |
+| `agentTokenSuspendedAt` | timestamp | Set when the agent token is auto-suspended (e.g. cross-tenant access attempt). Re-enrollment is blocked until cleared. |
+| `agentTokenSuspendedReason` | varchar(255) | Reason recorded alongside `agentTokenSuspendedAt`. |
 | `hostname` | varchar(255) | Device hostname |
-| `displayName` | varchar(255) | Optional display name |
+| `displayName` | varchar(255) | Optional display name (editable inline from the device detail page) |
 | `osType` | enum | `windows`, `macos`, `linux` |
 | `osVersion` | varchar(100) | OS version string |
 | `osBuild` | varchar(100) | OS build identifier (optional) |
 | `architecture` | varchar(20) | CPU architecture (e.g. `amd64`, `arm64`) |
 | `agentVersion` | varchar(20) | Installed agent version |
-| `status` | enum | `online`, `offline`, `maintenance`, `decommissioned`, `quarantined` |
+| `status` | enum | `online`, `offline`, `maintenance`, `updating`, `pending`, `decommissioned`, `quarantined` |
 | `lastSeenAt` | timestamp | Last telemetry received |
+| `lastSeenIp` | inet | Source IP recorded on the most recent heartbeat; changes raise an `agent.source.ip.changed` audit event. |
+| `mainAgentSilentSince` | timestamp | Set by the server when the main agent stops heartbeating but the watchdog is still online. Cleared when the agent resumes. |
+| `watchdogStatus` | enum | `connected`, `failover`, `offline` — last reported watchdog state. |
+| `watchdogLastSeenAt` | timestamp | Last watchdog check-in. |
+| `watchdogVersion` | varchar(20) | Installed watchdog binary version. |
 | `enrolledAt` | timestamp | When the device was enrolled |
 | `enrolledBy` | UUID | FK → users (who initiated enrollment) |
 | `tags` | text[] | Array of string tags |
@@ -59,6 +68,9 @@ The central table for managed endpoints:
 | `deviceGroups` | Static and dynamic device groups with filter rules |
 | `deviceGroupMemberships` | Many-to-many device ↔ group mapping |
 | `deviceCommands` | Command queue (pending, completed, failed) |
+| `elevationRequests` | Privileged-action mode (PAM) elevation requests awaiting approval |
+| `elevationAudit` | Immutable audit trail of elevation approve/deny/expire decisions |
+| `refreshTokenFamilies` | Refresh-token lineage for reuse-detection (RFC 9700 §4.13.2) |
 
 ### Organizations
 

@@ -1,0 +1,52 @@
+# Release notes template — security-hardening release
+
+Copy this into the GitHub Release body when tagging the version that ships PR #568. Keep the **action-required block at the top** — the release-watch email truncates after the first ~30 lines for many email clients.
+
+---
+
+# v0.XX.0 — Security hardening (SR-001..SR-024)
+
+## TL;DR — self-hosters, do this before `docker compose up`
+
+> ⚠️ **This release has required pre-deploy steps.** Full runbook: [`UPGRADING.md`](https://github.com/LanternOps/breeze/blob/main/UPGRADING.md).
+>
+> 1. Run the FORCE-RLS ownership pre-check (one SQL query — see UPGRADING.md).
+> 2. Add to `.env`: `APP_ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`, `ENROLLMENT_KEY_PEPPER`, `MFA_RECOVERY_CODE_PEPPER` — generate each as a **dedicated** random hex (`openssl rand -hex 32`); the production validator rejects boot if any two reuse the same value (including `JWT_SECRET`). Existing `enc:v1:` rows keep decrypting via the legacy `JWT_SECRET` fallback.
+> 3. If behind a reverse proxy with `TRUST_PROXY_HEADERS=true`: set `TRUSTED_PROXY_CIDRS` to your proxy IPs.
+> 4. Deploy. Watch the API logs for warnings — each tells you which legacy path is still live.
+>
+> Designed to be backward-compatible: if you skip these, the API still starts and existing users keep working, but you'll see warnings and lose some defense-in-depth until the env vars are set.
+
+## What's in this release
+
+This is a cross-cutting security hardening pass landing fixes from a parallel review covering 24 areas: remote access, public installer/enrollment, system tools and command execution, AI/MCP execution and approvals, OAuth dynamic client registration, auth/session/MFA/SSO, multi-tenant isolation, backup/restore authorization, integrations and webhooks, frontend CSP, agent trust boundary, API keys and rate limiting, reports/exports/audit-log exposure, background jobs/queues, RLS migrations, admin lifecycle, log/SNMP ingestion, Tauri viewer/helper local-app security, installer privilege and ACLs, crypto and secret rotation, TURN/relay/WebRTC edge, production deploy defaults, and high-privilege third-party sync jobs.
+
+The full review tracker is at `docs/security-reports/security_review_tracker_2026-05-02.md`.
+
+## Highlights
+
+- **Encryption-at-rest hardening** — secrets, MFA seeds, SNMP creds, notification channels, and integration tokens move to dedicated encryption keys (`APP_ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`) instead of reusing auth secrets.
+- **Webhook HMAC** — automation webhooks now support `x-breeze-signature` + `x-breeze-timestamp`. Legacy header-secret auth still works this release; flips to HMAC-only in the next release.
+- **OAuth DCR cleanup** excludes clients with active grants/auth codes/refresh tokens — safe for active MCP integrations.
+- **FORCE RLS** on tenant-scoped tables — RLS now applies even to the table owner.
+- **Agent token hash** auth tightened with a graceful re-enrollment signal (`code: 're_enrollment_required'`) for devices that predate the hash migration.
+- **Trusted proxy CIDRs** — `TRUSTED_PROXY_CIDRS` is now strictly validated; missing config defaults to loopback in production with a warning instead of trusting all upstreams.
+- **Reports permission** — new `reports:export` permission, granted automatically to any role that already had `reports:read` or `reports:write`.
+
+## Backward-compatibility windows (will tighten in the **next** release)
+
+Several flags default to legacy behavior for one release so existing deployments aren't stranded. Each emits a warning when the legacy path runs — fix it before the next release:
+
+- `SSO_EXCHANGE_RETURN_REFRESH_TOKEN` — **default flipped to `false` this release.** SSO exchange now delivers the refresh token only via the HttpOnly `breeze_refresh_token` cookie; the JSON `refreshToken` field is omitted. The web app already reads the cookie and is unaffected. If you have an external SSO client that reads `response.refreshToken` directly, set `SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true` explicitly while you migrate it. The flag and JSON field will be removed entirely after Sunset (2026-08-01).
+- `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` — **default flipped to `false` this release.** Inbound automation webhooks now require HMAC signing. Set to `true` only as a short-term emergency rollback while migrating legacy senders; the flag will be removed in a future release. The `?secret=` query-string path has been removed entirely (no flag re-enables it).
+- `ENROLLMENT_SECRET_ENFORCEMENT_MODE=warn` — opt-in, accepted only in this release. Set `AGENT_ENROLLMENT_SECRET` (or per-key secrets) before upgrading further.
+- Legacy enrollment-key pepper fallback — removed once you re-hash existing keys.
+- Legacy `enc:v1:` decrypt fallback — removed once `pnpm tsx scripts/re-encrypt-secrets.ts` has run.
+
+## Upgrade path
+
+See [`UPGRADING.md`](https://github.com/LanternOps/breeze/blob/main/UPGRADING.md) for the full pre-deploy / post-deploy runbook. Watch the API logs after deploy for the warnings listed there — each tells you exactly which legacy path is still live and what to do about it.
+
+## Full changelog
+
+<!-- Generate with: gh api repos/LanternOps/breeze/compare/v0.XX.0...v0.YY.0 --jq '.commits[] | "- \(.sha[0:7]) \(.commit.message | split("\n")[0])"' -->

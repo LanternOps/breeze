@@ -1,0 +1,35 @@
+# cargo-audit configuration for breeze-viewer
+#
+# These advisories are known and unfixable from this crate's perspective —
+# they are transitive dependencies pulled in by Tauri 2.x's Linux GTK3 stack
+# (gtk-rs/atk/gdk/etc.) and HTML parsing chain (kuchikiki/markup5ever).
+# Tauri has not migrated to GTK4 / newer html5ever yet.
+#
+# Re-evaluate this list whenever Tauri is upgraded.
+
+[advisories]
+ignore = [
+  # GTK3 bindings — no longer maintained (Tauri-Linux only, no v2 alternative yet)
+  "RUSTSEC-2024-0411", # gdkwayland-sys
+  "RUSTSEC-2024-0412", # gdk
+  "RUSTSEC-2024-0413", # atk
+  "RUSTSEC-2024-0414", # gdkx11-sys
+  "RUSTSEC-2024-0415", # gtk
+  "RUSTSEC-2024-0416", # atk-sys
+  "RUSTSEC-2024-0417", # gdkx11
+  "RUSTSEC-2024-0418", # gdk-sys
+  "RUSTSEC-2024-0419", # gtk3-macros
+  "RUSTSEC-2024-0420", # gtk-sys
+  "RUSTSEC-2024-0429", # glib VariantStrIter unsoundness — Tauri-Linux only
+  # Other unmaintained transitive deps from Tauri / html5ever
+  "RUSTSEC-2024-0370", # proc-macro-error (Tauri build chain)
+  "RUSTSEC-2025-0057", # fxhash (selectors → kuchikiki → wry)
+  "RUSTSEC-2025-0075", # unic-char-range (idna chain)
+  "RUSTSEC-2025-0080", # unic-common
+  "RUSTSEC-2025-0081", # unic-char-property
+  "RUSTSEC-2025-0098", # unic-ucd-version
+  "RUSTSEC-2025-0100", # unic-ucd-ident
+  # rand 0.7.3 / 0.8.5 unsoundness — only triggered with custom logger using
+  # rand::rng(); transitive via phf_generator → markup5ever → html5ever.
+  "RUSTSEC-2026-0097",
+]

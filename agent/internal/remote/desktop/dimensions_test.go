@@ -4,7 +4,7 @@ import "testing"
 
 func TestAlignEven(t *testing.T) {
 	cases := []struct {
-		name                     string
+		name                   string
 		inW, inH, wantW, wantH int
 	}{
 		{"both even passes through", 1920, 1080, 1920, 1080},
@@ -32,8 +32,8 @@ func TestFitRGBAFrame(t *testing.T) {
 		w = 1512
 		h = 948
 	)
-	exactLen := w * h * 4               // RGBA pixels at the rounded dimensions
-	oneExtraRow := w * (h + 1) * 4       // what an un-rounded 1512x949 GDI capturer produces
+	exactLen := w * h * 4          // RGBA pixels at the rounded dimensions
+	oneExtraRow := w * (h + 1) * 4 // what an un-rounded 1512x949 GDI capturer produces
 	twoExtraRows := w * (h + 2) * 4
 	tooSmall := w * (h - 1) * 4
 

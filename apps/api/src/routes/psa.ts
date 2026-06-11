@@ -1,13 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { db } from '../db';
-import { psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
+import { devices, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 
 export const psaRoutes = new Hono();
 
@@ -90,7 +90,10 @@ function decryptCredentials(value: unknown): Record<string, unknown> | null {
 
   try {
     if (typeof value === 'string') {
-      const decrypted = decryptSecret(value);
+      // psa_connections.credentials is a JSON column; the registry walker
+      // uses the column-level AAD when re-encrypting, so we bind the same
+      // here regardless of where the ciphertext sits inside the JSON.
+      const decrypted = decryptForColumn('psa_connections', 'credentials', value);
       if (!decrypted) return null;
       return parseRecord(JSON.parse(decrypted));
     }
@@ -98,7 +101,7 @@ function decryptCredentials(value: unknown): Record<string, unknown> | null {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const asRecord = value as Record<string, unknown>;
       if (typeof asRecord.encrypted === 'string') {
-        const decrypted = decryptSecret(asRecord.encrypted);
+        const decrypted = decryptForColumn('psa_connections', 'credentials', asRecord.encrypted);
         if (!decrypted) return null;
         return parseRecord(JSON.parse(decrypted));
       }
@@ -316,6 +319,7 @@ psaRoutes.post(
   '/connections',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', createConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -418,6 +422,7 @@ psaRoutes.patch(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -496,6 +501,7 @@ psaRoutes.delete(
   '/connections/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -529,6 +535,7 @@ psaRoutes.post(
   '/connections/:id/test',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -570,6 +577,7 @@ psaRoutes.post(
   '/connections/:id/sync',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -616,6 +624,7 @@ psaRoutes.post(
   '/connections/:id/status',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -661,6 +670,7 @@ psaRoutes.get(
   zValidator('query', listTicketsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -669,14 +679,20 @@ psaRoutes.get(
       return c.json({ data: [], pagination: { page, limit, total: 0 } });
     }
 
-    const conditions = [];
+    const conditions: SQL[] = [];
     if (orgIds) {
       conditions.push(inArray(psaConnectionsTable.orgId, orgIds));
+    }
+    if (perms?.allowedSiteIds) {
+      conditions.push(or(
+        isNull(psaTicketMappings.deviceId),
+        inArray(devices.siteId, perms.allowedSiteIds)
+      )!);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const rows = await db
+    const rowsQuery = db
       .select({
         id: psaTicketMappings.id,
         connectionId: psaTicketMappings.connectionId,
@@ -690,17 +706,21 @@ psaRoutes.get(
         createdAt: psaTicketMappings.createdAt
       })
       .from(psaTicketMappings)
-      .innerJoin(psaConnectionsTable, eq(psaTicketMappings.connectionId, psaConnectionsTable.id))
-      .where(whereClause)
+      .innerJoin(psaConnectionsTable, eq(psaTicketMappings.connectionId, psaConnectionsTable.id));
+    const rows = await (perms?.allowedSiteIds
+      ? rowsQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
+      : rowsQuery.where(whereClause))
       .orderBy(desc(psaTicketMappings.updatedAt))
       .limit(limit)
       .offset(offset);
 
-    const countRows = await db
+    const countQuery = db
       .select({ count: sql<number>`count(*)` })
       .from(psaTicketMappings)
-      .innerJoin(psaConnectionsTable, eq(psaTicketMappings.connectionId, psaConnectionsTable.id))
-      .where(whereClause);
+      .innerJoin(psaConnectionsTable, eq(psaTicketMappings.connectionId, psaConnectionsTable.id));
+    const countRows = await (perms?.allowedSiteIds
+      ? countQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
+      : countQuery.where(whereClause));
 
     return c.json({
       data: rows.map(mapTicketRow),
@@ -716,6 +736,7 @@ psaRoutes.get(
   zValidator('query', listTicketsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const connectionId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -730,7 +751,16 @@ psaRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    const rows = await db
+    const conditions: SQL[] = [eq(psaTicketMappings.connectionId, connectionId)];
+    if (perms?.allowedSiteIds) {
+      conditions.push(or(
+        isNull(psaTicketMappings.deviceId),
+        inArray(devices.siteId, perms.allowedSiteIds)
+      )!);
+    }
+    const whereClause = and(...conditions);
+
+    const rowsQuery = db
       .select({
         id: psaTicketMappings.id,
         connectionId: psaTicketMappings.connectionId,
@@ -743,16 +773,20 @@ psaRoutes.get(
         updatedAt: psaTicketMappings.updatedAt,
         createdAt: psaTicketMappings.createdAt
       })
-      .from(psaTicketMappings)
-      .where(eq(psaTicketMappings.connectionId, connectionId))
+      .from(psaTicketMappings);
+    const rows = await (perms?.allowedSiteIds
+      ? rowsQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
+      : rowsQuery.where(whereClause))
       .orderBy(desc(psaTicketMappings.updatedAt))
       .limit(limit)
       .offset(offset);
 
-    const countRows = await db
+    const countQuery = db
       .select({ count: sql<number>`count(*)` })
-      .from(psaTicketMappings)
-      .where(eq(psaTicketMappings.connectionId, connectionId));
+      .from(psaTicketMappings);
+    const countRows = await (perms?.allowedSiteIds
+      ? countQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
+      : countQuery.where(whereClause));
 
     return c.json({
       data: rows.map(mapTicketRow),

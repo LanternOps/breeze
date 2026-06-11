@@ -19,6 +19,14 @@ const (
 	maxDesktopKeyBytes      = 64
 	maxDesktopModifierBytes = 16
 	maxDesktopModifiers     = 8
+
+	// Caps for caller-supplied session-lifetime limits in the direct-mode
+	// (map-payload) decoder. Same maxima as the IPC path (userhelper), but note
+	// the enforcement DIFFERS: this decoder has no error channel so it CLAMPS to
+	// these bounds, whereas the IPC path REJECTS out-of-range input with an
+	// error. Either way the agent can't be pushed past these. 0 = disabled.
+	maxIdleTimeoutMinutes   = 1440 // 24h
+	maxSessionDurationHours = 168  // 7d
 )
 
 var desktopInputTypes = map[string]struct{}{
@@ -185,17 +193,19 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		displayIndex = int(di)
 	}
 
+	policy := parseDesktopSessionPolicy(cmd.Payload)
+
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
 	// cannot capture the screen directly even with TCC permission.
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
-		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, cmd.Payload)
+		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
 	}
 
 	// Direct mode (console or non-Windows)
-	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex)
+	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -203,6 +213,40 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		"sessionId": sessionID,
 		"answer":    answer,
 	}, time.Since(start).Milliseconds())
+}
+
+// parseDesktopSessionPolicy extracts the agent-enforced session policy from a
+// start_desktop payload. Absent clipboard fields default to permissive so an
+// older API that doesn't send them preserves existing behavior; timeouts of 0
+// mean disabled. Findings #2 and #7.
+func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
+	// Start from the shared default so this map-payload decoder and the IPC
+	// decoder (ipc.DesktopStartRequest.ResolveSessionPolicy) can't drift on
+	// what "default" means (permissive clipboard, no lifetime limits).
+	policy := desktop.DefaultSessionPolicy()
+	if cb, ok := payload["clipboard"].(map[string]any); ok {
+		if v, ok := cb["hostToViewer"].(bool); ok {
+			policy.ClipboardHostToViewer = v
+		}
+		if v, ok := cb["viewerToHost"].(bool); ok {
+			policy.ClipboardViewerToHost = v
+		}
+	}
+	// Clamp the lifetime fields defensively. The server already clamps these
+	// (remoteAccessPolicy.ts), but this direct-mode decoder must never trust a
+	// hostile/buggy value verbatim: a <=0 value means "disabled" (matching the
+	// IPC decoder ResolveSessionPolicyFromIPC), and an over-cap value is clamped
+	// to the same maxima the IPC path rejects at — so it can't push the agent
+	// into never-idle-out / never-expire territory. NOTE the mechanism differs:
+	// the IPC path (userhelper.validateDesktopStartRequest) returns an error on
+	// out-of-range input; this map decoder has no error channel, so it clamps.
+	if v, ok := payload["idleTimeoutMinutes"].(float64); ok && v > 0 {
+		policy.IdleTimeout = time.Duration(math.Min(v, maxIdleTimeoutMinutes)) * time.Minute
+	}
+	if v, ok := payload["maxSessionDurationHours"].(float64); ok && v > 0 {
+		policy.MaxDuration = time.Duration(math.Min(v, maxSessionDurationHours)) * time.Hour
+	}
+	return policy
 }
 
 func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {

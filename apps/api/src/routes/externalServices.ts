@@ -1,16 +1,23 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { HTTPException } from 'hono/http-exception';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { db } from '../db';
 import { users } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { rateLimiter } from '../services/rate-limit';
 import { getRedis } from '../services/redis';
+import { DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from '../services/corsOrigins';
+import { PERMISSIONS } from '../services/permissions';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const externalServicesRoutes = new Hono();
 
-externalServicesRoutes.use('*', authMiddleware);
+// NOTE: scoped to the actual routes — `.use('*', ...)` here would attach
+// the middleware to every `/api/v1/*` request via the `api.route('/', ...)`
+// mount in index.ts, breaking unauth paths like /api/v1/mcp/message.
+externalServicesRoutes.use('/billing/portal', authMiddleware);
+externalServicesRoutes.use('/support', authMiddleware);
 
 function externalBaseUrl(): string | null {
   return process.env.BREEZE_BILLING_URL || null;
@@ -31,10 +38,18 @@ async function forward(path: string, body: unknown) {
     body && typeof body === 'object' && 'partner_id' in body
       ? (body as { partner_id?: unknown }).partner_id
       : undefined;
+  // Service-to-service auth to breeze-billing. The boot validator
+  // (config/validate.ts) requires BREEZE_BILLING_API_KEY whenever
+  // BREEZE_BILLING_URL is set, so in production the key is guaranteed present.
+  // Only attach the header when the key exists to avoid sending
+  // `Bearer undefined` from dev/test deployments without billing configured.
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const billingKey = process.env.BREEZE_BILLING_API_KEY;
+  if (billingKey) headers['Authorization'] = `Bearer ${billingKey}`;
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -75,40 +90,95 @@ function retryAfterSeconds(resetAt: Date): number {
   return Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
 }
 
+function originFromUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function getAllowedBillingReturnOrigins(): Set<string> {
+  const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((value) => originFromUrl(value.trim()))
+    .filter((value): value is string => Boolean(value));
+
+  const appOrigins = [
+    originFromUrl(process.env.DASHBOARD_URL),
+    originFromUrl(process.env.PUBLIC_APP_URL),
+  ].filter((value): value is string => Boolean(value));
+
+  const defaults = shouldIncludeDefaultOrigins(process.env.NODE_ENV ?? 'development')
+    ? [...DEFAULT_ALLOWED_ORIGINS]
+    : [];
+
+  return new Set([...configuredOrigins, ...appOrigins, ...defaults]);
+}
+
+function isAllowedBillingReturnUrl(returnUrl: string): boolean {
+  const origin = originFromUrl(returnUrl);
+  if (!origin) return false;
+  return getAllowedBillingReturnOrigins().has(origin);
+}
+
 const portalSchema = z.object({
-  returnUrl: z.string().url(),
+  returnUrl: z.string().url().refine(isAllowedBillingReturnUrl, {
+    message: 'Return URL origin is not allowed',
+  }),
 });
 
 // POST /api/v1/billing/portal — returns { url } to Stripe Customer Portal,
 // or 503 if billing not configured on this deployment.
-externalServicesRoutes.post('/billing/portal', async (c) => {
-  const auth = c.get('auth');
-  if (!auth?.partnerId) {
-    throw new HTTPException(403, { message: 'Partner context required' });
-  }
-  const redis = getRedis();
-  const rate = await rateLimiter(
-    redis,
-    `billing-portal:user:${auth.user.id}`,
-    10,
-    3600
-  );
-  if (!rate.allowed) {
-    return c.json(
-      { error: 'rate_limited', retryAfter: retryAfterSeconds(rate.resetAt) },
-      429
+externalServicesRoutes.post(
+  '/billing/portal',
+  requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!auth?.partnerId) {
+      throw new HTTPException(403, { message: 'Partner context required' });
+    }
+    const redis = getRedis();
+    const rate = await rateLimiter(
+      redis,
+      `billing-portal:user:${auth.user.id}`,
+      10,
+      3600
     );
+    if (!rate.allowed) {
+      return c.json(
+        { error: 'rate_limited', retryAfter: retryAfterSeconds(rate.resetAt) },
+        429
+      );
+    }
+    const parsed = portalSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
+    }
+    const result = await forward('/portal-sessions', {
+      partner_id: auth.partnerId,
+      return_url: parsed.data.returnUrl,
+    });
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'billing.portal_session.create',
+      resourceType: 'partner',
+      resourceId: auth.partnerId,
+      details: {
+        upstreamStatus: result.status,
+        returnUrlOrigin: originFromUrl(parsed.data.returnUrl),
+      },
+      result: result.status >= 400 ? 'failure' : 'success',
+    });
+
+    return c.json(result.body as Record<string, unknown>, result.status as 200 | 400 | 404 | 502 | 503);
   }
-  const parsed = portalSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) {
-    return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
-  }
-  const result = await forward('/portal-sessions', {
-    partner_id: auth.partnerId,
-    return_url: parsed.data.returnUrl,
-  });
-  return c.json(result.body as Record<string, unknown>, result.status as 200 | 400 | 404 | 502 | 503);
-});
+);
 
 const supportSchema = z.object({
   subject: z.string().min(1).max(300),

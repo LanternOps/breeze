@@ -15,11 +15,14 @@ import {
   escalationPolicies,
   notificationRoutingRules,
   devices,
-  organizations
+  organizations,
+  partners
 } from '../db/schema';
 import { eq, and, inArray, asc } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
+import { checkNotificationThrottle } from './notificationThrottle';
+import { createAuditLogAsync } from './auditService';
 import { interpolateTemplate } from './alertConditions';
 import {
   sendEmailNotification,
@@ -27,12 +30,16 @@ import {
   sendWebhookNotification,
   sendInAppNotification,
   sendPagerDutyNotification,
+  sendPushoverNotification,
   type WebhookConfig,
   type PagerDutyConfig,
+  type PushoverConfig,
+  type PushoverPriority,
   type AlertSeverity
 } from './notificationSenders';
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
 import { getEventBus } from './eventBus';
+import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -357,6 +364,64 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     }
   }
 
+  // Feature #4: per-channel sliding-window throttle (defense-in-depth vs alert storms).
+  // Keyed by (channelId, device:<deviceId>) so one flooding device cannot starve other devices.
+  if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
+    const windowSeconds = channel.throttleWindowSeconds ?? 3600;
+    const throttle = await checkNotificationThrottle(
+      channel.id,
+      `device:${alert.deviceId}`,
+      channel.throttleMaxPerWindow,
+      windowSeconds
+    );
+    if (!throttle.allowed) {
+      const windowExpiresIso = new Date(throttle.windowExpiresAt).toISOString();
+      const throttleMessage = `Throttled: ${throttle.currentCount} delivered in last ${windowSeconds}s (cap=${channel.throttleMaxPerWindow})`;
+      console.warn(
+        `[NotificationThrottle] Suppressed: channel=${channel.id} device=${alert.deviceId} ` +
+        `count=${throttle.currentCount}/${channel.throttleMaxPerWindow} resetsAt=${windowExpiresIso}`
+      );
+      // Use 'failed' status + descriptive errorMessage so UI / queries that
+      // filter by status see throttled rows alongside other delivery failures.
+      // The alert_notifications.status column carries pending/sent/failed only;
+      // 'suppressed' belongs to the separate alertStatusEnum and would render
+      // as a phantom value here. (See #796 review.)
+      await db.update(alertNotifications)
+        .set({
+          status: 'failed',
+          errorMessage: throttleMessage
+        })
+        .where(eq(alertNotifications.id, notificationRecord.id));
+      // Operator-visible audit event so a misconfigured cap silently eating
+      // alerts is investigable instead of buried in stdout. (See #796 review.)
+      createAuditLogAsync({
+        orgId: alert.orgId,
+        actorType: 'system',
+        actorId: '00000000-0000-0000-0000-000000000000',
+        action: 'alert.notification.throttled',
+        resourceType: 'alert_notification',
+        resourceId: notificationRecord.id,
+        result: 'denied',
+        errorMessage: throttleMessage,
+        details: {
+          channelId: channel.id,
+          channelType: channel.type,
+          deviceId: alert.deviceId,
+          currentCount: throttle.currentCount,
+          maxPerWindow: channel.throttleMaxPerWindow,
+          windowSeconds,
+          windowExpiresAt: windowExpiresIso,
+        },
+      });
+      return {
+        success: false,
+        channelType: channel.type,
+        error: `Throttled (resets at ${windowExpiresIso})`,
+        durationMs: Date.now() - startTime
+      };
+    }
+  }
+
   // Phase 4c: Per-channel notification templates
   const channelTemplates = channel.templates as Record<string, string> | null;
   let messageBody = alert.message || alert.title;
@@ -382,10 +447,11 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
   let error: string | undefined;
 
   try {
+    const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
     switch (channel.type) {
       case 'email':
         const emailResult = await sendEmailChannelNotification(
-          channel.config as Record<string, unknown>,
+          channelConfig as Record<string, unknown>,
           alertForSend,
           device,
           org
@@ -396,7 +462,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
       case 'webhook':
         const webhookResult = await sendWebhookChannelNotification(
-          channel.config as WebhookConfig,
+          channelConfig as WebhookConfig,
           alertForSend,
           device,
           org
@@ -407,7 +473,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
       case 'sms':
         const smsResult = await sendSmsChannelNotification(
-          channel.config as SmsChannelConfig,
+          channelConfig as SmsChannelConfig,
           alertForSend,
           device,
           org
@@ -419,7 +485,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'slack':
         const slackResult = await sendChatWebhookChannelNotification(
           'slack',
-          channel.config as Record<string, unknown>,
+          channelConfig as Record<string, unknown>,
           alertForSend,
           device,
           org
@@ -431,7 +497,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       case 'teams':
         const teamsResult = await sendChatWebhookChannelNotification(
           'teams',
-          channel.config as Record<string, unknown>,
+          channelConfig as Record<string, unknown>,
           alertForSend,
           device,
           org
@@ -442,13 +508,24 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
       case 'pagerduty':
         const pagerDutyResult = await sendPagerDutyChannelNotification(
-          channel.config as PagerDutyConfig,
+          channelConfig as PagerDutyConfig,
           alertForSend,
           device,
           org
         );
         success = pagerDutyResult.success;
         error = pagerDutyResult.error;
+        break;
+
+      case 'pushover':
+        const pushoverResult = await sendPushoverChannelNotification(
+          channelConfig as PushoverConfig,
+          alertForSend,
+          device,
+          org
+        );
+        success = pushoverResult.success;
+        error = pushoverResult.error;
         break;
 
       // In-app notifications are handled automatically in processAlertNotifications
@@ -641,6 +718,81 @@ async function sendPagerDutyChannelNotification(
     : undefined;
 
   const result = await sendPagerDutyNotification(config, {
+    alertId: alert.id,
+    alertName: alert.title,
+    severity: alert.severity as AlertSeverity,
+    summary: alert.message || alert.title,
+    deviceId: alert.deviceId,
+    deviceName: device?.displayName ?? device?.hostname ?? undefined,
+    orgId: alert.orgId,
+    orgName: org?.name,
+    triggeredAt: alert.triggeredAt.toISOString(),
+    ruleId: alert.ruleId ?? undefined,
+    dashboardUrl
+  });
+
+  return {
+    success: result.success,
+    error: result.error
+  };
+}
+
+/**
+ * Send notification via Pushover channel.
+ *
+ * Per-org channels may leave any field blank; in that case we fall back to
+ * the partner-level `pushoverAppToken` / `pushoverDefaultUser` /
+ * `pushoverDefaultSound` / `pushoverDefaultPriority` from
+ * `partners.settings.notifications`. This mirrors the Slack-webhook-URL
+ * inheritance pattern.
+ */
+async function sendPushoverChannelNotification(
+  config: PushoverConfig,
+  alert: typeof alerts.$inferSelect,
+  device: typeof devices.$inferSelect | undefined,
+  org: typeof organizations.$inferSelect | undefined
+): Promise<{ success: boolean; error?: string }> {
+  const merged: PushoverConfig = { ...config };
+
+  const tokenBlank = !merged.token || merged.token.trim().length === 0;
+  const userBlank = !merged.user || merged.user.trim().length === 0;
+  const needsInherit = tokenBlank || userBlank || merged.sound === undefined || merged.priority === undefined;
+
+  if (needsInherit && org?.partnerId) {
+    const inherited = await runWithSystemDbAccess(async () => {
+      const [partner] = await db
+        .select({ settings: partners.settings })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .limit(1);
+      const notifications = (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications;
+      return {
+        pushoverAppToken: typeof notifications?.pushoverAppToken === 'string' ? notifications.pushoverAppToken : undefined,
+        pushoverDefaultUser: typeof notifications?.pushoverDefaultUser === 'string' ? notifications.pushoverDefaultUser : undefined,
+        pushoverDefaultSound: typeof notifications?.pushoverDefaultSound === 'string' ? notifications.pushoverDefaultSound : undefined,
+        pushoverDefaultPriority: typeof notifications?.pushoverDefaultPriority === 'number' ? notifications.pushoverDefaultPriority as PushoverPriority : undefined,
+      };
+    });
+
+    if (tokenBlank && inherited.pushoverAppToken) {
+      merged.token = inherited.pushoverAppToken;
+    }
+    if (userBlank && inherited.pushoverDefaultUser) {
+      merged.user = inherited.pushoverDefaultUser;
+    }
+    if (merged.sound === undefined && inherited.pushoverDefaultSound) {
+      merged.sound = inherited.pushoverDefaultSound;
+    }
+    if (merged.priority === undefined && inherited.pushoverDefaultPriority !== undefined) {
+      merged.priority = inherited.pushoverDefaultPriority;
+    }
+  }
+
+  const dashboardUrl = process.env.DASHBOARD_URL
+    ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
+    : undefined;
+
+  const result = await sendPushoverNotification(merged, {
     alertId: alert.id,
     alertName: alert.title,
     severity: alert.severity as AlertSeverity,

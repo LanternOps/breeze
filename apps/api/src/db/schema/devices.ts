@@ -4,7 +4,7 @@ import { users } from './users';
 import type { DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
-export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating']);
+export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
 export const deviceGroupTypeEnum = pgEnum('device_group_type', ['static', 'dynamic']);
 export const membershipSourceEnum = pgEnum('membership_source', ['manual', 'dynamic_rule', 'policy']);
 export const ipAssignmentTypeEnum = pgEnum('ip_assignment_type', ['dhcp', 'static', 'vpn', 'link-local', 'unknown']);
@@ -19,12 +19,31 @@ export const devices = pgTable('devices', {
   tokenIssuedAt: timestamp('token_issued_at', { withTimezone: true }),
   previousTokenHash: varchar('previous_token_hash', { length: 64 }),
   previousTokenExpiresAt: timestamp('previous_token_expires_at', { withTimezone: true }),
+  watchdogTokenHash: varchar('watchdog_token_hash', { length: 64 }),
+  watchdogTokenIssuedAt: timestamp('watchdog_token_issued_at', { withTimezone: true }),
+  previousWatchdogTokenHash: varchar('previous_watchdog_token_hash', { length: 64 }),
+  previousWatchdogTokenExpiresAt: timestamp('previous_watchdog_token_expires_at', { withTimezone: true }),
+  helperTokenHash: varchar('helper_token_hash', { length: 64 }),
+  helperTokenIssuedAt: timestamp('helper_token_issued_at', { withTimezone: true }),
+  previousHelperTokenHash: varchar('previous_helper_token_hash', { length: 64 }),
+  previousHelperTokenExpiresAt: timestamp('previous_helper_token_expires_at', { withTimezone: true }),
   mtlsCertSerialNumber: varchar('mtls_cert_serial_number', { length: 128 }),
   mtlsCertExpiresAt: timestamp('mtls_cert_expires_at'),
   mtlsCertIssuedAt: timestamp('mtls_cert_issued_at'),
   mtlsCertCfId: varchar('mtls_cert_cf_id', { length: 128 }),
   quarantinedAt: timestamp('quarantined_at'),
   quarantinedReason: varchar('quarantined_reason', { length: 255 }),
+  // Task 18: Auto-suspend agent tokens after repeated cross-tenant probe
+  // attempts. Suspension is sticky (DB-backed) — reconnects with the same
+  // token fail at the auth gate until an operator clears these columns.
+  agentTokenSuspendedAt: timestamp('agent_token_suspended_at'),
+  agentTokenSuspendedReason: varchar('agent_token_suspended_reason', { length: 100 }),
+  // Task 19: Track the last source IP seen on an authenticated agent request.
+  // A sudden change (legit agent → different IP) is a strong compromise signal.
+  // We audit-log the transition (once per IP per device per 24h via Redis
+  // dedup) and update this column fire-and-forget so the next request can
+  // compare.
+  lastSeenIp: varchar('last_seen_ip', { length: 45 }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),
@@ -49,6 +68,13 @@ export const devices = pgTable('devices', {
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  // Asymmetry detector (#800): set when the watchdog is still reporting
+  // in but the main agent has gone silent past the offline threshold.
+  // Cleared when the main agent next heartbeats. Distinct from
+  // status='offline' which only reflects main-agent silence — operators
+  // need to know "box alive, only the BreezeAgent service is wedged" so
+  // their support workflow is "remote restart" not "physical visit."
+  mainAgentSilentSince: timestamp('main_agent_silent_since'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -255,9 +281,9 @@ export const deviceConnections = pgTable('device_connections', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   protocol: connectionProtocolEnum('protocol').notNull(),
-  localAddr: varchar('local_addr', { length: 45 }).notNull(),
+  localAddr: text('local_addr').notNull(),
   localPort: integer('local_port').notNull(),
-  remoteAddr: varchar('remote_addr', { length: 45 }),
+  remoteAddr: text('remote_addr'),
   remotePort: integer('remote_port'),
   state: varchar('state', { length: 20 }),
   pid: integer('pid'),

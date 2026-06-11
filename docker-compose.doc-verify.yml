@@ -46,6 +46,10 @@ services:
     environment:
       NODE_ENV: test
       DATABASE_URL: postgresql://breeze_test:breeze_test@postgres-test:5432/breeze_test
+      # Lets ensureAppRole() create the unprivileged `breeze_app` role on first boot.
+      # Required because RLS-policy migrations (e.g. 2026-04-23-oauth-server.sql)
+      # do `CREATE POLICY ... FOR ALL TO breeze_app` and fail if the role is absent.
+      POSTGRES_PASSWORD: breeze_test
       REDIS_URL: redis://redis-test:6379
       AGENT_ENROLLMENT_SECRET: test-enrollment-secret
       JWT_SECRET: test-jwt-secret-must-be-at-least-32-characters-long

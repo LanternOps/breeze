@@ -47,11 +47,18 @@ const (
 	CmdShutdown       = "shutdown"
 	CmdLock           = "lock"
 	CmdRebootSafeMode = "reboot_safe_mode"
+	CmdWakeOnLan      = "wake_on_lan"
+	// On-demand re-run of all inventory collectors. Triggers the same set of
+	// send*Inventory submissions the heartbeat fires periodically, so the API
+	// sees fresh hardware/software/network/etc. without waiting for the next
+	// scheduled cycle.
+	CmdRefreshInventory = "refresh_inventory"
 
 	// Software inventory
 	CmdCollectSoftware   = "collect_software"
 	CmdSoftwareUninstall = "software_uninstall"
 	CmdSoftwareInstall   = "software_install"
+	CmdSoftwareUpdate    = "software_update"
 
 	// Boot performance
 	CmdCollectBootPerformance    = "collect_boot_performance"
@@ -168,6 +175,9 @@ const (
 	CmdSetLogLevel = "set_log_level"
 
 	// Dev push (fast dev binary update)
+	// Auto-update management
+	CmdSetAutoUpdate = "set_auto_update"
+
 	CmdDevUpdate = "dev_update"
 
 	// Screenshot (AI Vision)
@@ -204,6 +214,12 @@ const (
 	CmdTunnelOpen  = "tunnel_open"
 	CmdTunnelData  = "tunnel_data"
 	CmdTunnelClose = "tunnel_close"
+
+	// PAM Track 5: actuate an approved UAC elevation by typing the
+	// dormant-admin credentials into consent.exe on the secure desktop.
+	// Server-pushed only; handled by internal/pamactuator on Windows and
+	// a no-op stub on other platforms.
+	CmdActuateElevation = "actuate_elevation"
 )
 
 // CommandResult represents the result of a command execution
@@ -214,6 +230,10 @@ type CommandResult struct {
 	Stderr     string `json:"stderr,omitempty"`
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
+	// RFC3339Nano timestamp captured by the agent at the moment the command's
+	// primary work began. Set by command handlers that care about the server-
+	// side reconstruction (e.g. software_install). Empty when not applicable.
+	StartedAt string `json:"startedAt,omitempty"`
 }
 
 // NewSuccessResult creates a successful command result with data

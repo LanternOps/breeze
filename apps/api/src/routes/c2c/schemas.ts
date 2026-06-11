@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { M365_TENANT_ID_REGEX } from '../../services/c2cM365';
 
 // ── Connection schemas ──────────────────────────────────────────────────────
 
@@ -10,7 +11,7 @@ export const createConnectionSchema = z
   .object({
     provider: z.enum(c2cProviders),
     displayName: z.string().min(1).max(200),
-    tenantId: z.string().max(100).optional(),
+    tenantId: z.string().trim().max(100).optional(),
     clientId: z.string().min(1).max(200).optional(),
     clientSecret: z.string().min(1).optional(),
     scopes: z.string().optional(),
@@ -24,7 +25,23 @@ export const createConnectionSchema = z
       return true;
     },
     { message: 'clientId and clientSecret are required for manual connections' }
-  );
+  )
+  // tenantId is shared across providers; only Microsoft 365 tenant ids are
+  // Entra GUIDs, so enforce the GUID shape only for that provider and leave
+  // google_workspace (and other future providers) free to use their own format.
+  .superRefine((data, ctx) => {
+    if (
+      data.provider === 'microsoft_365' &&
+      data.tenantId !== undefined &&
+      !M365_TENANT_ID_REGEX.test(data.tenantId)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tenantId'],
+        message: 'tenantId must be an Entra tenant GUID',
+      });
+    }
+  });
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
 

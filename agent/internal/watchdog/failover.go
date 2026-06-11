@@ -24,6 +24,15 @@ type HeartbeatResponse struct {
 	UpgradeTo         string            `json:"upgradeTo,omitempty"`
 }
 
+// RestartStats summarizes the watchdog's recent restart activity for the
+// failover heartbeat payload. Pulled out of RecoveryManager to keep
+// failover.go independent of recovery internals.
+type RestartStats struct {
+	Count24h      int
+	LastRestartAt time.Time
+	FlapDetected  bool
+}
+
 // FailoverClient is an HTTP client for API communication during failover mode.
 type FailoverClient struct {
 	baseURL string
@@ -64,15 +73,21 @@ func (c *FailoverClient) setHeaders(req *http.Request) {
 
 // SendHeartbeat POSTs a watchdog heartbeat to the API and returns the parsed
 // response. The request body includes role, watchdogState, agentVersion,
-// journalExcerpt, and timestamp fields.
-func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, journalEntries []JournalEntry) (*HeartbeatResponse, error) {
+// journalExcerpt, mainAgentRestartCount24h, mainAgentLastRestartAt,
+// flapDetected, and timestamp fields.
+func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, journalEntries []JournalEntry, restartStats RestartStats) (*HeartbeatResponse, error) {
 	body := map[string]any{
-		"role":           "watchdog",
-		"watchdogState":  currentState,
-		"status":         "ok",
-		"agentVersion":   watchdogVersion,
-		"journalExcerpt": journalEntries,
-		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"role":                     "watchdog",
+		"watchdogState":            currentState,
+		"status":                   "ok",
+		"agentVersion":             watchdogVersion,
+		"journalExcerpt":           journalEntries,
+		"timestamp":                time.Now().UTC().Format(time.RFC3339),
+		"mainAgentRestartCount24h": restartStats.Count24h,
+		"flapDetected":             restartStats.FlapDetected,
+	}
+	if !restartStats.LastRestartAt.IsZero() {
+		body["mainAgentLastRestartAt"] = restartStats.LastRestartAt.UTC().Format(time.RFC3339)
 	}
 
 	data, err := json.Marshal(body)

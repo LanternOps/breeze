@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -111,8 +112,8 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || `Failed to ${isEdit ? 'update' : 'create'} SLA config`);
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, `Failed to ${isEdit ? 'update' : 'create'} SLA config`));
       }
 
       onClose(true);

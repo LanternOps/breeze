@@ -32,6 +32,10 @@ async function verifyDeviceAccess(
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+  // Site axis: deny devices outside the caller's site allowlist (no-op when unrestricted).
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { error: 'Device not found or access denied' };
+  }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
 }
@@ -47,6 +51,7 @@ export function registerCisBenchmarkTools(aiTools: Map<string, AiTool>): void {
 
 registerTool({
   tier: 1,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'get_cis_compliance',
     description: 'Retrieve CIS benchmark compliance status across devices, including latest score, failed check count, and baseline metadata.',
@@ -195,6 +200,7 @@ registerTool({
 
 registerTool({
   tier: 1,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'get_cis_device_report',
     description: 'Get detailed CIS findings for a specific device, including failed checks and evidence from the latest scans.',
@@ -271,6 +277,7 @@ registerTool({
 
 registerTool({
   tier: 3,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'apply_cis_remediation',
     description: 'Queue approved CIS remediation actions for one device and one or more failed checks.',

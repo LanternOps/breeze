@@ -71,7 +71,13 @@ approvalsRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    // The frontend always sends ?orgId=<currentOrgId> in the query for
+    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
+    // left partner-scope users with no resolvable org (#805 and class).
+    const orgResolution = resolvePatchApprovalOrgId(
+      auth,
+      data.orgId ?? c.req.query('orgId') ?? undefined
+    );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
     }
@@ -124,7 +130,13 @@ approvalsRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    // The frontend always sends ?orgId=<currentOrgId> in the query for
+    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
+    // left partner-scope users with no resolvable org (#805 and class).
+    const orgResolution = resolvePatchApprovalOrgId(
+      auth,
+      data.orgId ?? c.req.query('orgId') ?? undefined
+    );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
     }
@@ -177,7 +189,13 @@ approvalsRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    // The frontend always sends ?orgId=<currentOrgId> in the query for
+    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
+    // left partner-scope users with no resolvable org (#805 and class).
+    const orgResolution = resolvePatchApprovalOrgId(
+      auth,
+      data.orgId ?? c.req.query('orgId') ?? undefined
+    );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
     }
@@ -227,7 +245,13 @@ approvalsRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    const orgResolution = resolvePatchApprovalOrgId(auth, data.orgId);
+    // The frontend always sends ?orgId=<currentOrgId> in the query for
+    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
+    // left partner-scope users with no resolvable org (#805 and class).
+    const orgResolution = resolvePatchApprovalOrgId(
+      auth,
+      data.orgId ?? c.req.query('orgId') ?? undefined
+    );
     if ('error' in orgResolution) {
       return c.json({ error: orgResolution.error }, orgResolution.status);
     }

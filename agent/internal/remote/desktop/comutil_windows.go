@@ -71,12 +71,12 @@ var (
 	procCoUninitialize = ole32DLL.NewProc("CoUninitialize")
 	procCoTaskMemFree  = ole32DLL.NewProc("CoTaskMemFree")
 
-	procMFStartup                = mfplatDLL.NewProc("MFStartup")
-	procMFShutdown               = mfplatDLL.NewProc("MFShutdown")
-	procMFTEnumEx                = mfplatDLL.NewProc("MFTEnumEx")
-	procMFCreateMediaType        = mfplatDLL.NewProc("MFCreateMediaType")
-	procMFCreateSample           = mfplatDLL.NewProc("MFCreateSample")
-	procMFCreateMemoryBuffer     = mfplatDLL.NewProc("MFCreateMemoryBuffer")
+	procMFStartup                 = mfplatDLL.NewProc("MFStartup")
+	procMFShutdown                = mfplatDLL.NewProc("MFShutdown")
+	procMFTEnumEx                 = mfplatDLL.NewProc("MFTEnumEx")
+	procMFCreateMediaType         = mfplatDLL.NewProc("MFCreateMediaType")
+	procMFCreateSample            = mfplatDLL.NewProc("MFCreateSample")
+	procMFCreateMemoryBuffer      = mfplatDLL.NewProc("MFCreateMemoryBuffer")
 	procMFCreateDXGIDeviceManager = mfplatDLL.NewProc("MFCreateDXGIDeviceManager")
 	procMFCreateDXGISurfaceBuffer = mfplatDLL.NewProc("MFCreateDXGISurfaceBuffer")
 )
@@ -124,8 +124,8 @@ const (
 	dxgiFormatNV12 = 103
 
 	// D3D11 bind flags
-	d3d11BindRenderTarget      = 0x20
-	d3d11BindShaderResource    = 0x08
+	d3d11BindRenderTarget   = 0x20
+	d3d11BindShaderResource = 0x08
 )
 
 // mftRegisterTypeInfo matches MFT_REGISTER_TYPE_INFO.
@@ -181,7 +181,7 @@ var (
 	mfSAD3D11Aware = comGUID{0x206b4fc8, 0xfcf9, 0x4c51, [8]byte{0xaf, 0xe3, 0x97, 0x64, 0x36, 0x9e, 0x33, 0xa0}}
 
 	// ICodecAPI — for dynamic bitrate changes on live encoder
-	iidICodecAPI               = comGUID{0x901db4c7, 0x31ce, 0x41a2, [8]byte{0x85, 0xdc, 0x8f, 0xa0, 0xbf, 0x41, 0xb8, 0xda}}
+	iidICodecAPI                    = comGUID{0x901db4c7, 0x31ce, 0x41a2, [8]byte{0x85, 0xdc, 0x8f, 0xa0, 0xbf, 0x41, 0xb8, 0xda}}
 	codecAPIAVEncCommonMeanBitRate  = comGUID{0xf7222374, 0x2144, 0x4815, [8]byte{0xb5, 0x50, 0xa3, 0x7f, 0x8e, 0x12, 0xee, 0x52}}
 	codecAPIAVEncVideoForceKeyFrame = comGUID{0x398c1b98, 0x8353, 0x475a, [8]byte{0x9e, 0xf2, 0x8f, 0x26, 0x5d, 0x26, 0x03, 0x45}}
 	codecAPIAVEncMPVGOPSize         = comGUID{0x95f31b26, 0x95a4, 0x41d0, [8]byte{0xa3, 0xc4, 0x99, 0xd7, 0xe2, 0xb7, 0xeb, 0xe7}}
@@ -283,9 +283,9 @@ const (
 // comVariant matches the Windows VARIANT struct (16 bytes on x64).
 // Used for ICodecAPI::SetValue calls.
 type comVariant struct {
-	vt       uint16   // VARTYPE
-	reserved [6]byte  // wReserved1-3
-	val      uint64   // union (holds ULONG for VT_UI4)
+	vt       uint16  // VARTYPE
+	reserved [6]byte // wReserved1-3
+	val      uint64  // union (holds ULONG for VT_UI4)
 }
 
 const vtUI4 = 19  // VT_UI4

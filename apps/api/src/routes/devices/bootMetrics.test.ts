@@ -33,7 +33,8 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('./helpers', () => ({
-  getDeviceWithOrgCheck: vi.fn(),
+  getDeviceWithOrgAndSiteCheck: vi.fn(),
+  SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -41,7 +42,7 @@ vi.mock('../../services/commandQueue', () => ({
 }));
 
 import { db } from '../../db';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { bootMetricsRoutes } from './bootMetrics';
 
 describe('boot metrics routes', () => {
@@ -54,7 +55,7 @@ describe('boot metrics routes', () => {
   });
 
   it('returns startup items with normalized itemId values', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
       id: 'device-1',
       status: 'online',
       orgId: 'org-123',
@@ -93,7 +94,7 @@ describe('boot metrics routes', () => {
   });
 
   it('returns 409 when startup-item selector is ambiguous', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
       id: 'device-1',
       status: 'online',
       orgId: 'org-123',
@@ -143,5 +144,15 @@ describe('boot metrics routes', () => {
     expect(body.error).toContain('ambiguous');
     expect(body.candidates).toHaveLength(2);
   });
-});
 
+  it('denies startup-item reads when site scope excludes the device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
+
+    const res = await app.request('/devices/device-1/startup-items', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});

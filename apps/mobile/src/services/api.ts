@@ -1,10 +1,40 @@
 import * as SecureStore from 'expo-secure-store';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
+import { getServerUrl } from './serverConfig';
+import { getOrCreateInstallationId } from './installationId';
+
+const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
 const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
+export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
+export const DEVICE_BLOCKED_CODE = 'device_blocked';
+
+type DeviceBlockedListener = (reason: string | null) => void;
+const deviceBlockedListeners = new Set<DeviceBlockedListener>();
+
+/**
+ * Subscribe to the global "this device just got blocked" signal. The first
+ * API response carrying `code: device_blocked` triggers it; the app should
+ * sign out and render the blocked-state screen.
+ */
+export function onDeviceBlocked(listener: DeviceBlockedListener): () => void {
+  deviceBlockedListeners.add(listener);
+  return () => {
+    deviceBlockedListeners.delete(listener);
+  };
+}
+
+function notifyDeviceBlocked(reason: string | null): void {
+  for (const listener of deviceBlockedListeners) {
+    try {
+      listener(reason);
+    } catch (err) {
+      console.error('[api] device-blocked listener threw', err);
+    }
+  }
+}
 
 // Types
 export interface Alert {
@@ -62,6 +92,18 @@ export interface LoginResponse {
   user: User;
 }
 
+export type MfaMethod = 'totp' | 'sms';
+
+export interface MfaChallenge {
+  tempToken: string;
+  mfaMethod: MfaMethod;
+  phoneLast4: string | null;
+}
+
+export type LoginResult =
+  | { kind: 'success'; token: string; user: User }
+  | { kind: 'mfaRequired'; challenge: MfaChallenge };
+
 export interface ApiError {
   message: string;
   code?: string;
@@ -87,6 +129,9 @@ interface LoginPayload {
   tokens?: AuthTokensPayload;
   accessToken?: string;
   mfaRequired?: boolean;
+  tempToken?: string;
+  mfaMethod?: MfaMethod;
+  phoneLast4?: string | null;
   error?: string;
 }
 
@@ -163,7 +208,21 @@ async function requestWithPrefix<T>(
     (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
   }
 
-  const response = await fetch(`${API_BASE_URL}${prefix}${endpoint}`, {
+  // Always send the per-install id so the API can recognise this phone for
+  // the lifecycle/lockout flow. Failures (SecureStore disabled in tests)
+  // fall through silently — a missing header simply means "no row to match".
+  try {
+    const installationId = await getOrCreateInstallationId();
+    if (installationId) {
+      (headers as Record<string, string>)[MOBILE_DEVICE_ID_HEADER] = installationId;
+    }
+  } catch {
+    // ignore
+  }
+
+  const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
+  const url = `${baseUrl}${prefix}${endpoint}`;
+  const response = await fetch(url, {
     ...options,
     headers,
     credentials: 'include',
@@ -171,11 +230,17 @@ async function requestWithPrefix<T>(
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
+    const code = typeof body.code === 'string' ? body.code : undefined;
+    if (code === DEVICE_BLOCKED_CODE) {
+      const reason = typeof body.reason === 'string' ? body.reason : null;
+      notifyDeviceBlocked(reason);
+    }
     const error: ApiError = {
       message:
         (typeof body.error === 'string' && body.error)
         || (typeof body.message === 'string' && body.message)
         || 'An error occurred',
+      code,
       statusCode: response.status
     };
     throw error;
@@ -246,14 +311,24 @@ function mapDevice(device: MobileDeviceRecord): Device {
 }
 
 // Auth API
-export async function login(email: string, password: string): Promise<LoginResponse> {
+export async function login(email: string, password: string): Promise<LoginResult> {
   const response = await requestWithPrefix<LoginPayload>('/auth/login', API_CORE_PREFIX, {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
 
   if (response.mfaRequired) {
-    throw { message: 'MFA is required for this account' } as ApiError;
+    if (!response.tempToken || !response.mfaMethod) {
+      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+    }
+    return {
+      kind: 'mfaRequired',
+      challenge: {
+        tempToken: response.tempToken,
+        mfaMethod: response.mfaMethod,
+        phoneLast4: response.phoneLast4 ?? null,
+      },
+    };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
@@ -261,10 +336,28 @@ export async function login(email: string, password: string): Promise<LoginRespo
     throw { message: response.error || 'Invalid login response' } as ApiError;
   }
 
-  return {
-    token,
-    user: response.user
-  };
+  return { kind: 'success', token, user: response.user };
+}
+
+export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
+  const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
+    method: 'POST',
+    body: JSON.stringify({ code, tempToken }),
+  });
+
+  const token = response.tokens?.accessToken || response.accessToken;
+  if (!response.user || !token) {
+    throw { message: response.error || 'Invalid MFA response' } as ApiError;
+  }
+
+  return { token, user: response.user };
+}
+
+export async function sendMfaSms(tempToken: string): Promise<void> {
+  await requestWithPrefix('/auth/mfa/sms/send', API_CORE_PREFIX, {
+    method: 'POST',
+    body: JSON.stringify({ tempToken }),
+  });
 }
 
 export async function logout(): Promise<void> {
@@ -381,6 +474,41 @@ export async function sendDeviceAction(
     id: response.id || response.commandId || '',
     type: action
   };
+}
+
+export type WakeFailureCode =
+  | 'TARGET_NOT_FOUND'
+  | 'NO_MACS'
+  | 'NO_SUBNET'
+  | 'IPV6_ONLY'
+  | 'NO_RELAY'
+  | 'RELAY_OVERRIDE_INVALID'
+  | 'WS_SEND_FAILED';
+
+export interface WakeMobileResponse {
+  id: string;
+  deviceId: string;
+  type: 'wake_on_lan';
+  status: string;
+  wakeAttemptId: string;
+  relay: { deviceId: string; hostname: string };
+  network: string;
+  broadcast: string;
+  macs: string[];
+}
+
+// Throws an ApiError on non-2xx — the caller can read err.code for the
+// pre-flight failure reason (NO_MACS, NO_RELAY, etc.) and surface a friendly
+// message. requestWithPrefix already preserves both code and statusCode.
+export async function sendWakeAction(deviceId: string): Promise<WakeMobileResponse> {
+  return requestWithPrefix<WakeMobileResponse>(
+    `/devices/${deviceId}/commands`,
+    API_CORE_PREFIX,
+    {
+      method: 'POST',
+      body: JSON.stringify({ type: 'wake' }),
+    },
+  );
 }
 
 // Push notification registration

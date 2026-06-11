@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiPageContext, AiStreamEvent, AiApprovalMode } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { extractApiError } from '@/lib/apiError';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -16,6 +17,12 @@ interface SearchResult {
   title: string | null;
   matchedContent: string;
   createdAt: string;
+}
+
+interface M365Connection {
+  id: string;
+  customerLabel: string;
+  customerDisplayName: string;
 }
 
 interface AiState {
@@ -38,6 +45,10 @@ interface AiState {
   isInterrupting: boolean;
   isFlagged: boolean;
   flagReason: string | null;
+  // M365 customer binding (Delegant helpdesk tools)
+  m365Connections: M365Connection[];
+  selectedM365ConnectionId: string | null;
+  boundM365ConnectionId: string | null;
 
   // Actions
   toggle: () => void;
@@ -60,6 +71,8 @@ interface AiState {
   switchSession: (sessionId: string) => Promise<void>;
   flagSession: (reason?: string) => Promise<void>;
   unflagSession: () => Promise<void>;
+  loadM365Connections: () => Promise<void>;
+  setSelectedM365Connection: (connectionId: string | null) => void;
 }
 
 export const useAiStore = create<AiState>()(
@@ -84,6 +97,9 @@ export const useAiStore = create<AiState>()(
   isInterrupting: false,
   isFlagged: false,
   flagReason: null,
+  m365Connections: [],
+  selectedM365ConnectionId: null,
+  boundM365ConnectionId: null,
 
   toggle: () => {
     const opening = !get().isOpen;
@@ -104,17 +120,27 @@ export const useAiStore = create<AiState>()(
   createSession: async () => {
     set({ isLoading: true, error: null });
     try {
-      const { pageContext } = get();
+      const { pageContext, selectedM365ConnectionId } = get();
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
-        body: JSON.stringify({ pageContext: pageContext ?? undefined })
+        body: JSON.stringify({
+          pageContext: pageContext ?? undefined,
+          delegantM365ConnectionId: selectedM365ConnectionId ?? undefined
+        })
       });
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to create session');
+        const data = await res.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
-      set({ sessionId: data.id, messages: [], isLoading: false, isFlagged: false, flagReason: null });
+      set({
+        sessionId: data.id,
+        messages: [],
+        isLoading: false,
+        isFlagged: false,
+        flagReason: null,
+        boundM365ConnectionId: data.delegantM365ConnectionId ?? null
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
@@ -149,6 +175,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
         flagReason: data.session.flagReason ?? null,
+        boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
       });
     } catch (err) {
       set({
@@ -212,17 +239,17 @@ export const useAiStore = create<AiState>()(
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to send message' }));
+        const data = await res.json().catch(() => null);
 
         if (res.status === 409) {
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
-            error: data.error || 'Another response is still in progress for this conversation.'
+            error: extractApiError(data, 'Another response is still in progress for this conversation.')
           }));
           return;
         }
 
-        throw new Error(data.error || 'Failed to send message');
+        throw new Error(extractApiError(data, 'Failed to send message'));
       }
 
       const reader = res.body?.getReader();
@@ -277,8 +304,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ approved })
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to process approval. It may have timed out.' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
         return;
       }
       set({ pendingApproval: null });
@@ -298,8 +325,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ approved })
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to process plan approval' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to process plan approval') });
         return;
       }
       if (approved) {
@@ -333,8 +360,8 @@ export const useAiStore = create<AiState>()(
         method: 'POST'
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to abort plan' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to abort plan') });
         return;
       }
       set({ activePlan: null });
@@ -354,8 +381,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ paused })
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        set({ error: data.error || 'Failed to pause AI' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to pause AI') });
         return;
       }
       set({ isPaused: paused });
@@ -375,7 +402,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, messages: [] });
+      set({ sessionId: null, messages: [], boundM365ConnectionId: null });
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
       set({ error: 'Failed to close session' });
@@ -415,8 +442,8 @@ export const useAiStore = create<AiState>()(
         const data = await res.json();
         set({ searchResults: data.data || [], isSearching: false });
       } else {
-        const data = await res.json().catch(() => ({ error: 'Search failed' }));
-        set({ isSearching: false, error: data.error || 'Search failed' });
+        const data = await res.json().catch(() => null);
+        set({ isSearching: false, error: extractApiError(data, 'Search failed') });
       }
     } catch (err) {
       console.error('[AI] Search failed:', err);
@@ -439,6 +466,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,
         flagReason: data.session?.flagReason ?? null,
+        boundM365ConnectionId: data.session?.delegantM365ConnectionId ?? null,
       });
     } catch (err) {
       set({
@@ -457,8 +485,8 @@ export const useAiStore = create<AiState>()(
         body: JSON.stringify({ reason }),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to flag session' }));
-        set({ error: data.error || 'Failed to flag session' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to flag session') });
         return;
       }
       set({ isFlagged: true, flagReason: reason ?? null });
@@ -474,8 +502,8 @@ export const useAiStore = create<AiState>()(
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}/flag`, { method: 'DELETE' });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to unflag session' }));
-        set({ error: data.error || 'Failed to unflag session' });
+        const data = await res.json().catch(() => null);
+        set({ error: extractApiError(data, 'Failed to unflag session') });
         return;
       }
       set({ isFlagged: false, flagReason: null });
@@ -484,6 +512,23 @@ export const useAiStore = create<AiState>()(
       set({ error: 'Failed to unflag session' });
     }
   },
+
+  loadM365Connections: async () => {
+    try {
+      const res = await fetchWithAuth('/ai/m365-connections');
+      if (!res.ok) {
+        console.error('[AI] Failed to load M365 connections: HTTP', res.status);
+        return;
+      }
+      const data = await res.json();
+      set({ m365Connections: data.data || [] });
+    } catch (err) {
+      console.error('[AI] Failed to load M365 connections:', err);
+    }
+  },
+
+  setSelectedM365Connection: (connectionId: string | null) =>
+    set({ selectedM365ConnectionId: connectionId }),
     }),
     {
       name: 'breeze-ai-chat',

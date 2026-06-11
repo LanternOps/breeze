@@ -199,13 +199,29 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
+      // Name/status update — schema is .strict() so only declared keys are accepted.
+      const patchRes = await fetchWithAuth(`/users/${selectedUser.id}`, {
         method: 'PATCH',
-        body: JSON.stringify(values)
+        body: JSON.stringify({ name: values.name })
       });
-
-      if (!response.ok) {
+      if (!patchRes.ok) {
         throw new Error('Failed to update user');
+      }
+
+      // Role lives on partner_users / organization_users; the dedicated
+      // POST /users/:id/role endpoint writes it. selectedUser.role is the
+      // role name (display string), not the id — resolve via the roles list.
+      // Only POST when the role actually changed to avoid an unnecessary
+      // audit-log entry on name-only edits.
+      const currentRoleId = roles.find(r => r.name === selectedUser.role)?.id;
+      if (values.roleId && values.roleId !== currentRoleId) {
+        const roleRes = await fetchWithAuth(`/users/${selectedUser.id}/role`, {
+          method: 'POST',
+          body: JSON.stringify({ roleId: values.roleId })
+        });
+        if (!roleRes.ok) {
+          throw new Error('Failed to update role');
+        }
       }
 
       await fetchUsers();

@@ -24,10 +24,14 @@ const createCustomFieldSchema = z.object({
     .max(100)
     .regex(/^[a-z][a-z0-9_]*$/, 'Field key must be lowercase alphanumeric with underscores'),
   type: customFieldTypeSchema,
-  options: customFieldOptionsSchema.optional(),
+  // .nullable().optional() so the create form can send explicit null
+  // for unused fields. The web form serializes unused fields as null
+  // rather than omitting them — without .nullable() the validator
+  // rejects every non-Dropdown create (Text, Number, Boolean, Date).
+  options: customFieldOptionsSchema.nullable().optional(),
   required: z.boolean().default(false),
   defaultValue: z.unknown().optional(),
-  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional()
+  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()
 });
 
 const updateCustomFieldSchema = z.object({

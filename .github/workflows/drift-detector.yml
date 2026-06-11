@@ -1,0 +1,67 @@
+# Main History Drift Detector
+#
+# Daily-cron + manual-dispatch monitor that fails if origin/main loses
+# ancestry to the latest v* release tag, or if its root commit changes.
+#
+# EXPECTED_ROOT is the genesis commit of main (93bad0ec, "feat: initialize
+# Breeze RMM project structure", Jan 2026). This is the original root that
+# survived the 2026-04-25 force-push incident — main's full pre-orphan
+# history was restored. We pin to it so a future force-push that severs
+# parent links (and thus produces a different first-parentless commit) is
+# detected within 24h via the daily cron.
+#
+# Triggered by the 2026-04-25 main-orphan incident, when ~6 days of
+# parallel-line releases shipped before the topology was noticed.
+#
+# This is a monitor, not a required status check. Failures surface via
+# GitHub-native error markup and the standard workflow-failure email.
+# See docs/runbooks/2026-05-02-main-orphan-and-userhelper-flag.md.
+
+name: Main History Drift Detector
+
+on:
+  schedule:
+    # Daily at 14:00 UTC (08:00 MDT) — off-peak relative to typical release windows.
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    name: Check main ancestry and root
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify main root commit and ancestry to latest tag
+        run: |
+          EXPECTED_ROOT=93bad0ec76d6f0134ed3b21ee7bfef224b4c102e
+          ACTUAL_ROOT=$(git rev-list --max-parents=0 origin/main | head -1)
+          if [ "$ACTUAL_ROOT" != "$EXPECTED_ROOT" ]; then
+            echo "::error::main root commit changed: expected $EXPECTED_ROOT, got $ACTUAL_ROOT"
+            echo "This usually means main was force-pushed in a way that severed history."
+            echo "See docs/runbooks/2026-05-02-main-orphan-and-userhelper-flag.md."
+            exit 1
+          fi
+          LATEST_TAG=$(git tag --sort=-creatordate -l 'v*' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::warning::no v* tag found; skipping ancestry check"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$LATEST_TAG" origin/main; then
+            echo "::error::main has lost ancestry to latest release tag $LATEST_TAG"
+            echo "main can no longer reach $LATEST_TAG via parent links — main was probably force-pushed."
+            echo "See docs/runbooks/2026-05-02-main-orphan-and-userhelper-flag.md."
+            exit 1
+          fi
+          echo "OK: main rooted at $EXPECTED_ROOT and reaches $LATEST_TAG"

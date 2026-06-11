@@ -1,11 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyPollFailure,
   dedupeThreatDetections,
+  logSyncFailureServerSide,
   normalizeSeverity,
   normalizeThreatStatus,
-  resolveDeviceIdForAgent
+  normalizeS1SiteName,
+  resolveAgentSyncTarget,
+  resolveOrgIdForAgentSite,
+  resolveThreatSyncTarget,
+  resolveDeviceIdForAgent,
+  truncateError
 } from './s1Sync';
+import { SentinelOneHttpError } from '../services/sentinelOne/client';
 
 describe('s1Sync helpers', () => {
   it('deduplicates threat detections by SentinelOne threat ID', () => {
@@ -24,6 +31,64 @@ describe('s1Sync helpers', () => {
     expect(normalizeThreatStatus('quarantine_pending')).toBe('quarantined');
     expect(normalizeThreatStatus('in_progress')).toBe('in_progress');
     expect(normalizeThreatStatus('new')).toBe('active');
+  });
+
+  it('truncateError strips Authorization-bearer patterns before persisting to DB', () => {
+    // S1 puts the bearer token in a header; HTTP error messages can echo
+    // headers back. lastSyncError is read by operators in plain text — the
+    // redaction guards against any future error message that includes the
+    // header verbatim.
+    const out = truncateError(new Error('s1 fetch failed: Authorization: Bearer s1_token_secret at /web/api'));
+    expect(out).not.toContain('s1_token_secret');
+    expect(out).toContain('[REDACTED]');
+  });
+
+  it('truncateError reads only the body-free message of a SentinelOneHttpError', () => {
+    // The persisted lastSyncError column is fed by truncateError, which reads
+    // `.message`. SentinelOneHttpError keeps the upstream body OFF `.message`
+    // (it lives on `.responseBody`), so the tenant-visible column must never
+    // receive the raw upstream body. This pins that invariant: drift in either
+    // the error class or truncateError would leak the body into the DB column.
+    const out = truncateError(
+      new SentinelOneHttpError('GET', '/web/api/v2.1/agents', 401, 'SECRET_UPSTREAM_BODY')
+    );
+    expect(out).toBe('SentinelOne API GET /web/api/v2.1/agents failed (401)');
+    expect(out).not.toContain('SECRET_UPSTREAM_BODY');
+  });
+});
+
+describe('logSyncFailureServerSide', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('logs the status and a redacted responseBody for a SentinelOneHttpError', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    logSyncFailureServerSide(
+      { integrationId: 'int-1', orgId: 'org-1' },
+      new SentinelOneHttpError('GET', '/web/api/v2.1/agents', 500, 'Authorization: Bearer s1_secret')
+    );
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    // The logger calls console.error(label, JSON.stringify({...})). Join the
+    // raw string args of the call so we assert on the actual logged payload
+    // (the inner JSON is already a string — no double-encoding).
+    const logged = spy.mock.calls[0]!.map((arg) => String(arg)).join(' ');
+    expect(logged).toContain('"status":500');
+    // responseBody is redacted server-side even though the server log is
+    // allowed to carry more detail than the persisted column.
+    expect(logged).not.toContain('s1_secret');
+    expect(logged).toContain('[REDACTED]');
+  });
+
+  it('logs a plain Error via the fallback branch without throwing', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() =>
+      logSyncFailureServerSide({ actionId: 'act-1', orgId: 'org-1' }, new Error('boom'))
+    ).not.toThrow();
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('transitions action polling failures to terminal failure at threshold', () => {
@@ -132,5 +197,60 @@ describe('resolveDeviceIdForAgent', () => {
       networkInterfaces: [{ inet: ['10.0.0.5'] }],
     };
     expect(resolveDeviceIdForAgent(agent, candidates)).toBe('device-aaa');
+  });
+});
+
+describe('SentinelOne site-to-org mapping helpers', () => {
+  it('normalizes provider site names for case-insensitive lookup', () => {
+    expect(normalizeS1SiteName('  Denver Site  ')).toBe('denver site');
+    expect(normalizeS1SiteName('')).toBeNull();
+    expect(normalizeS1SiteName(null)).toBeNull();
+  });
+
+  it('resolves mapped sites to their target org and falls back to the integration org', () => {
+    const mappings = new Map([
+      ['denver site', 'org-denver'],
+      ['nyc', 'org-nyc'],
+    ]);
+
+    expect(resolveOrgIdForAgentSite('Denver Site', 'org-default', mappings)).toBe('org-denver');
+    expect(resolveOrgIdForAgentSite('unknown', 'org-default', mappings)).toBe('org-default');
+    expect(resolveOrgIdForAgentSite(null, 'org-default', mappings)).toBe('org-default');
+  });
+
+  it('uses the mapped org device candidates when resolving an agent', () => {
+    const target = resolveAgentSyncTarget(
+      { siteName: 'Denver Site', computerName: 'server-1' },
+      'org-default',
+      new Map([['denver site', 'org-denver']]),
+      new Map([
+        ['org-default', {
+          byHostname: new Map([['server-1', 'device-default']]),
+          byIp: new Map(),
+        }],
+        ['org-denver', {
+          byHostname: new Map([['server-1', 'device-denver']]),
+          byIp: new Map(),
+        }],
+      ])
+    );
+
+    expect(target).toEqual({ orgId: 'org-denver', deviceId: 'device-denver' });
+  });
+
+  it('uses the integration org and null device for unmapped threat agents', () => {
+    const mapped = resolveThreatSyncTarget(
+      'agent-denver',
+      'org-default',
+      new Map([['agent-denver', { orgId: 'org-denver', deviceId: 'device-denver' }]])
+    );
+    const unmapped = resolveThreatSyncTarget(
+      'missing-agent',
+      'org-default',
+      new Map([['agent-denver', { orgId: 'org-denver', deviceId: 'device-denver' }]])
+    );
+
+    expect(mapped).toEqual({ orgId: 'org-denver', deviceId: 'device-denver' });
+    expect(unmapped).toEqual({ orgId: 'org-default', deviceId: null });
   });
 });

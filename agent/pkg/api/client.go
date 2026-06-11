@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -63,12 +64,24 @@ type MtlsCertData struct {
 }
 
 type EnrollResponse struct {
-	AgentID   string        `json:"agentId"`
-	AuthToken string        `json:"authToken"`
-	OrgID     string        `json:"orgId"`
-	SiteID    string        `json:"siteId"`
-	Config    AgentConfig   `json:"config"`
-	Mtls      *MtlsCertData `json:"mtls"`
+	AgentID           string             `json:"agentId"`
+	AuthToken         string             `json:"authToken"`
+	WatchdogAuthToken string             `json:"watchdogAuthToken"`
+	HelperAuthToken   string             `json:"helperAuthToken"`
+	OrgID             string             `json:"orgId"`
+	SiteID            string             `json:"siteId"`
+	Config            AgentConfig        `json:"config"`
+	Mtls              *MtlsCertData      `json:"mtls"`
+	ManifestTrustKeys []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+}
+
+// ManifestTrustKey is a per-deployment Ed25519 pubkey delivered at enrollment
+// for self-host agent updates (#625). The agent pins these alongside the
+// embedded LanternOps trust root.
+type ManifestTrustKey struct {
+	KeyID        string `json:"keyId"`
+	PublicKeyB64 string `json:"publicKeyB64"`
+	ValidFrom    string `json:"validFrom,omitempty"`
 }
 
 type RenewCertResponse struct {
@@ -78,8 +91,10 @@ type RenewCertResponse struct {
 }
 
 type RotateTokenResponse struct {
-	AuthToken string `json:"authToken"`
-	RotatedAt string `json:"rotatedAt"`
+	AuthToken         string `json:"authToken"`
+	WatchdogAuthToken string `json:"watchdogAuthToken"`
+	HelperAuthToken   string `json:"helperAuthToken"`
+	RotatedAt         string `json:"rotatedAt"`
 }
 
 type AgentConfig struct {
@@ -88,13 +103,50 @@ type AgentConfig struct {
 	EnabledCollectors                []string `json:"enabledCollectors,omitempty"`
 }
 
+// refuseUntrustedRedirect is the http.Client.CheckRedirect policy for the agent
+// API client. Every request the client makes carries the device token — Enroll
+// sends it as the custom x-agent-reenrollment-token header, the other calls send
+// it as Authorization: Bearer. Go follows redirects by default and, while it
+// drops Authorization/Cookie once a redirect leaves the original domain (it
+// still trusts subdomains), it forwards arbitrary custom headers — so a
+// compromised or MITM'd server could 30x a request to a host it controls and
+// harvest the token.
+//
+// Merely stripping the headers is not enough: following the redirect would still
+// hand the request body (during enroll: hostname, hardware serial, OS info) to
+// the attacker and let it forge the response the agent parses and persists
+// (e.g. authToken / mTLS cert). A legitimate Breeze server never redirects an
+// agent to a different host, so refuse the redirect outright and surface it to
+// the caller (which wraps the resulting error). Trusted redirects on the same
+// endpoint — a different path, or an http->https upgrade — are still followed.
+// An https->http downgrade is refused because it would expose the token over
+// cleartext. See #1043.
+func refuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	prev := via[len(via)-1]
+	// The hostname is the trust boundary: the agent already trusts its
+	// configured server, so a same-host redirect (different path or port, or
+	// an http->https upgrade) is fine, but a redirect to any other host is not.
+	// Compared case-insensitively since hostnames are.
+	if !strings.EqualFold(req.URL.Hostname(), prev.URL.Hostname()) {
+		return fmt.Errorf("refusing redirect from host %s to untrusted host %s during credentialed request", prev.URL.Hostname(), req.URL.Hostname())
+	}
+	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing https->%s downgrade redirect to %s during credentialed request", req.URL.Scheme, req.URL.Hostname())
+	}
+	return nil
+}
+
 func NewClient(baseURL, authToken, agentID string) *Client {
 	return &Client{
 		baseURL:   baseURL,
 		authToken: authToken,
 		agentID:   agentID,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: refuseUntrustedRedirect,
 		},
 	}
 }
@@ -110,8 +162,9 @@ func NewClientWithTLS(baseURL, authToken, agentID string, tlsCfg *tls.Config) *C
 		authToken: authToken,
 		agentID:   agentID,
 		httpClient: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: transport,
+			Timeout:       30 * time.Second,
+			Transport:     transport,
+			CheckRedirect: refuseUntrustedRedirect,
 		},
 	}
 }
@@ -128,6 +181,18 @@ func (c *Client) Enroll(req *EnrollRequest) (*EnrollResponse, error) {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	// On a forced re-enrollment the agent still holds its existing device
+	// token (loaded from secrets.yaml into the client). Present it so the
+	// server can match the existing device row and re-enroll it in place
+	// rather than treating this as a brand-new device and 409-ing on the
+	// hostname collision with the agent's own active row. The server reads
+	// this header in the enrollment route's existing-device branch. Empty on
+	// a fresh enroll (no stored token) -> header omitted, behaviour
+	// unchanged. See #1028.
+	if c.authToken != "" {
+		httpReq.Header.Set("x-agent-reenrollment-token", c.authToken)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

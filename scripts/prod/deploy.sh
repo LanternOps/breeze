@@ -4,7 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.prod.yml"
+COMPOSE_FILE="${REPO_ROOT}/deploy/docker-compose.prod.yml"
+MONITORING_COMPOSE_FILE="${REPO_ROOT}/docker-compose.monitoring.yml"
 ENV_FILE="${BREEZE_ENV_FILE:-${REPO_ROOT}/.env.prod}"
 ENABLE_MONITORING="${ENABLE_MONITORING:-true}"
 
@@ -14,7 +15,7 @@ fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "[deploy] Environment file not found: ${ENV_FILE}" >&2
-  echo "[deploy] Copy .env.example to .env.prod and set production values first." >&2
+  echo "[deploy] Copy deploy/.env.example to .env.prod and set production values first." >&2
   exit 1
 fi
 
@@ -43,14 +44,30 @@ fi
 
 required_vars=(
   BREEZE_DOMAIN
-  ACME_EMAIL
-  POSTGRES_PASSWORD
+  DATABASE_URL
+  BREEZE_VERSION
+  BREEZE_API_IMAGE_DIGEST
+  BREEZE_WEB_IMAGE_DIGEST
+  BREEZE_BINARIES_IMAGE_DIGEST
+  CADDY_IMAGE_REF
+  CLOUDFLARED_IMAGE_REF
+  REDIS_IMAGE_REF
+  COTURN_IMAGE_REF
+  BILLING_IMAGE_REF
+  REDIS_PASSWORD
   JWT_SECRET
   AGENT_ENROLLMENT_SECRET
-  METRICS_SCRAPE_TOKEN
+  APP_ENCRYPTION_KEY
+  MFA_ENCRYPTION_KEY
+  ENROLLMENT_KEY_PEPPER
+  MFA_RECOVERY_CODE_PEPPER
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS
   PUBLIC_API_URL
-  GRAFANA_ADMIN_PASSWORD
 )
+
+if [[ "${ENABLE_MONITORING}" == "true" ]]; then
+  required_vars+=(METRICS_SCRAPE_TOKEN GRAFANA_ADMIN_PASSWORD)
+fi
 
 for name in "${required_vars[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -59,45 +76,71 @@ for name in "${required_vars[@]}"; do
   fi
 done
 
-compose() {
-  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
+require_sha256_digest() {
+  local name="$1"
+  if [[ ! "${!name}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "[deploy] ${name} must be a sha256 digest, for example sha256:<64 lowercase hex chars>" >&2
+    exit 1
+  fi
 }
 
-mkdir -p "${REPO_ROOT}/monitoring/secrets"
-printf '%s\n' "${METRICS_SCRAPE_TOKEN}" > "${REPO_ROOT}/monitoring/secrets/metrics_scrape_token"
-chmod 600 "${REPO_ROOT}/monitoring/secrets/metrics_scrape_token"
+require_digest_ref() {
+  local name="$1"
+  if [[ ! "${!name}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+    echo "[deploy] ${name} must be digest-pinned with @sha256:<64 lowercase hex chars>" >&2
+    exit 1
+  fi
+}
+
+require_sha256_digest BREEZE_API_IMAGE_DIGEST
+require_sha256_digest BREEZE_WEB_IMAGE_DIGEST
+require_sha256_digest BREEZE_BINARIES_IMAGE_DIGEST
+require_digest_ref CADDY_IMAGE_REF
+require_digest_ref CLOUDFLARED_IMAGE_REF
+require_digest_ref REDIS_IMAGE_REF
+require_digest_ref COTURN_IMAGE_REF
+require_digest_ref BILLING_IMAGE_REF
+
+COMPOSE_ARGS=(-f "${COMPOSE_FILE}")
+if [[ "${ENABLE_MONITORING}" == "true" ]]; then
+  COMPOSE_ARGS+=(-f "${MONITORING_COMPOSE_FILE}")
+fi
+
+compose() {
+  docker compose "${COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" "$@"
+}
+
+redis_ping() {
+  compose exec -T redis sh -ec 'password="$(cat /run/secrets/redis_password)"; { printf "AUTH %s\r\n" "$password"; printf "PING\r\n"; } | redis-cli --no-auth-warning | grep -q PONG'
+}
 
 compose config >/dev/null
 
-echo "[deploy] Starting stateful services (PostgreSQL, Redis)"
-compose up -d postgres redis
+echo "[deploy] Starting Redis"
+compose up -d redis
 
-echo "[deploy] Waiting for PostgreSQL readiness"
+echo "[deploy] Waiting for Redis readiness"
 for _ in {1..30}; do
-  if compose exec -T postgres pg_isready -U "${POSTGRES_USER:-breeze}" -d "${POSTGRES_DB:-breeze}" >/dev/null 2>&1; then
+  if redis_ping >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
 
-if ! compose exec -T postgres pg_isready -U "${POSTGRES_USER:-breeze}" -d "${POSTGRES_DB:-breeze}" >/dev/null 2>&1; then
-  echo "[deploy] PostgreSQL did not become ready in time" >&2
+if ! redis_ping >/dev/null 2>&1; then
+  echo "[deploy] Redis did not become ready in time" >&2
   exit 1
 fi
 
 echo "[deploy] Running database migrations"
 (
   cd "${REPO_ROOT}"
-  export DATABASE_URL="postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-breeze}"
+  export DATABASE_URL
   pnpm db:migrate
 )
 
 echo "[deploy] Deploying application stack"
-if [[ "${ENABLE_MONITORING}" == "true" ]]; then
-  compose up -d --build --remove-orphans
-else
-  compose up -d --build --remove-orphans caddy api web postgres redis
-fi
+compose up -d --remove-orphans
 
 echo "[deploy] Running smoke checks"
 for _ in {1..24}; do

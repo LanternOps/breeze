@@ -59,6 +59,7 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed_${key}`),
+  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed_${key}`]),
 }));
 
 vi.mock('../services/redis', () => ({
@@ -124,6 +125,30 @@ function mockInsertValuesReturning(rows: any[]) {
     }),
   } as any);
 }
+
+/**
+ * Like mockInsertValuesReturning, but captures the exact payload the handler
+ * passes to .values() so a test can assert on the server-computed expiresAt
+ * directly — no reaching into vi mock internals, no conditionally-skipped
+ * assertions (PR #739 review). Returns a getter for the captured row.
+ */
+function mockInsertCapture(rows: any[]): () => any {
+  let captured: any;
+  vi.mocked(db.insert).mockReturnValueOnce({
+    values: vi.fn((v: any) => {
+      captured = v;
+      return { returning: vi.fn().mockResolvedValue(rows) };
+    }),
+  } as any);
+  return () => captured;
+}
+
+// Server default when neither ttlMinutes nor expiresAt is supplied:
+// DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt("ENROLLMENT_KEY_DEFAULT_TTL_MINUTES", 60).
+// The env var is unset in tests, so the literal 60 is the resolved value
+// (the constant is captured at module import — a later env mutation cannot
+// change it).
+const DEFAULT_TTL_MINUTES = 60;
 
 describe('enrollment key routes — list & create', () => {
   let app: Hono;
@@ -325,6 +350,106 @@ describe('enrollment key routes — list & create', () => {
       });
 
       expect(res.status).toBe(201);
+    });
+
+    it('resolves expiresAt from ttlMinutes server-side (now + ttl)', async () => {
+      const getInserted = mockInsertCapture([makeEnrollmentKey()]);
+      const before = Date.now();
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'TTL key', ttlMinutes: 10080 }),
+      });
+
+      const after = Date.now();
+      expect(res.status).toBe(201);
+      // Unconditional: if the payload can't be captured the test must FAIL,
+      // not silently pass (PR #739 review — the prior guard skipped this).
+      const inserted = getInserted();
+      expect(inserted?.expiresAt).toBeInstanceOf(Date);
+      const ttlMs = 10080 * 60 * 1000;
+      expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + ttlMs - 50);
+      expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs + 50);
+    });
+
+    it('honors an explicit expiresAt when ttlMinutes is omitted (regression — pre-existing caller contract)', async () => {
+      const getInserted = mockInsertCapture([makeEnrollmentKey()]);
+      const explicit = new Date(Date.now() + 86_400_000); // +24h
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Explicit', expiresAt: explicit.toISOString() }),
+      });
+
+      expect(res.status).toBe(201);
+      const inserted = getInserted();
+      expect(inserted?.expiresAt).toBeInstanceOf(Date);
+      // Exact round-trip of the supplied timestamp (ms precision).
+      expect(inserted.expiresAt.getTime()).toBe(explicit.getTime());
+    });
+
+    it('falls back to DEFAULT_ENROLLMENT_KEY_TTL_MINUTES when neither ttlMinutes nor expiresAt is sent', async () => {
+      const getInserted = mockInsertCapture([makeEnrollmentKey()]);
+      const before = Date.now();
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Default TTL' }),
+      });
+
+      const after = Date.now();
+      expect(res.status).toBe(201);
+      const inserted = getInserted();
+      expect(inserted?.expiresAt).toBeInstanceOf(Date);
+      const ttlMs = DEFAULT_TTL_MINUTES * 60 * 1000;
+      expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + ttlMs - 50);
+      expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs + 50);
+    });
+
+    it('rejects when both ttlMinutes and expiresAt are sent', async () => {
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Conflicting',
+          ttlMinutes: 60,
+          expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+        }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts the inclusive ttlMinutes boundaries (1 and 525_600)', async () => {
+      mockInsertValuesReturning([makeEnrollmentKey()]);
+      const minRes = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Min', ttlMinutes: 1 }),
+      });
+      expect(minRes.status).toBe(201);
+
+      mockInsertValuesReturning([makeEnrollmentKey()]);
+      const maxRes = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Max', ttlMinutes: 525_600 }),
+      });
+      expect(maxRes.status).toBe(201);
+    });
+
+    it('rejects ttlMinutes outside the 1..525_600 range and non-integers', async () => {
+      const cases = [0, 525_601, 60.5];
+      for (const ttlMinutes of cases) {
+        const res = await app.request('/enrollment-keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'X', ttlMinutes }),
+        });
+        expect(res.status, `ttlMinutes=${ttlMinutes} should be rejected`).toBe(400);
+      }
     });
 
     it('returns 400 when system user provides no orgId', async () => {

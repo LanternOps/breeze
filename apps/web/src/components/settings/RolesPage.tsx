@@ -9,6 +9,8 @@ import RoleManager, {
 } from './RoleManager';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'clone' | 'delete' | 'users';
 
@@ -57,7 +59,20 @@ export default function RolesPage() {
       if (!response.ok) {
         throw new Error('Failed to fetch role details');
       }
-      return await response.json();
+      const data = await response.json();
+      // Shape validation (#822 issue #2): if the role-detail endpoint ever
+      // returns a role without a `permissions` array (renamed key, nested
+      // shape, partial response), opening the Edit modal would populate
+      // with zero checked cells. A user who saves then PATCHes
+      // `permissions: []` over a real role — data loss. Treat any shape
+      // mismatch as a load error rather than silently dropping the cells.
+      if (!data || typeof data !== 'object') {
+        throw new Error('Role detail response is not an object');
+      }
+      if (!Array.isArray(data.permissions)) {
+        throw new Error('Role detail response is missing the `permissions` array');
+      }
+      return data as Role;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       return null;
@@ -168,20 +183,24 @@ export default function RolesPage() {
   }) => {
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth('/roles', {
-        method: 'POST',
-        body: JSON.stringify(data)
+      await runAction({
+        request: () => fetchWithAuth('/roles', {
+          method: 'POST',
+          body: JSON.stringify(data)
+        }),
+        errorFallback: 'Failed to create role',
+        successMessage: `Role "${data.name}" created`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to create role');
-      }
-
       await fetchRoles();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -197,20 +216,24 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/roles/${selectedRole.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(data)
+      await runAction({
+        request: () => fetchWithAuth(`/roles/${selectedRole.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(data)
+        }),
+        errorFallback: 'Failed to update role',
+        successMessage: `Role "${data.name}" updated`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to update role');
-      }
-
       await fetchRoles();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -226,18 +249,15 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/roles/${selectedRole.id}/clone`, {
-        method: 'POST',
-        body: JSON.stringify({ name: data.name })
+      // Step 1: clone with the new name. Server returns the new role row.
+      const clonedRole = await runAction<Role>({
+        request: () => fetchWithAuth(`/roles/${selectedRole.id}/clone`, {
+          method: 'POST',
+          body: JSON.stringify({ name: data.name })
+        }),
+        errorFallback: 'Failed to clone role',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to clone role');
-      }
-
-      // If cloning succeeded, now update with new permissions if different
-      const clonedRole = await response.json();
 
       // Check if permissions were modified from original
       const originalPermSet = new Set(
@@ -251,22 +271,38 @@ export default function RolesPage() {
 
       const parentRoleChanged = data.parentRoleId !== selectedRole.parentRoleId;
 
+      // Step 2 (#822 issue #1): if the user edited permissions / description /
+      // parent, PATCH the new role with the changes. PREVIOUSLY this PATCH's
+      // response was unchecked — if the clone succeeded but the PATCH failed,
+      // the code reported success and the user thought they had a clone with
+      // their edited permissions but silently got the original ones. Now the
+      // PATCH goes through runAction so any failure surfaces as a clear toast
+      // and the modal does NOT close on partial-success.
       if (permissionsChanged || data.description !== selectedRole.description || parentRoleChanged) {
-        // Update the cloned role with modified permissions/description/parentRoleId
-        await fetchWithAuth(`/roles/${clonedRole.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            description: data.description,
-            permissions: data.permissions,
-            parentRoleId: data.parentRoleId
-          })
+        await runAction({
+          request: () => fetchWithAuth(`/roles/${clonedRole.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              description: data.description,
+              permissions: data.permissions,
+              parentRoleId: data.parentRoleId
+            })
+          }),
+          errorFallback: 'Role cloned, but applying the edited permissions failed. Edit the new role to retry.',
+          onUnauthorized: () => void navigateTo('/login', { replace: true })
         });
       }
 
+      showToast({ message: `Role "${data.name}" cloned`, type: 'success' });
       await fetchRoles();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -276,20 +312,25 @@ export default function RolesPage() {
     if (!selectedRole) return;
 
     setSubmitting(true);
+    const deletedName = selectedRole.name;
     try {
-      const response = await fetchWithAuth(`/roles/${selectedRole.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () => fetchWithAuth(`/roles/${selectedRole.id}`, {
+          method: 'DELETE'
+        }),
+        errorFallback: 'Failed to delete role',
+        successMessage: `Role "${deletedName}" deleted`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to delete role');
-      }
-
       await fetchRoles();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
     } finally {
       setSubmitting(false);
     }

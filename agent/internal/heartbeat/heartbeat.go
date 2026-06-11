@@ -37,6 +37,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -89,15 +90,16 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands        []Command       `json:"commands"`
-	ConfigUpdate    map[string]any  `json:"configUpdate,omitempty"`
-	UpgradeTo       string          `json:"upgradeTo,omitempty"`
-	RenewCert       bool            `json:"renewCert,omitempty"`
-	RotateToken     bool            `json:"rotateToken,omitempty"`
-	HelperEnabled   bool            `json:"helperEnabled,omitempty"`
-	HelperSettings  *HelperSettings `json:"helperSettings,omitempty"`
-	HelperUpgradeTo          string          `json:"helperUpgradeTo,omitempty"`
-	ManageRemoteManagement   bool            `json:"manageRemoteManagement,omitempty"`
+	Commands               []Command              `json:"commands"`
+	ConfigUpdate           map[string]any         `json:"configUpdate,omitempty"`
+	UpgradeTo              string                 `json:"upgradeTo,omitempty"`
+	RenewCert              bool                   `json:"renewCert,omitempty"`
+	RotateToken            bool                   `json:"rotateToken,omitempty"`
+	HelperEnabled          bool                   `json:"helperEnabled,omitempty"`
+	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
+	HelperUpgradeTo        string                 `json:"helperUpgradeTo,omitempty"`
+	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
+	ManifestTrustKeys      []api.ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
 }
 
 type HelperSettings struct {
@@ -153,6 +155,8 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 
 	// User session helper (IPC)
+	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
+	helperTokenMu    sync.RWMutex
 	sessionBroker    *sessionbroker.Broker
 	isService        bool
 	isHeadless       bool
@@ -184,6 +188,15 @@ type Heartbeat struct {
 	tokenRotating     atomic.Bool
 	upgradeInProgress atomic.Bool
 
+	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
+	// Suspends auto-update until the rotation conflict is resolved (server
+	// stops sending the conflicting key, restoring an idempotent re-pin) or
+	// the agent restarts. Without this gate, a single SECURITY log line is
+	// the only signal of a possible API compromise — auto-update would
+	// otherwise continue against the still-pinned (legitimate) key, masking
+	// the rejection from the operator.
+	manifestTrustRotationRejected atomic.Bool
+
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
@@ -208,6 +221,41 @@ type Heartbeat struct {
 	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
 	// production — the real sendHeartbeat method is invoked.
 	sendHeartbeatFn func()
+
+	// sendInventoryFn is an optional override used by tests to replace the
+	// real sendInventory call inside handleRefreshInventory. nil in
+	// production — the real sendInventory method is invoked.
+	sendInventoryFn func()
+
+	// userHelperDownloader is an optional test seam: when non-nil,
+	// prefetchUserHelper calls this instead of constructing a real
+	// updater.Updater and invoking DownloadBinary. nil in production.
+	// Signature mirrors updater.Updater.DownloadBinary so the production
+	// default can be a one-line shim.
+	userHelperDownloader func(targetVersion string) (string, error)
+
+	// userHelperGOOS is an optional test seam: when non-empty, replaces
+	// runtime.GOOS in prefetchUserHelper. nil/"" in production — the real
+	// runtime.GOOS value is used so the prefetch only runs on Windows.
+	userHelperGOOS string
+
+	// userHelperInstaller is an optional test seam: when non-nil,
+	// reconcileUserHelper calls this instead of performing the real on-disk
+	// install (copy into place + broker hash-allowlist refresh). nil in
+	// production. Signature is (tempPath, installPath, version).
+	userHelperInstaller func(tempPath, installPath, version string) error
+
+	// userHelperInstallMu serializes installUserHelperBinary so a manual
+	// dev_update and the periodic reconcile can't run the
+	// taskkill→copy→rename→allowlist-refresh sequence concurrently and race on
+	// the shared backup target / install path.
+	userHelperInstallMu sync.Mutex
+
+	// userHelperReconcileFailures counts consecutive reconcileUserHelper
+	// failures so a permanently-unfetchable helper escalates from WARN to a
+	// distinct, greppable ERROR instead of looping at WARN forever. Reset to 0
+	// on the first success.
+	userHelperReconcileFailures atomic.Int32
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -288,6 +336,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, nil)
 		h.mu.Unlock()
 		go func(sysInfo *collectors.SystemInfo) {
+			defer observability.Recoverer("heartbeat.hardwareCollect")
 			hwInfo, err := h.hardwareCol.CollectHardware()
 			if err != nil {
 				log.Warn("hardware collection failed in background; device role will use system-info-only classification", "error", err.Error())
@@ -311,6 +360,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -335,6 +386,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
 					return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
@@ -345,6 +398,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	} else {
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithAgentVersion(version),
+			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
 		)
 	}
 
@@ -378,6 +433,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
+		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
+		// Retain the helper-scoped token so connect-time pushes have it even after
+		// the config copy is cleared post-persist during rotation.
+		h.setHelperToken(h.config.HelperAuthToken)
 		reason := "config"
 		if cfg.IsService {
 			reason = "system-service"
@@ -687,6 +746,11 @@ func (h *Heartbeat) Start() {
 	defer ticker.Stop()
 	const bootCheckInterval = 5 * time.Minute
 	var lastBootCheck time.Time
+	// Self-heal a missing breeze-user-helper.exe (Windows), decoupled from
+	// upgrades. Zero-valued timer → fires on the first tick (≈startup), then
+	// every interval after (issue #816 follow-up).
+	const userHelperCheckInterval = 30 * time.Minute
+	var lastUserHelperCheck time.Time
 
 	// Send initial heartbeat after jitter
 	h.sendHeartbeatWithWatchdog()
@@ -749,6 +813,7 @@ func (h *Heartbeat) Start() {
 					if h.bootCol.ShouldCollect(uptimeSec, bt) {
 						h.bootCol.MarkCollected(bt)
 						go func() {
+							defer observability.Recoverer("heartbeat.bootPerformance")
 							log.Info("detected recent boot, collecting boot performance")
 							metrics, err := h.bootCol.Collect()
 							if err != nil {
@@ -765,6 +830,19 @@ func (h *Heartbeat) Start() {
 						}()
 					}
 				}
+			}
+
+			// Reconcile a missing user-helper binary on Windows (issue #816
+			// follow-up). Gated on an interval; the download only happens on the
+			// genuine-absence path. Runs in a goroutine because it does network
+			// I/O on the miss path. The auth-dead skip above already prevents
+			// this block from running without a valid token.
+			if now.Sub(lastUserHelperCheck) >= userHelperCheckInterval {
+				lastUserHelperCheck = now
+				go func() {
+					defer observability.Recoverer("heartbeat.reconcileUserHelper")
+					h.reconcileUserHelperFromExecutable()
+				}()
 			}
 
 			if shouldSendInventory {
@@ -906,6 +984,7 @@ func (h *Heartbeat) sendInventory() {
 		h.inventoryWg.Add(1)
 		go func(f func()) {
 			defer h.inventoryWg.Done()
+			defer observability.Recoverer("heartbeat.inventory")
 			f()
 		}(fn)
 	}
@@ -1545,6 +1624,10 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 				category = "homebrew"
 			}
 		}
+		externalId := p.KBNumber
+		if externalId == "" {
+			externalId = p.ID
+		}
 		items[i] = map[string]any{
 			"name":            p.Title,
 			"version":         p.Version,
@@ -1552,7 +1635,9 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 			"severity":        severity,
 			"description":     p.Description,
 			"source":          h.mapPatchProviderSource(p.Provider),
-			"externalId":      p.KBNumber,
+			"externalId":      externalId,
+			"packageId":       p.ID,
+			"vendor":          extractVendor(p.Provider, p.ID),
 			"kbNumber":        p.KBNumber,
 			"size":            p.Size,
 			"requiresRestart": p.RebootRequired,
@@ -1569,12 +1654,18 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 		if category == "" {
 			category = h.mapPatchProviderCategory(p.Provider)
 		}
+		externalId := p.KBNumber
+		if externalId == "" {
+			externalId = p.ID
+		}
 		m := map[string]any{
 			"name":       p.Title,
 			"version":    p.Version,
 			"category":   category,
 			"source":     h.mapPatchProviderSource(p.Provider),
-			"externalId": p.KBNumber,
+			"externalId": externalId,
+			"packageId":  p.ID,
+			"vendor":     extractVendor(p.Provider, p.ID),
 		}
 		if p.KBNumber != "" {
 			m["kbNumber"] = p.KBNumber
@@ -1661,6 +1752,8 @@ func (h *Heartbeat) mapPatchProviderSource(provider string) string {
 		return "third_party"
 	case "chocolatey":
 		return "third_party"
+	case "winget":
+		return "third_party"
 	case "apt", "yum":
 		return "linux"
 	default:
@@ -1672,13 +1765,23 @@ func (h *Heartbeat) mapPatchProviderCategory(provider string) string {
 	switch provider {
 	case "windows-update", "apple-softwareupdate":
 		return "system"
-	case "homebrew", "chocolatey":
+	case "homebrew", "chocolatey", "winget":
 		return "application"
 	case "apt", "yum":
 		return "system"
 	default:
 		return "application"
 	}
+}
+
+func extractVendor(provider, packageID string) string {
+	if provider != "winget" {
+		return ""
+	}
+	if i := strings.Index(packageID, "."); i > 0 {
+		return packageID[:i]
+	}
+	return ""
 }
 
 func (h *Heartbeat) mapPatchSeverity(severity string) string {
@@ -2130,6 +2233,45 @@ func (h *Heartbeat) sendHeartbeat() {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}
 
+	// Pin per-deployment manifest trust keys delivered by the server (#625).
+	// TOFU: PinManifestKeys rejects a *changed* pubkey for an already-pinned
+	// keyId. This blocks an attacker with API write access (but not the signing
+	// key) from rotating in their own key. It does NOT defend against a
+	// host-level compromise of the API — the signing key and APP_ENCRYPTION_KEY
+	// live there. See docs/deploy/agent-update-trust-bootstrap.md for the
+	// threat model.
+	if len(response.ManifestTrustKeys) > 0 {
+		keys := make([]config.ManifestTrustKey, 0, len(response.ManifestTrustKeys))
+		for _, k := range response.ManifestTrustKeys {
+			if k.KeyID == "" || k.PublicKeyB64 == "" {
+				continue
+			}
+			keys = append(keys, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
+		}
+		if len(keys) > 0 {
+			cfgPath := config.ActiveConfigFile()
+			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
+				if errors.Is(err, config.ErrManifestTrustRotationRejected) {
+					h.manifestTrustRotationRejected.Store(true)
+					log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
+						"error", err.Error())
+				} else {
+					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+				}
+			} else {
+				// Successful pin (idempotent or genuine new keyId append) means
+				// the conflict — if any — is no longer present. Clear the
+				// rotation-rejected gate so auto-update can resume.
+				h.manifestTrustRotationRejected.Store(false)
+				if reloaded, rerr := config.Reload(); rerr != nil {
+					log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
+				} else if reloaded != nil {
+					h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+				}
+			}
+		}
+	}
+
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
 		if !h.accepting.Load() {
@@ -2144,7 +2286,19 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		if h.config.AutoUpdate {
+		if isDowngrade(response.UpgradeTo, h.agentVersion) {
+			// SECURITY: never auto-downgrade. A compromised/MITM'd control plane
+			// could otherwise force a fleet-wide rollback to an older,
+			// still-validly-signed, known-vulnerable build. Deliberate rollback
+			// is an operator action via the (default-off) dev_update path.
+			log.Error("SECURITY: refusing server-directed auto-update downgrade",
+				"currentVersion", h.agentVersion,
+				"targetVersion", response.UpgradeTo,
+				"hint", "deliberate rollback uses the operator dev_update path")
+		} else if h.manifestTrustRotationRejected.Load() {
+			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
+				"targetVersion", response.UpgradeTo)
+		} else if h.config.AutoUpdate {
 			if h.upgradeInProgress.CompareAndSwap(false, true) {
 				go h.handleUpgrade(response.UpgradeTo)
 			} else {
@@ -2167,7 +2321,19 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
-		h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+		installedHelper := h.helperMgr.InstalledVersion()
+		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, h.helperMgr.IsInstalled()); !allowed {
+			// SECURITY: never auto-downgrade the helper. The signed manifest
+			// only binds manifest.Release == requested version, so a
+			// compromised/MITM'd control plane could replay an older,
+			// validly-signed, known-vulnerable helper release.
+			log.Error("SECURITY: refusing server-directed helper update",
+				"installedVersion", installedHelper,
+				"targetVersion", response.HelperUpgradeTo,
+				"reason", reason)
+		} else {
+			h.helperMgr.CheckUpdate(response.HelperUpgradeTo)
+		}
 	}
 
 	// Update tunnel manager policy flag
@@ -2306,12 +2472,24 @@ func (h *Heartbeat) handleTokenRotation() {
 		log.Error("agent token rotation response missing auth token")
 		return
 	}
+	if rotateResp.WatchdogAuthToken == "" {
+		log.Error("agent token rotation response missing watchdog auth token")
+		return
+	}
+	if rotateResp.HelperAuthToken == "" {
+		log.Error("agent token rotation response missing helper auth token")
+		return
+	}
 
 	h.mu.Lock()
 	h.secureToken.Replace(rotateResp.AuthToken)
 	h.config.AuthToken = rotateResp.AuthToken
+	h.config.WatchdogAuthToken = rotateResp.WatchdogAuthToken
+	h.config.HelperAuthToken = rotateResp.HelperAuthToken
 	saveErr := config.Save(h.config)
 	h.config.AuthToken = ""
+	h.config.WatchdogAuthToken = ""
+	h.config.HelperAuthToken = ""
 	h.mu.Unlock()
 
 	if saveErr != nil {
@@ -2320,8 +2498,12 @@ func (h *Heartbeat) handleTokenRotation() {
 		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
 	}
 
-	// Notify the watchdog of the new token so it can use it for failover heartbeats.
-	h.sendWatchdogTokenUpdate(rotateResp.AuthToken)
+	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
+	h.sendWatchdogTokenUpdate(rotateResp.WatchdogAuthToken)
+
+	// Retain and push the rotated helper token to any connected assist sessions.
+	h.setHelperToken(rotateResp.HelperAuthToken)
+	h.sendHelperTokenUpdate(rotateResp.HelperAuthToken)
 
 	if h.wsClient != nil {
 		h.wsClient.ForceReconnect()
@@ -2359,6 +2541,97 @@ func (h *Heartbeat) sendWatchdogTokenUpdate(newToken string) {
 	_ = sess.SendNotify("", ipc.TypeTokenUpdate, ipc.TokenUpdate{
 		Token: newToken,
 	})
+}
+
+func (h *Heartbeat) setHelperToken(token string) {
+	h.helperTokenMu.Lock()
+	h.helperToken = token
+	h.helperTokenMu.Unlock()
+}
+
+func (h *Heartbeat) currentHelperToken() string {
+	h.helperTokenMu.RLock()
+	defer h.helperTokenMu.RUnlock()
+	return h.helperToken
+}
+
+// shouldPushHelperToken reports whether a session with the given scopes should
+// receive the helper token. Only assist-scope sessions qualify; this guards
+// against ever sending the helper token to the watchdog or a user helper.
+func shouldPushHelperToken(scopes []string) bool {
+	for _, s := range scopes {
+		if s == ipc.ScopeAssist {
+			return true
+		}
+	}
+	return false
+}
+
+// pushHelperToken delivers the helper token to a single eligible session and
+// recovers from a delivery failure. A missed push after rotation otherwise
+// leaves the Helper 401ing against the API with a stale/invalid token, with no
+// re-push until it happens to reconnect on its own. On a SendNotify error we
+// therefore close the session: closing tears down the connection so the client
+// reconnects and re-runs handleHelperSessionAuthenticated, which re-pushes the
+// current token. Closing from this goroutine is safe — Session.Close() only
+// touches the session's own conn/done (not the broker mutex); the broker's
+// RecvLoop unblocks on the closed conn and runs removeSession (which acquires
+// b.mu and fires onSessionClosed) for us. Callers must NOT hold b.mu here.
+func (h *Heartbeat) pushHelperToken(session *sessionbroker.Session, token string) {
+	// ExpiresAt omitted: RotateTokenResponse carries no expiry for the helper token.
+	if err := session.SendNotify("", ipc.TypeHelperTokenUpdate, ipc.HelperTokenUpdate{Token: token}); err != nil {
+		log.Error("failed to push helper token; closing assist session for reconnect+re-push",
+			"sessionId", session.SessionID, "error", err.Error())
+		if closeErr := session.Close(); closeErr != nil {
+			log.Error("failed to close assist session after token push failure",
+				"sessionId", session.SessionID, "error", closeErr.Error())
+		}
+	}
+}
+
+// handleHelperSessionAuthenticated is wired as the broker's
+// SessionAuthenticatedHandler. It pushes the current helper token to a freshly
+// authenticated assist session.
+func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Session) {
+	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
+		return
+	}
+	// #1009: never deliver the device helper token to an assist helper outside
+	// the active console session — on a multi-user host that would hand a
+	// co-logged-in user org-scoped fleet access. Inert on single-user/non-Windows.
+	if h.sessionBroker != nil && !h.sessionBroker.SessionInConsoleSession(session) {
+		log.Warn("withholding helper token from non-console assist session",
+			"sessionId", session.SessionID, "winSessionId", session.WinSessionID)
+		return
+	}
+	token := h.currentHelperToken()
+	if token == "" {
+		return
+	}
+	h.pushHelperToken(session, token)
+}
+
+// sendHelperTokenUpdate pushes a (possibly rotated) helper token to all
+// connected assist sessions. Recipient eligibility is routed through the single
+// authoritative shouldPushHelperToken predicate (the same one used at connect
+// time) rather than SessionsWithScope's HasScope alone, whose wildcard match
+// would also select a hypothetical "*"-scoped session.
+func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
+	if h.sessionBroker == nil || newToken == "" {
+		return
+	}
+	for _, sess := range h.sessionBroker.SessionsWithScope(ipc.ScopeAssist) {
+		if !shouldPushHelperToken(sess.AllowedScopes) {
+			continue
+		}
+		// #1009: only the console-session assist helper may receive the token.
+		if !h.sessionBroker.SessionInConsoleSession(sess) {
+			log.Warn("withholding rotated helper token from non-console assist session",
+				"sessionId", sess.SessionID, "winSessionId", sess.WinSessionID)
+			continue
+		}
+		h.pushHelperToken(sess, newToken)
+	}
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {
@@ -2901,6 +3174,7 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer observability.Recoverer("heartbeat.upgrade")
 		h.doUpgrade(targetVersion)
 	}()
 
@@ -2913,6 +3187,227 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 		// Do NOT clear upgradeInProgress -- the goroutine is still alive.
 		// It will remain blocked until the process restarts.
 	}
+}
+
+// prefetchUserHelper pre-downloads breeze-user-helper.exe so the upgrade-restart
+// script can drop it alongside the new agent binary. Returns nil when the
+// helper is not applicable (non-Windows) or could not be fetched (404 for
+// pre-#816 releases, network errors, checksum mismatches, manifest signature
+// failure, etc.). Callers proceed with an agent-only upgrade in that case —
+// non-fatal by design (issue #816).
+//
+// Without this prefetch, in-place upgrades produce an agent install missing
+// the user-helper (only the MSI installer ever placed it on disk before #816),
+// the HelperLifecycleManager falls through to a `breeze-agent.exe user-helper`
+// fallback every ~30s, and orphaned processes accumulate during heartbeat
+// goroutine wedges until the service dies.
+//
+// ANY download failure is non-fatal — we log a WARN and return nil. This is
+// intentional and covers more than just 404s:
+//
+//	(a) pre-#816 releases legitimately lack the user-helper artifact, so we
+//	    don't want to block their upgrades, and
+//	(b) we'd rather degrade than fail an agent upgrade on a transient
+//	    helper-fetch glitch.
+//
+// `currentVersion` is included in the WARN so operators can tell the
+// "legitimately pre-#816, ignore" case apart from the "this release SHOULD
+// have shipped the artifact, something's broken" case.
+func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *updater.BinaryPair {
+	goos := h.userHelperGOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "windows" {
+		return nil
+	}
+
+	download := h.userHelperDownloader
+	if download == nil {
+		helperCfg := &updater.Config{
+			ServerURL:             h.config.ServerURL,
+			AuthToken:             h.secureToken,
+			CurrentVersion:        h.agentVersion,
+			Component:             "user-helper",
+			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		}
+		helperUpdater := updater.New(helperCfg)
+		download = helperUpdater.DownloadBinary
+	}
+
+	tempPath, dlErr := download(targetVersion)
+	if dlErr != nil {
+		log.Warn(
+			"user-helper download failed; proceeding with agent-only upgrade",
+			"currentVersion", h.agentVersion,
+			"targetVersion", targetVersion,
+			"error", dlErr.Error(),
+		)
+		return nil
+	}
+
+	pair := &updater.BinaryPair{
+		Temp:   tempPath,
+		Target: filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe"),
+	}
+	log.Info(
+		"pre-downloaded user-helper for restart-helper swap",
+		"temp", pair.Temp,
+		"target", pair.Target,
+	)
+	return pair
+}
+
+// reconcileUserHelper self-heals a Windows agent whose breeze-user-helper.exe
+// sibling is missing from disk, decoupled from any version upgrade. The MSI
+// installer and the in-place upgrade prefetch (see prefetchUserHelper) are the
+// only two vectors that ever place the helper, so an agent installed via a
+// vector that skips it (direct-exe enrollment, pre-#816 MSI) and already at the
+// latest version has no path to acquire it — it falls back to spawning
+// breeze-agent.exe as the helper every ~30s, which is unstable (issue #816
+// follow-up). This reconciliation closes that gap: if the helper is absent next
+// to the agent, fetch the matching CURRENT version via the user-helper update
+// component and drop it in. All failure modes are non-fatal — we log and return
+// so a fetch glitch never wedges the heartbeat.
+func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
+	goos := h.userHelperGOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos != "windows" {
+		// macOS/Linux have no sibling helper binary — the helper runs as a
+		// breeze-agent subcommand — so there is nothing to reconcile.
+		return
+	}
+
+	helperPath := filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
+	switch fi, statErr := os.Stat(helperPath); {
+	case statErr == nil && fi.Size() > 0:
+		// Present and non-empty — nothing to heal. If we'd been failing (e.g.
+		// the helper was restored out-of-band via dev_update / MSI repair /
+		// manual copy), clear the consecutive-failure counter so a later
+		// transient failure starts fresh rather than from a stale high count.
+		if prev := h.userHelperReconcileFailures.Swap(0); prev >= userHelperReconcilePersistentThreshold {
+			log.Info("user-helper present again after persistent reconcile failures", "previousFailures", prev)
+		}
+		return
+	case statErr == nil:
+		// Present but zero-length: a previous install was interrupted mid-write
+		// (or an external truncation). Treat as absent and re-fetch — otherwise
+		// the corpse blocks self-heal forever, since the spawn would load a
+		// broken binary. (The atomic install path makes us-produced truncation
+		// impossible, so this is defense-in-depth against external causes.)
+		log.Warn("user-helper reconciliation: helper present but zero-length, re-fetching",
+			"path", helperPath)
+	case !os.IsNotExist(statErr):
+		// An unexpected stat error (permissions, transient IO) is not a
+		// confirmed absence — don't risk fetching/clobbering over a binary we
+		// merely couldn't read.
+		log.Warn("user-helper reconciliation: cannot stat helper, skipping this tick",
+			"path", helperPath, "error", statErr.Error())
+		return
+	}
+
+	// Fetch the binary matching the CURRENTLY-installed agent version, not
+	// "latest". The helper shares the agent's IPC protocol and behavior, so it
+	// must track the running agent — pulling a newer release's helper risks a
+	// protocol/behavior skew against the older agent still in place. (Note: the
+	// broker's hash allowlist is content-based, not version-gated —
+	// installUserHelperBinary copies then RefreshAllowedHashes admits whatever
+	// landed on disk — so the allowlist is NOT the reason to prefer current.)
+	download := h.userHelperDownloader
+	if download == nil {
+		helperCfg := &updater.Config{
+			ServerURL:             h.config.ServerURL,
+			AuthToken:             h.secureToken,
+			CurrentVersion:        h.agentVersion,
+			Component:             "user-helper",
+			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		}
+		download = updater.New(helperCfg).DownloadBinary
+	}
+
+	tempPath, dlErr := download(h.agentVersion)
+	if dlErr != nil {
+		// Non-fatal: a transient fetch failure (network, server hiccup) should
+		// not wedge the heartbeat. The next reconcile tick retries. A version
+		// whose user-helper artifact genuinely doesn't exist (pre-#816 release)
+		// would 404 every tick — noteUserHelperReconcileFailure escalates that
+		// from WARN to a distinct ERROR so it doesn't loop silently forever.
+		h.noteUserHelperReconcileFailure("download_failed", dlErr)
+		return
+	}
+	defer func() { _ = os.Remove(tempPath) }()
+
+	install := h.userHelperInstaller
+	if install == nil {
+		install = func(temp, ip, ver string) error {
+			_, err := h.installUserHelperBinary(temp, ip, ver)
+			return err
+		}
+	}
+	if err := install(tempPath, helperPath, h.agentVersion); err != nil {
+		h.noteUserHelperReconcileFailure("install_failed", err)
+		return
+	}
+	if prev := h.userHelperReconcileFailures.Swap(0); prev >= userHelperReconcilePersistentThreshold {
+		log.Info("user-helper reconciliation recovered after persistent failures", "previousFailures", prev)
+	}
+	log.Info("user-helper reconciliation: installed missing helper binary",
+		"path", helperPath, "version", h.agentVersion)
+}
+
+// userHelperReconcilePersistentThreshold is the consecutive-failure count at
+// which reconcileUserHelper escalates from a routine WARN to a distinct ERROR
+// (~2h at the 30-min reconcile cadence). userHelperReconcileReLogEvery re-emits
+// the ERROR periodically thereafter (~daily) so a stuck device stays visible
+// without logging every tick.
+const (
+	userHelperReconcilePersistentThreshold = 4
+	userHelperReconcileReLogEvery          = 48
+)
+
+// noteUserHelperReconcileFailure records a consecutive reconcile failure and
+// logs it at a level that escalates with persistence: WARN on the first, ERROR
+// once the failure count crosses the threshold (and periodically after), DEBUG
+// in between so a permanently-unfetchable helper doesn't spam an indistinct
+// WARN every tick. The ERROR carries a stable reason + consecutiveFailures so
+// fleet telemetry can GROUP BY and alert on it.
+func (h *Heartbeat) noteUserHelperReconcileFailure(reason string, err error) {
+	n := h.userHelperReconcileFailures.Add(1)
+	switch {
+	case n >= userHelperReconcilePersistentThreshold &&
+		(n == userHelperReconcilePersistentThreshold || n%userHelperReconcileReLogEvery == 0):
+		log.Error("user-helper reconciliation persistently failing — device cannot self-heal its missing helper",
+			"reason", reason, "consecutiveFailures", n,
+			"currentVersion", h.agentVersion, "error", err.Error())
+	case n == 1:
+		log.Warn("user-helper reconciliation failed; will retry on a later tick",
+			"reason", reason, "consecutiveFailures", n,
+			"currentVersion", h.agentVersion, "error", err.Error())
+	default:
+		log.Debug("user-helper reconciliation still failing",
+			"reason", reason, "consecutiveFailures", n, "error", err.Error())
+	}
+}
+
+// reconcileUserHelperFromExecutable is the production entry point for
+// reconcileUserHelper: it resolves the running agent's on-disk path (following
+// symlinks) and delegates. Split out so reconcileUserHelper stays a pure
+// function of an injected binaryPath for testing.
+func (h *Heartbeat) reconcileUserHelperFromExecutable() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Warn("user-helper reconciliation: cannot resolve executable path", "error", err.Error())
+		return
+	}
+	if resolved, symErr := filepath.EvalSymlinks(binaryPath); symErr == nil {
+		binaryPath = resolved
+	}
+	h.reconcileUserHelper(binaryPath)
 }
 
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
@@ -2946,15 +3441,23 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:      h.config.ServerURL,
-		AuthToken:      h.secureToken,
-		CurrentVersion: h.agentVersion,
-		BinaryPath:     binaryPath,
-		BackupPath:     backupPath,
+		ServerURL:             h.config.ServerURL,
+		AuthToken:             h.secureToken,
+		CurrentVersion:        h.agentVersion,
+		BinaryPath:            binaryPath,
+		BackupPath:            backupPath,
+		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
 	}
 
+	// Pre-download breeze-user-helper.exe on Windows so the restart-helper
+	// script can drop it alongside the new agent binary. See prefetchUserHelper
+	// for the full rationale (issue #816 / PR #845). All failure modes are
+	// non-fatal — a nil return value is the normal "agent-only upgrade"
+	// outcome.
+	userHelperPair := h.prefetchUserHelper(targetVersion, binaryPath)
+
 	u := updater.New(updaterCfg)
-	if err := u.UpdateTo(targetVersion); err != nil {
+	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair}); err != nil {
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)
@@ -3000,7 +3503,7 @@ func (h *Heartbeat) makeUserExecFunc() patching.UserExecFunc {
 			return "", "", -1, fmt.Errorf("no session broker available")
 		}
 
-		session := h.sessionBroker.PreferredSessionWithScope("run_as_user")
+		session := h.sessionBroker.PreferredRunAsUserSession()
 		if session == nil {
 			return "", "", -1, fmt.Errorf("no user helper connected")
 		}

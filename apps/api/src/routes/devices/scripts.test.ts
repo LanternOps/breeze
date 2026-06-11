@@ -42,7 +42,23 @@ vi.mock('../../middleware/auth', () => ({
     });
     return next();
   }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (resource === 'scripts' && action === 'read' && c.req.header('x-deny-scripts-read') === 'true') {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    if (c.req.header('x-site-restricted') === 'true') {
+      c.set('permissions', {
+        permissions: [{ resource, action }],
+        partnerId: null,
+        orgId: 'org-123',
+        roleId: 'role-123',
+        scope: 'organization',
+        allowedSiteIds: ['site-allowed']
+      });
+    }
+    return next();
+  })
 }));
 
 vi.mock('./helpers', () => ({
@@ -60,6 +76,16 @@ describe('device scripts routes', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/devices', scriptsRoutes);
+  });
+
+  it('requires scripts.read before returning script output history', async () => {
+    const res = await app.request('/devices/device-1/scripts', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token', 'x-deny-scripts-read': 'true' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(getDeviceWithOrgCheck).not.toHaveBeenCalled();
   });
 
   it('returns script execution history for an accessible device', async () => {
@@ -123,6 +149,23 @@ describe('device scripts routes', () => {
     });
 
     expect(res.status).toBe(404);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('denies script execution history when the device is outside the caller site restriction', async () => {
+    vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+      id: 'device-1',
+      orgId: 'org-123',
+      hostname: 'host-1',
+      siteId: 'site-denied'
+    } as never);
+
+    const res = await app.request('/devices/device-1/scripts', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(403);
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 });

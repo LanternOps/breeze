@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../../db';
+import { devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId, toDateOrNull } from './helpers';
 import {
   backupHealthQuerySchema,
@@ -22,6 +25,16 @@ import {
 } from './verificationService';
 
 export const backupVerificationRoutes = new Hono();
+
+async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: UserPermissions | undefined): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
+}
 
 backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', backupHealthQuerySchema), async (c) => {
   const auth = c.get('auth');
@@ -63,6 +76,9 @@ backupVerificationRoutes.post(
 
   const payload = c.req.valid('json');
   const verificationType = payload.verificationType ?? 'integrity';
+  if (await isDeviceSiteDenied(orgId, payload.deviceId, c.get('permissions') as UserPermissions | undefined)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
 
   try {
     const { verification, readiness } = await runBackupVerification({

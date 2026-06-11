@@ -124,17 +124,17 @@ Remote desktop uses hardware GPU encoding when available for better performance.
 
 If the hardware encoder stalls (for example, due to a driver issue), the agent automatically switches to a software encoder within approximately 600 milliseconds — previous builds took around 11 seconds to recover. Headless servers without a GPU use software rendering automatically with no configuration needed.
 
-### VNC Fallback (macOS)
+### VNC Fallback and In-Window Switcher (macOS)
 
-Older macOS devices running Monterey or Ventura do not support WebRTC remote desktop at the login screen. Breeze auto-detects this limitation and falls back to VNC via the built-in macOS Screen Sharing service.
+Some macOS devices and scenarios — older releases, certain hardware configurations, or sessions started at the login screen — cannot use WebRTC remote desktop. Breeze auto-detects these situations and falls back to VNC via the built-in macOS Screen Sharing service.
 
-When the fallback activates, the system tunnels VNC through the agent connection and renders it in the browser using noVNC. When you disconnect, the VNC password is cleared — no credentials persist on the device.
+In the **Breeze Viewer** desktop app, you can switch between WebRTC and VNC transports inside the same session window. If WebRTC degrades or fails, the viewer hands off to VNC without closing the window or losing your place. When conditions improve, you can switch back. From the web app, the **Remote Desktop** button hands off to the viewer via a deep link when VNC is the right transport, so the experience is consistent whether you start from the browser or the app.
+
+When the fallback activates, the system tunnels VNC through the agent connection. When you disconnect, the VNC password is cleared — no credentials persist on the device.
 
 <Aside type="note">
   The agent no longer disables Apple Remote Management on startup. If you use Screen Sharing alongside Breeze, it stays enabled. VNC fallback behavior is controlled by the `manageRemoteManagement` Configuration Policy flag (off by default). When VNC is needed and Screen Sharing is not already enabled, the agent returns an informative error asking you to enable the policy or enable Screen Sharing manually on the device.
 </Aside>
-
-This works in both the browser and the Breeze viewer app. No manual configuration is needed — the **Connect Desktop** button auto-detects the situation and displays a VNC badge on the session.
 
 ### Session Switcher
 
@@ -156,6 +156,8 @@ Select a shortcut from the menu to inject it into the remote session. This avoid
 
 Keyboard and mouse input works at the macOS login screen during remote desktop sessions. You can type passwords and interact with login UI elements remotely. This uses a low-level input method that operates below the normal event system, so it functions even when no user session is active.
 
+The agent dynamically switches input handling when the console transitions to or from the login window, so keyboard and mouse keep working through sign-in and sign-out events without reconnecting the session.
+
 ### Network Proxy
 
 Network Proxy lets you access TCP services on an agent's local network without a VPN — router web interfaces, NAS management panels, printer admin pages, switch management ports, and similar resources. Traffic tunnels over the existing agent WebSocket connection, so there is no additional network configuration required on either end.
@@ -172,11 +174,67 @@ Network Proxy lets you access TCP services on an agent's local network without a
 - A built-in SSRF-safe blocklist prevents tunnels to internal metadata endpoints and loopback addresses.
 - Each tunnel session is associated with a specific user and fully audit logged.
 
+### Wake-on-LAN
+
+Wake-on-LAN powers on an offline device from the Breeze dashboard without visiting it physically. Because the Breeze server cannot send packets on your local network, the wake is relayed through another online agent on the same network as the target.
+
+**Requirements:**
+
+- The target device must have Wake-on-LAN enabled in its BIOS/UEFI (often labelled "Power on by LAN" or "Wake on Magic Packet").
+- The target must have checked in at least once so Breeze has its MAC address(es) and one or more recorded non-APIPA IPv4 subnets. APIPA addresses (`169.254.0.0/16`) are skipped — they're a sign of a broken DHCP lease and don't represent the real LAN.
+- At least one other agent must be online at the same site and on a matching subnet to relay the magic packet. Breeze tries every plausible candidate subnet recorded for the target, in priority order, until one succeeds.
+
+**Sending a wake:**
+
+<Steps>
+
+1. Go to **Devices** and open the offline device's detail page.
+
+2. Click **Actions** and select **Wake**.
+
+3. Breeze automatically chooses an online relay agent at the target's site and subnet, sends the magic packet, and reports the relay device and MAC addresses attempted.
+
+</Steps>
+
+If a wake cannot be sent, Breeze returns a specific reason rather than failing silently — the most common are: the target has no recorded MAC address, no known IPv4 subnet (only IPv6), or no online agent is available at its site and subnet to relay the packet. Every wake attempt — successful or not — is recorded in the audit log with the actor, target, relay device, MACs attempted, and result.
+
+### Pluggable Remote-Desktop Launcher
+
+By default, **Connect → Desktop** opens the built-in Breeze WebRTC desktop session. MSPs that standardise on a third-party tool (RustDesk, ScreenConnect, TeamViewer, AnyDesk, and similar) can configure Breeze to hand off to that tool instead, per partner.
+
+**Configuring a provider:**
+
+<Steps>
+
+1. Go to **Settings** and open the **Remote** tab (partner-level access required).
+
+2. Keep the built-in WebRTC desktop session (the default, which cannot be deleted), or click **Add provider**.
+
+3. Give the provider a name and a launch-URL template. The template supports placeholders that Breeze substitutes at click time:
+   - `{id}` — the device's per-tool identifier, read from a device custom field
+   - `{password}` — an optional preset password (URL-encoded automatically)
+   - `{customFieldKey}` — the value of any device custom field by key
+
+   Example: `rustdesk://{id}?password={password}` or `https://acme.screenconnect.com/Host#Access///{id}/Join`.
+
+4. Specify the custom-field key that holds each device's identifier (for example `rustdesk_id`), and optionally a preset password. Mark the provider **Enabled**, and **Default** if it should replace the built-in launcher.
+
+</Steps>
+
+Each device then needs that custom field populated with its identifier for the tool. When a user clicks **Connect → Desktop**, Breeze substitutes the values and either opens the URL in a new browser tab (`http`/`https`) or hands it to the operating system's protocol handler (any other scheme, e.g. `rustdesk://`). If the launcher can't issue a URL — provider disabled, no provider configured, device is missing the required custom field, or the resolved URL fails the scheme check — the UI surfaces the specific reason instead of silently falling back to WebRTC, so you can fix the configuration rather than guess why a click did nothing.
+
+**Security:**
+
+- Launch URLs are validated against an allowed-scheme list both when the template is saved and again when the URL is issued. Dangerous schemes (`javascript:`, `data:`, `vbscript:`, `file:`, `about:`, `chrome:`, `jar:`, `blob:`, `view-source:`, `filesystem:`) are rejected.
+- Preset passwords are stored server-side only and are never embedded in the web bundle or earlier API responses. The launch URL is issued one-shot in response to an explicit user click and each issuance is audit logged.
+
 ---
 
 ## Remote Terminal
 
 Remote Terminal opens an interactive shell session rendered in the browser using xterm.js. It is a PTY session on the device — keystrokes are sent to the device's shell and output is streamed back in real time, with full terminal emulation including colour, cursor control, and resizing.
+
+On Windows, terminal sessions use the modern **ConPTY** pseudo-console API, so colours, resizing, and interactive prompts behave the same as a local PowerShell window. macOS and Linux use a standard POSIX PTY.
 
 ### Starting a terminal session
 
@@ -372,6 +430,16 @@ To free session capacity, close active sessions from the Active Sessions list on
 | GET | `/remote/tunnels/allowlists` | List proxy allowlists for a site |
 | POST | `/remote/tunnels/allowlists` | Create or update a proxy allowlist entry |
 | DELETE | `/remote/tunnels/allowlists/:id` | Remove a proxy allowlist entry |
+
+### Wake-on-LAN & Remote-Desktop Launcher
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/devices/:id/commands` | Body `{ "type": "wake" }` — dispatch a Wake-on-LAN magic packet to the device via an automatically selected relay agent. Returns the relay device and MACs attempted, or a specific failure reason. |
+| POST | `/mobile/devices/:id/actions` | Body `{ "action": "wake" }` — equivalent quick-action wake used by the mobile app. |
+| POST | `/devices/:id/remote-access-launch` | Issue a one-shot remote-desktop launch URL for the device's configured provider. Returns the resolved `launchUrl` and scheme, or `422` if no provider applies or the scheme is disallowed. |
+
+Remote-access providers are configured per partner under **Settings → Remote**; see [Pluggable Remote-Desktop Launcher](#pluggable-remote-desktop-launcher).
 
 ### Events
 

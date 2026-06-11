@@ -1,12 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { alertRoutes } from './alerts';
 
 const { sendSmsNotificationMock } = vi.hoisted(() => ({
   sendSmsNotificationMock: vi.fn()
 }));
+
+const { createTicketFromAlertMock } = vi.hoisted(() => ({
+  createTicketFromAlertMock: vi.fn()
+}));
+
+vi.mock('../services/ticketService', () => ({
+  createTicketFromAlert: createTicketFromAlertMock,
+  TicketServiceError: class TicketServiceError extends Error {
+    constructor(message: string, public status: number = 400) {
+      super(message);
+      this.name = 'TicketServiceError';
+    }
+  }
+}));
 const { publishEventMock } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1')
+}));
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false }
 }));
 
 vi.mock('../services', () => ({}));
@@ -80,8 +99,14 @@ vi.mock('../db/schema', () => ({
   notificationChannels: {},
   escalationPolicies: {},
   alertNotifications: {},
-  devices: {},
-  organizations: {}
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    hostname: 'devices.hostname',
+  },
+  organizations: {},
+  partners: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -94,9 +119,33 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keep it out here so a route relying on permissions
+    // for site-scoping but lacking a permission gate fails its tests (not masks).
     return next();
   }),
-  requireScope: vi.fn(() => (c: any, next: any) => next())
+  requireScope: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
+    return next();
+  }),
+  requireMfa: vi.fn(() => (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  })
 }));
 
 import { db } from '../db';
@@ -107,6 +156,8 @@ describe('alert routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     sendSmsNotificationMock.mockResolvedValue({
       success: true,
       sentCount: 1,
@@ -121,6 +172,7 @@ describe('alert routes', () => {
         accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
         canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
       });
+      // permissions is populated by requirePermission (mirrors prod), not here.
       return next();
     });
     app = new Hono();
@@ -215,6 +267,124 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.data[0].status).toBe('acknowledged');
       expect(body.data[0].severity).toBe('critical');
+    });
+
+    it('returns 403 when a site-restricted caller filters to an out-of-scope device', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '22222222-2222-2222-2222-222222222222',
+              siteId: '33333333-3333-3333-3333-333333333333'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/alerts?deviceId=22222222-2222-2222-2222-222222222222', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token',
+          'x-restrict-site': '11111111-1111-1111-1111-111111111111'
+        }
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    });
+
+    it('keeps org-wide (device-less) alerts visible to a site-restricted caller', async () => {
+      // Org-wide alerts (deviceId = null) are not site-bound; a leftJoin +
+      // inArray(devices.siteId, allowed) would drop them (null siteId never
+      // matches), hiding them from site-restricted users. The narrowing must be
+      // or(isNull(alerts.deviceId), inArray(devices.siteId, allowed)).
+      let listWhere: any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockImplementation((cond: any) => {
+                  listWhere = cond;
+                  return {
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([])
+                      })
+                    })
+                  };
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token',
+          'x-restrict-site': '11111111-1111-1111-1111-111111111111'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const sqlText = new PgDialect().sqlToQuery(listWhere).sql.toLowerCase();
+      expect(sqlText).toContain('is null'); // org-wide (device-less) branch present
+      expect(sqlText).toMatch(/in \(/); // still narrows device-bound alerts by site
+    });
+
+    it('still surfaces org-wide alerts to a caller restricted to zero sites', async () => {
+      // allowedSiteIds === [] must not blanket-empty the list — org-wide alerts
+      // (deviceId = null) stay visible; only device-bound alerts are excluded.
+      let listWhere: any;
+      let listQueried = false;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockImplementation((cond: any) => {
+                  listWhere = cond;
+                  listQueried = true;
+                  return {
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([])
+                      })
+                    })
+                  };
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token',
+          'x-restrict-site': '__empty__'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(listQueried).toBe(true); // did NOT short-circuit to an empty list
+      const sqlText = new PgDialect().sqlToQuery(listWhere).sql.toLowerCase();
+      expect(sqlText).toContain('is null'); // org-wide branch present
     });
   });
 
@@ -421,6 +591,75 @@ describe('alert routes', () => {
   });
 
   describe('notification channel webhook validation', () => {
+    it('encrypts and redacts credential-bearing channel config on create', async () => {
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn((values: any) => ({
+          returning: vi.fn(() => Promise.resolve([{
+            id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            orgId: '11111111-1111-1111-1111-111111111111',
+            name: 'PagerDuty',
+            type: 'pagerduty',
+            config: values.config,
+            enabled: true,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          }]))
+        }))
+      } as any);
+
+      const res = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'PagerDuty',
+          type: 'pagerduty',
+          config: { routingKey: 'pd-routing-key' },
+          enabled: true
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const insertValues = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0][0];
+      expect(insertValues.config.routingKey).not.toBe('pd-routing-key');
+      expect(String(insertValues.config.routingKey)).toMatch(/^enc:v1:/);
+      const body = await res.json();
+      expect(JSON.stringify(body)).not.toContain('pd-routing-key');
+      expect(body.config.routingKey).toEqual({
+        redacted: true,
+        hasSecret: true,
+        masked: '********'
+      });
+    });
+
+    it('requires permission and MFA for channel mutations', async () => {
+      permissionGate.deny = true;
+      const deniedPermission = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'PagerDuty',
+          type: 'pagerduty',
+          config: { routingKey: 'pd-routing-key' },
+          enabled: true
+        })
+      });
+      expect(deniedPermission.status).toBe(403);
+
+      permissionGate.deny = false;
+      mfaGate.deny = true;
+      const deniedMfa = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'PagerDuty',
+          type: 'pagerduty',
+          config: { routingKey: 'pd-routing-key' },
+          enabled: true
+        })
+      });
+      expect(deniedMfa.status).toBe(403);
+    });
+
     it('rejects creating a webhook channel with an unsafe URL', async () => {
       const res = await app.request('/alerts/channels', {
         method: 'POST',
@@ -463,6 +702,147 @@ describe('alert routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('Invalid webhook channel configuration');
+    });
+
+    it('does not return decrypted webhook URLs from channel test details', async () => {
+      const channelId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Webhook',
+              type: 'webhook',
+              config: { url: 'https://hooks.example.com/token/secret-token' }
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(JSON.stringify(body)).not.toContain('secret-token');
+      expect(body.testResult.details.url).toEqual({
+        redacted: true,
+        hasSecret: true,
+        masked: '********'
+      });
+    });
+  });
+
+  describe('notification channel pushover inheritance', () => {
+    it('runs partner lookup under system scope when testing a pushover channel with blank tokens', async () => {
+      const dbModule = await import('../db');
+      const withSystemSpy = vi.mocked(dbModule.withSystemDbAccessContext);
+      const runOutsideSpy = vi.mocked(dbModule.runOutsideDbContext);
+      withSystemSpy.mockClear();
+      runOutsideSpy.mockClear();
+
+      const channelId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      // 1) Channel lookup (request scope, returns the saved channel with blank token/user)
+      // 2) Org lookup (under system scope, returns partnerId)
+      // 3) Partner lookup (under system scope, returns notifications settings)
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: channelId,
+                orgId,
+                name: 'Pushover',
+                type: 'pushover',
+                config: { token: '', user: '' }
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                settings: {
+                  notifications: {
+                    pushoverAppToken: 'inherited-app-token',
+                    pushoverDefaultUser: 'inherited-user-key'
+                  }
+                }
+              }])
+            })
+          })
+        } as any);
+
+      const sendersModule = await import('../services/notificationSenders');
+      const sendPushoverMock = vi.spyOn(sendersModule, 'sendPushoverNotification')
+        .mockResolvedValue({ success: true, statusCode: 200, request: 'req-1' } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+      // Partner lookup must have escaped the request DB context and used system scope.
+      expect(runOutsideSpy).toHaveBeenCalled();
+      expect(withSystemSpy).toHaveBeenCalled();
+      // Inherited token + user reached the sender (would have been blank without
+      // the system-scope lookup for an org-tier caller without partner-read RLS).
+      expect(sendPushoverMock).toHaveBeenCalledWith(
+        expect.objectContaining({ token: 'inherited-app-token', user: 'inherited-user-key' }),
+        expect.anything()
+      );
+
+      sendPushoverMock.mockRestore();
+    });
+
+    it('rejects creating a pushover channel when both channel and partner have no token', async () => {
+      // partner lookup returns no notifications config
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: { notifications: {} } }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Blank Pushover',
+          type: 'pushover',
+          config: { token: '', user: '' },
+          enabled: true
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Invalid pushover channel configuration');
+      expect(body.details.join(' ')).toMatch(/pushoverAppToken|no token/);
     });
   });
 
@@ -516,6 +896,329 @@ describe('alert routes', () => {
       const body = await res.json();
       expect(body.testResult.success).toBe(true);
       expect(body.testResult.message).toContain('Test SMS sent');
+    });
+  });
+
+  describe('notification channel test endpoint — unsupported types', () => {
+    it('returns 501 with a renderable error when channel.type has no handler', async () => {
+      const unsupportedChannelId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      // Simulate deploy drift: DB row has a `type` value the switch does not handle.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: unsupportedChannelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Future channel type',
+              // Cast through unknown: this value isn't in the TS enum on purpose.
+              type: 'discord' as unknown as 'email',
+              config: {}
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${unsupportedChannelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(501);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(typeof body.error).toBe('string');
+      expect(body.error).toContain('discord');
+    });
+  });
+
+  describe('notification channel test endpoint — persists last_tested_at/status (#720)', () => {
+    it('persists lastTestedAt and lastTestStatus after a successful test', async () => {
+      const channelId = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+
+      // Channel lookup via getNotificationChannelWithOrgCheck
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Email Test',
+              type: 'email',
+              config: { recipients: ['test@example.com'] }
+            }])
+          })
+        })
+      } as any);
+
+      // Capture what .set() receives so we can assert on it
+      let capturedSetPayload: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload: Record<string, unknown>) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn(() => Promise.resolve())
+          };
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+
+      // update() must have been called to persist the test outcome
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(capturedSetPayload).toBeDefined();
+      expect(capturedSetPayload!.lastTestedAt).toBeInstanceOf(Date);
+      expect(capturedSetPayload!.lastTestStatus).toBe('success');
+    });
+
+    it('persists lastTestStatus as "failed" when the test notification fails', async () => {
+      const channelId = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+
+      // Channel lookup — email channel with no recipients configured
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Empty Email',
+              type: 'email',
+              config: {}
+            }])
+          })
+        })
+      } as any);
+
+      let capturedSetPayload: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload: Record<string, unknown>) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn(() => Promise.resolve())
+          };
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(false);
+
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(capturedSetPayload).toBeDefined();
+      expect(capturedSetPayload!.lastTestedAt).toBeInstanceOf(Date);
+      expect(capturedSetPayload!.lastTestStatus).toBe('failed');
+    });
+
+    it('does not surface a DB persist failure to the client — test result is still HTTP 200', async () => {
+      const channelId = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4';
+
+      // Channel lookup via getNotificationChannelWithOrgCheck
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: channelId,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              name: 'Email Test',
+              type: 'email',
+              config: { recipients: ['test@example.com'] }
+            }])
+          })
+        })
+      } as any);
+
+      // Make the persist update throw a transient DB error
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn(() => ({
+          where: vi.fn(() => Promise.reject(new Error('connection timeout')))
+        }))
+      } as any);
+
+      const res = await app.request(`/alerts/channels/${channelId}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      // The persist failure must not surface to the client — response is still 200
+      // with the correct testResult reflecting the successful send.
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.testResult.success).toBe(true);
+    });
+
+    it('includes lastTestedAt and lastTestStatus in the channel list response', async () => {
+      const testedAt = new Date('2026-05-15T10:00:00.000Z');
+
+      // Count query
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([{
+                    id: 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3',
+                    orgId: '11111111-1111-1111-1111-111111111111',
+                    name: 'Email',
+                    type: 'email',
+                    config: { recipients: ['ops@example.com'] },
+                    enabled: true,
+                    lastTestedAt: testedAt,
+                    lastTestStatus: 'success',
+                    createdAt: testedAt,
+                    updatedAt: testedAt
+                  }])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts/channels', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      const ch = body.data[0];
+      expect(ch.lastTestedAt).toBe(testedAt.toISOString());
+      expect(ch.lastTestStatus).toBe('success');
+    });
+  });
+
+  describe('POST /alerts/:id/create-ticket', () => {
+    const ALERT_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('creates a linked ticket via ticketService', async () => {
+      // Alert visibility check (getAlertWithOrgCheck) returns a visible alert
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              status: 'active',
+              title: 'High CPU',
+              severity: 'high'
+            }])
+          })
+        })
+      } as any);
+      createTicketFromAlertMock.mockResolvedValue({ id: 't-9', internalNumber: 'T-2026-0042' });
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.internalNumber).toBe('T-2026-0042');
+      expect(createTicketFromAlertMock).toHaveBeenCalledWith(
+        ALERT_ID,
+        expect.objectContaining({ userId: 'user-123' }),
+        expect.any(Object)
+      );
+    });
+
+    it('returns 404 when the alert is not visible to the caller', async () => {
+      // Alert visibility check returns nothing (out of scope)
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Alert not found');
+      expect(createTicketFromAlertMock).not.toHaveBeenCalled();
+    });
+
+    it('passes optional overrides through to the service', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+      createTicketFromAlertMock.mockResolvedValue({ id: 't-10', internalNumber: 'T-2026-0043' });
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: 'Custom subject', priority: 'urgent' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(createTicketFromAlertMock).toHaveBeenCalledWith(
+        ALERT_ID,
+        expect.objectContaining({ userId: 'user-123' }),
+        expect.objectContaining({ subject: 'Custom subject', priority: 'urgent' })
+      );
+    });
+
+    it('maps TicketServiceError status through (e.g. 404 alert not found in service)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ALERT_ID,
+              orgId: '11111111-1111-1111-1111-111111111111',
+              status: 'active'
+            }])
+          })
+        })
+      } as any);
+
+      const { TicketServiceError } = await import('../services/ticketService');
+      createTicketFromAlertMock.mockRejectedValue(new TicketServiceError('Organization not found', 404));
+
+      const res = await app.request(`/alerts/${ALERT_ID}/create-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Organization not found');
     });
   });
 });

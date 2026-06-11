@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +10,11 @@ import (
 	"runtime"
 	"testing"
 )
+
+func testSHA256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
 
 func TestWatchdogBinaryName(t *testing.T) {
 	tests := []struct {
@@ -49,6 +56,14 @@ func TestWatchdogDownloadURL(t *testing.T) {
 			t.Errorf("watchdogDownloadURL(%q,%q,%q) = %q, want %q",
 				tc.version, tc.goos, tc.goarch, got, tc.want)
 		}
+	}
+}
+
+func TestWatchdogChecksumsURL(t *testing.T) {
+	got := watchdogChecksumsURL("0.62.24")
+	want := "https://github.com/LanternOps/breeze/releases/download/v0.62.24/checksums.txt"
+	if got != want {
+		t.Errorf("watchdogChecksumsURL() = %q, want %q", got, want)
 	}
 }
 
@@ -102,7 +117,7 @@ func TestDownloadWatchdog_Success(t *testing.T) {
 	destDir := t.TempDir()
 	destPath := filepath.Join(destDir, "breeze-watchdog")
 
-	if err := downloadWatchdog(srv.URL, destPath); err != nil {
+	if err := downloadWatchdog(srv.URL, destPath, testSHA256Hex(body)); err != nil {
 		t.Fatalf("downloadWatchdog: %v", err)
 	}
 
@@ -131,7 +146,7 @@ func TestDownloadWatchdog_404(t *testing.T) {
 	defer srv.Close()
 
 	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
-	err := downloadWatchdog(srv.URL, destPath)
+	err := downloadWatchdog(srv.URL, destPath, testSHA256Hex([]byte("unused")))
 	if err == nil {
 		t.Fatalf("downloadWatchdog: expected error on 404, got nil")
 	}
@@ -148,12 +163,52 @@ func TestDownloadWatchdog_TooSmall(t *testing.T) {
 	defer srv.Close()
 
 	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
-	err := downloadWatchdog(srv.URL, destPath)
+	err := downloadWatchdog(srv.URL, destPath, testSHA256Hex([]byte("not a real binary")))
 	if err == nil {
 		t.Fatalf("downloadWatchdog: expected error on too-small body, got nil")
 	}
 	if _, statErr := os.Stat(destPath); statErr == nil {
 		t.Errorf("downloadWatchdog: dest file should not exist after failure")
+	}
+}
+
+func TestDownloadWatchdog_ChecksumMismatch(t *testing.T) {
+	body := make([]byte, 2*1024*1024)
+	for i := range body {
+		body[i] = byte(i % 251)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
+	err := downloadWatchdog(srv.URL, destPath, testSHA256Hex([]byte("different body")))
+	if err == nil {
+		t.Fatalf("downloadWatchdog: expected checksum mismatch, got nil")
+	}
+	if _, statErr := os.Stat(destPath); statErr == nil {
+		t.Errorf("downloadWatchdog: dest file should not exist after checksum failure")
+	}
+}
+
+func TestFetchWatchdogChecksum(t *testing.T) {
+	body := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  breeze-watchdog-linux-amd64\n" +
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *breeze-watchdog-linux-arm64\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	got, err := fetchWatchdogChecksum(srv.URL, "breeze-watchdog-linux-arm64")
+	if err != nil {
+		t.Fatalf("fetchWatchdogChecksum: %v", err)
+	}
+	want := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if got != want {
+		t.Errorf("fetchWatchdogChecksum = %q, want %q", got, want)
 	}
 }
 
@@ -224,11 +279,12 @@ func TestBootstrapWatchdog_DownloadFailure(t *testing.T) {
 	}
 
 	opts := bootstrapOptions{
-		agentPath:   agentPath,
-		version:     "0.62.24",
-		goos:        runtime.GOOS,
-		goarch:      runtime.GOARCH,
-		urlOverride: srv.URL,
+		agentPath:        agentPath,
+		version:          "0.62.24",
+		goos:             runtime.GOOS,
+		goarch:           runtime.GOARCH,
+		urlOverride:      srv.URL,
+		checksumOverride: testSHA256Hex([]byte("unused")),
 	}
 	err := bootstrapWatchdog(opts)
 	if err == nil {

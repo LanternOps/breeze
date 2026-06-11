@@ -26,7 +26,7 @@ export const ROLE_SCOPES = ['system', 'partner', 'organization'] as const;
 export const USER_STATUSES = ['active', 'invited', 'disabled'] as const;
 
 // Notification Channel Types
-export const NOTIFICATION_CHANNEL_TYPES = ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms'] as const;
+export const NOTIFICATION_CHANNEL_TYPES = ['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms', 'pushover'] as const;
 
 // Remote Session Types
 export const REMOTE_SESSION_TYPES = ['terminal', 'desktop', 'file_transfer'] as const;

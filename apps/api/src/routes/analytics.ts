@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, gte, lte, ne, inArray, desc } from 'drizzle-orm';
+import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc } from 'drizzle-orm';
 import { db } from '../db';
 import {
   analyticsDashboards,
@@ -15,7 +15,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const analyticsRoutes = new Hono();
 const requireAnalyticsRead = requirePermission(
@@ -63,6 +63,26 @@ async function getOrgIdsForAuth(
 
   // system scope - return null to indicate no filtering needed
   return null;
+}
+
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted user must not read
+// per-device metrics / capacity predictions for devices in other sites within
+// the same org. Mirrors browserSecurity.ts `resolveSiteAllowedDeviceIds`.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  perms: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+    .map((d) => d.id);
 }
 
 const timeSeriesQuerySchema = z.object({
@@ -235,6 +255,20 @@ analyticsRoutes.post(
     const endTime = new Date(data.endTime);
     if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
       return c.json({ error: 'Invalid startTime or endTime' }, 400);
+    }
+
+    // Site-scope gate: device IDs arrive in the request body, so the :deviceId
+    // URL scanner can't catch this. RLS only defends the org axis — a
+    // site-restricted caller must not read metrics for devices outside their
+    // site allowlist. If ANY requested id is out of scope, deny the batch
+    // (matches the project convention in sentinelOne.ts `hasDeniedDeviceSite`).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      const allowedSet = new Set(allowedDeviceIds ?? []);
+      if (data.deviceIds.some((id) => !allowedSet.has(id))) {
+        return c.json({ error: 'Access to one or more device sites denied' }, 403);
+      }
     }
 
     const interval = data.interval;
@@ -853,6 +887,19 @@ analyticsRoutes.get(
     const query = c.req.valid('query');
     const metricType = query.metricType.toLowerCase();
 
+    // Site-scope gate. RLS defends only the org axis; a site-restricted caller
+    // must not drill into per-device capacity/metrics for devices in other
+    // sites within the same org. `allowedDeviceIds === null` means unrestricted.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    let allowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && auth?.orgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      // Explicit per-device drill-down must target an in-scope device.
+      if (query.deviceId && !(allowedDeviceIds ?? []).includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+    }
+
     const predictionOrgCondition =
       typeof auth?.orgCondition === 'function'
         ? auth.orgCondition(capacityPredictions.orgId)
@@ -860,10 +907,24 @@ analyticsRoutes.get(
           ? eq(capacityPredictions.orgId, auth.orgId)
           : undefined;
 
+    // When site-restricted and no explicit deviceId, constrain per-device
+    // predictions to the in-scope set while keeping org-wide rows (deviceId is
+    // nullable on capacity_predictions) visible.
+    const predictionSiteCondition =
+      allowedDeviceIds !== null && !query.deviceId
+        ? or(
+            isNull(capacityPredictions.deviceId),
+            ...(allowedDeviceIds.length > 0
+              ? [inArray(capacityPredictions.deviceId, allowedDeviceIds)]
+              : [])
+          )
+        : undefined;
+
     const predictionWhere = and(
       eq(capacityPredictions.metricType, metricType),
       ...(predictionOrgCondition ? [predictionOrgCondition] : []),
-      ...(query.deviceId ? [eq(capacityPredictions.deviceId, query.deviceId)] : [])
+      ...(query.deviceId ? [eq(capacityPredictions.deviceId, query.deviceId)] : []),
+      ...(predictionSiteCondition ? [predictionSiteCondition] : [])
     );
 
     const storedPredictions = await db
@@ -941,10 +1002,20 @@ analyticsRoutes.get(
           ? eq(devices.orgId, auth.orgId)
           : undefined;
 
+    // device_metrics.deviceId is NOT NULL — constrain the broad (no-deviceId)
+    // query to the in-scope device set when site-restricted, and short-circuit
+    // when none are in scope.
+    if (allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length === 0) {
+      return c.json({ currentValue: 0, predictions: [], thresholds: undefined });
+    }
+
     const metricsWhere = and(
       gte(deviceMetrics.timestamp, rangeStart),
       ...(metricsOrgCondition ? [metricsOrgCondition] : []),
-      ...(query.deviceId ? [eq(deviceMetrics.deviceId, query.deviceId)] : [])
+      ...(query.deviceId ? [eq(deviceMetrics.deviceId, query.deviceId)] : []),
+      ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
+        ? [inArray(deviceMetrics.deviceId, allowedDeviceIds)]
+        : [])
     );
 
     const actualRows = await db
@@ -1256,11 +1327,13 @@ analyticsRoutes.get(
       let total = 0;
       let online = 0;
       let offline = 0;
+      let pending = 0;
       for (const row of statusCounts) {
         const n = Number(row.count);
         total += n;
         if (row.status === 'online') online = n;
         if (row.status === 'offline' || row.status === 'maintenance') offline += n;
+        if (row.status === 'pending') pending = n;
       }
 
       // Weekly enrollment trend (last 12 weeks)
@@ -1286,10 +1359,11 @@ analyticsRoutes.get(
       return c.json({
         data: {
           periodType: query.periodType ?? 'monthly',
-          devices: { total, online, offline },
+          devices: { total, online, offline, pending },
           totalDevices: total,
           onlineDevices: online,
           offlineDevices: offline,
+          pendingDevices: pending,
           trendData,
           trendLabel: 'Weekly enrollments',
           highlights: [],
@@ -1299,10 +1373,11 @@ analyticsRoutes.get(
     } catch {
       return c.json({
         data: {
-          devices: { total: 0, online: 0, offline: 0 },
+          devices: { total: 0, online: 0, offline: 0, pending: 0 },
           totalDevices: 0,
           onlineDevices: 0,
           offlineDevices: 0,
+          pendingDevices: 0,
           trendData: [],
           highlights: [],
           metrics: [],

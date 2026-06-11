@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procoutput"
 )
 
 const (
@@ -27,8 +29,13 @@ var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 // InstallSoftware downloads a package from a presigned URL, verifies its checksum,
 // and executes it with the provided silent install arguments.
-func InstallSoftware(payload map[string]any) CommandResult {
+func InstallSoftware(payload map[string]any) (result CommandResult) {
 	startTime := time.Now()
+	// Stamp StartedAt on every return path so the server can record the
+	// real start instead of reconstructing it from durationMs.
+	defer func() {
+		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
+	}()
 
 	downloadUrl, errResult := RequirePayloadString(payload, "downloadUrl")
 	if errResult != nil {
@@ -94,7 +101,7 @@ func InstallSoftware(payload map[string]any) CommandResult {
 		return result
 	}
 
-	result := map[string]any{
+	successPayload := map[string]any{
 		"softwareName": softwareName,
 		"version":      version,
 		"fileType":     fileType,
@@ -104,9 +111,9 @@ func InstallSoftware(payload map[string]any) CommandResult {
 		"success":      true,
 	}
 	if outputTruncated {
-		result["outputTruncated"] = true
+		successPayload["outputTruncated"] = true
 	}
-	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+	return NewSuccessResult(successPayload, time.Since(startTime).Milliseconds())
 }
 
 func validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version string) (string, string, string, string, string, string, error) {
@@ -316,26 +323,28 @@ func executeInstaller(localPath, fileType, silentInstallArgs string) (int, strin
 		return 1, "", fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
 	}
 
+	cmd.Env = procoutput.ApplyEnv(os.Environ())
+
 	output, err := cmd.CombinedOutput()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			return 1, string(output), err
+			return 1, procoutput.BytesToUTF8(output), err
 		}
 	}
 
 	// MSI exit codes: 0 = success, 3010 = success pending reboot
 	if fileType == "msi" && (exitCode == 0 || exitCode == 3010) {
-		return exitCode, string(output), nil
+		return exitCode, procoutput.BytesToUTF8(output), nil
 	}
 
 	if exitCode != 0 {
-		return exitCode, string(output), fmt.Errorf("installer exited with code %d", exitCode)
+		return exitCode, procoutput.BytesToUTF8(output), fmt.Errorf("installer exited with code %d", exitCode)
 	}
 
-	return 0, string(output), nil
+	return 0, procoutput.BytesToUTF8(output), nil
 }
 
 func buildMSIExecArgs(localPath, silentInstallArgs string) []string {
@@ -372,7 +381,7 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
 
 	mountCmd := exec.CommandContext(ctx, "hdiutil", "attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet")
 	if out, err := mountCmd.CombinedOutput(); err != nil {
-		return 1, string(out), fmt.Errorf("failed to mount DMG: %w", err)
+		return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to mount DMG: %w", err)
 	}
 	defer exec.Command("hdiutil", "detach", mountPoint, "-quiet").Run()
 
@@ -389,11 +398,11 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
 					exitCode = exitErr.ExitCode()
 				}
 				if exitCode != 0 {
-					return exitCode, string(out), fmt.Errorf("pkg installer exited with code %d", exitCode)
+					return exitCode, procoutput.BytesToUTF8(out), fmt.Errorf("pkg installer exited with code %d", exitCode)
 				}
-				return 1, string(out), err
+				return 1, procoutput.BytesToUTF8(out), err
 			}
-			return 0, string(out), nil
+			return 0, procoutput.BytesToUTF8(out), nil
 		}
 	}
 
@@ -405,9 +414,9 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
 			cmd := exec.CommandContext(ctx, "cp", "-R", src, dst)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return 1, string(out), fmt.Errorf("failed to copy app: %w", err)
+				return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to copy app: %w", err)
 			}
-			return 0, string(out), nil
+			return 0, procoutput.BytesToUTF8(out), nil
 		}
 	}
 

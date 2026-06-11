@@ -222,7 +222,7 @@ type systemPowerStatus struct {
 }
 
 var (
-	kernel32               = windows.NewLazySystemDLL("kernel32.dll")
+	kernel32                 = windows.NewLazySystemDLL("kernel32.dll")
 	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
 )
 
@@ -318,7 +318,7 @@ func checkMaintenanceWindow(startStr, endStr string, days []string) PreflightChe
 // Best-effort: returns error but callers should not block on failure.
 func CreateRestorePoint(description string) error {
 	var (
-		srclientDLL          = windows.NewLazySystemDLL("srclient.dll")
+		srclientDLL           = windows.NewLazySystemDLL("srclient.dll")
 		procSRSetRestorePoint = srclientDLL.NewProc("SRSetRestorePointW")
 	)
 
@@ -343,8 +343,8 @@ func CreateRestorePoint(description string) error {
 	}
 
 	const (
-		beginSystemChange   = 100
-		applicationInstall  = 0
+		beginSystemChange  = 100
+		applicationInstall = 0
 	)
 
 	rpi := restorePointInfo{

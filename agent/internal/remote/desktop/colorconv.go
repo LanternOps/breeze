@@ -71,14 +71,14 @@ func bgraToNV12(bgra []byte, width, height, stride int) []byte {
 		x := 0
 		for ; x < w4; x += 4 {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi+2]) + 129*int(row[pi+1]) + 25*int(row[pi]) + 128) >> 8 + 16)
-			yRow[x+1] = byte((66*int(row[pi+6]) + 129*int(row[pi+5]) + 25*int(row[pi+4]) + 128) >> 8 + 16)
-			yRow[x+2] = byte((66*int(row[pi+10]) + 129*int(row[pi+9]) + 25*int(row[pi+8]) + 128) >> 8 + 16)
-			yRow[x+3] = byte((66*int(row[pi+14]) + 129*int(row[pi+13]) + 25*int(row[pi+12]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi+2])+129*int(row[pi+1])+25*int(row[pi])+128)>>8 + 16)
+			yRow[x+1] = byte((66*int(row[pi+6])+129*int(row[pi+5])+25*int(row[pi+4])+128)>>8 + 16)
+			yRow[x+2] = byte((66*int(row[pi+10])+129*int(row[pi+9])+25*int(row[pi+8])+128)>>8 + 16)
+			yRow[x+3] = byte((66*int(row[pi+14])+129*int(row[pi+13])+25*int(row[pi+12])+128)>>8 + 16)
 		}
 		for ; x < width; x++ {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi+2]) + 129*int(row[pi+1]) + 25*int(row[pi]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi+2])+129*int(row[pi+1])+25*int(row[pi])+128)>>8 + 16)
 		}
 	}
 
@@ -95,8 +95,8 @@ func bgraToNV12(bgra []byte, width, height, stride int) []byte {
 			g := int(row[pi+1])
 			b := int(row[pi])
 
-			uvRow[x] = byte((-38*r - 74*g + 112*b + 128) >> 8 + 128)
-			uvRow[x+1] = byte((112*r - 94*g - 18*b + 128) >> 8 + 128)
+			uvRow[x] = byte((-38*r-74*g+112*b+128)>>8 + 128)
+			uvRow[x+1] = byte((112*r-94*g-18*b+128)>>8 + 128)
 		}
 	}
 	return nv12
@@ -171,14 +171,14 @@ func bgraToI420(bgra []byte, width, height, stride int) []byte {
 		x := 0
 		for ; x < w4; x += 4 {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi+2]) + 129*int(row[pi+1]) + 25*int(row[pi]) + 128) >> 8 + 16)
-			yRow[x+1] = byte((66*int(row[pi+6]) + 129*int(row[pi+5]) + 25*int(row[pi+4]) + 128) >> 8 + 16)
-			yRow[x+2] = byte((66*int(row[pi+10]) + 129*int(row[pi+9]) + 25*int(row[pi+8]) + 128) >> 8 + 16)
-			yRow[x+3] = byte((66*int(row[pi+14]) + 129*int(row[pi+13]) + 25*int(row[pi+12]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi+2])+129*int(row[pi+1])+25*int(row[pi])+128)>>8 + 16)
+			yRow[x+1] = byte((66*int(row[pi+6])+129*int(row[pi+5])+25*int(row[pi+4])+128)>>8 + 16)
+			yRow[x+2] = byte((66*int(row[pi+10])+129*int(row[pi+9])+25*int(row[pi+8])+128)>>8 + 16)
+			yRow[x+3] = byte((66*int(row[pi+14])+129*int(row[pi+13])+25*int(row[pi+12])+128)>>8 + 16)
 		}
 		for ; x < width; x++ {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi+2]) + 129*int(row[pi+1]) + 25*int(row[pi]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi+2])+129*int(row[pi+1])+25*int(row[pi])+128)>>8 + 16)
 		}
 	}
 
@@ -195,8 +195,8 @@ func bgraToI420(bgra []byte, width, height, stride int) []byte {
 			g := int(row[pi+1])
 			b := int(row[pi])
 
-			uPlane[uvOff] = byte((-38*r - 74*g + 112*b + 128) >> 8 + 128)
-			vPlane[uvOff] = byte((112*r - 94*g - 18*b + 128) >> 8 + 128)
+			uPlane[uvOff] = byte((-38*r-74*g+112*b+128)>>8 + 128)
+			vPlane[uvOff] = byte((112*r-94*g-18*b+128)>>8 + 128)
 			uvOff++
 		}
 	}
@@ -232,14 +232,14 @@ func rgbaToI420(rgba []byte, width, height, stride int) []byte {
 		x := 0
 		for ; x < w4; x += 4 {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi]) + 129*int(row[pi+1]) + 25*int(row[pi+2]) + 128) >> 8 + 16)
-			yRow[x+1] = byte((66*int(row[pi+4]) + 129*int(row[pi+5]) + 25*int(row[pi+6]) + 128) >> 8 + 16)
-			yRow[x+2] = byte((66*int(row[pi+8]) + 129*int(row[pi+9]) + 25*int(row[pi+10]) + 128) >> 8 + 16)
-			yRow[x+3] = byte((66*int(row[pi+12]) + 129*int(row[pi+13]) + 25*int(row[pi+14]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi])+129*int(row[pi+1])+25*int(row[pi+2])+128)>>8 + 16)
+			yRow[x+1] = byte((66*int(row[pi+4])+129*int(row[pi+5])+25*int(row[pi+6])+128)>>8 + 16)
+			yRow[x+2] = byte((66*int(row[pi+8])+129*int(row[pi+9])+25*int(row[pi+10])+128)>>8 + 16)
+			yRow[x+3] = byte((66*int(row[pi+12])+129*int(row[pi+13])+25*int(row[pi+14])+128)>>8 + 16)
 		}
 		for ; x < width; x++ {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi]) + 129*int(row[pi+1]) + 25*int(row[pi+2]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi])+129*int(row[pi+1])+25*int(row[pi+2])+128)>>8 + 16)
 		}
 	}
 
@@ -256,8 +256,8 @@ func rgbaToI420(rgba []byte, width, height, stride int) []byte {
 			g := int(row[pi+1])
 			b := int(row[pi+2])
 
-			uPlane[uvOff] = byte((-38*r - 74*g + 112*b + 128) >> 8 + 128)
-			vPlane[uvOff] = byte((112*r - 94*g - 18*b + 128) >> 8 + 128)
+			uPlane[uvOff] = byte((-38*r-74*g+112*b+128)>>8 + 128)
+			vPlane[uvOff] = byte((112*r-94*g-18*b+128)>>8 + 128)
 			uvOff++
 		}
 	}
@@ -297,14 +297,14 @@ func rgbaToNV12(rgba []byte, width, height, stride int) []byte {
 		x := 0
 		for ; x < w4; x += 4 {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi]) + 129*int(row[pi+1]) + 25*int(row[pi+2]) + 128) >> 8 + 16)
-			yRow[x+1] = byte((66*int(row[pi+4]) + 129*int(row[pi+5]) + 25*int(row[pi+6]) + 128) >> 8 + 16)
-			yRow[x+2] = byte((66*int(row[pi+8]) + 129*int(row[pi+9]) + 25*int(row[pi+10]) + 128) >> 8 + 16)
-			yRow[x+3] = byte((66*int(row[pi+12]) + 129*int(row[pi+13]) + 25*int(row[pi+14]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi])+129*int(row[pi+1])+25*int(row[pi+2])+128)>>8 + 16)
+			yRow[x+1] = byte((66*int(row[pi+4])+129*int(row[pi+5])+25*int(row[pi+6])+128)>>8 + 16)
+			yRow[x+2] = byte((66*int(row[pi+8])+129*int(row[pi+9])+25*int(row[pi+10])+128)>>8 + 16)
+			yRow[x+3] = byte((66*int(row[pi+12])+129*int(row[pi+13])+25*int(row[pi+14])+128)>>8 + 16)
 		}
 		for ; x < width; x++ {
 			pi := x * 4
-			yRow[x] = byte((66*int(row[pi]) + 129*int(row[pi+1]) + 25*int(row[pi+2]) + 128) >> 8 + 16)
+			yRow[x] = byte((66*int(row[pi])+129*int(row[pi+1])+25*int(row[pi+2])+128)>>8 + 16)
 		}
 	}
 
@@ -321,8 +321,8 @@ func rgbaToNV12(rgba []byte, width, height, stride int) []byte {
 			g := int(row[pi+1])
 			b := int(row[pi+2])
 
-			uvRow[x] = byte((-38*r - 74*g + 112*b + 128) >> 8 + 128)
-			uvRow[x+1] = byte((112*r - 94*g - 18*b + 128) >> 8 + 128)
+			uvRow[x] = byte((-38*r-74*g+112*b+128)>>8 + 128)
+			uvRow[x+1] = byte((112*r-94*g-18*b+128)>>8 + 128)
 		}
 	}
 	return nv12

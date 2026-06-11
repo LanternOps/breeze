@@ -29,6 +29,7 @@ const BLOCKED_TOOLS = new Set<string>([
 //   manage_services: list is a read downgraded from the tool's base Tier 3
 const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
+  manage_tickets: ['create', 'comment', 'assign', 'update_status'],
   manage_services: ['list'],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
@@ -97,6 +98,14 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
     acknowledge: { resource: 'alerts', action: 'acknowledge' },
     resolve: { resource: 'alerts', action: 'write' },
     suppress: { resource: 'alerts', action: 'write' },
+  },
+  manage_tickets: {
+    list: { resource: 'tickets', action: 'read' },
+    get: { resource: 'tickets', action: 'read' },
+    create: { resource: 'tickets', action: 'write' },
+    comment: { resource: 'tickets', action: 'write' },
+    assign: { resource: 'tickets', action: 'write' },
+    update_status: { resource: 'tickets', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
@@ -370,6 +379,21 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   get_backup_health: { resource: 'devices', action: 'read' },
   run_backup_verification: { resource: 'devices', action: 'execute' },
   get_recovery_readiness: { resource: 'devices', action: 'read' },
+  // M365 helpdesk tools (Delegant-backed)
+  m365_lookup_user: { resource: 'm365', action: 'read' },
+  m365_recent_signins: { resource: 'm365', action: 'read' },
+  m365_list_group_memberships: { resource: 'm365', action: 'read' },
+  m365_disable_user: { resource: 'm365', action: 'execute' },
+  m365_reset_password: { resource: 'm365', action: 'execute' },
+};
+
+const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
+  restore_snapshot: [{ resource: 'backup', action: 'read' }],
+  restore_as_vm: [{ resource: 'backup', action: 'read' }],
+  instant_boot_vm: [{ resource: 'backup', action: 'read' }],
+  restore_mssql_database: [{ resource: 'backup', action: 'read' }],
+  verify_mssql_backup: [{ resource: 'backup', action: 'read' }],
+  restore_hyperv_vm: [{ resource: 'backup', action: 'read' }],
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -585,7 +609,11 @@ export async function checkToolPermission(
     const hint = redirectHints[toolName];
     return `Unknown action "${action}" for tool "${toolName}".${hint ? ` ${hint}` : ''}`;
   } else {
-    return null; // No action provided — allow (base tool permission applies)
+    // Action-multiplexed tool invoked without an `action` arg — deny (fail-closed).
+    // Each sub-operation has its own RBAC permission; without an action we can't
+    // resolve which one applies, so allowing here would let any caller bypass
+    // per-action checks. Zod schemas require `action` anyway; this is defense in depth.
+    return `Missing required "action" argument for tool "${toolName}"`;
   }
 
   const userPerms = await getUserPermissions(auth.user.id, {
@@ -599,6 +627,12 @@ export async function checkToolPermission(
 
   if (!hasPermission(userPerms, required.resource, required.action)) {
     return `Insufficient permissions: requires ${required.resource}.${required.action}`;
+  }
+
+  for (const extraPermission of TOOL_EXTRA_PERMISSIONS[toolName] ?? []) {
+    if (!hasPermission(userPerms, extraPermission.resource, extraPermission.action)) {
+      return `Insufficient permissions: requires ${extraPermission.resource}.${extraPermission.action}`;
+    }
   }
 
   return null;

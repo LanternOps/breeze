@@ -14,34 +14,34 @@ func TestPermanentRejectError_Error(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		err    *PermanentRejectError
-		want   string
+		name string
+		err  *PermanentRejectError
+		want string
 	}{
 		{
-			name:  "nil receiver returns sentinel string",
-			err:   nil,
-			want:  "permanent reject",
+			name: "nil receiver returns sentinel string",
+			err:  nil,
+			want: "permanent reject",
 		},
 		{
-			name:  "both Code and Reason set — includes both",
-			err:   &PermanentRejectError{Code: "binary_path_unknown", Reason: "binary path not registered"},
-			want:  "broker permanently rejected helper: binary path not registered (binary_path_unknown)",
+			name: "both Code and Reason set — includes both",
+			err:  &PermanentRejectError{Code: "binary_path_unknown", Reason: "binary path not registered"},
+			want: "broker permanently rejected helper: binary path not registered (binary_path_unknown)",
 		},
 		{
-			name:  "empty Code — omits Code from output",
-			err:   &PermanentRejectError{Code: "", Reason: "some reason"},
-			want:  "broker permanently rejected helper: some reason",
+			name: "empty Code — omits Code from output",
+			err:  &PermanentRejectError{Code: "", Reason: "some reason"},
+			want: "broker permanently rejected helper: some reason",
 		},
 		{
-			name:  "empty Reason with Code — only Reason branch, shows empty reason",
-			err:   &PermanentRejectError{Code: "sid_mismatch", Reason: ""},
-			want:  "broker permanently rejected helper:  (sid_mismatch)",
+			name: "empty Reason with Code — only Reason branch, shows empty reason",
+			err:  &PermanentRejectError{Code: "sid_mismatch", Reason: ""},
+			want: "broker permanently rejected helper:  (sid_mismatch)",
 		},
 		{
-			name:  "both empty — shows empty reason, no code",
-			err:   &PermanentRejectError{Code: "", Reason: ""},
-			want:  "broker permanently rejected helper: ",
+			name: "both empty — shows empty reason, no code",
+			err:  &PermanentRejectError{Code: "", Reason: ""},
+			want: "broker permanently rejected helper: ",
 		},
 	}
 

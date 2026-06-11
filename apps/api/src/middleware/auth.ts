@@ -4,16 +4,21 @@ import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, organizations } from '../db/schema';
-import { and, eq, inArray, SQL } from 'drizzle-orm';
+import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
+import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
+import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { writeAuditEvent } from '../services/auditEvents';
+import { mfaForcePartnerAdmin } from '../config/env';
+import { ipAllowlistGuard } from './ipAllowlistGuard';
 
 export interface AuthContext {
   user: {
     id: string;
     email: string;
     name: string;
+    isPlatformAdmin: boolean;
   };
   token: TokenPayload;
   partnerId: string | null;
@@ -41,122 +46,130 @@ export interface AuthContext {
    * Use when validating an orgId passed as a parameter.
    */
   canAccessOrg: (orgId: string) => boolean;
+
+  /**
+   * Site-axis allowlist (sub-org restriction). `undefined` = no site
+   * restriction (full access to every site in accessible orgs). Mirrors
+   * `UserPermissions.allowedSiteIds`. Populated for organization-scope users;
+   * left undefined for partner/system scope.
+   */
+  allowedSiteIds?: string[];
+
+  /**
+   * Check if the caller can access a specific site. Returns `true` when
+   * unrestricted (`allowedSiteIds` undefined). A site-restricted caller is
+   * denied for a null/undefined siteId (e.g. a device with no site assignment).
+   */
+  canAccessSite?: (siteId: string | null | undefined) => boolean;
+
+  /**
+   * Set ONLY for Breeze Helper sessions (helperAuth). When present, the
+   * AI-tools executeTool gate forces every tool's device input to this device
+   * id and denies org-wide tools — the Helper can act only on its own device.
+   * Undefined for all normal (user/agent) contexts.
+   */
+  helperDeviceId?: string;
 }
 
 declare module 'hono' {
   interface ContextVariableMap {
     auth: AuthContext;
+    permissions: UserPermissions;
   }
 }
 
-// Optional auth - doesn't throw if not authenticated, just sets auth to null
-export async function optionalAuthMiddleware(c: Context, next: Next) {
-  // If another middleware already authenticated this request, don't re-verify.
-  const existing = c.get('auth') as AuthContext | undefined;
-  if (existing) {
-    await next();
-    return;
-  }
+/**
+ * Build the AuthContext site-axis closure (`canAccessSite`). An `undefined`
+ * allowlist means unrestricted — returns true for every site (partner/system
+ * scope, or org users with no site restriction). A restricted caller is denied
+ * for a null/undefined siteId (e.g. a device with no site assignment). An empty
+ * allowlist denies all sites, matching `permissions.canAccessSite` semantics.
+ *
+ * Single source of truth for the closure, reused by the request path
+ * (authMiddleware) and the MCP API-key path (buildAuthFromApiKey) so the two
+ * never drift.
+ */
+export function siteAccessCheck(
+  allowedSiteIds?: string[]
+): (siteId: string | null | undefined) => boolean {
+  return (siteId) => {
+    if (!allowedSiteIds) return true;
+    if (!siteId) return false;
+    return allowedSiteIds.includes(siteId);
+  };
+}
 
-  const authHeader = c.req.header('Authorization');
+/**
+ * Resolve whether the user's effective role for the current request has
+ * `force_mfa=true`. Returns false for system scope (platform admin is a
+ * user flag, not a role) and for any user whose membership row is missing.
+ *
+ * Runs under system scope because the request's RLS context isn't set yet.
+ */
+async function userRoleRequiresMfa(
+  scope: 'system' | 'partner' | 'organization',
+  partnerId: string | null,
+  orgId: string | null,
+  userId: string
+): Promise<boolean> {
+  if (scope === 'system') return false;
+  // Kill-switch: when off, skip the role lookup entirely so an enrollment
+  // outage can be relieved by ops with an env flag (no code deploy).
+  if (!mfaForcePartnerAdmin()) return false;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // Not authenticated - continue without auth context
-    await next();
-    return;
-  }
+  return withSystemDbAccessContext(async () => {
+    if (scope === 'organization' && orgId) {
+      const [row] = await db
+        .select({ forceMfa: roles.forceMfa })
+        .from(organizationUsers)
+        .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
+        .where(
+          and(
+            eq(organizationUsers.userId, userId),
+            eq(organizationUsers.orgId, orgId)
+          )
+        )
+        .limit(1);
+      return row?.forceMfa === true;
+    }
 
-  const token = authHeader.slice(7);
-  const payload = await verifyToken(token);
+    if (scope === 'partner' && partnerId) {
+      const [row] = await db
+        .select({ forceMfa: roles.forceMfa })
+        .from(partnerUsers)
+        .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
+        .where(
+          and(
+            eq(partnerUsers.userId, userId),
+            eq(partnerUsers.partnerId, partnerId)
+          )
+        )
+        .limit(1);
+      return row?.forceMfa === true;
+    }
 
-  if (!payload || payload.type !== 'access') {
-    // Invalid token - continue without auth context
-    await next();
-    return;
-  }
+    return false;
+  });
+}
 
-  if (await isUserTokenRevoked(payload.sub, payload.iat)) {
-    // Token has been explicitly revoked - continue without auth context
-    await next();
-    return;
-  }
+/**
+ * Paths the user is permitted to hit while in the mfa_enrollment_required
+ * state. Without this they couldn't enroll MFA — the same gate would
+ * bounce them off the setup endpoints. Kept intentionally tight.
+ *
+ * Path is the API path *after* the `/api/v1` mount, e.g. `/auth/mfa/setup`.
+ */
+function isMfaEnrollmentExemptPath(path: string): boolean {
+  // Strip the /api/v1 prefix if present so the check works whether Hono
+  // gives us the absolute path or a sub-app path.
+  const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
-  // Fetch user. Runs BEFORE withDbAccessContext is set (the outer purpose
-  // of this middleware), so under breeze_app without a scope the RLS policy
-  // on `users` denies everything. Wrap in system scope for the lookup only —
-  // the real request-scoped context is applied further down.
-  const [user] = await withSystemDbAccessContext(async () =>
-    db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status
-      })
-      .from(users)
-      .where(eq(users.id, payload.sub))
-      .limit(1)
-  );
-
-  if (user && user.status === 'active') {
-    const accessibleOrgIds = await computeAccessibleOrgIds(
-      payload.scope,
-      payload.partnerId,
-      payload.orgId,
-      user.id
-    );
-    const accessiblePartnerIds = computeAccessiblePartnerIds(
-      payload.scope,
-      payload.partnerId
-    );
-
-    const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
-      if (accessibleOrgIds === null) return undefined;
-      if (accessibleOrgIds.length === 0) {
-        return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
-      }
-      if (accessibleOrgIds.length === 1) {
-        return eq(orgIdColumn, accessibleOrgIds[0]);
-      }
-      return inArray(orgIdColumn, accessibleOrgIds);
-    };
-
-    const canAccessOrg = (orgId: string): boolean => {
-      if (accessibleOrgIds === null) return true;
-      return accessibleOrgIds.includes(orgId);
-    };
-
-    await withDbAccessContext(
-      {
-        scope: payload.scope,
-        orgId: payload.orgId,
-        accessibleOrgIds,
-        accessiblePartnerIds,
-        userId: user.id
-      },
-      async () => {
-        c.set('auth', {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name
-          },
-          token: payload,
-          partnerId: payload.partnerId,
-          orgId: payload.orgId,
-          scope: payload.scope,
-          accessibleOrgIds,
-          orgCondition,
-          canAccessOrg
-        });
-
-        await next();
-      }
-    );
-    return;
-  }
-
-  await next();
+  if (rel === '/auth/logout') return true;
+  if (rel === '/users/me') return true;
+  if (rel.startsWith('/auth/mfa/')) return true;
+  // Phone verification is part of the MFA setup flow (SMS factor).
+  if (rel.startsWith('/auth/phone/')) return true;
+  return false;
 }
 
 /**
@@ -224,7 +237,9 @@ async function computeAccessibleOrgIds(
           .where(
             and(
               eq(organizations.partnerId, partnerId),
-              inArray(organizations.id, selectedOrgIds)
+              inArray(organizations.id, selectedOrgIds),
+              inArray(organizations.status, ['active', 'trial']),
+              isNull(organizations.deletedAt)
             )
           );
 
@@ -235,7 +250,13 @@ async function computeAccessibleOrgIds(
       const partnerOrgs = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(eq(organizations.partnerId, partnerId));
+        .where(
+          and(
+            eq(organizations.partnerId, partnerId),
+            inArray(organizations.status, ['active', 'trial']),
+            isNull(organizations.deletedAt)
+          )
+        );
 
       return partnerOrgs.map(o => o.id);
     });
@@ -262,7 +283,7 @@ function computeAccessiblePartnerIds(
   return [];
 }
 
-export async function authMiddleware(c: Context, next: Next) {
+export async function authMiddleware(c: Context, next: Next): Promise<void | Response> {
   // Avoid double-verification when authMiddleware is applied both globally and per-route.
   const existing = c.get('auth') as AuthContext | undefined;
   if (existing) {
@@ -293,14 +314,16 @@ export async function authMiddleware(c: Context, next: Next) {
 
   // Fetch user to ensure they still exist and are active. Pre-auth lookup —
   // must run under system scope because the request's real scope isn't
-  // applied until further down (see optionalAuthMiddleware note).
+  // applied until further down (see the withDbAccessContext call below).
   const [user] = await withSystemDbAccessContext(async () =>
     db
       .select({
         id: users.id,
         email: users.email,
         name: users.name,
-        status: users.status
+        status: users.status,
+        mfaEnabled: users.mfaEnabled,
+        isPlatformAdmin: users.isPlatformAdmin
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -313,6 +336,54 @@ export async function authMiddleware(c: Context, next: Next) {
 
   if (user.status !== 'active') {
     throw new HTTPException(403, { message: 'Account is not active' });
+  }
+
+  try {
+    await assertActiveTenantContext({
+      scope: payload.scope,
+      partnerId: payload.partnerId,
+      orgId: payload.orgId,
+    });
+  } catch (err) {
+    if (err instanceof TenantInactiveError) {
+      throw new HTTPException(403, { message: 'Tenant is not active' });
+    }
+    throw err;
+  }
+
+  // Role-level MFA gate. If the user's role requires MFA and they
+  // haven't enabled it, short-circuit to 428 Precondition Required.
+  // Allow a tight set of routes through (logout, the user's own
+  // profile, MFA setup endpoints) so they can complete enrollment.
+  if (ENABLE_2FA && !user.mfaEnabled) {
+    const requiresMfa = await userRoleRequiresMfa(
+      payload.scope,
+      payload.partnerId,
+      payload.orgId,
+      user.id
+    );
+
+    if (requiresMfa && !isMfaEnrollmentExemptPath(c.req.path)) {
+      // Fire-and-forget audit. Lets ops see when forced-enrollment is
+      // bouncing users — useful for diagnosing onboarding friction or
+      // a misconfigured role flag.
+      writeAuditEvent(c, {
+        orgId: payload.orgId ?? null,
+        action: 'auth.mfa.enrollment.required',
+        resourceType: 'user',
+        resourceId: user.id,
+        actorType: 'user',
+        actorId: user.id,
+        actorEmail: user.email,
+        result: 'denied',
+        details: { path: c.req.path, scope: payload.scope }
+      });
+
+      return c.json(
+        { error: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+        428
+      );
+    }
   }
 
   // Pre-compute accessible org IDs
@@ -347,7 +418,26 @@ export async function authMiddleware(c: Context, next: Next) {
     return accessibleOrgIds.includes(orgId);
   };
 
-  await withDbAccessContext(
+  // Resolve the site-axis allowlist (sub-org restriction). Only organization
+  // scope carries site restrictions (`organizationUsers.siteIds` via
+  // getUserPermissions); partner/system scope stay unrestricted (undefined).
+  // getUserPermissions is cached (and re-used by requirePermission downstream),
+  // so this warms the cache rather than adding a steady-state query.
+  let allowedSiteIds: string[] | undefined;
+  if (payload.scope === 'organization' && payload.orgId) {
+    const userPerms = await getUserPermissions(user.id, {
+      partnerId: payload.partnerId || undefined,
+      orgId: payload.orgId || undefined,
+    });
+    allowedSiteIds = userPerms?.allowedSiteIds;
+  }
+  const canAccessSite = siteAccessCheck(allowedSiteIds);
+
+  // The return value matters: ipAllowlistGuard returns its deny/error
+  // Response as a value (it does not throw). Dropping it leaves the Hono
+  // context unfinalized — every gated request then 500s with "Context is
+  // not finalized" instead of the intended 403/503.
+  return withDbAccessContext(
     {
       scope: payload.scope,
       orgId: payload.orgId,
@@ -360,7 +450,8 @@ export async function authMiddleware(c: Context, next: Next) {
         user: {
           id: user.id,
           email: user.email,
-          name: user.name
+          name: user.name,
+          isPlatformAdmin: user.isPlatformAdmin
         },
         token: payload,
         partnerId: payload.partnerId,
@@ -368,10 +459,12 @@ export async function authMiddleware(c: Context, next: Next) {
         scope: payload.scope,
         accessibleOrgIds,
         orgCondition,
-        canAccessOrg
+        canAccessOrg,
+        allowedSiteIds,
+        canAccessSite
       });
 
-      await next();
+      return ipAllowlistGuard(c, next);
     }
   );
 }

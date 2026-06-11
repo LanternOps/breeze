@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../../layouts/DashboardLayout.astro';
+import UserDevicesPage from '../../../../components/admin/UserDevicesPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="User devices">
+  <UserDevicesPage client:load userId={id ?? ''} />
+</DashboardLayout>

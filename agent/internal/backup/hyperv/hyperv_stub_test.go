@@ -135,7 +135,7 @@ func TestTypeSerialization(t *testing.T) {
 
 func TestEmptyVHDPaths(t *testing.T) {
 	vm := HyperVVM{
-		Name:    "EmptyVM",
+		Name:     "EmptyVM",
 		VHDPaths: nil,
 	}
 	data, err := json.Marshal(vm)

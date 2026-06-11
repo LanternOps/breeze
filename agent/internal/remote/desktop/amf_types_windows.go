@@ -153,8 +153,8 @@ const (
 
 // AMFInterface (base of all ref-counted objects)
 const (
-	amfAcquire       = 0
-	amfRelease       = 1
+	amfAcquire        = 0
+	amfRelease        = 1
 	amfQueryInterface = 2
 )
 
@@ -205,23 +205,23 @@ const amfEncoderAVC = "AMFVideoEncoderVCE_AVC"
 
 // Usage enum
 const (
-	amfUsageTranscoding      = 0
-	amfUsageUltraLowLatency  = 1
-	amfUsageLowLatency       = 2
-	amfUsageWebcam           = 3
-	amfUsageHighQuality      = 4
-	amfUsageLowLatencyHQ     = 5
+	amfUsageTranscoding     = 0
+	amfUsageUltraLowLatency = 1
+	amfUsageLowLatency      = 2
+	amfUsageWebcam          = 3
+	amfUsageHighQuality     = 4
+	amfUsageLowLatencyHQ    = 5
 )
 
 // Rate control method
 const (
-	amfRCConstQP           = 0
-	amfRCCBR               = 1
-	amfRCPeakVBR           = 2
-	amfRCLatencyVBR        = 3
-	amfRCQualityVBR        = 4
-	amfRCHighQualityVBR    = 5
-	amfRCHighQualityCBR    = 6
+	amfRCConstQP        = 0
+	amfRCCBR            = 1
+	amfRCPeakVBR        = 2
+	amfRCLatencyVBR     = 3
+	amfRCQualityVBR     = 4
+	amfRCHighQualityVBR = 5
+	amfRCHighQualityCBR = 6
 )
 
 // Quality presets
@@ -243,36 +243,36 @@ const (
 
 // Profile
 const (
-	amfProfileBaseline          = 66
-	amfProfileMain              = 77
-	amfProfileHigh              = 100
-	amfProfileConstrainedBase   = 256
-	amfProfileConstrainedHigh   = 257
+	amfProfileBaseline        = 66
+	amfProfileMain            = 77
+	amfProfileHigh            = 100
+	amfProfileConstrainedBase = 256
+	amfProfileConstrainedHigh = 257
 )
 
 // Property name strings (passed as wide strings to SetProperty)
 const (
-	amfPropUsage           = "Usage"
-	amfPropProfile         = "Profile"
-	amfPropProfileLevel    = "ProfileLevel"
-	amfPropQualityPreset   = "QualityPreset"
-	amfPropRateControl     = "RateControlMethod"
-	amfPropLowLatency      = "LowLatencyInternal"
-	amfPropTargetBitrate   = "TargetBitrate"
-	amfPropPeakBitrate     = "PeakBitrate"
-	amfPropFrameRate       = "FrameRate"
-	amfPropIDRPeriod       = "IDRPeriod"
-	amfPropBPicPattern     = "BPicturesPattern"
-	amfPropSlicesPerFrame  = "SlicesPerFrame"
-	amfPropMinQP           = "MinQP"
-	amfPropMaxQP           = "MaxQP"
-	amfPropVBAQ            = "EnableVBAQ"
-	amfPropFillerData      = "FillerDataEnable"
-	amfPropEnforceHRD      = "EnforceHRD"
-	amfPropDeblocking      = "DeBlockingFilter"
-	amfPropForcePicType    = "ForcePictureType"
-	amfPropInsertSPS       = "InsertSPS"
-	amfPropInsertPPS       = "InsertPPS"
+	amfPropUsage          = "Usage"
+	amfPropProfile        = "Profile"
+	amfPropProfileLevel   = "ProfileLevel"
+	amfPropQualityPreset  = "QualityPreset"
+	amfPropRateControl    = "RateControlMethod"
+	amfPropLowLatency     = "LowLatencyInternal"
+	amfPropTargetBitrate  = "TargetBitrate"
+	amfPropPeakBitrate    = "PeakBitrate"
+	amfPropFrameRate      = "FrameRate"
+	amfPropIDRPeriod      = "IDRPeriod"
+	amfPropBPicPattern    = "BPicturesPattern"
+	amfPropSlicesPerFrame = "SlicesPerFrame"
+	amfPropMinQP          = "MinQP"
+	amfPropMaxQP          = "MaxQP"
+	amfPropVBAQ           = "EnableVBAQ"
+	amfPropFillerData     = "FillerDataEnable"
+	amfPropEnforceHRD     = "EnforceHRD"
+	amfPropDeblocking     = "DeBlockingFilter"
+	amfPropForcePicType   = "ForcePictureType"
+	amfPropInsertSPS      = "InsertSPS"
+	amfPropInsertPPS      = "InsertPPS"
 )
 
 // =============================================================================

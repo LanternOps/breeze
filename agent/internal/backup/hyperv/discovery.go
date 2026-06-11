@@ -30,10 +30,10 @@ type psVHDPayload struct {
 
 // psCheckpointPayload is the JSON shape returned by Get-VMSnapshot.
 type psCheckpointPayload struct {
-	Id                string `json:"Id"`
-	Name              string `json:"Name"`
-	CreationTime      string `json:"CreationTime"`
-	ParentSnapshotId  string `json:"ParentSnapshotId"`
+	Id               string `json:"Id"`
+	Name             string `json:"Name"`
+	CreationTime     string `json:"CreationTime"`
+	ParentSnapshotId string `json:"ParentSnapshotId"`
 }
 
 // DiscoverVMs enumerates all Hyper-V VMs on the local host.

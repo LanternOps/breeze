@@ -51,6 +51,43 @@ function resolveWritableToolOrgId(
   return { error: 'orgId is required for this operation' };
 }
 
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `auth.allowedSiteIds`. Returns null when the caller is NOT
+// site-restricted (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted org user must not read
+// extension/violation rows for devices in other sites within the same org.
+// Mirrors the route-layer browserSecurity.ts helper (AuthContext flavour).
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  auth: AuthContext,
+): Promise<string[] | null> {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => auth.canAccessSite!(d.siteId))
+    .map((d) => d.id);
+}
+
+// A site-restricted caller may only mutate policies that target sites entirely
+// within their allowlist. Org/group/device/tag targets are not site-bounded, so
+// a site-restricted caller cannot confirm scope over them and is denied.
+// Unrestricted callers (no `allowedSiteIds`) always pass. Mirrors the
+// route-layer browserSecurity.ts helper (AuthContext flavour).
+export function policyWithinSiteWriteScope(
+  auth: AuthContext,
+  targetType: string,
+  targetIds: string[] | null | undefined,
+): boolean {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return true;
+  if (targetType !== 'site') return false;
+  const ids = targetIds ?? [];
+  if (ids.length === 0) return false;
+  return ids.every((id) => auth.canAccessSite!(id));
+}
+
 export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -62,6 +99,7 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_browser_security',
       description: 'Get browser extension inventory risk summary and active browser policy violations.',
@@ -96,6 +134,27 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
       }
       if (typeof input.riskLevel === 'string') {
         conditions.push(eq(browserExtensions.riskLevel, input.riskLevel));
+      }
+
+      // Site axis: a site-restricted caller may only read rows for devices in
+      // their allowed sites (RLS does NOT enforce site). Narrow both the
+      // extension and violation reads to that device set; short-circuit to empty
+      // when the caller has no in-scope devices.
+      const siteScopeOrgId = auth.orgId ?? (typeof input.orgId === 'string' ? input.orgId : null);
+      let siteAllowedDeviceIds: string[] | null = null;
+      if (auth.allowedSiteIds && siteScopeOrgId) {
+        siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(siteScopeOrgId, auth);
+        if (typeof input.deviceId === 'string' && !siteAllowedDeviceIds!.includes(input.deviceId)) {
+          return JSON.stringify({ error: 'Device not found or access denied' });
+        }
+        if (!siteAllowedDeviceIds || siteAllowedDeviceIds.length === 0) {
+          return JSON.stringify({
+            summary: { total: 0, low: 0, medium: 0, high: 0, critical: 0, sideloaded: 0 },
+            extensions: [],
+            violations: [],
+          });
+        }
+        conditions.push(inArray(browserExtensions.deviceId, siteAllowedDeviceIds));
       }
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -143,6 +202,8 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         if (violationOrgCondition) violationConditions.push(violationOrgCondition);
         if (typeof input.orgId === 'string') violationConditions.push(eq(browserPolicyViolations.orgId, input.orgId));
         if (typeof input.deviceId === 'string') violationConditions.push(eq(browserPolicyViolations.deviceId, input.deviceId));
+        // Same site-axis narrowing as the extension read above.
+        if (siteAllowedDeviceIds) violationConditions.push(inArray(browserPolicyViolations.deviceId, siteAllowedDeviceIds));
 
         const rows = await db
           .select({
@@ -184,6 +245,7 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_browser_policy',
       description: 'Create, update, list, and apply browser extension compliance policies.',
@@ -248,6 +310,11 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         if (!['org', 'site', 'group', 'device', 'tag'].includes(targetType)) {
           return JSON.stringify({ error: 'targetType must be one of org|site|group|device|tag' });
         }
+        // Site axis: a site-restricted caller may only create policies that
+        // target sites entirely within their allowlist (never org/group/device/tag).
+        if (!policyWithinSiteWriteScope(auth, targetType, normalizeArray(input.targetIds))) {
+          return JSON.stringify({ error: 'Access denied: policy target is outside your site scope' });
+        }
 
         const [policy] = await db
           .insert(browserPolicies)
@@ -299,6 +366,18 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         if (!existing) {
           return JSON.stringify({ error: 'Policy not found or access denied' });
         }
+        // Site axis: a site-restricted caller may edit a policy only if it is
+        // already within their site scope, and may not retarget it outside.
+        if (!policyWithinSiteWriteScope(auth, existing.targetType, existing.targetIds)) {
+          return JSON.stringify({ error: 'Access denied: policy is outside your site scope' });
+        }
+        if (typeof input.targetType === 'string' || Array.isArray(input.targetIds)) {
+          const nextTargetType = typeof input.targetType === 'string' ? input.targetType : existing.targetType;
+          const nextTargetIds = Array.isArray(input.targetIds) ? normalizeArray(input.targetIds) : existing.targetIds;
+          if (!policyWithinSiteWriteScope(auth, nextTargetType, nextTargetIds)) {
+            return JSON.stringify({ error: 'Access denied: target is outside your site scope' });
+          }
+        }
 
         const [updated] = await db
           .update(browserPolicies)
@@ -345,6 +424,11 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           .limit(1);
         if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
         if (!policy.isActive) return JSON.stringify({ error: 'Policy is inactive' });
+        // Site axis: a site-restricted caller may apply only policies within
+        // their site scope (org/group/device/tag-targeted policies are denied).
+        if (!policyWithinSiteWriteScope(auth, policy.targetType, policy.targetIds)) {
+          return JSON.stringify({ error: 'Access denied: policy is outside your site scope' });
+        }
 
         const requestedDeviceIds = normalizeArray(input.deviceIds);
         let targetDevices: Array<{ id: string; hostname: string }> = [];

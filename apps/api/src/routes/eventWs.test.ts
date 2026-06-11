@@ -67,13 +67,23 @@ describe('createEventWsTicket', () => {
     const b = await createEventWsTicket('user-1', 'org-1');
     expect(a.ticket).not.toBe(b.ticket);
   });
+
+  it('accepts an array of orgIds for multi-org partner tickets', async () => {
+    const { ticket } = await createEventWsTicket('user-1', ['org-1', 'org-2', 'org-3']);
+    const identity = await consumeTicket(ticket);
+    expect(identity).toEqual({ userId: 'user-1', orgIds: ['org-1', 'org-2', 'org-3'] });
+  });
+
+  it('rejects an empty orgIds array', async () => {
+    await expect(createEventWsTicket('user-1', [])).rejects.toThrow();
+  });
 });
 
 describe('consumeTicket', () => {
   it('returns identity for a valid ticket', async () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1');
     const identity = await consumeTicket(ticket);
-    expect(identity).toEqual({ userId: 'user-1', orgId: 'org-1' });
+    expect(identity).toEqual({ userId: 'user-1', orgIds: ['org-1'] });
   });
 
   it('returns null on second consumption (one-time use)', async () => {
@@ -186,7 +196,40 @@ describe('createEventWsTicketRoute', () => {
     expect(body.ticket).toBeTruthy();
 
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgId: 'org-from-query' });
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-from-query'] });
+  });
+
+  it('issues a multi-org ticket for partner users when allOrgs=1', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        canAccessOrg: () => true,
+        accessibleOrgIds: ['org-a', 'org-b'],
+      } as any);
+      await next();
+    });
+
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({
+      type: 'multiple',
+      orgIds: ['org-a', 'org-b'],
+    });
+
+    const ticketApp = createEventWsTicketRoute();
+    app.route('/events', ticketApp);
+
+    const res = await app.request('/events/ws-ticket?allOrgs=1', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const identity = await consumeTicket(body.ticket);
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b'] });
   });
 
   it('issued ticket is consumable with correct identity', async () => {
@@ -205,6 +248,6 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
 
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgId: 'org-xyz' });
+    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-xyz'] });
   });
 });

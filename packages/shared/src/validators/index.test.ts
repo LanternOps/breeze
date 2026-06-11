@@ -9,6 +9,8 @@ import {
   refreshTokenSchema,
   mfaVerifySchema,
   passwordResetSchema,
+  exitCodeSeverityMappingSchema,
+  alertSeverityValueSchema,
   createOrgSchema,
   createSiteSchema,
   inviteUserSchema,
@@ -532,5 +534,50 @@ describe('validators', () => {
       });
       expect(result.success).toBe(true);
     });
+  });
+});
+
+describe('exitCodeSeverityMappingSchema', () => {
+  it('accepts a valid mapping with severities and null', () => {
+    const r = exitCodeSeverityMappingSchema.safeParse({
+      '0': null,
+      '1': 'low',
+      '2': 'medium',
+      '3': 'high',
+      '4': 'critical',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts an empty mapping (semantics handled by deriveSeverityFromScript)', () => {
+    expect(exitCodeSeverityMappingSchema.safeParse({}).success).toBe(true);
+  });
+
+  it('rejects negative integer keys', () => {
+    const r = exitCodeSeverityMappingSchema.safeParse({ '-1': 'critical' });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects non-integer string keys', () => {
+    expect(exitCodeSeverityMappingSchema.safeParse({ '1.5': 'high' }).success).toBe(false);
+    expect(exitCodeSeverityMappingSchema.safeParse({ 'abc': 'high' }).success).toBe(false);
+  });
+
+  it('rejects an unknown severity value', () => {
+    const r = exitCodeSeverityMappingSchema.safeParse({ '1': 'urgent' });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe('alertSeverityValueSchema', () => {
+  it('accepts each canonical severity', () => {
+    for (const sev of ['critical', 'high', 'medium', 'low', 'info'] as const) {
+      expect(alertSeverityValueSchema.safeParse(sev).success).toBe(true);
+    }
+  });
+
+  it('rejects null at the standalone level', () => {
+    // The mapping schema wraps with .nullable(); this base schema does not.
+    expect(alertSeverityValueSchema.safeParse(null).success).toBe(false);
   });
 });

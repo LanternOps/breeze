@@ -1,0 +1,121 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+// ErrManifestTrustRotationRejected is returned by PinManifestKeys when the
+// caller supplies a different pubkey for an already-pinned keyId. This is a
+// possible compromise signal — callers should surface it loudly.
+var ErrManifestTrustRotationRejected = errors.New("manifest trust key rotation rejected")
+
+// ActiveConfigFile returns the absolute path of the currently loaded agent
+// config file, or "" if Load() has not been called. Callers writing changes
+// to disk should pass this through to SaveTo / PinManifestKeys.
+func ActiveConfigFile() string {
+	return viper.ConfigFileUsed()
+}
+
+// ManifestTrustKey is a per-deployment Ed25519 public key delivered by the
+// API via enrollment or heartbeat ack and pinned TOFU-style on the agent.
+// The keyId is opaque to the agent; the publicKeyB64 is the raw 32-byte
+// Ed25519 public key, base64-encoded.
+type ManifestTrustKey struct {
+	KeyID        string
+	PublicKeyB64 string
+}
+
+// PinManifestKeys merges the supplied trust keys into the on-disk config at
+// cfgPath. Returns an error if a different pubkey is supplied for an
+// already-pinned keyId — TOFU semantics: a server cannot silently rotate a
+// key out from under us. The keyset is deduplicated by keyId.
+//
+// Returns nil if there are no changes (already-known keys), or after a
+// successful append + save.
+func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	existing := make(map[string]string, len(cfg.PinnedManifestPubKeys))
+	for _, entry := range cfg.PinnedManifestPubKeys {
+		id, pub, ok := splitPinnedEntry(entry)
+		if !ok {
+			continue
+		}
+		existing[id] = pub
+	}
+
+	changed := false
+	for _, k := range keys {
+		if k.KeyID == "" || k.PublicKeyB64 == "" {
+			continue
+		}
+		if cur, ok := existing[k.KeyID]; ok {
+			if cur != k.PublicKeyB64 {
+				return fmt.Errorf("%w for keyId=%s: pinned pubkey differs from new value", ErrManifestTrustRotationRejected, k.KeyID)
+			}
+			continue
+		}
+		existing[k.KeyID] = k.PublicKeyB64
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+
+	// Sort by keyId for stable serialization — map iteration is
+	// nondeterministic, so without an explicit sort two consecutive calls
+	// with the same input would shuffle the on-disk file and cause spurious
+	// diffs. We sort by the keyId field explicitly (not the full "id:pub"
+	// string) so that the sort key is unambiguous regardless of which
+	// base64 characters appear in the pubkey. (#644)
+	type pinnedEntry struct{ id, pub string }
+	entries := make([]pinnedEntry, 0, len(existing))
+	for id, pub := range existing {
+		entries = append(entries, pinnedEntry{id: id, pub: pub})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
+	pinned := make([]string, 0, len(entries))
+	for _, e := range entries {
+		pinned = append(pinned, e.id+":"+e.pub)
+	}
+	cfg.PinnedManifestPubKeys = pinned
+
+	return SaveTo(cfg, cfgPath)
+}
+
+// splitPinnedEntry parses a "<keyId>:<base64>" entry into its components.
+// Returns ("", "", false) if the entry is malformed.
+func splitPinnedEntry(entry string) (string, string, bool) {
+	parts := strings.SplitN(entry, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// PinnedManifestPubKeyBytes returns the decoded raw pubkey bytes for each
+// pinned entry that parses cleanly. Used by the updater when assembling the
+// trust set for manifest verification.
+func PinnedManifestPubKeyBytes(pinned []string) []string {
+	out := make([]string, 0, len(pinned))
+	for _, entry := range pinned {
+		_, pub, ok := splitPinnedEntry(entry)
+		if ok {
+			out = append(out, pub)
+		}
+	}
+	return out
+}

@@ -1,0 +1,532 @@
+import { Provider } from 'oidc-provider';
+import * as Sentry from '@sentry/node';
+import {
+  OAUTH_COOKIE_SECRET,
+  OAUTH_CONSENT_URL_BASE,
+  OAUTH_DCR_ENABLED,
+  OAUTH_DCR_REQUIRE_IAT,
+  OAUTH_ISSUER,
+  OAUTH_RESOURCE_URL,
+} from '../config/env';
+import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from './adapter';
+import { findAccount } from './findAccount';
+import { loadJwks } from './keys';
+import { revokeJti } from './revocationCache';
+import { getPartnerScopePolicy } from './partnerScopePolicy';
+import { isSentryEnabled } from '../services/sentry';
+import { db } from '../db';
+import {
+  oauthAuthorizationCodes,
+  oauthClientPartnerGrants,
+  oauthClients,
+  oauthGrants,
+  oauthInteractions,
+  oauthRefreshTokens,
+  oauthSessions,
+} from '../db/schema';
+import { isNull, lt, sql, and as drizzleAnd } from 'drizzle-orm';
+import { ERROR_IDS, logOauthError } from './log';
+import { assertActiveTenantContext } from '../services/tenantStatus';
+
+let providerInstance: Provider | null = null;
+
+// Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
+// grant-revocation cache marker (see revocationCache.revokeGrant) so the
+// marker outlives every JWT derived from the grant.
+export const ACCESS_TOKEN_TTL_SECONDS = 600;
+export const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
+
+// DCR cleanup TTL: a registered OAuth client that has never been used and
+// is not bound to a partner is considered abandoned after this many ms.
+export const DCR_STALE_CLIENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const OAUTH_LIFECYCLE_ROW_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Garbage-collect DCR-registered OAuth clients that were never used.
+ *
+ * M-B5 (audit 2026-04-24): with `OAUTH_DCR_ENABLED=true` and
+ * `initialAccessToken: false`, anyone can call POST /oauth/reg and create
+ * a new client. Without GC, the table grows unbounded and abandoned client
+ * IDs accumulate forever. We delete clients that:
+ *   - were created more than DCR_STALE_CLIENT_TTL_MS ago (default 7 days),
+ *   - have never been used (`last_used_at IS NULL`), AND
+ *   - are not bound to a partner (`partner_id IS NULL`) — partner-bound
+ *     clients represent a deliberate enterprise registration that should
+ *     never be GC'd by time alone.
+ *
+ * Returns the number of rows deleted. Safe to call concurrently — the
+ * SELECT-then-DELETE is a single SQL statement, no locks held across calls.
+ *
+ * Scheduling: wired via `jobs/oauthCleanup.ts` as a daily BullMQ cron at
+ * 03:00 UTC. `initializeOauthCleanupWorker` is registered in the API
+ * worker registry (`apps/api/src/index.ts`). Multi-replica safe via a
+ * fixed `jobId`. Disable in an emergency with `OAUTH_CLEANUP_ENABLED=false`.
+ *
+ * Hardening (Task 21, May 2026): the registration endpoint now defaults
+ * OFF (`OAUTH_DCR_ENABLED=false`). When ON in production, an initial-
+ * access-token is required (`OAUTH_DCR_REQUIRE_IAT=true`) so anonymous
+ * clients can no longer create rows via POST /oauth/reg.
+ */
+export async function cleanupStaleOauthClients(
+  now: Date = new Date(),
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - DCR_STALE_CLIENT_TTL_MS);
+  // Date objects bound inside raw `sql` template fragments have no column-type
+  // context, so postgres-js cannot serialize them and throws ERR_INVALID_ARG_TYPE.
+  // Drizzle helpers like lt() above are fine because they know the column type.
+  const nowIso = now.toISOString();
+  const deleted = await db
+    .delete(oauthClients)
+    .where(
+      drizzleAnd(
+        lt(oauthClients.createdAt, cutoff),
+        isNull(oauthClients.lastUsedAt),
+        isNull(oauthClients.partnerId),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthClientPartnerGrants}
+          WHERE ${oauthClientPartnerGrants.clientId} = ${oauthClients.id}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthGrants}
+          WHERE ${oauthGrants.clientId} = ${oauthClients.id}
+          AND ${oauthGrants.expiresAt} >= ${nowIso}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthAuthorizationCodes}
+          WHERE ${oauthAuthorizationCodes.clientId} = ${oauthClients.id}
+          AND ${oauthAuthorizationCodes.expiresAt} >= ${nowIso}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthRefreshTokens}
+          WHERE ${oauthRefreshTokens.clientId} = ${oauthClients.id}
+          AND ${oauthRefreshTokens.revokedAt} IS NULL
+          AND ${oauthRefreshTokens.expiresAt} >= ${nowIso}
+        )`,
+      ),
+    )
+    .returning({ id: oauthClients.id });
+  return deleted.length;
+}
+
+export type OauthLifecycleCleanupCounts = {
+  authCodes: number;
+  interactions: number;
+  sessions: number;
+  grants: number;
+  refreshTokens: number;
+};
+
+export async function cleanupExpiredOauthLifecycleRows(
+  now: Date = new Date(),
+  retentionMs: number = OAUTH_LIFECYCLE_ROW_RETENTION_MS,
+): Promise<OauthLifecycleCleanupCounts> {
+  const cutoff = new Date(now.getTime() - retentionMs);
+  // See note in cleanupStaleOauthClients: Dates bound inside raw `sql` need
+  // explicit ISO string conversion since postgres-js has no column-type hint.
+  const nowIso = now.toISOString();
+  const cutoffIso = cutoff.toISOString();
+
+  const [authCodes, interactions, sessions, grants, refreshTokens] = await Promise.all([
+    db.delete(oauthAuthorizationCodes)
+      .where(lt(oauthAuthorizationCodes.expiresAt, cutoff))
+      .returning({ id: oauthAuthorizationCodes.id }),
+    db.delete(oauthInteractions)
+      .where(lt(oauthInteractions.expiresAt, cutoff))
+      .returning({ id: oauthInteractions.id }),
+    db.delete(oauthSessions)
+      .where(lt(oauthSessions.expiresAt, cutoff))
+      .returning({ id: oauthSessions.id }),
+    db.delete(oauthGrants)
+      .where(drizzleAnd(
+        lt(oauthGrants.expiresAt, cutoff),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${oauthRefreshTokens}
+          WHERE ${oauthRefreshTokens.payload}->>'grantId' = ${oauthGrants.id}
+          AND ${oauthRefreshTokens.revokedAt} IS NULL
+          AND ${oauthRefreshTokens.expiresAt} >= ${nowIso}
+        )`,
+      ))
+      .returning({ id: oauthGrants.id }),
+    db.delete(oauthRefreshTokens)
+      .where(sql`(
+        ${oauthRefreshTokens.expiresAt} < ${cutoffIso}
+        OR (
+          ${oauthRefreshTokens.revokedAt} IS NOT NULL
+          AND ${oauthRefreshTokens.revokedAt} < ${cutoffIso}
+        )
+      )`)
+      .returning({ id: oauthRefreshTokens.id }),
+  ]);
+
+  return {
+    authCodes: authCodes.length,
+    interactions: interactions.length,
+    sessions: sessions.length,
+    grants: grants.length,
+    refreshTokens: refreshTokens.length,
+  };
+}
+
+export async function buildExtraTokenClaims(
+  ctx: any,
+  _token: any,
+): Promise<{ partner_id: string | null; org_id: string | null; grant_id: string | null }> {
+  const grant: any = ctx.oidc?.entities?.Grant;
+  if (!grant) return { partner_id: null, org_id: null, grant_id: null };
+  // The Grant instance's id is on `.jti` (oidc-provider's BaseToken sets jti
+  // on every persisted entity). We can't read meta off `grant.breeze` because
+  // Grant.IN_PAYLOAD doesn't include `breeze`, so unknown fields are dropped
+  // on save and never restored on find. The side-table in adapter.ts is keyed
+  // by that same jti — set in the consent route, read here at token mint.
+  const grantId: string | undefined = grant.jti ?? grant.grantId;
+  // First try the in-memory cache (warm path: same process as consent), then
+  // fall back to the DB row for refresh-token grants that span an API
+  // restart between consent and the next token exchange.
+  const cached = getGrantBreezeMeta(grantId);
+  const meta = cached ?? grant.breeze ?? (await getGrantBreezeMetaAsync(grantId));
+  // Invariant: no null-claim JWT EVER leaves the server. If a grant_id is
+  // present (the only case that produces a real access token), we must be
+  // able to resolve its tenancy — otherwise bearer middleware would later
+  // reject every request with a confusing 401 and the JWT itself would be
+  // unreachable to refresh. Throw here so token mint fails with
+  // `server_error` (surfaced by the `server_error` event listener below)
+  // and the client can retry; better an immediate hard failure than a
+  // silently broken token.
+  if (grantId && (!meta || !meta.partner_id)) {
+    const err = new Error(`OAuth grant meta missing for grant_id=${grantId}`);
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_GRANT_META_LOOKUP_FAILED,
+      message: 'extraTokenClaims could not resolve grant meta; refusing to mint null-claim JWT',
+      err,
+      context: { grantId },
+    });
+    throw err;
+  }
+  if (meta?.partner_id) {
+    await assertActiveTenantContext({
+      scope: meta.org_id ? 'organization' : 'partner',
+      partnerId: meta.partner_id,
+      orgId: meta.org_id,
+    });
+  }
+  return {
+    partner_id: meta?.partner_id ?? null,
+    org_id: meta?.org_id ?? null,
+    // Surface the Grant id as a top-level JWT claim so bearer middleware can
+    // check it against the grant-revocation cache. Without this, revoking a
+    // refresh token (or deleting a connected app) would not invalidate the
+    // ~10-minute access tokens already minted from the same grant.
+    grant_id: grantId ?? null,
+  };
+}
+
+// Master list of MCP scopes this provider knows how to issue. The policy
+// helper intersects this with the partner's allowlist; any scope added to
+// this list must also be added to `scopes:` below.
+export const ALL_MCP_SCOPES = ['mcp:read', 'mcp:write', 'mcp:execute'] as const;
+
+/**
+ * Resolve the partner_id for the current token request. Strategy:
+ *   1. Grant entity's breeze meta (authoritative — set at consent time).
+ *   2. Client row's partner binding (fallback for client_credentials-style
+ *      flows that don't have a Grant).
+ * Returns null when neither source has a partner_id; callers treat that
+ * as "no policy applicable" and fall back to all-scopes (back-compat).
+ */
+export function resolvePartnerIdForResourceServerInfo(
+  ctx: any,
+  client: any,
+): string | null {
+  const grant: any = ctx?.oidc?.entities?.Grant;
+  if (grant) {
+    const grantId: string | undefined = grant.jti ?? grant.grantId;
+    const meta = getGrantBreezeMeta(grantId) ?? grant.breeze;
+    if (meta?.partner_id && typeof meta.partner_id === 'string') {
+      return meta.partner_id;
+    }
+  }
+  // Fall back to the Client entity. Our adapter stores partner binding on
+  // oauth_clients.partner_id; oidc-provider doesn't project that onto the
+  // Client entity by default but our Client metadata carries `partner_id`
+  // where set (see adapter.ts Client projection). Probe a couple of
+  // conventional locations defensively.
+  const fromClient =
+    client?.partner_id ??
+    client?.partnerId ??
+    ctx?.oidc?.client?.partner_id ??
+    ctx?.oidc?.client?.partnerId;
+  if (typeof fromClient === 'string' && fromClient.length > 0) return fromClient;
+  return null;
+}
+
+/**
+ * Apply the partner's scope policy to the set of scopes this provider
+ * would otherwise issue for `resource`. Returns the effective scope
+ * string (space-joined). When no policy is set or the lookup returns
+ * `{}`, this degrades to `allScopes` (current behavior).
+ */
+export async function resolveAllowedMcpScopes(
+  partnerId: string | null,
+  allScopes: readonly string[] = ALL_MCP_SCOPES,
+): Promise<{ allowed: string[]; reduced: boolean }> {
+  if (!partnerId) return { allowed: [...allScopes], reduced: false };
+  const policy = await getPartnerScopePolicy(partnerId);
+  const whitelist = policy.mcp_allowed_scopes;
+  if (!whitelist) return { allowed: [...allScopes], reduced: false };
+  const allowed = allScopes.filter((s) => whitelist.includes(s));
+  return { allowed, reduced: allowed.length < allScopes.length };
+}
+
+export async function handleRevocationSuccess(
+  ctx: any,
+  token: { jti?: string; exp?: number },
+  deps: { revokeJti: (jti: string, ttl: number) => Promise<void>; now?: () => number } = { revokeJti },
+): Promise<void> {
+  if (!token.jti || !token.exp) return;
+  const nowMs = deps.now?.() ?? Date.now();
+  const ttl = Math.max(token.exp - Math.floor(nowMs / 1000), 1);
+  // Await the cache write and rethrow on failure so oidc-provider returns
+  // a 5xx — fire-and-forget swallowed Redis outages, leaving the operator
+  // with no signal that revocation had stopped working.
+  try {
+    await deps.revokeJti(token.jti, ttl);
+  } catch (err) {
+    const clientId = (ctx?.oidc?.client?.clientId as string | undefined)
+      ?? (ctx?.oidc?.entities?.Client?.clientId as string | undefined);
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+      message: 'Revocation cache write failed in handleRevocationSuccess',
+      err,
+      context: { jti: token.jti, clientId },
+    });
+    throw err;
+  }
+}
+
+export async function getProvider(): Promise<Provider> {
+  if (providerInstance) return providerInstance;
+  if (!OAUTH_COOKIE_SECRET) {
+    throw new Error('OAUTH_COOKIE_SECRET is required when MCP_OAUTH_ENABLED is true (set a strong random string in env)');
+  }
+  if (!OAUTH_ISSUER) {
+    throw new Error('OAUTH_ISSUER is required when MCP_OAUTH_ENABLED is true (set the issuer URL in env)');
+  }
+  if (!OAUTH_RESOURCE_URL) {
+    throw new Error('OAUTH_RESOURCE_URL is required when MCP_OAUTH_ENABLED is true (typically `${OAUTH_ISSUER}/mcp/server`)');
+  }
+  if (!OAUTH_CONSENT_URL_BASE) {
+    throw new Error(
+      'OAUTH_CONSENT_URL_BASE is required when MCP_OAUTH_ENABLED is true. ' +
+      'For a single-origin deployment this should equal OAUTH_ISSUER; for cross-origin dev ' +
+      'set it to the web app origin that hosts /oauth/consent (e.g. http://localhost:4321).',
+    );
+  }
+
+  const jwks = await loadJwks();
+
+  providerInstance = new Provider(OAUTH_ISSUER, {
+    adapter: BreezeOidcAdapter,
+    clients: [],
+    jwks,
+    cookies: {
+      keys: [OAUTH_COOKIE_SECRET],
+      // Widen the interaction cookie path so the consent UI (`/oauth/consent`)
+      // AND the consent backend (`/api/v1/oauth/interaction/...`) both receive
+      // it. Without this, the browser would scope the cookie to /oauth/consent
+      // only and the API endpoint that resumes the flow would never see it.
+      short: { path: '/' },
+      long: { path: '/' },
+    },
+    findAccount,
+    enabledJWA: {
+      idTokenSigningAlgValues: ['EdDSA'],
+      requestObjectSigningAlgValues: ['EdDSA'],
+      userinfoSigningAlgValues: ['EdDSA'],
+      introspectionSigningAlgValues: ['EdDSA'],
+      authorizationSigningAlgValues: ['EdDSA'],
+    },
+    // DCR clients (Claude.ai, ChatGPT, etc.) typically omit
+    // id_token_signed_response_alg and inherit oidc-provider's default of
+    // 'RS256'. Since enabledJWA only permits EdDSA, that default fails
+    // validation with `invalid_client_metadata`. Override the per-client
+    // defaults so DCR registrations succeed without the client knowing the
+    // algorithm preference.
+    clientDefaults: {
+      id_token_signed_response_alg: 'EdDSA',
+      // Force every DCR client to be PUBLIC. The pre-handler in routes/oauth.ts
+      // rejects an explicit non-`none` token_endpoint_auth_method, but a client
+      // that OMITS the field would otherwise inherit oidc-provider's built-in
+      // default of `client_secret_basic` and become CONFIDENTIAL — which is
+      // exempt from the introspection deny-policy's `none` branch (a confidential
+      // client may introspect other clients' tokens). Defaulting an omitted
+      // value to `none` here keeps the "all DCR clients are public" invariant
+      // whole alongside the explicit-rejection gate.
+      token_endpoint_auth_method: 'none',
+    },
+    // oidc-provider's default `issueRefreshToken` returns false unless the
+    // auth code's scopes include `offline_access`. The OIDC core spec then
+    // silently drops `offline_access` from the request scope unless the
+    // request explicitly carries `prompt=consent` (see oidc-provider's
+    // `lib/actions/authorization/check_scope.js` and the `prompt` getter on
+    // OIDCContext — `PARAM_LIST` always contains `'prompt'`, so the gate
+    // simplifies to "did the request send prompt=consent?"). MCP clients in
+    // the wild rarely send `prompt=consent`, so by default they never get a
+    // refresh token, forcing re-consent every 10 minutes when the access
+    // token expires. We override the gate to issue a refresh token whenever
+    // the client is registered for the `refresh_token` grant — DCR-registered
+    // clients default to `['authorization_code', 'refresh_token']` so this
+    // covers everything the MCP installer registers, while still respecting
+    // confidential-client config that explicitly disables refresh.
+    issueRefreshToken: async (_ctx: any, client: any, _code: any) =>
+      client.grantTypeAllowed('refresh_token'),
+    features: {
+      devInteractions: { enabled: false },
+      // When OAUTH_DCR_REQUIRE_IAT=true, oidc-provider requires a valid
+      // InitialAccessToken (issued out-of-band, e.g. via the dashboard) for
+      // every POST /oauth/reg. This closes the public-spam vector that
+      // ungated DCR opens up. validateConfig refuses boot in production if
+      // DCR is enabled without IAT (see config/validate.ts).
+      registration: { enabled: OAUTH_DCR_ENABLED, initialAccessToken: OAUTH_DCR_REQUIRE_IAT },
+      registrationManagement: { enabled: OAUTH_DCR_ENABLED },
+      revocation: { enabled: true },
+      introspection: { enabled: true },
+      resourceIndicators: {
+        enabled: true,
+        defaultResource: () => OAUTH_RESOURCE_URL,
+        // M-B3 follow-up (audit 2026-04-24): per-tenant scope policy. If
+        // the partner has `settings.oauth_scope_policy.mcp_allowed_scopes`
+        // set, we intersect it with the issuable scope set; otherwise we
+        // issue all scopes (back-compat). Partner lookup uses a short-TTL
+        // process-local cache (see partnerScopePolicy.ts) so the hot path
+        // is still O(1) after the first call per partner per minute.
+        getResourceServerInfo: async (ctx: any, resource: string, client: any) => {
+          const partnerId = resolvePartnerIdForResourceServerInfo(ctx, client);
+          const { allowed, reduced } = await resolveAllowedMcpScopes(partnerId);
+          const scope = allowed.join(' ');
+          if (isSentryEnabled()) {
+            Sentry.addBreadcrumb({
+              category: 'oauth.scope',
+              level: 'info',
+              message: 'mcp_scope_issued',
+              data: { resource, scope, partnerId, policyApplied: reduced },
+            });
+            if (reduced) {
+              Sentry.addBreadcrumb({
+                category: 'oauth.scope_policy',
+                level: 'info',
+                message: 'mcp_scope_reduced',
+                data: {
+                  partnerId,
+                  resource,
+                  requested: ALL_MCP_SCOPES.join(' '),
+                  allowed: scope,
+                },
+              });
+            }
+          }
+          if (!partnerId) {
+            // Partner could not be resolved — log a breadcrumb so
+            // operators notice if this becomes a common case (policy is
+            // silently bypassed).
+            if (isSentryEnabled()) {
+              Sentry.addBreadcrumb({
+                category: 'oauth.scope_policy',
+                level: 'warning',
+                message: 'mcp_scope_policy_no_partner',
+                data: { resource, clientId: client?.clientId },
+              });
+            }
+          }
+          return {
+            scope,
+            accessTokenFormat: 'jwt' as const,
+            accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
+            audience: resource,
+            jwt: { sign: { alg: 'EdDSA' as const } },
+          };
+        },
+        useGrantedResource: (_ctx: any, _model: any) => true,
+      },
+    },
+    scopes: ['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute'],
+    // S256 is the only PKCE method supported in oidc-provider v8 (the spec
+    // dropped `plain`); pass only `required`.
+    pkce: { required: () => true },
+    ttl: {
+      AccessToken: ACCESS_TOKEN_TTL_SECONDS,
+      AuthorizationCode: 600,
+      RefreshToken: REFRESH_TOKEN_TTL_SECONDS,
+      Session: 14 * 24 * 60 * 60,
+      Interaction: 60 * 60,
+      Grant: 14 * 24 * 60 * 60,
+    },
+    claims: {
+      openid: ['sub'],
+      profile: ['name', 'email'],
+      breeze_tenant: ['partner_id', 'org_id'],
+    },
+    extraTokenClaims: buildExtraTokenClaims,
+    // Tell the provider its endpoints sit under /oauth so it sets cookies
+    // with the right path. Without this, _interaction_resume's path would
+    // be /auth/<uid> and the browser would never send it back to
+    // /oauth/auth/<uid>, breaking the flow on consent submission.
+    routes: {
+      authorization: '/oauth/auth',
+      backchannel_authentication: '/oauth/backchannel',
+      code_verification: '/oauth/device',
+      device_authorization: '/oauth/device/auth',
+      end_session: '/oauth/session/end',
+      introspection: '/oauth/token/introspection',
+      jwks: '/oauth/jwks',
+      pushed_authorization_request: '/oauth/par',
+      registration: '/oauth/reg',
+      revocation: '/oauth/token/revocation',
+      token: '/oauth/token',
+      userinfo: '/oauth/me',
+    },
+    interactions: {
+      url: (_ctx: any, interaction: any) =>
+        `${OAUTH_CONSENT_URL_BASE}/oauth/consent?uid=${interaction.uid}`,
+    },
+  });
+
+  providerInstance.proxy = true;
+  // NOTE: oidc-provider 8.x does NOT emit `revocation.success`. We previously
+  // attached `handleRevocationSuccess` here, but the event never fired so
+  // revoked tokens kept passing the bearer middleware until they expired.
+  // Revocation is now wired via the adapter's `destroy()` method (see
+  // adapter.ts), which oidc-provider DOES call on revoke. The
+  // `handleRevocationSuccess` helper is retained because its tests cover the
+  // TTL-clamp logic we want to keep verified.
+  // Surface OIDC error events to stderr. These are otherwise swallowed by
+  // oidc-provider's debug() logging (only visible with DEBUG=oidc-provider:*),
+  // and the JSON error responses sent to clients deliberately omit the
+  // detail string for security — so without these listeners, on-call has
+  // no way to diagnose a 400/500 from the OAuth endpoints.
+  (providerInstance as any).on('server_error', (_ctx: any, err: any) => {
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_PROVIDER_SERVER_ERROR,
+      message: 'oidc-provider server_error',
+      err,
+    });
+  });
+  (providerInstance as any).on('authorization.error', (_ctx: any, err: any) => {
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_PROVIDER_AUTHORIZATION_ERROR,
+      message: 'oidc-provider authorization.error',
+      err,
+    });
+  });
+  (providerInstance as any).on('grant.error', (_ctx: any, err: any) => {
+    logOauthError({
+      errorId: ERROR_IDS.OAUTH_PROVIDER_GRANT_ERROR,
+      message: 'oidc-provider grant.error',
+      err,
+      context: {
+        error: err?.error,
+        detail: err?.error_detail,
+      },
+    });
+  });
+  return providerInstance;
+}

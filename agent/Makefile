@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
+.PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
 VERSION ?= 0.5.0
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -39,14 +39,77 @@ build-darwin:
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-darwin-amd64 ./cmd/breeze-agent
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-agent-darwin-arm64 ./cmd/breeze-agent
 
-build-windows:
+build-windows: build-windows-user-helper
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-windows-amd64.exe ./cmd/breeze-agent
 
-build-winres:
-	@command -v go-winres >/dev/null 2>&1 || (echo "go-winres not found. Install with: go install github.com/tc-hib/go-winres@latest" && exit 1)
-	cd resources && go-winres make --in winres.json --out ../cmd/breeze-agent/rsrc_windows_amd64.syso
+# build-windows-user-helper builds the SAME ./cmd/breeze-agent source as a
+# GUI-subsystem PE binary so the scheduled task that launches the user-helper
+# at user logon does not allocate a visible console window. Console-subsystem
+# binaries (the default `go build` output on Windows) get an attached console
+# from the kernel whenever the Task Scheduler spawns them in a user session,
+# regardless of the task XML <Hidden> flag. -H windowsgui flips the PE
+# subsystem byte from 3 to 2; the kernel then allocates no console at all.
+# Same Go program, same subcommands, same agent.yaml — only the linker flag
+# differs.
+build-windows-user-helper:
+	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/breeze-user-helper-windows-amd64.exe ./cmd/breeze-agent
 
-build-windows-msi: build-windows
+build-winres:
+	@command -v go-winres >/dev/null 2>&1 || (echo "go-winres not found. Install with: go install github.com/tc-hib/go-winres@v0.3.3" && exit 1)
+	# Embed VERSIONINFO + manifest + icon into every Windows binary we ship.
+	#
+	# Without an embedded FileVersion resource, MSI's FileTable default rule
+	# ("preserve user-modified unversioned files") leaves an existing copy in
+	# place on upgrade or reinstall whenever its on-disk hash differs from the
+	# one captured at MSI build time. The install.log line we kept seeing was:
+	#   File: C:\Program Files\Breeze\breeze-agent.exe;
+	#   Won't Overwrite; Won't patch; Existing file is unversioned but modified.
+	# Embedding a FileVersion flips MSI into normal "newer wins" semantics.
+	# See issue #944.
+	#
+	# Implementation note: we use go-winres `simply` (CLI args) rather than
+	# `make` + JSON because (a) .ico files work via --icon in simply mode but
+	# not in JSON-mode RT_GROUP_ICON entries, and (b) one Makefile line per
+	# binary keeps the source of truth here in the build file instead of
+	# scattered across resources/winres-*.json. The four binaries map to:
+	#   breeze-agent.exe            - admin manifest (matches existing UAC)
+	#   breeze-watchdog.exe         - service, asInvoker
+	#   breeze-backup.exe           - launched by agent, asInvoker
+	#   breeze-desktop-helper.exe   - per-user session, asInvoker, GUI manifest
+	cd resources && go-winres simply --arch amd64 --no-suffix \
+		--icon icon.ico --admin \
+		--file-version $(VERSION) --product-version $(VERSION) \
+		--product-name "Breeze RMM Agent" \
+		--file-description "Breeze RMM Agent" \
+		--copyright "Copyright (c) Breeze RMM" \
+		--original-filename "breeze-agent.exe" \
+		--out ../cmd/breeze-agent/rsrc_windows_amd64.syso
+	cd resources && go-winres simply --arch amd64 --no-suffix \
+		--icon icon.ico \
+		--file-version $(VERSION) --product-version $(VERSION) \
+		--product-name "Breeze RMM Watchdog" \
+		--file-description "Breeze RMM Watchdog" \
+		--copyright "Copyright (c) Breeze RMM" \
+		--original-filename "breeze-watchdog.exe" \
+		--out ../cmd/breeze-watchdog/rsrc_windows_amd64.syso
+	cd resources && go-winres simply --arch amd64 --no-suffix \
+		--icon icon.ico \
+		--file-version $(VERSION) --product-version $(VERSION) \
+		--product-name "Breeze RMM Backup Helper" \
+		--file-description "Breeze RMM Backup Helper" \
+		--copyright "Copyright (c) Breeze RMM" \
+		--original-filename "breeze-backup.exe" \
+		--out ../cmd/breeze-backup/rsrc_windows_amd64.syso
+	cd resources && go-winres simply --arch amd64 --no-suffix --manifest gui \
+		--icon icon.ico \
+		--file-version $(VERSION) --product-version $(VERSION) \
+		--product-name "Breeze RMM Desktop Helper" \
+		--file-description "Breeze RMM Desktop Helper" \
+		--copyright "Copyright (c) Breeze RMM" \
+		--original-filename "breeze-desktop-helper.exe" \
+		--out ../cmd/breeze-desktop-helper/rsrc_windows_amd64.syso
+
+build-windows-msi: build-winres build-windows
 ifeq ($(OS),Windows_NT)
 	powershell -ExecutionPolicy Bypass -File installer/build-msi.ps1 -Version $(VERSION) -AgentExePath "$(CURDIR)\\bin\\breeze-agent-windows-amd64.exe" -OutputPath "$(CURDIR)\\..\\dist\\breeze-agent.msi"
 else

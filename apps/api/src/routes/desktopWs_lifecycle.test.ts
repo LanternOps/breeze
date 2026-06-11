@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules
@@ -40,6 +40,12 @@ vi.mock('../services/jwt', () => ({
   createAccessToken: vi.fn(async () => 'mock-access-token-xyz')
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
@@ -54,10 +60,32 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   }),
 }));
 
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
+vi.mock('./remote/helpers', () => ({
+  logSessionAudit: vi.fn(async () => undefined),
+  getIceServers: vi.fn(() => []),
+}));
+
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
 import { db } from '../db';
+import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createAccessToken } from '../services/jwt';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -77,6 +105,8 @@ import {
 const SESSION_ID = 'session-desktop-001';
 const DEVICE_ID = 'device-xyz';
 const AGENT_ID = 'agent-xyz';
+// Mirror PING_INTERVAL_MS in desktopWs.ts (30s).
+const PING_INTERVAL_MS = 30_000;
 
 // Use a unique user ID per successful onOpen to avoid the in-memory
 // rate limiter (10 connections per user per 60s) blocking later tests.
@@ -131,7 +161,8 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
-      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined))
+      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined)
     }
   };
 
@@ -146,6 +177,7 @@ function setupSuccessfulValidation() {
   const userId = nextUserId();
 
   const ticketRecord = {
+    ok: true as const,
     sessionId: SESSION_ID,
     sessionType: 'desktop' as const,
     userId,
@@ -167,7 +199,8 @@ function setupSuccessfulValidation() {
     agentId: AGENT_ID,
     hostname: 'test-host',
     osType: 'windows',
-    status: 'online'
+    status: 'online',
+    orgId: 'org-test-1'
   };
 
   vi.mocked(db.select)
@@ -186,7 +219,10 @@ function setupSuccessfulValidation() {
   vi.mocked(sendCommandToAgent).mockReturnValue(true);
   vi.mocked(db.update).mockReturnValue(mockUpdateNoReturn() as any);
 
-  return { userId };
+  const mockIsViewerSessionRevoked = vi.mocked(isViewerSessionRevoked);
+  mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+  return { userId, mockIsViewerSessionRevoked };
 }
 
 /**
@@ -337,6 +373,101 @@ describe('desktopWs', () => {
       const app = buildApp();
       const res = await app.request('/health', { method: 'GET' });
       expect(res.status).toBe(200);
+    });
+  });
+
+  // ==========================================
+  // #4: mid-session revocation via the ping loop
+  // ==========================================
+
+  describe('mid-session revocation (ping loop)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('closes the socket (4003) and removes the session within one ping interval once revoked', async () => {
+      // Install fake timers BEFORE onOpen so the ping setInterval is captured.
+      vi.useFakeTimers();
+
+      // Open a real, fully-validated session.
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      // Stay un-revoked through onOpen so setup completes.
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      expect(getActiveDesktopSessionCount()).toBe(1);
+
+      // Now flip to revoked and let the ping interval fire.
+      mockIsViewerSessionRevoked.mockResolvedValue(true);
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      // Flush the microtask queue for the .then() chain.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session revoked');
+      expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    it('negative control: stays open and pings while not revoked', async () => {
+      vi.useFakeTimers();
+
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      expect(getActiveDesktopSessionCount()).toBe(1);
+
+      ws.send.mockClear();
+      ws.close.mockClear();
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Not revoked: socket stays open and a server ping is sent this tick.
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(getActiveDesktopSessionCount()).toBe(1);
+      const pingSent = ws.send.mock.calls.some((args: unknown[]) => {
+        try {
+          return JSON.parse(args[0] as string)?.type === 'ping';
+        } catch {
+          return false;
+        }
+      });
+      expect(pingSent).toBe(true);
+
+      // Clean up so the count doesn't leak into other tests.
+      vi.useRealTimers();
+      await handlers.onClose({}, ws);
+      expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    it('I3: fails CLOSED (4003) when the revocation check rejects', async () => {
+      vi.useFakeTimers();
+
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      expect(getActiveDesktopSessionCount()).toBe(1);
+
+      // A thrown rejection (distinct from the Redis-down fail-closed `true`
+      // path) must still tear down the socket via the new `.catch`.
+      mockIsViewerSessionRevoked.mockRejectedValue(new Error('redis rejected'));
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session revocation check failed');
+      expect(getActiveDesktopSessionCount()).toBe(0);
     });
   });
 

@@ -81,10 +81,25 @@ vi.mock('../middleware/auth', () => ({
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
       orgCondition: () => null,
     });
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keep it out here so the site-scope gate is genuinely
+    // exercised (overridden per-test in beforeEach for the same reason).
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
+    const restrict = c.req.header('x-restrict-site');
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
+    return next();
+  }),
 }));
 
 import { db } from '../db';
@@ -144,10 +159,41 @@ describe('networkChange routes', () => {
         canAccessOrg: (orgId: string) => orgId === ORG_ID,
         orgCondition: () => null,
       });
+      // permissions is populated by the requirePermission mock (mirrors prod),
+      // not authMiddleware — see the vi.mock above.
       return next();
     });
     app = new Hono();
     app.route('/changes', networkChangeRoutes);
+  });
+
+  describe('GET /changes site-scope', () => {
+    it('returns 403 when a site-restricted caller filters to an out-of-scope site', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: SITE_ID }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/changes?siteId=${SITE_ID}`, {
+        headers: { 'x-restrict-site': '99999999-9999-4999-8999-999999999999' },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns an empty list when the site allowlist is empty', async () => {
+      const res = await app.request('/changes', {
+        headers: { 'x-restrict-site': '__empty__' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
+    });
   });
 
   // ----------------------------------------------------------------

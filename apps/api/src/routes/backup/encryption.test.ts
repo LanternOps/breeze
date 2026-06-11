@@ -40,6 +40,11 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
+  backupSnapshots: {
+    id: 'backup_snapshots.id',
+    orgId: 'backup_snapshots.org_id',
+    encryptionKeyId: 'backup_snapshots.encryption_key_id',
+  },
   storageEncryptionKeys: {
     id: 'storage_encryption_keys.id',
     orgId: 'storage_encryption_keys.org_id',
@@ -48,6 +53,7 @@ vi.mock('../../db/schema', () => ({
     keyHash: 'storage_encryption_keys.key_hash',
     isActive: 'storage_encryption_keys.is_active',
     publicKeyPem: 'storage_encryption_keys.public_key_pem',
+    encryptedPrivateKey: 'storage_encryption_keys.encrypted_private_key',
     createdAt: 'storage_encryption_keys.created_at',
     rotatedAt: 'storage_encryption_keys.rotated_at',
     expiresAt: 'storage_encryption_keys.expires_at',
@@ -81,6 +87,7 @@ function makeKey(overrides: Record<string, unknown> = {}) {
     keyHash: '1234567890abcdef1234567890abcdef',
     isActive: true,
     publicKeyPem: '-----BEGIN PUBLIC KEY-----',
+    encryptedPrivateKey: null,
     createdAt: new Date('2026-03-01T00:00:00.000Z'),
     rotatedAt: null,
     expiresAt: null,
@@ -123,8 +130,30 @@ describe('encryption routes', () => {
   });
 
   it('creates an encryption key', async () => {
-    insertMock.mockReturnValueOnce(chainMock([makeKey()]));
+    insertMock.mockReturnValueOnce(chainMock([makeKey({
+      encryptedPrivateKey: 'enc:v1:wrapped-private-key',
+    })]));
 
+    const res = await app.request('/backup/encryption/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'Primary key',
+        keyType: 'aes_256',
+        keyHash: '1234567890abcdef1234567890abcdef',
+        encryptedPrivateKey: 'enc:v1:wrapped-private-key',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.id).toBe(KEY_ID);
+    expect(body.publicKeyPem).toBeUndefined();
+    expect(body.hasDecryptMaterial).toBe(true);
+    expect(body.managedRestoreSupported).toBe(true);
+  });
+
+  it('rejects creating a fingerprint-only encryption key', async () => {
     const res = await app.request('/backup/encryption/keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -135,13 +164,12 @@ describe('encryption routes', () => {
       }),
     });
 
-    expect(res.status).toBe(201);
-    const body = await res.json();
-    expect(body.id).toBe(KEY_ID);
-    expect(body.publicKeyPem).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('deactivates an encryption key', async () => {
+    selectMock.mockReturnValueOnce(chainMock([]));
     updateMock.mockReturnValueOnce(chainMock([makeKey({ isActive: false })]));
 
     const res = await app.request(`/backup/encryption/keys/${KEY_ID}`, {
@@ -151,6 +179,18 @@ describe('encryption routes', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deactivated: true });
+  });
+
+  it('keeps encryption keys active when snapshots still reference them', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'snapshot-1' }]));
+
+    const res = await app.request(`/backup/encryption/keys/${KEY_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('rotates an encryption key', async () => {
@@ -166,8 +206,25 @@ describe('encryption routes', () => {
       id: NEW_KEY_ID,
       name: 'Primary key (rotated)',
       keyHash: 'fedcba0987654321fedcba0987654321',
+      encryptedPrivateKey: 'enc:v1:new-wrapped-private-key',
     })]));
 
+    const res = await app.request(`/backup/encryption/keys/${KEY_ID}/rotate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        newKeyHash: 'fedcba0987654321fedcba0987654321',
+        newEncryptedPrivateKey: 'enc:v1:new-wrapped-private-key',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.previousKeyId).toBe(KEY_ID);
+    expect(body.newKey.id).toBe(NEW_KEY_ID);
+  });
+
+  it('rejects rotating to a fingerprint-only encryption key', async () => {
     const res = await app.request(`/backup/encryption/keys/${KEY_ID}/rotate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -176,10 +233,9 @@ describe('encryption routes', () => {
       }),
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.previousKeyId).toBe(KEY_ID);
-    expect(body.newKey.id).toBe(NEW_KEY_ID);
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('should get single key by id', async () => {
@@ -209,6 +265,7 @@ describe('encryption routes', () => {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({
         newKeyHash: 'fedcba0987654321fedcba0987654321',
+        newEncryptedPrivateKey: 'enc:v1:new-wrapped-private-key',
       }),
     });
 

@@ -3,7 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceCommands } from '../../db/schema';
+import { deviceCommands, deploymentResults } from '../../db/schema';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
   commandResultSchema,
@@ -22,6 +23,7 @@ import {
 import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
+import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -108,6 +110,28 @@ const commandResultParamSchema = z.object({
   commandId: z.string().min(1),
 });
 
+commandsRoutes.get('/:id/commands', async (c) => {
+  const agent = c.get('agent') as AgentAuthContext | undefined;
+
+  if (!agent?.deviceId) {
+    return c.json({ error: 'Agent context not found' }, 401);
+  }
+
+  const commands = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      claimPendingCommandsForDevice(agent.deviceId, 10, agent.role)
+    )
+  );
+
+  return c.json({
+    commands: commands.map(cmd => ({
+      id: cmd.id,
+      type: cmd.type,
+      payload: cmd.payload,
+    })),
+  });
+});
+
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -115,7 +139,7 @@ commandsRoutes.post(
   async (c) => {
     const { id: agentId, commandId } = c.req.valid('param');
     const data = c.req.valid('json');
-    const agent = c.get('agent') as { orgId?: string; agentId?: string; deviceId?: string } | undefined;
+    const agent = c.get('agent') as AgentAuthContext | undefined;
 
     if (!agent?.deviceId) {
       return c.json({ error: 'Agent context not found' }, 401);
@@ -126,6 +150,46 @@ commandsRoutes.post(
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
     if (!uuidRegex.test(commandId)) {
+      // Software install commands carry their tracking IDs in the commandId
+      // itself: `sw-install-<deploymentUuid>-<deviceUuid>`. Persist the
+      // outcome to deployment_results so the dashboard reflects reality.
+      const swInstallMatch = commandId.match(
+        /^sw-install-([0-9a-f-]{36})-([0-9a-f-]{36})$/i,
+      );
+      if (swInstallMatch) {
+        const [, deploymentIdFromCmd, deviceIdFromCmd] = swInstallMatch;
+        if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
+          const drStatus =
+            data.status === 'completed'
+              ? data.exitCode && data.exitCode !== 0
+                ? 'failed'
+                : 'completed'
+              : 'failed';
+          const completedAt = new Date();
+          // Prefer agent-reported startedAt (post-#631); fall back to
+          // reconstructing from durationMs for older agents that don't carry it.
+          const startedAt = data.startedAt
+            ? new Date(data.startedAt)
+            : data.durationMs
+              ? new Date(completedAt.getTime() - data.durationMs)
+              : completedAt;
+          await db
+            .update(deploymentResults)
+            .set({
+              status: drStatus,
+              startedAt,
+              completedAt,
+              exitCode: data.exitCode ?? null,
+              output: data.stdout ?? null,
+              errorMessage: data.error ?? data.stderr ?? null,
+            })
+            .where(and(
+              eq(deploymentResults.deploymentId, deploymentIdFromCmd),
+              eq(deploymentResults.deviceId, deviceId),
+              eq(deploymentResults.status, 'pending'),
+            ));
+        }
+      }
       return c.json({ success: true });
     }
 
@@ -147,6 +211,11 @@ commandsRoutes.post(
 
     if (!command) {
       return c.json({ error: 'Command not found' }, 404);
+    }
+
+    const commandTargetRole = command.targetRole === 'watchdog' ? 'watchdog' : 'agent';
+    if (commandTargetRole !== agent.role) {
+      return c.json({ error: 'Command role mismatch' }, 403);
     }
 
     if (
@@ -173,6 +242,7 @@ commandsRoutes.post(
         .where(and(
           eq(deviceCommands.id, commandId),
           eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.targetRole, agent.role),
           inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
         )) as any;
 

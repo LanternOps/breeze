@@ -588,14 +588,32 @@ export async function recalculateReadinessScores(orgId?: string): Promise<number
   if (devicesToOrg.size === 0) {
     for (const job of backupJobs) {
       const targetOrg = jobOrgById.get(job.id);
-      if (!targetOrg) continue;
+      if (!targetOrg || !UUID_RE.test(targetOrg)) {
+        if (targetOrg) {
+          console.warn('[backupVerification] Skipping job with non-UUID orgId during readiness recompute', {
+            jobId: job.id,
+            deviceId: job.deviceId,
+            targetOrg,
+          });
+        }
+        continue;
+      }
       if (orgId && targetOrg !== orgId) continue;
       if (!devicesToOrg.has(job.deviceId)) devicesToOrg.set(job.deviceId, targetOrg);
     }
 
     for (const verification of backupVerifications) {
       const targetOrg = verificationOrgById.get(verification.id) ?? verification.orgId;
-      if (!targetOrg) continue;
+      if (!targetOrg || !UUID_RE.test(targetOrg)) {
+        if (targetOrg) {
+          console.warn('[backupVerification] Skipping verification with non-UUID orgId during readiness recompute', {
+            verificationId: verification.id,
+            deviceId: verification.deviceId,
+            targetOrg,
+          });
+        }
+        continue;
+      }
       if (orgId && targetOrg !== orgId) continue;
       if (!devicesToOrg.has(verification.deviceId)) devicesToOrg.set(verification.deviceId, targetOrg);
     }

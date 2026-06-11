@@ -384,4 +384,3 @@ func TestRunChecksTracksConsecutiveFailures(t *testing.T) {
 		t.Errorf("consecutiveFailures = %d, want 3", failures)
 	}
 }
-

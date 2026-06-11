@@ -71,11 +71,12 @@ function makeExistingHandler(
         check = { allowed: false, error: 'Internal guardrails error.' };
       }
       if (!check.allowed) {
+        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
         if (onPostToolUse) {
-          try { await onPostToolUse(toolName, args, JSON.stringify({ error: check.error }), true, 0); }
+          try { await onPostToolUse(toolName, args, safeError, true, 0); }
           catch (err) { captureException(err); console.error('[ScriptBuilder] PostToolUse failed:', err); }
         }
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: check.error }) }], isError: true };
+        return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
     }
 
@@ -114,13 +115,14 @@ function makeExistingHandler(
       captureException(err);
       const errorMsg = err instanceof Error ? err.message : 'Unknown error';
       const durationMs = Date.now() - startTime;
+      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: errorMsg }));
 
       if (onPostToolUse) {
-        try { await onPostToolUse(toolName, args, JSON.stringify({ error: errorMsg }), true, durationMs); }
+        try { await onPostToolUse(toolName, args, safeError, true, durationMs); }
         catch (e) { captureException(e); console.error('[ScriptBuilder] PostToolUse failed:', e); }
       }
 
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ error: errorMsg }) }], isError: true };
+      return { content: [{ type: 'text' as const, text: safeError }], isError: true };
     }
   };
 }
@@ -135,7 +137,13 @@ function makeApplyHandler(
 ) {
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
-    const output = JSON.stringify({ applied: true, toolName, ...args });
+    const code = typeof args.code === 'string' ? args.code : undefined;
+    const output = compactToolResultForChat(toolName, JSON.stringify({
+      applied: true,
+      toolName,
+      language: args.language,
+      ...(code ? { codeOmitted: true, codeChars: code.length } : {}),
+    }));
     const durationMs = Date.now() - startTime;
 
     if (onPostToolUse) {

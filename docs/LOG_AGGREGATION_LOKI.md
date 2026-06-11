@@ -50,6 +50,6 @@ If your compose project name is different, query by container label:
 
 ## Operational Notes
 
-- Promtail reads container logs from Docker via `/var/run/docker.sock`.
+- Promtail reads Docker JSON log files from `/var/lib/docker/containers` and does not mount the Docker socket.
 - Keep Loki retention aligned with your compliance policy.
 - For long-term retention, ship Loki data to object storage.

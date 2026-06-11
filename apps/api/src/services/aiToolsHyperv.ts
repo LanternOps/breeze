@@ -8,11 +8,16 @@
 
 import { db } from '../db';
 import { backupJobs, backupSnapshots, devices, hypervVms } from '../db/schema';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+
+function getOrgId(auth: AuthContext): string | null {
+  return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
 
 type HypervHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -59,7 +64,11 @@ async function loadVmWithAccess(vmId: string, auth: AuthContext) {
     .where(and(...vmConditions))
     .limit(1);
 
-  return vm ?? null;
+  if (!vm) return null;
+  // Site axis (app-layer only; RLS does NOT enforce it): the VM resolves to a
+  // host device that may be in a site outside a restricted caller's allowlist.
+  if (await deviceIdSiteDenied(auth, vm.deviceId)) return null;
+  return vm;
 }
 
 // ============================================
@@ -77,6 +86,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_hyperv_vms',
       description: 'List discovered Hyper-V virtual machines in the accessible organization scope.',
@@ -96,6 +106,15 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       if (oc) conditions.push(oc);
       if (typeof input.deviceId === 'string') conditions.push(eq(hypervVms.deviceId, input.deviceId));
       if (typeof input.state === 'string') conditions.push(eq(hypervVms.state, input.state));
+
+      // Site axis: narrow to host devices in the caller's allowed sites.
+      const vmsOrgId = getOrgId(auth);
+      if (auth.allowedSiteIds && vmsOrgId) {
+        const allowed = await resolveSiteAllowedDeviceIds(vmsOrgId, auth);
+        if (!allowed || allowed.length === 0) return JSON.stringify({ vms: [], showing: 0 });
+        if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ vms: [], showing: 0 });
+        conditions.push(inArray(hypervVms.deviceId, allowed));
+      }
 
       const limit = clampLimit(input.limit);
       const rows = await db
@@ -183,6 +202,10 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
+      // Site axis: deny VM detail reads for a host device outside the caller's sites.
+      if (await deviceIdSiteDenied(auth, vm.deviceId)) {
+        return JSON.stringify({ error: 'VM not found or access denied' });
+      }
 
       return JSON.stringify({
         ...vm,
@@ -338,6 +361,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_hyperv_vm',
       description: 'Dispatch a Hyper-V restore/import command from a provider-backed snapshot to a host device.',
@@ -361,11 +385,12 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
       const sc = orgWhere(auth, backupSnapshots.orgId);

@@ -1,12 +1,26 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   sendWebhookNotification,
   validateWebhookConfig,
   validateWebhookUrlSafety,
   redactUrlForLogs
 } from './webhookSender';
+import { __setLookupForTests } from '../urlSafety';
+
+const basePayload = {
+  alertId: 'alert-1',
+  alertName: 'Test Alert',
+  severity: 'high',
+  summary: 'summary',
+  orgId: 'org-1',
+  triggeredAt: new Date().toISOString()
+};
 
 describe('webhook sender safety', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+  });
+
   it('rejects non-https and private URLs during config validation', () => {
     const result = validateWebhookConfig({
       url: 'http://127.0.0.1/webhook',
@@ -22,29 +36,46 @@ describe('webhook sender safety', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
-  it('fails closed before fetch when webhook URL is unsafe', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  it('rejects reserved outbound headers in channel config', () => {
+    const result = validateWebhookConfig({
+      url: 'https://example.com/webhook',
+      method: 'POST',
+      headers: {
+        Host: '169.254.169.254',
+        'X-Breeze-Event-Type': 'forged'
+      }
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(' ')).toContain('reserved');
+  });
+
+  it('fails closed before any network I/O when webhook URL is a literal private IP', async () => {
+    // Swap in a lookup hook that throws if called, so we can prove the static
+    // check shortcuts before DNS.
+    __setLookupForTests(async () => {
+      throw new Error('DNS should not have been invoked');
+    });
 
     const result = await sendWebhookNotification(
-      {
-        url: 'http://169.254.169.254/latest/meta-data',
-        method: 'POST'
-      },
-      {
-        alertId: 'alert-1',
-        alertName: 'Test Alert',
-        severity: 'high',
-        summary: 'summary',
-        orgId: 'org-1',
-        triggeredAt: new Date().toISOString()
-      }
+      { url: 'http://169.254.169.254/latest/meta-data', method: 'POST' },
+      basePayload
     );
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Unsafe webhook URL');
-    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
-    fetchSpy.mockRestore();
+  it('rejects when DNS resolves to a private address (post-validation TOCTOU defense)', async () => {
+    __setLookupForTests(async () => [{ address: '10.0.0.1', family: 4 }]);
+
+    const result = await sendWebhookNotification(
+      { url: 'https://sneaky-rebind.example/hook', method: 'POST' },
+      basePayload
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unsafe webhook URL');
   });
 });
 

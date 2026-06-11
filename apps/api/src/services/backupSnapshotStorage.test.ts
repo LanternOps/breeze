@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DeleteObjectsCommand,
   GetObjectLockConfigurationCommand,
   ListObjectsV2Command,
   PutObjectRetentionCommand,
@@ -16,6 +17,7 @@ vi.mock('./recoveryMediaService', () => ({
 import {
   applyBackupSnapshotImmutability,
   checkBackupProviderCapabilities,
+  deleteBackupSnapshotArtifacts,
 } from './backupSnapshotStorage';
 
 describe('backup snapshot storage', () => {
@@ -148,6 +150,81 @@ describe('backup snapshot storage', () => {
       enforcement: 'provider',
       objectCount: 2,
     });
+  });
+
+  it('does not apply retention to adjacent S3 snapshot prefixes', async () => {
+    const retainedKeys: string[] = [];
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('snapshots/provider-snap-1');
+        return {
+          Contents: [
+            { Key: 'snapshots/provider-snap-1/manifest.json' },
+            { Key: 'snapshots/provider-snap-10/manifest.json' },
+            { Key: 'snapshots/provider-snap-1-extra/manifest.json' },
+          ],
+          IsTruncated: false,
+        };
+      })
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(PutObjectRetentionCommand);
+        retainedKeys.push(command.input.Key);
+        return {};
+      });
+
+    const result = await applyBackupSnapshotImmutability({
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+      },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+      retainUntil: new Date('2026-04-30T00:00:00.000Z'),
+    });
+
+    expect(result.objectCount).toBe(1);
+    expect(retainedKeys).toEqual(['snapshots/provider-snap-1/manifest.json']);
+  });
+
+  it('does not delete adjacent S3 snapshot prefixes', async () => {
+    const deletedKeys: string[] = [];
+    sendMock
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        return {
+          Contents: [
+            { Key: 'snapshots/provider-snap-1/manifest.json' },
+            { Key: 'snapshots/provider-snap-10/manifest.json' },
+            { Key: 'snapshots/provider-snap-1-extra/manifest.json' },
+          ],
+          IsTruncated: false,
+        };
+      })
+      .mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(DeleteObjectsCommand);
+        deletedKeys.push(
+          ...(command.input.Delete?.Objects ?? []).map((object: { Key?: string }) => object.Key ?? '')
+        );
+        return {};
+      });
+
+    await deleteBackupSnapshotArtifacts({
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+      },
+      snapshotId: 'provider-snap-1',
+      metadata: {},
+    });
+
+    expect(deletedKeys).toEqual(['snapshots/provider-snap-1/manifest.json']);
   });
 
   it('fails when no objects are found for provider immutability', async () => {

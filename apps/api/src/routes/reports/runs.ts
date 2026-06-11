@@ -3,8 +3,9 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { reports, reportRuns } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { getPagination, ensureOrgAccess, getReportWithOrgCheck, getReportRunWithOrgCheck } from './helpers';
 import { listRunsSchema } from './schemas';
 
@@ -16,6 +17,7 @@ runsRoutes.use('*', authMiddleware);
 runsRoutes.post(
   '/:id/generate',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_WRITE.resource, PERMISSIONS.REPORTS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
@@ -92,6 +94,7 @@ runsRoutes.post(
 runsRoutes.get(
   '/runs',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action),
   zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -170,6 +173,7 @@ runsRoutes.get(
 runsRoutes.get(
   '/runs/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const runId = c.req.param('id')!;

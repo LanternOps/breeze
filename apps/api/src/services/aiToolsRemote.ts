@@ -2,11 +2,16 @@
  * AI Remote Tools
  *
  * Tools for remote device control and session management.
- * - take_screenshot (Tier 2): Capture a screenshot of the device screen
- * - analyze_screen (Tier 2): Take a screenshot and analyze what is visible
+ * - take_screenshot (Tier 3): Capture a screenshot of the device screen (allowlist-gated)
+ * - analyze_screen (Tier 3): Take a screenshot and analyze what is visible (allowlist-gated)
  * - computer_control (Tier 3): Control a device by sending mouse/keyboard input
  * - list_remote_sessions (Tier 1): List active and recent remote sessions
  * - create_remote_session (Tier 3): Create a new remote session
+ *
+ * Screen-capture tools are Tier 3 because screen contents are the most sensitive
+ * RMM output (credentials, customer data on display, etc). Tier 3 requires
+ * `ai:execute` scope AND, in production, an explicit entry in
+ * `MCP_EXECUTE_TOOL_ALLOWLIST`. See `apps/api/src/routes/mcpServer.ts`.
  */
 
 import { db } from '../db';
@@ -27,6 +32,10 @@ async function verifyDeviceAccess(
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+  // Site axis: deny devices outside the caller's site allowlist (no-op when unrestricted).
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { error: 'Device not found or access denied' };
+  }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
 }
@@ -43,11 +52,12 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
   }
 
   // ============================================
-  // take_screenshot - Tier 2 (auto-execute + audit)
+  // take_screenshot - Tier 3 (requires ai:execute + allowlist in prod)
   // ============================================
 
   registerTool({
-    tier: 2 as AiToolTier,
+    tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'take_screenshot',
       description: 'Capture a screenshot of the device screen. Returns the image for visual analysis. Use this when you need to see what is displayed on the device screen.',
@@ -99,11 +109,12 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // analyze_screen - Tier 2 (auto-execute + audit)
+  // analyze_screen - Tier 3 (requires ai:execute + allowlist in prod)
   // ============================================
 
   registerTool({
-    tier: 2 as AiToolTier,
+    tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_screen',
       description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees.',
@@ -168,6 +179,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'computer_control',
       description: 'Control a device by sending mouse/keyboard input and capturing screenshots. Returns a screenshot after each action by default (configurable via captureAfter). Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type.',
@@ -244,6 +256,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'list_remote_sessions',
       description: 'List active and recent remote sessions (terminal, desktop, file transfer).',
@@ -315,6 +328,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'create_remote_session',
       description: 'Create a new remote terminal or file transfer session to a device.',

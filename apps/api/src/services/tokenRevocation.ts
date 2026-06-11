@@ -1,8 +1,38 @@
+import { eq, sql } from 'drizzle-orm';
 import { getRedis } from './redis';
+import * as dbModule from '../db';
+import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 
 const ACCESS_TOKEN_REVOCATION_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_REVOCATION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const USER_REVOCATION_TTL_SECONDS = REFRESH_TOKEN_REVOCATION_TTL_SECONDS + ACCESS_TOKEN_REVOCATION_TTL_SECONDS;
+// Family revocation sentinel must outlive the refresh token itself: a token
+// minted just before revocation could otherwise survive past the sentinel's
+// expiry. Match the user-revocation buffer pattern.
+const REFRESH_FAMILY_REVOCATION_TTL_SECONDS = USER_REVOCATION_TTL_SECONDS;
+// jti → familyId mapping. Stored alongside the refresh token so a stolen
+// token's family can be looked up without a DB round-trip on the hot
+// /refresh path. TTL matches the refresh token expiry + slop.
+const REFRESH_JTI_FAMILY_TTL_SECONDS = REFRESH_TOKEN_REVOCATION_TTL_SECONDS + ACCESS_TOKEN_REVOCATION_TTL_SECONDS;
+// Rotation-grace window. When a refresh jti is legitimately rotated we drop a
+// short-lived marker so that a benign concurrent/double-fired replay of the
+// SAME jti (multi-tab, the 5-min heartbeat, or a page reload fired while a
+// refresh was already in flight) is recognised as a race instead of an attack.
+// Within this window we suppress the family-wide reuse-detection kill — the
+// replayed jti is already revoked and cannot mint anything, so the only thing
+// suppressed is the escalation, never a real mint. 15s comfortably covers the
+// concurrency window (multi-tab, heartbeat, reload-mid-flight + one client
+// retry) while keeping the relaxed period — and thus the attack surface —
+// small. This is the standard "refresh-token rotation leeway / reuse interval"
+// pattern (cf. Auth0, IdentityServer). Overridable via env for ops tuning;
+// set REFRESH_ROTATION_GRACE_SECONDS=0 to restore strict, no-leeway
+// reuse-detection. Read per call so the value is runtime-tunable + testable.
+const DEFAULT_REFRESH_ROTATION_GRACE_SECONDS = 15;
+
+function getRotationGraceSeconds(): number {
+  const raw = Number.parseInt(process.env.REFRESH_ROTATION_GRACE_SECONDS ?? '', 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_REFRESH_ROTATION_GRACE_SECONDS;
+}
 
 function getRevokedAccessKey(userId: string): string {
   return `token:revoked:${userId}`;
@@ -14,6 +44,18 @@ function getRevokedAfterKey(userId: string): string {
 
 function getRevokedRefreshKey(jti: string): string {
   return `token:refresh:revoked:${jti}`;
+}
+
+function getRefreshJtiFamilyKey(jti: string): string {
+  return `refresh-jti-fam:${jti}`;
+}
+
+function getRevokedFamilyKey(familyId: string): string {
+  return `refresh-fam-revoked:${familyId}`;
+}
+
+function getRotationGraceKey(jti: string): string {
+  return `refresh-rotated-grace:${jti}`;
 }
 
 // Fail-closed: when Redis is unavailable we treat access tokens as revoked.
@@ -111,16 +153,260 @@ export async function isRefreshTokenJtiRevoked(jti: string): Promise<boolean> {
   }
 }
 
-export async function revokeRefreshTokenJti(jti: string): Promise<void> {
+/**
+ * Atomically claim revocation of a refresh-token jti.
+ *
+ * Returns `true` when this caller won the claim (the key did not exist and we
+ * just wrote it), `false` when another caller — typically a concurrent /refresh
+ * racing on the same cookie — already revoked the jti.
+ *
+ * The /refresh hot path MUST treat `false` as a concurrent-refresh signal and
+ * refuse to mint a new pair. An unconditional SETEX would let both racers
+ * believe they were the first to revoke, leaving two parallel valid descendant
+ * chains on the same family for up to the refresh TTL. This is exactly the
+ * TOCTOU the family-revocation scheme was meant to close.
+ *
+ * Throws only on Redis unavailability or write errors. Idempotent at the
+ * Redis-key level: re-claiming an already-claimed jti returns `false` without
+ * extending the TTL (`NX` skips writes for existing keys).
+ */
+export async function revokeRefreshTokenJti(jti: string): Promise<boolean> {
   const redis = getRedis();
   if (!redis) {
     throw new Error('[token-revocation] Redis unavailable — cannot revoke refresh token');
   }
 
   try {
-    await redis.setex(getRevokedRefreshKey(jti), REFRESH_TOKEN_REVOCATION_TTL_SECONDS, '1');
+    const result = await redis.set(
+      getRevokedRefreshKey(jti),
+      '1',
+      'EX',
+      REFRESH_TOKEN_REVOCATION_TTL_SECONDS,
+      'NX'
+    );
+    return result === 'OK';
   } catch (error) {
     console.error('[token-revocation] Failed to revoke refresh token:', error);
     throw error;
+  }
+}
+
+/**
+ * Marks a refresh-token jti as having just been legitimately rotated. Read by
+ * `wasRefreshTokenJtiRecentlyRotated` during reuse-detection to tell a benign
+ * concurrent/double-fired replay apart from a true token-reuse attack.
+ *
+ * Best-effort: a Redis outage means the marker is absent, so a concurrent
+ * replay falls through to the (conservative) family-revocation path — the
+ * safe direction. Set this BEFORE revoking the old jti so the marker is
+ * already present whenever the revoked state becomes visible to a racer.
+ */
+export async function markRefreshTokenJtiRotated(jti: string): Promise<void> {
+  const graceSeconds = getRotationGraceSeconds();
+  if (graceSeconds <= 0) return; // strict mode — no leeway marker
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.setex(getRotationGraceKey(jti), graceSeconds, '1');
+  } catch (error) {
+    console.warn('[token-revocation] Failed to set refresh rotation-grace marker:', error);
+  }
+}
+
+/**
+ * Returns true when the given jti was legitimately rotated within the
+ * rotation-grace window. A `true` result means a replay of this jti is a
+ * benign race (multi-tab / heartbeat / reload-mid-flight), not an attack.
+ *
+ * Fails toward `false` (treat as a genuine replay) on any Redis error — the
+ * conservative choice that preserves reuse-detection.
+ */
+export async function wasRefreshTokenJtiRecentlyRotated(jti: string): Promise<boolean> {
+  if (getRotationGraceSeconds() <= 0) return false; // strict mode — never benign
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return Boolean(await redis.get(getRotationGraceKey(jti)));
+  } catch (error) {
+    console.warn('[token-revocation] Failed to read refresh rotation-grace marker:', error);
+    return false;
+  }
+}
+
+// ============================================================================
+// Refresh-Token Families (OAuth 2.1 reuse detection)
+//
+// Each /login mints a fresh familyId; every refresh token in the resulting
+// rotation chain carries the same `fam` claim. When a revoked jti is
+// replayed, the whole family is killed so the legitimate user's later
+// refresh can't continue silently in parallel with the attacker's.
+//
+// Source-of-truth split:
+//   - Redis (`refresh-fam-revoked:<familyId>`) is the hot-path lookup.
+//   - Postgres (`refresh_token_families.revoked_at`) is the durable audit
+//     trail, surviving Redis flushes.
+// Both are written on every revoke; reads prefer Redis and fall back to PG.
+// ============================================================================
+
+/**
+ * Remembers the mapping from a freshly-minted refresh-token jti to its
+ * family id. Stored in Redis only (not PG) because the lookup is hot-path
+ * and the mapping naturally expires with the token; on Redis loss we fall
+ * back to the `fam` claim that's already embedded in the verified JWT.
+ *
+ * Idempotent. Best-effort: a Redis outage here just means a slightly slower
+ * /refresh next time (we'll fall through to the JWT claim).
+ */
+export async function rememberJtiFamily(jti: string, familyId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) {
+    // Not fatal — the family id is also encoded in the JWT `fam` claim, so
+    // the family-revocation check still works from the verified payload.
+    return;
+  }
+  try {
+    await redis.setex(getRefreshJtiFamilyKey(jti), REFRESH_JTI_FAMILY_TTL_SECONDS, familyId);
+  } catch (error) {
+    console.warn('[token-revocation] Failed to remember jti→family mapping:', error);
+  }
+}
+
+/**
+ * Hot-path lookup of the family for a given jti. Returns null on miss.
+ * Callers should fall back to the verified JWT's `fam` claim — Redis is
+ * an accelerator, not the source of truth.
+ */
+export async function getFamilyForJti(jti: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    return await redis.get(getRefreshJtiFamilyKey(jti));
+  } catch (error) {
+    console.warn('[token-revocation] Failed to look up jti→family mapping:', error);
+    return null;
+  }
+}
+
+/**
+ * Atomically marks the family as revoked in both Redis (hot-path sentinel)
+ * and Postgres (durable audit row). Idempotent: a second call against an
+ * already-revoked family is a no-op for the PG row's first revocation
+ * timestamp (uses `WHERE revoked_at IS NULL`).
+ *
+ * Uses `withSystemDbAccessContext` for the DB write because reuse-detection
+ * runs before the user-scope is established in /refresh — and even if it
+ * did run user-scoped, the system-scope path is the conservative choice
+ * (it never fails RLS).
+ */
+export async function revokeFamily(familyId: string, reason: string): Promise<void> {
+  const truncatedReason = reason.length > 64 ? reason.slice(0, 64) : reason;
+
+  // Best-effort Redis flip first. Failure here is logged but the DB update
+  // still goes through — fail-closed semantics live in isFamilyRevoked,
+  // which prefers Redis but falls back to PG on Redis miss.
+  const redis = getRedis();
+  if (redis) {
+    try {
+      await redis.setex(
+        getRevokedFamilyKey(familyId),
+        REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
+        '1'
+      );
+    } catch (error) {
+      console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
+    }
+  } else {
+    console.error('[token-revocation] Redis unavailable while revoking family — DB row will still be updated');
+  }
+
+  // Durable audit: stamp revoked_at on the PG row (idempotent — only the
+  // first revocation wins). Bypass RLS via system scope so the call works
+  // regardless of which DB context (if any) is on the stack.
+  try {
+    await dbModule.withSystemDbAccessContext(async () => {
+      await dbModule.db
+        .update(refreshTokenFamilies)
+        .set({
+          revokedAt: sql`COALESCE(revoked_at, now())`,
+          revokedReason: sql`COALESCE(revoked_reason, ${truncatedReason})`,
+        })
+        .where(eq(refreshTokenFamilies.familyId, familyId));
+    });
+  } catch (error) {
+    // The Redis sentinel above is what gates /refresh; the DB row is a
+    // durable audit. If Redis flipped but PG didn't, we still block the
+    // attacker — we just lose the audit trail.
+    console.error('[token-revocation] Failed to persist family revocation to DB:', error);
+  }
+}
+
+/**
+ * Returns true if the family has been revoked. Hot-path check uses Redis;
+ * on Redis miss/error, falls back to the PG audit row.
+ *
+ * Fail-closed: if BOTH Redis and PG are unreachable, returns true. The
+ * trade-off matches `isUserTokenRevoked` — a brief outage blocks all
+ * refreshes rather than silently re-enabling a compromised family.
+ */
+export async function isFamilyRevoked(familyId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const sentinel = await redis.get(getRevokedFamilyKey(familyId));
+      if (sentinel) return true;
+      // Redis says "not revoked" — but the sentinel could have been evicted
+      // (no maxmemory eviction-policy guarantee). Confirm against PG before
+      // declaring the family alive. This is cheap: indexed PK lookup.
+    } catch (error) {
+      console.warn(
+        '[token-revocation] Family-revoked Redis lookup failed — falling back to DB:',
+        error
+      );
+    }
+  }
+
+  try {
+    const rows = await dbModule.withSystemDbAccessContext(async () =>
+      dbModule.db
+        .select({ revokedAt: refreshTokenFamilies.revokedAt })
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, familyId))
+        .limit(1)
+    );
+    const row = rows[0];
+    if (!row) {
+      // No row at all → fail-closed. A valid /refresh path always has a row
+      // (created during /login). A missing row means either Redis is also
+      // wiped (token from another deployment generation) or the JWT was
+      // forged; either way we reject.
+      return true;
+    }
+    return row.revokedAt !== null;
+  } catch (error) {
+    console.error(
+      '[token-revocation] Family-revoked DB lookup failed — failing closed:',
+      error
+    );
+    return true;
+  }
+}
+
+/**
+ * Best-effort lastUsedAt update. Called on every successful /refresh. Not
+ * critical to the security model — used for analytics + dashboards only
+ * (e.g. "this session has been silent for 30d"). System-scoped for the
+ * same reason as revokeFamily.
+ */
+export async function touchFamilyLastUsed(familyId: string): Promise<void> {
+  try {
+    await dbModule.withSystemDbAccessContext(async () => {
+      await dbModule.db
+        .update(refreshTokenFamilies)
+        .set({ lastUsedAt: sql`now()` })
+        .where(eq(refreshTokenFamilies.familyId, familyId));
+    });
+  } catch (error) {
+    // Pure telemetry; do not block the refresh.
+    console.warn('[token-revocation] Failed to update family lastUsedAt:', error);
   }
 }

@@ -1,30 +1,43 @@
-import { Hono } from 'hono';
-import type { Context } from 'hono';
-import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
-import { and, eq, sql, desc, inArray, lt, isNull, or, asc } from 'drizzle-orm';
-import { customAlphabet } from 'nanoid';
-import { db, withSystemDbAccessContext } from '../db';
-import { enrollmentKeys, organizations } from '../db/schema';
-import { sites } from '../db/schema/orgs';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { userRateLimit } from '../middleware/userRateLimit';
-import { randomBytes } from 'crypto';
-import { createAuditLogAsync } from '../services/auditService';
-import { PERMISSIONS } from '../services/permissions';
-import { hashEnrollmentKey } from '../services/enrollmentKeySecurity';
+import { Hono } from "hono";
+import type { Context } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+import { and, eq, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
+import { customAlphabet } from "nanoid";
+import { db, withSystemDbAccessContext } from "../db";
+import { enrollmentKeys, organizations } from "../db/schema";
+import { sites } from "../db/schema/orgs";
 import {
-  buildMacosInstallerZip, buildWindowsInstallerZip,
-  fetchRegularMsi, fetchMacosPkg, fetchMacosInstallerAppZip,
-} from '../services/installerBuilder';
-import { renameAppInZip } from '../services/installerAppZip';
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  type AuthContext,
+} from "../middleware/auth";
+import { userRateLimit } from "../middleware/userRateLimit";
+import { randomBytes } from "crypto";
+import { createAuditLogAsync } from "../services/auditService";
+import { PERMISSIONS } from "../services/permissions";
+import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enrollmentKeySecurity";
+import {
+  getTrustedClientIp,
+  getTrustedClientIpOrUndefined,
+} from "../services/clientIp";
+import {
+  buildMacosInstallerZip,
+  buildWindowsInstallerZip,
+  fetchRegularMsi,
+  assertMacosInstallerPkgsReachable,
+  fetchMacosInstallerAppZip,
+} from "../services/installerBuilder";
+import { renameAppInZip } from "../services/installerAppZip";
 import {
   issueBootstrapTokenForKey,
   BootstrapTokenIssuanceError,
-} from '../services/installerBootstrapTokenIssuance';
-import { MsiSigningService } from '../services/msiSigning';
-import { getGithubReleaseVersion } from '../services/binarySource';
-import { captureException } from '../services/sentry';
+} from "../services/installerBootstrapTokenIssuance";
+import { MsiSigningService } from "../services/msiSigning";
+import { getGithubReleaseVersion } from "../services/binarySource";
+import { captureException } from "../services/sentry";
 
 /**
  * Narrow `Buffer | null` to `Buffer`, throwing an actionable error when
@@ -53,7 +66,10 @@ function envInt(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
-const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt(
+  "ENROLLMENT_KEY_DEFAULT_TTL_MINUTES",
+  60,
+);
 
 // Child enrollment keys (installer downloads, installer-link downloads, and
 // short-link redemptions) get a fresh, independent TTL rather than inheriting
@@ -61,21 +77,35 @@ const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MI
 // behaviour made installers DOA whenever the parent was near expiry at
 // download time — a minute-59 download against a 60-minute parent produced a
 // child good for only 60 seconds. 24h by default, overridable.
-const CHILD_ENROLLMENT_KEY_TTL_MINUTES = envInt('CHILD_ENROLLMENT_KEY_TTL_MINUTES', 60 * 24);
+const CHILD_ENROLLMENT_KEY_TTL_MINUTES = envInt(
+  "CHILD_ENROLLMENT_KEY_TTL_MINUTES",
+  60 * 24,
+);
 
 // Parent keys that are within this window of expiry are refused as installer
 // sources. Prevents a race where the admin-side parent is already live on
 // this side of the API but the install on a remote device fires 30 seconds
 // later, after the parent expired.
-const INSTALLER_PARENT_MIN_REMAINING_SECONDS = envInt('INSTALLER_PARENT_MIN_REMAINING_SECONDS', 60);
+const INSTALLER_PARENT_MIN_REMAINING_SECONDS = envInt(
+  "INSTALLER_PARENT_MIN_REMAINING_SECONDS",
+  60,
+);
 
 function generateEnrollmentKey(): string {
-  return randomBytes(32).toString('hex'); // 64-char hex string
+  return randomBytes(32).toString("hex"); // 64-char hex string
 }
 
-/** Fresh absolute expiry for a child enrollment key, independent of parent. */
-function freshChildExpiresAt(): Date {
-  return new Date(Date.now() + CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
+/**
+ * Fresh absolute expiry for a child enrollment key, measured from *now*
+ * (mint time), independent of the parent's remaining lifetime. This is the
+ * #410/#413/#414 anti-DOA property: a child minted from a near-expiry parent
+ * still gets a full window. `ttlMinutes`, when supplied, is the admin's
+ * per-link choice from the Add Device modal; absent it, the deployment
+ * default applies.
+ */
+function freshChildExpiresAt(ttlMinutes?: number): Date {
+  const minutes = ttlMinutes ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES;
+  return new Date(Date.now() + minutes * 60 * 1000);
 }
 
 /**
@@ -87,7 +117,7 @@ function freshChildExpiresAt(): Date {
  */
 function signingServiceVersion(): string {
   const v = getGithubReleaseVersion();
-  if (v === 'latest' || v.startsWith('v')) return v;
+  if (v === "latest" || v.startsWith("v")) return v;
   return `v${v}`;
 }
 
@@ -103,20 +133,32 @@ function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
   return remainingMs < INSTALLER_PARENT_MIN_REMAINING_SECONDS * 1000;
 }
 
+function allowLegacyMacosInstallerFilenameToken(): boolean {
+  const value =
+    process.env.MACOS_INSTALLER_FILENAME_TOKEN_COMPAT?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
 function getPagination(query: { page?: string; limit?: string }) {
-  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
+  const page = Math.max(1, Number.parseInt(query.page ?? "1", 10) || 1);
+  const limit = Math.min(
+    100,
+    Math.max(1, Number.parseInt(query.limit ?? "50", 10) || 50),
+  );
   return { page, limit, offset: (page - 1) * limit };
 }
 
 async function ensureOrgAccess(
   orgId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+  auth: Pick<
+    AuthContext,
+    "scope" | "orgId" | "accessibleOrgIds" | "canAccessOrg"
+  >,
 ) {
-  if (auth.scope === 'organization') {
+  if (auth.scope === "organization") {
     return auth.orgId === orgId;
   }
-  if (auth.scope === 'partner') {
+  if (auth.scope === "partner") {
     return auth.canAccessOrg(orgId);
   }
   return true;
@@ -131,26 +173,27 @@ function writeEnrollmentKeyAudit(
     keyId?: string;
     keyName?: string;
     details?: Record<string, unknown>;
-  }
+  },
 ): void {
   createAuditLogAsync({
     orgId: event.orgId,
     actorId: auth.user.id,
     actorEmail: auth.user.email,
     action: event.action,
-    resourceType: 'enrollment_key',
+    resourceType: "enrollment_key",
     resourceId: event.keyId,
     resourceName: event.keyName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-    userAgent: c.req.header('user-agent'),
-    result: 'success'
+    ipAddress: getTrustedClientIpOrUndefined(c),
+    userAgent: c.req.header("user-agent"),
+    result: "success",
   });
 }
 
-// fetchRegularMsi, fetchMacosPkg moved to installerBuilder.ts
+// fetchRegularMsi and the macOS installer helpers live in installerBuilder.ts
 
-const shortCodeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz';
+const shortCodeAlphabet =
+  "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
 const generateShortCode = customAlphabet(shortCodeAlphabet, 10);
 
 export async function allocateShortCode(): Promise<string> {
@@ -163,7 +206,7 @@ export async function allocateShortCode(): Promise<string> {
       .limit(1);
     if (!existing) return code;
   }
-  throw new Error('Failed to allocate unique short code after 5 attempts');
+  throw new Error("Failed to allocate unique short code after 5 attempts");
 }
 
 // ============================================
@@ -198,7 +241,9 @@ export interface RedeemedShortCode {
  * row id + org/site for joins (e.g. marking `deployment_invites.clickedAt`).
  * Returns `null` for unknown / expired codes.
  */
-export async function peekShortCode(shortCode: string): Promise<PeekedShortCode | null> {
+export async function peekShortCode(
+  shortCode: string,
+): Promise<PeekedShortCode | null> {
   if (!shortCode || shortCode.length > 12) return null;
   return withSystemDbAccessContext(async () => {
     const [row] = await db
@@ -235,7 +280,9 @@ export async function peekShortCode(shortCode: string): Promise<PeekedShortCode 
  * have `installerPlatform` set — MCP-invite short codes are OS-agnostic
  * and the `/i/` landing page lets the recipient pick their OS.
  */
-export async function redeemShortCode(shortCode: string): Promise<RedeemedShortCode | null> {
+export async function redeemShortCode(
+  shortCode: string,
+): Promise<RedeemedShortCode | null> {
   if (!shortCode || shortCode.length > 12) return null;
 
   return withSystemDbAccessContext(async () => {
@@ -246,7 +293,8 @@ export async function redeemShortCode(shortCode: string): Promise<RedeemedShortC
       .limit(1);
 
     if (!parent) return null;
-    if (parent.expiresAt && new Date(parent.expiresAt) < new Date()) return null;
+    if (parent.expiresAt && new Date(parent.expiresAt) < new Date())
+      return null;
     if (!parent.siteId || !parent.orgId) return null;
 
     const rawKey = generateEnrollmentKey();
@@ -286,7 +334,10 @@ export async function redeemShortCode(shortCode: string): Promise<RedeemedShortC
       .returning({ id: enrollmentKeys.id });
 
     if (claimed.length === 0) {
-      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, child.id)).catch(() => {});
+      await db
+        .delete(enrollmentKeys)
+        .where(eq(enrollmentKeys.id, child.id))
+        .catch(() => {});
       return null;
     }
 
@@ -319,7 +370,7 @@ export interface MintChildEnrollmentKeyInput {
   /** Display name suffix for the child key. */
   nameSuffix?: string;
   /** Optional installer platform to persist on the row. */
-  installerPlatform?: 'windows' | 'macos' | null;
+  installerPlatform?: "windows" | "macos" | null;
 }
 
 export interface MintChildEnrollmentKeyResult {
@@ -354,7 +405,9 @@ export async function mintChildEnrollmentKey(
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     if (!org) {
-      throw new Error(`mintChildEnrollmentKey: partner ${input.partnerId} has no organizations`);
+      throw new Error(
+        `mintChildEnrollmentKey: partner ${input.partnerId} has no organizations`,
+      );
     }
     orgId = org.id;
   }
@@ -377,8 +430,8 @@ export async function mintChildEnrollmentKey(
   const keyHash = hashEnrollmentKey(rawKey);
   const shortCode = await allocateShortCode();
   const expiresAt = new Date(
-    Date.now()
-      + (input.expiresInSeconds ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60) * 1000,
+    Date.now() +
+      (input.expiresInSeconds ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60) * 1000,
   );
 
   const [row] = await db
@@ -386,7 +439,7 @@ export async function mintChildEnrollmentKey(
     .values({
       orgId,
       siteId,
-      name: input.nameSuffix ? `mcp-invite ${input.nameSuffix}` : 'mcp-invite',
+      name: input.nameSuffix ? `mcp-invite ${input.nameSuffix}` : "mcp-invite",
       key: keyHash,
       maxUsage: input.maxUsage ?? 1,
       expiresAt,
@@ -397,7 +450,7 @@ export async function mintChildEnrollmentKey(
     .returning();
 
   if (!row) {
-    throw new Error('mintChildEnrollmentKey: insert returned no row');
+    throw new Error("mintChildEnrollmentKey: insert returned no row");
   }
 
   return { id: row.id, orgId, siteId, shortCode, rawKey, expiresAt };
@@ -411,32 +464,58 @@ const listEnrollmentKeysSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().uuid().optional(),
-  expired: z.enum(['true', 'false']).optional()
+  expired: z.enum(["true", "false"]).optional(),
 });
 
+// ttlMinutes caps at 525_600 (365 days = 365 * 24 * 60), matching the UI's
+// "1 year" option exactly. Caller supplies either ttlMinutes or an explicit
+// expiresAt; if both are absent the handler falls back to
+// DEFAULT_ENROLLMENT_KEY_TTL_MINUTES. Sending both is rejected so the
+// resolved expiry is unambiguous. "Never expires" is not exposed here
+// pending the partner-level cap (max ttl) that gates it.
+const MAX_TTL_MINUTES = 525_600;
+
+// `.strict()` on every write schema: unknown keys surface as a Zod
+// `unrecognized_keys` issue (HTTP 400 via zValidator) instead of being
+// silently dropped. A common foot-gun is a caller sending `maxUses` when
+// the canonical field is `maxUsage` — without strict mode the request
+// returned 201 with `maxUsage: 1` (the default), masking the typo.
+// Closes #945.
 const createEnrollmentKeySchema = z.object({
   orgId: z.string().uuid().optional(),
   siteId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   maxUsage: z.number().int().min(1).max(100000).optional(),
-  expiresAt: z.string().datetime().optional()
-});
+  expiresAt: z.string().datetime().optional(),
+  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
+}).strict().refine(
+  (data) => !(data.expiresAt !== undefined && data.ttlMinutes !== undefined),
+  { message: 'Pass either ttlMinutes or expiresAt, not both', path: ['ttlMinutes'] }
+);
 
 const rotateEnrollmentKeySchema = z.object({
   maxUsage: z.number().int().min(1).max(100000).nullable().optional(),
-  expiresAt: z.string().datetime().optional()
-});
+  expiresAt: z.string().datetime().optional(),
+}).strict();
 
+// ttlMinutes here sets the lifetime of the *child* key — the downloaded
+// installer / shared short-link the admin actually distributes. Measured
+// fresh from mint time (see freshChildExpiresAt). Absent → deployment
+// default. Same 365-day cap as createEnrollmentKeySchema.
 const installerQuerySchema = z.object({
   count: z.coerce.number().int().min(1).max(100000).optional(),
+  ttlMinutes: z.coerce.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 });
 
 const installerLinkSchema = z.object({
-  platform: z.enum(['windows', 'macos']),
+  platform: z.enum(["windows", "macos"]),
   count: z.number().int().min(1).max(100000).optional(),
-});
+  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
+}).strict();
 
-function sanitizeEnrollmentKey(enrollmentKey: typeof enrollmentKeys.$inferSelect) {
+function sanitizeEnrollmentKey(
+  enrollmentKey: typeof enrollmentKeys.$inferSelect,
+) {
   const { key, ...safeRecord } = enrollmentKey;
   return safeRecord;
 }
@@ -447,31 +526,34 @@ const idParamSchema = z.object({ id: z.string().uuid() });
 // Routes
 // ============================================
 
-enrollmentKeyRoutes.use('*', authMiddleware);
+enrollmentKeyRoutes.use("*", authMiddleware);
 
 // GET /enrollment-keys - List enrollment keys (org-scoped)
 enrollmentKeyRoutes.get(
-  '/',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
-  zValidator('query', listEnrollmentKeysSchema),
+  "/",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_READ.resource,
+    PERMISSIONS.ORGS_READ.action,
+  ),
+  zValidator("query", listEnrollmentKeysSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const query = c.req.valid('query');
+    const auth = c.get("auth");
+    const query = c.req.valid("query");
     const { page, limit, offset } = getPagination(query);
 
     const conditions: ReturnType<typeof eq>[] = [];
 
-    if (auth.scope === 'organization') {
+    if (auth.scope === "organization") {
       if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
+        return c.json({ error: "Organization context required" }, 403);
       }
       conditions.push(eq(enrollmentKeys.orgId, auth.orgId));
-    } else if (auth.scope === 'partner') {
+    } else if (auth.scope === "partner") {
       if (query.orgId) {
         const hasAccess = await ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
-          return c.json({ error: 'Access to this organization denied' }, 403);
+          return c.json({ error: "Access to this organization denied" }, 403);
         }
         conditions.push(eq(enrollmentKeys.orgId, query.orgId));
       } else {
@@ -479,27 +561,32 @@ enrollmentKeyRoutes.get(
         if (orgIds.length === 0) {
           return c.json({ data: [], pagination: { page, limit, total: 0 } });
         }
-        conditions.push(inArray(enrollmentKeys.orgId, orgIds) as ReturnType<typeof eq>);
+        conditions.push(
+          inArray(enrollmentKeys.orgId, orgIds) as ReturnType<typeof eq>,
+        );
       }
-    } else if (auth.scope === 'system') {
+    } else if (auth.scope === "system") {
       if (query.orgId) {
         conditions.push(eq(enrollmentKeys.orgId, query.orgId));
       }
     }
 
     // Filter by expired status
-    if (query.expired === 'true') {
-      conditions.push(lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>);
-    } else if (query.expired === 'false') {
+    if (query.expired === "true") {
+      conditions.push(
+        lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
+      );
+    } else if (query.expired === "false") {
       conditions.push(
         or(
           isNull(enrollmentKeys.expiresAt),
-          sql`${enrollmentKeys.expiresAt} >= NOW()`
-        ) as ReturnType<typeof eq>
+          sql`${enrollmentKeys.expiresAt} >= NOW()`,
+        ) as ReturnType<typeof eq>,
       );
     }
 
-    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
+    const whereCondition =
+      conditions.length > 0 ? and(...conditions) : undefined;
 
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
@@ -517,65 +604,85 @@ enrollmentKeyRoutes.get(
 
     return c.json({
       data: keyList.map((keyRecord) => sanitizeEnrollmentKey(keyRecord)),
-      pagination: { page, limit, total }
+      pagination: { page, limit, total },
     });
-  }
+  },
 );
 
 // POST /enrollment-keys - Create new enrollment key
 enrollmentKeyRoutes.post(
-  '/',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  userRateLimit('enroll-write', 10, 60),
+  "/",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
   requireMfa(),
-  zValidator('json', createEnrollmentKeySchema),
+  zValidator("json", createEnrollmentKeySchema),
   async (c) => {
-    const auth = c.get('auth');
-    const data = c.req.valid('json');
+    const auth = c.get("auth");
+    const data = c.req.valid("json");
     let orgId = data.orgId;
 
-    if (auth.scope === 'organization') {
+    if (auth.scope === "organization") {
       if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
+        return c.json({ error: "Organization context required" }, 403);
       }
       if (data.orgId && data.orgId !== auth.orgId) {
-        return c.json({ error: 'Can only create enrollment keys for your organization' }, 403);
+        return c.json(
+          { error: "Can only create enrollment keys for your organization" },
+          403,
+        );
       }
       orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
+    } else if (auth.scope === "partner") {
       if (!orgId) {
         const singleOrg = auth.accessibleOrgIds?.[0];
         if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
           orgId = singleOrg;
         } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+          return c.json(
+            {
+              error:
+                "orgId is required when partner has multiple organizations",
+            },
+            400,
+          );
         }
       }
       const hasAccess = await ensureOrgAccess(orgId, auth);
       if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
+        return c.json({ error: "Access to this organization denied" }, 403);
       }
     } else if (!orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+      return c.json({ error: "orgId is required" }, 400);
     }
 
     // Verify siteId belongs to the target org (if provided)
     if (data.siteId) {
-      const [site] = await db.select({ id: sites.id })
+      const [site] = await db
+        .select({ id: sites.id })
         .from(sites)
         .where(and(eq(sites.id, data.siteId), eq(sites.orgId, orgId)))
         .limit(1);
       if (!site) {
-        return c.json({ error: 'siteId does not belong to the specified org' }, 400);
+        return c.json(
+          { error: "siteId does not belong to the specified org" },
+          400,
+        );
       }
     }
 
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
-    const expiresAt = data.expiresAt
-      ? new Date(data.expiresAt)
-      : new Date(Date.now() + DEFAULT_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
+    // ttlMinutes preferred wire format (timezone math stays server-side);
+    // explicit expiresAt remains accepted for callers that need it.
+    const expiresAt = data.ttlMinutes !== undefined
+      ? new Date(Date.now() + data.ttlMinutes * 60 * 1000)
+      : data.expiresAt
+        ? new Date(data.expiresAt)
+        : new Date(Date.now() + DEFAULT_ENROLLMENT_KEY_TTL_MINUTES * 60 * 1000);
     const maxUsage = data.maxUsage ?? 1;
 
     const [enrollmentKey] = await db
@@ -587,41 +694,47 @@ enrollmentKeyRoutes.post(
         key: keyHash,
         maxUsage,
         expiresAt,
-        createdBy: auth.user.id
+        createdBy: auth.user.id,
       })
       .returning();
 
     if (!enrollmentKey) {
-      return c.json({ error: 'Failed to create enrollment key' }, 500);
+      return c.json({ error: "Failed to create enrollment key" }, 500);
     }
 
     writeEnrollmentKeyAudit(c, auth, {
       orgId: enrollmentKey.orgId,
-      action: 'enrollment_key.create',
+      action: "enrollment_key.create",
       keyId: enrollmentKey.id,
       keyName: enrollmentKey.name,
       details: {
         siteId: enrollmentKey.siteId,
         maxUsage: enrollmentKey.maxUsage,
-        expiresAt: enrollmentKey.expiresAt
-      }
+        expiresAt: enrollmentKey.expiresAt,
+      },
     });
 
-    return c.json({
-      ...sanitizeEnrollmentKey(enrollmentKey),
-      key: rawKey
-    }, 201);
-  }
+    return c.json(
+      {
+        ...sanitizeEnrollmentKey(enrollmentKey),
+        key: rawKey,
+      },
+      201,
+    );
+  },
 );
 
 // GET /enrollment-keys/:id - Get enrollment key details
 enrollmentKeyRoutes.get(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  "/:id",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_READ.resource,
+    PERMISSIONS.ORGS_READ.action,
+  ),
   async (c) => {
-    const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
+    const auth = c.get("auth");
+    const keyId = c.req.param("id")!;
 
     const [enrollmentKey] = await db
       .select()
@@ -630,30 +743,33 @@ enrollmentKeyRoutes.get(
       .limit(1);
 
     if (!enrollmentKey) {
-      return c.json({ error: 'Enrollment key not found' }, 404);
+      return c.json({ error: "Enrollment key not found" }, 404);
     }
 
     const hasAccess = await ensureOrgAccess(enrollmentKey.orgId, auth);
     if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     return c.json(sanitizeEnrollmentKey(enrollmentKey));
-  }
+  },
 );
 
 // POST /enrollment-keys/:id/rotate - Rotate enrollment key material in-place
 enrollmentKeyRoutes.post(
-  '/:id/rotate',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  userRateLimit('enroll-write', 10, 60),
+  "/:id/rotate",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
   requireMfa(),
-  zValidator('json', rotateEnrollmentKeySchema),
+  zValidator("json", rotateEnrollmentKeySchema),
   async (c) => {
-    const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
-    const data = c.req.valid('json');
+    const auth = c.get("auth");
+    const keyId = c.req.param("id")!;
+    const data = c.req.valid("json");
 
     const [existingKey] = await db
       .select()
@@ -662,18 +778,21 @@ enrollmentKeyRoutes.post(
       .limit(1);
 
     if (!existingKey) {
-      return c.json({ error: 'Enrollment key not found' }, 404);
+      return c.json({ error: "Enrollment key not found" }, 404);
     }
 
     const hasAccess = await ensureOrgAccess(existingKey.orgId, auth);
     if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
-    const expiresAt = data.expiresAt ? new Date(data.expiresAt) : existingKey.expiresAt;
-    const maxUsage = data.maxUsage !== undefined ? data.maxUsage : existingKey.maxUsage;
+    const expiresAt = data.expiresAt
+      ? new Date(data.expiresAt)
+      : existingKey.expiresAt;
+    const maxUsage =
+      data.maxUsage !== undefined ? data.maxUsage : existingKey.maxUsage;
 
     const [rotatedKey] = await db
       .update(enrollmentKeys)
@@ -681,18 +800,18 @@ enrollmentKeyRoutes.post(
         key: keyHash,
         usageCount: 0,
         expiresAt,
-        maxUsage
+        maxUsage,
       })
       .where(eq(enrollmentKeys.id, keyId))
       .returning();
 
     if (!rotatedKey) {
-      return c.json({ error: 'Failed to rotate enrollment key' }, 500);
+      return c.json({ error: "Failed to rotate enrollment key" }, 500);
     }
 
     writeEnrollmentKeyAudit(c, auth, {
       orgId: rotatedKey.orgId,
-      action: 'enrollment_key.rotate',
+      action: "enrollment_key.rotate",
       keyId: rotatedKey.id,
       keyName: rotatedKey.name,
       details: {
@@ -700,27 +819,30 @@ enrollmentKeyRoutes.post(
         previousMaxUsage: existingKey.maxUsage,
         nextMaxUsage: rotatedKey.maxUsage,
         previousExpiresAt: existingKey.expiresAt,
-        nextExpiresAt: rotatedKey.expiresAt
-      }
+        nextExpiresAt: rotatedKey.expiresAt,
+      },
     });
 
     return c.json({
       ...sanitizeEnrollmentKey(rotatedKey),
-      key: rawKey
+      key: rawKey,
     });
-  }
+  },
 );
 
 // DELETE /enrollment-keys/:id - Delete enrollment key (hard delete)
 enrollmentKeyRoutes.delete(
-  '/:id',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  userRateLimit('enroll-write', 10, 60),
+  "/:id",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
   requireMfa(),
   async (c) => {
-    const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
+    const auth = c.get("auth");
+    const keyId = c.req.param("id")!;
 
     const [existingKey] = await db
       .select()
@@ -729,34 +851,32 @@ enrollmentKeyRoutes.delete(
       .limit(1);
 
     if (!existingKey) {
-      return c.json({ error: 'Enrollment key not found' }, 404);
+      return c.json({ error: "Enrollment key not found" }, 404);
     }
 
     const hasAccess = await ensureOrgAccess(existingKey.orgId, auth);
     if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: "Access denied" }, 403);
     }
 
-    await db
-      .delete(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId));
+    await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, keyId));
 
     writeEnrollmentKeyAudit(c, auth, {
       orgId: existingKey.orgId,
-      action: 'enrollment_key.delete',
+      action: "enrollment_key.delete",
       keyId: existingKey.id,
       keyName: existingKey.name,
       details: {
         usageCount: existingKey.usageCount,
-        maxUsage: existingKey.maxUsage
-      }
+        maxUsage: existingKey.maxUsage,
+      },
     });
 
     return c.json({
       success: true,
-      message: 'Enrollment key deleted successfully'
+      message: "Enrollment key deleted successfully",
     });
-  }
+  },
 );
 
 // ============================================
@@ -764,19 +884,26 @@ enrollmentKeyRoutes.delete(
 // ============================================
 
 enrollmentKeyRoutes.get(
-  '/:id/installer/:platform',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  "/:id/installer/:platform",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
   requireMfa(),
-  zValidator('query', installerQuerySchema),
+  zValidator("query", installerQuerySchema),
   async (c) => {
-    const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
-    const platform = c.req.param('platform');
-    const { count: childMaxUsage = 1 } = c.req.valid('query');
+    const auth = c.get("auth");
+    const keyId = c.req.param("id")!;
+    const platform = c.req.param("platform");
+    const { count: childMaxUsage = 1, ttlMinutes: childTtlMinutes } =
+      c.req.valid("query");
 
-    if (platform !== 'windows' && platform !== 'macos') {
-      return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
+    if (platform !== "windows" && platform !== "macos") {
+      return c.json(
+        { error: 'Invalid platform. Must be "windows" or "macos".' },
+        400,
+      );
     }
 
     // Look up parent enrollment key
@@ -787,43 +914,58 @@ enrollmentKeyRoutes.get(
       .limit(1);
 
     if (!parentKey) {
-      return c.json({ error: 'Enrollment key not found' }, 404);
+      return c.json({ error: "Enrollment key not found" }, 404);
     }
 
     // Verify org access
     const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
     if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     // Verify key is still usable
     if (parentKey.expiresAt && new Date(parentKey.expiresAt) < new Date()) {
-      return c.json({ error: 'Enrollment key has expired' }, 410);
+      return c.json({ error: "Enrollment key has expired" }, 410);
     }
-    if (parentKey.maxUsage !== null && parentKey.usageCount >= parentKey.maxUsage) {
-      return c.json({ error: 'Enrollment key usage exhausted' }, 410);
+    if (
+      parentKey.maxUsage !== null &&
+      parentKey.usageCount >= parentKey.maxUsage
+    ) {
+      return c.json({ error: "Enrollment key usage exhausted" }, 410);
     }
     if (parentKeyTooCloseToExpiry(parentKey.expiresAt)) {
-      return c.json({
-        error: 'Parent enrollment key expires too soon to build an installer — regenerate the key with a longer TTL',
-      }, 410);
+      return c.json(
+        {
+          error:
+            "Parent enrollment key expires too soon to build an installer — regenerate the key with a longer TTL",
+        },
+        410,
+      );
     }
 
     // Require siteId on the parent key
     if (!parentKey.siteId) {
-      return c.json({ error: 'Enrollment key must have a siteId to generate installers' }, 400);
+      return c.json(
+        { error: "Enrollment key must have a siteId to generate installers" },
+        400,
+      );
     }
 
     // Determine server URL (no header fallback — prevent host header injection)
     const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
     if (!serverUrl) {
-      return c.json({ error: 'Server URL not configured (set PUBLIC_API_URL or API_URL)' }, 500);
+      return c.json(
+        { error: "Server URL not configured (set PUBLIC_API_URL or API_URL)" },
+        500,
+      );
     }
 
     // Global enrollment secret (per-key secrets can't be recovered from hash)
-    const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
+    const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || "";
     if (!globalSecret && parentKey.keySecretHash) {
-      console.warn('[installer] AGENT_ENROLLMENT_SECRET not configured but parent key has a secret hash — agents may fail to enroll');
+      console.warn(
+        "[installer] AGENT_ENROLLMENT_SECRET not configured but parent key has a secret hash — agents may fail to enroll",
+      );
     }
 
     // ----------------------------------------------------------------
@@ -833,8 +975,8 @@ enrollmentKeyRoutes.get(
     //   (a) caller passed ?legacy=1, OR
     //   (b) the installer-app asset is not yet published on GitHub.
     // ----------------------------------------------------------------
-    if (platform === 'macos') {
-      const wantLegacy = c.req.query('legacy') === '1';
+    if (platform === "macos") {
+      const wantLegacy = c.req.query("legacy") === "1";
       const appZip = wantLegacy ? null : await fetchMacosInstallerAppZip();
 
       if (appZip) {
@@ -849,43 +991,73 @@ enrollmentKeyRoutes.get(
           });
         } catch (err) {
           if (err instanceof BootstrapTokenIssuanceError) {
-            if (err.code === 'parent_not_found') return c.json({ error: err.message }, 404);
+            if (err.code === "parent_not_found")
+              return c.json({ error: err.message }, 404);
             return c.json({ error: err.message }, 410);
           }
           throw err;
         }
 
         const apiHost = new URL(serverUrl).host;
-        const newAppName = `Breeze Installer [${issued.token}@${apiHost}].app`;
+        const useLegacyFilenameToken = allowLegacyMacosInstallerFilenameToken();
+        const newAppName = useLegacyFilenameToken
+          ? `Breeze Installer [${issued.token}@${apiHost}].app`
+          : "Breeze Installer.app";
+        const bootstrapPayloadName = "Breeze Installer.bootstrap.json";
 
         let renamedZip: Buffer | undefined;
         try {
           renamedZip = await renameAppInZip(appZip, {
-            oldAppName: 'Breeze Installer.app',
+            oldAppName: "Breeze Installer.app",
             newAppName,
+            ...(useLegacyFilenameToken
+              ? {}
+              : {
+                  extraFiles: [
+                    {
+                      path: bootstrapPayloadName,
+                      data: JSON.stringify({ token: issued.token, apiHost }),
+                      mode: 0o600,
+                    },
+                  ],
+                }),
           });
         } catch (err) {
-          console.error('[installer] renameAppInZip failed, falling back to legacy zip', {
-            parentKeyId: parentKey.id,
-            tokenId: issued.id, // orphaned bootstrap token — will expire normally
-            error: err instanceof Error ? err.message : String(err),
-          });
+          console.error(
+            "[installer] renameAppInZip failed, falling back to legacy zip",
+            {
+              parentKeyId: parentKey.id,
+              tokenId: issued.id, // orphaned bootstrap token — will expire normally
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
           // Fall through to legacy path — do NOT return.
         }
 
         if (renamedZip) {
           writeEnrollmentKeyAudit(c, auth, {
             orgId: parentKey.orgId,
-            action: 'enrollment_key.installer_download',
+            action: "enrollment_key.installer_download",
             keyId: parentKey.id,
             keyName: parentKey.name,
-            details: { platform, mode: 'app-bundle', tokenId: issued.id, count: childMaxUsage },
+            details: {
+              platform,
+              mode: "app-bundle",
+              tokenId: issued.id,
+              count: childMaxUsage,
+            },
           });
 
-          c.header('Content-Type', 'application/zip');
-          c.header('Content-Disposition', `attachment; filename="${newAppName}.zip"`);
-          c.header('Content-Length', String(renamedZip.length));
-          c.header('Cache-Control', 'no-store');
+          c.header("Content-Type", "application/zip");
+          const downloadFilename = useLegacyFilenameToken
+            ? `${newAppName}.zip`
+            : "breeze-agent-macos-installer.zip";
+          c.header(
+            "Content-Disposition",
+            `attachment; filename="${downloadFilename}"`,
+          );
+          c.header("Content-Length", String(renamedZip.length));
+          c.header("Cache-Control", "no-store");
           return c.body(renamedZip as unknown as ArrayBuffer);
         }
       }
@@ -900,14 +1072,19 @@ enrollmentKeyRoutes.get(
     const signingService = MsiSigningService.fromEnv();
     let binaryBuffer: Buffer | null = null;
     try {
-      if (platform === 'windows' && !signingService) {
+      if (platform === "windows" && !signingService) {
         binaryBuffer = await fetchRegularMsi();
-      } else if (platform === 'macos') {
-        binaryBuffer = await fetchMacosPkg();
       }
+      // macOS no longer fetches a binary here — the bundled install.sh downloads
+      // the architecture-matched pkg at install time.
     } catch (err) {
       console.error(`[installer] Failed to fetch ${platform} binary:`, err);
-      return c.json({ error: `${platform === 'windows' ? 'MSI' : 'macOS PKG'} not available` }, 503);
+      return c.json(
+        {
+          error: `${platform === "windows" ? "MSI" : "macOS PKG"} not available`,
+        },
+        503,
+      );
     }
 
     // Generate a child enrollment key. Child gets a FRESH TTL independent
@@ -922,11 +1099,11 @@ enrollmentKeyRoutes.get(
       .values({
         orgId: parentKey.orgId,
         siteId: parentKey.siteId,
-        name: `${parentKey.name} (installer${childMaxUsage > 1 ? ` x${childMaxUsage}` : ''})`,
+        name: `${parentKey.name} (installer${childMaxUsage > 1 ? ` x${childMaxUsage}` : ""})`,
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
         maxUsage: childMaxUsage,
-        expiresAt: freshChildExpiresAt(),
+        expiresAt: freshChildExpiresAt(childTtlMinutes),
         createdBy: auth.user.id,
         shortCode,
         installerPlatform: platform,
@@ -934,12 +1111,12 @@ enrollmentKeyRoutes.get(
       .returning();
 
     if (!childKey) {
-      return c.json({ error: 'Failed to generate installer key' }, 500);
+      return c.json({ error: "Failed to generate installer key" }, 500);
     }
 
     // Build the installer — wrap in try/catch to clean up orphaned child key on failure
     try {
-      if (platform === 'windows') {
+      if (platform === "windows") {
         let resultBuffer: Buffer;
         let contentType: string;
         let filename: string;
@@ -955,12 +1132,12 @@ enrollmentKeyRoutes.get(
               ...(globalSecret ? { ENROLLMENT_SECRET: globalSecret } : {}),
             },
           });
-          contentType = 'application/octet-stream';
-          filename = 'breeze-agent.msi';
+          contentType = "application/octet-stream";
+          filename = "breeze-agent.msi";
         } else {
           // No signing: zip bundle with unmodified signed MSI + enrollment.json + install.bat
           resultBuffer = await buildWindowsInstallerZip(
-            ensureBuffer(binaryBuffer, 'installer/windows zip'),
+            ensureBuffer(binaryBuffer, "installer/windows zip"),
             {
               serverUrl,
               enrollmentKey: rawChildKey,
@@ -968,52 +1145,64 @@ enrollmentKeyRoutes.get(
               siteId: parentKey.siteId,
             },
           );
-          contentType = 'application/zip';
-          filename = 'breeze-agent-windows.zip';
+          contentType = "application/zip";
+          filename = "breeze-agent-windows.zip";
         }
 
         writeEnrollmentKeyAudit(c, auth, {
           orgId: parentKey.orgId,
-          action: 'enrollment_key.installer_download',
+          action: "enrollment_key.installer_download",
           keyId: parentKey.id,
           keyName: parentKey.name,
-          details: { platform, childKeyId: childKey.id, shortCode, count: childMaxUsage, signed: !!signingService },
+          details: {
+            platform,
+            childKeyId: childKey.id,
+            shortCode,
+            count: childMaxUsage,
+            signed: !!signingService,
+          },
         });
 
-        c.header('Content-Type', contentType);
-        c.header('Content-Disposition', `attachment; filename="${filename}"`);
-        c.header('Content-Length', String(resultBuffer.length));
-        c.header('Cache-Control', 'no-store');
+        c.header("Content-Type", contentType);
+        c.header("Content-Disposition", `attachment; filename="${filename}"`);
+        c.header("Content-Length", String(resultBuffer.length));
+        c.header("Cache-Control", "no-store");
         return c.body(resultBuffer as unknown as ArrayBuffer);
       }
 
-      // macOS — unchanged
-      const zipBuffer = await buildMacosInstallerZip(
-        ensureBuffer(binaryBuffer, 'installer/macos zip'),
-        {
-          serverUrl,
-          enrollmentKey: rawChildKey,
-          enrollmentSecret: globalSecret,
-          siteId: parentKey.siteId,
-        },
-      );
+      // macOS — install.sh downloads the architecture-matched pkg at install
+      // time, so no binary is bundled here (one zip serves Intel + Apple Silicon).
+      const zipBuffer = await buildMacosInstallerZip({
+        serverUrl,
+        enrollmentKey: rawChildKey,
+        enrollmentSecret: globalSecret,
+        siteId: parentKey.siteId,
+      });
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
-        action: 'enrollment_key.installer_download',
+        action: "enrollment_key.installer_download",
         keyId: parentKey.id,
         keyName: parentKey.name,
-        details: { platform, childKeyId: childKey.id, shortCode, count: childMaxUsage },
+        details: {
+          platform,
+          childKeyId: childKey.id,
+          shortCode,
+          count: childMaxUsage,
+        },
       });
 
-      c.header('Content-Type', 'application/zip');
-      c.header('Content-Disposition', 'attachment; filename="breeze-agent-macos.zip"');
-      c.header('Content-Length', String(zipBuffer.length));
-      c.header('Cache-Control', 'no-store');
+      c.header("Content-Type", "application/zip");
+      c.header(
+        "Content-Disposition",
+        'attachment; filename="breeze-agent-macos.zip"',
+      );
+      c.header("Content-Length", String(zipBuffer.length));
+      c.header("Cache-Control", "no-store");
       return c.body(zipBuffer as unknown as ArrayBuffer);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      console.error('[installer] Build failed:', detail);
+      console.error("[installer] Build failed:", detail);
       captureException(err, c);
 
       // Audit the failure so it's traceable
@@ -1021,26 +1210,38 @@ enrollmentKeyRoutes.get(
         orgId: parentKey.orgId,
         actorId: auth.user.id,
         actorEmail: auth.user.email,
-        action: 'enrollment_key.installer_build_failed',
-        resourceType: 'enrollment_key',
+        action: "enrollment_key.installer_build_failed",
+        resourceType: "enrollment_key",
         resourceId: parentKey.id,
         resourceName: parentKey.name,
-        details: { platform, childKeyId: childKey.id, count: childMaxUsage, error: detail },
-        ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
-        userAgent: c.req.header('user-agent'),
-        result: 'failure',
+        details: {
+          platform,
+          childKeyId: childKey.id,
+          count: childMaxUsage,
+          error: detail,
+        },
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header("user-agent"),
+        result: "failure",
       });
 
-      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, childKey.id)).catch((cleanupErr) => {
-        console.error('[installer] Failed to clean up orphaned child key:', childKey.id, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
-      });
+      await db
+        .delete(enrollmentKeys)
+        .where(eq(enrollmentKeys.id, childKey.id))
+        .catch((cleanupErr) => {
+          console.error(
+            "[installer] Failed to clean up orphaned child key:",
+            childKey.id,
+            cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+          );
+        });
 
       // Route is MFA-gated + org-write permission — safe to surface the
       // underlying error so admins debugging a misconfigured signing
       // service get actionable signal instead of an opaque 500.
-      return c.json({ error: 'Failed to build installer', detail }, 500);
+      return c.json({ error: "Failed to build installer", detail }, 500);
     }
-  }
+  },
 );
 
 // ============================================
@@ -1049,20 +1250,23 @@ enrollmentKeyRoutes.get(
 
 const bootstrapTokenBodySchema = z.object({
   maxUsage: z.number().int().min(1).max(1000).default(1),
-});
+}).strict();
 
 enrollmentKeyRoutes.post(
-  '/:id/bootstrap-token',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  userRateLimit('enroll-write', 10, 60),
+  "/:id/bootstrap-token",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
   requireMfa(),
-  zValidator('param', idParamSchema),
-  zValidator('json', bootstrapTokenBodySchema),
+  zValidator("param", idParamSchema),
+  zValidator("json", bootstrapTokenBodySchema),
   async (c) => {
-    const auth = c.get('auth');
-    const { id: keyId } = c.req.valid('param');
-    const { maxUsage } = c.req.valid('json');
+    const auth = c.get("auth");
+    const { id: keyId } = c.req.valid("param");
+    const { maxUsage } = c.req.valid("json");
 
     const [parent] = await db
       .select()
@@ -1071,16 +1275,20 @@ enrollmentKeyRoutes.post(
       .limit(1);
 
     if (!parent) {
-      return c.json({ error: 'Enrollment key not found' }, 404);
+      return c.json({ error: "Enrollment key not found" }, 404);
     }
 
     const hasAccess = await ensureOrgAccess(parent.orgId, auth);
     if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     try {
-      const { id: tokenId, token, expiresAt } = await issueBootstrapTokenForKey({
+      const {
+        id: tokenId,
+        token,
+        expiresAt,
+      } = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: parent.id,
         createdByUserId: auth.user.id,
         maxUsage,
@@ -1088,7 +1296,7 @@ enrollmentKeyRoutes.post(
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parent.orgId,
-        action: 'enrollment_key.bootstrap_token_issued',
+        action: "enrollment_key.bootstrap_token_issued",
         keyId: parent.id,
         keyName: parent.name,
         details: { maxUsage, tokenId },
@@ -1097,7 +1305,8 @@ enrollmentKeyRoutes.post(
       return c.json({ token, expiresAt: expiresAt.toISOString(), maxUsage });
     } catch (err) {
       if (err instanceof BootstrapTokenIssuanceError) {
-        if (err.code === 'parent_not_found') return c.json({ error: err.message }, 404);
+        if (err.code === "parent_not_found")
+          return c.json({ error: err.message }, 404);
         return c.json({ error: err.message }, 410);
       }
       throw err;
@@ -1110,16 +1319,23 @@ enrollmentKeyRoutes.post(
 // ============================================
 
 enrollmentKeyRoutes.post(
-  '/:id/installer-link',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  userRateLimit('enroll-write', 10, 60),
+  "/:id/installer-link",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
   requireMfa(),
-  zValidator('json', installerLinkSchema),
+  zValidator("json", installerLinkSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const keyId = c.req.param('id')!;
-    const { platform, count: childMaxUsage = 1 } = c.req.valid('json');
+    const auth = c.get("auth");
+    const keyId = c.req.param("id")!;
+    const {
+      platform,
+      count: childMaxUsage = 1,
+      ttlMinutes: childTtlMinutes,
+    } = c.req.valid("json");
 
     // Look up parent enrollment key
     const [parentKey] = await db
@@ -1129,31 +1345,44 @@ enrollmentKeyRoutes.post(
       .limit(1);
 
     if (!parentKey) {
-      return c.json({ error: 'Enrollment key not found' }, 404);
+      return c.json({ error: "Enrollment key not found" }, 404);
     }
 
     // Verify org access
     const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
     if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     // Verify key is still usable
     if (parentKey.expiresAt && new Date(parentKey.expiresAt) < new Date()) {
-      return c.json({ error: 'Enrollment key has expired' }, 410);
+      return c.json({ error: "Enrollment key has expired" }, 410);
     }
-    if (parentKey.maxUsage !== null && parentKey.usageCount >= parentKey.maxUsage) {
-      return c.json({ error: 'Enrollment key usage exhausted' }, 410);
+    if (
+      parentKey.maxUsage !== null &&
+      parentKey.usageCount >= parentKey.maxUsage
+    ) {
+      return c.json({ error: "Enrollment key usage exhausted" }, 410);
     }
     if (parentKeyTooCloseToExpiry(parentKey.expiresAt)) {
-      return c.json({
-        error: 'Parent enrollment key expires too soon to build an installer link — regenerate the key with a longer TTL',
-      }, 410);
+      return c.json(
+        {
+          error:
+            "Parent enrollment key expires too soon to build an installer link — regenerate the key with a longer TTL",
+        },
+        410,
+      );
     }
 
     // Require siteId on the parent key
     if (!parentKey.siteId) {
-      return c.json({ error: 'Enrollment key must have a siteId to generate installer links' }, 400);
+      return c.json(
+        {
+          error:
+            "Enrollment key must have a siteId to generate installer links",
+        },
+        400,
+      );
     }
 
     // Verify the build pipeline is reachable before creating a child key —
@@ -1163,7 +1392,7 @@ enrollmentKeyRoutes.post(
     // TCP/TLS + /health liveness check (GET /health with 5s timeout) when
     // signing is configured; otherwise a local binary fetch.
     try {
-      if (platform === 'windows') {
+      if (platform === "windows") {
         const signingService = MsiSigningService.fromEnv();
         if (signingService) {
           await signingService.probe();
@@ -1171,14 +1400,22 @@ enrollmentKeyRoutes.post(
           await fetchRegularMsi();
         }
       } else {
-        await fetchMacosPkg();
+        // macOS installer downloads the arch-matched pkg at install time —
+        // validate BOTH architectures are reachable, not just arm64.
+        await assertMacosInstallerPkgsReachable();
       }
     } catch (err) {
-      console.error(`[installer-link] pre-flight check failed for ${platform}:`, err);
+      console.error(
+        `[installer-link] pre-flight check failed for ${platform}:`,
+        err,
+      );
       captureException(err, c);
-      return c.json({
-        error: `${platform === 'windows' ? 'MSI build pipeline' : 'macOS PKG'} not reachable`,
-      }, 503);
+      return c.json(
+        {
+          error: `${platform === "windows" ? "MSI build pipeline" : "macOS PKG"} not reachable`,
+        },
+        503,
+      );
     }
 
     // Generate a child enrollment key with a fresh TTL independent of parent
@@ -1191,11 +1428,11 @@ enrollmentKeyRoutes.post(
       .values({
         orgId: parentKey.orgId,
         siteId: parentKey.siteId,
-        name: `${parentKey.name} (link${childMaxUsage > 1 ? ` x${childMaxUsage}` : ''})`,
+        name: `${parentKey.name} (link${childMaxUsage > 1 ? ` x${childMaxUsage}` : ""})`,
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
         maxUsage: childMaxUsage,
-        expiresAt: freshChildExpiresAt(),
+        expiresAt: freshChildExpiresAt(childTtlMinutes),
         createdBy: auth.user.id,
         shortCode,
         installerPlatform: platform,
@@ -1203,29 +1440,37 @@ enrollmentKeyRoutes.post(
       .returning();
 
     if (!childKey) {
-      return c.json({ error: 'Failed to generate installer link' }, 500);
+      return c.json({ error: "Failed to generate installer link" }, 500);
     }
 
     // Build public URL
     const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
     if (!serverUrl) {
-      return c.json({ error: 'Server URL not configured (set PUBLIC_API_URL or API_URL)' }, 500);
+      return c.json(
+        { error: "Server URL not configured (set PUBLIC_API_URL or API_URL)" },
+        500,
+      );
     }
 
     // Issue a one-time download handle so the raw token never appears in the URL.
-    const { issueDownloadHandle } = await import('../services/downloadHandle');
+    const { issueDownloadHandle } = await import("../services/downloadHandle");
     const handle = await issueDownloadHandle(rawChildKey);
 
-    const publicUrl = `${serverUrl.replace(/\/$/, '')}/api/v1/enrollment-keys/public-download/${platform}?h=${handle}`;
-    const shortUrl = `${serverUrl.replace(/\/$/, '')}/s/${shortCode}`;
+    const publicUrl = `${serverUrl.replace(/\/$/, "")}/api/v1/enrollment-keys/public-download/${platform}?h=${handle}`;
+    const shortUrl = `${serverUrl.replace(/\/$/, "")}/s/${shortCode}`;
 
     // Audit log
     writeEnrollmentKeyAudit(c, auth, {
       orgId: parentKey.orgId,
-      action: 'enrollment_key.installer_link_created',
+      action: "enrollment_key.installer_link_created",
       keyId: parentKey.id,
       keyName: parentKey.name,
-      details: { platform, childKeyId: childKey.id, shortCode, count: childMaxUsage },
+      details: {
+        platform,
+        childKeyId: childKey.id,
+        shortCode,
+        count: childMaxUsage,
+      },
     });
 
     return c.json({
@@ -1236,7 +1481,7 @@ enrollmentKeyRoutes.post(
       platform,
       childKeyId: childKey.id,
     });
-  }
+  },
 );
 
 // ============================================
@@ -1245,35 +1490,43 @@ enrollmentKeyRoutes.post(
 // ============================================
 
 enrollmentKeyRoutes.post(
-  '/:id/download-handle',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  userRateLimit('enroll-handle', 30, 60),
-  zValidator('param', idParamSchema),
+  "/:id/download-handle",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-handle", 30, 60),
+  zValidator("param", idParamSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const { id: keyId } = c.req.valid('param');
-    const body = await c.req.json().catch(() => ({})) as { rawToken?: string };
-    if (!body.rawToken || typeof body.rawToken !== 'string') {
-      return c.json({ error: 'rawToken is required' }, 400);
+    const auth = c.get("auth");
+    const { id: keyId } = c.req.valid("param");
+    const body = (await c.req.json().catch(() => ({}))) as {
+      rawToken?: string;
+    };
+    if (!body.rawToken || typeof body.rawToken !== "string") {
+      return c.json({ error: "rawToken is required" }, 400);
     }
 
     // Ownership check: caller must own the key row.
-    const [row] = await db.select().from(enrollmentKeys)
+    const [row] = await db
+      .select()
+      .from(enrollmentKeys)
       .where(eq(enrollmentKeys.id, keyId))
       .limit(1);
-    if (!row) return c.json({ error: 'Not found' }, 404);
+    if (!row) return c.json({ error: "Not found" }, 404);
 
     // Verify org access.
     const hasAccess = await ensureOrgAccess(row.orgId, auth);
-    if (!hasAccess) return c.json({ error: 'Not found' }, 404);
+    if (!hasAccess) return c.json({ error: "Not found" }, 404);
 
-    // Verify the raw token matches the stored hash.
-    if (row.key !== hashEnrollmentKey(body.rawToken)) {
-      return c.json({ error: 'Invalid token' }, 400);
+    // Verify the raw token matches the stored hash. Accept legacy-pepper hashes
+    // for keys created before ENROLLMENT_KEY_PEPPER was mandatory.
+    if (!hashEnrollmentKeyCandidates(body.rawToken).includes(row.key)) {
+      return c.json({ error: "Invalid token" }, 400);
     }
 
-    const { issueDownloadHandle } = await import('../services/downloadHandle');
+    const { issueDownloadHandle } = await import("../services/downloadHandle");
     const handle = await issueDownloadHandle(body.rawToken);
     return c.json({ handle });
   },
@@ -1283,55 +1536,136 @@ enrollmentKeyRoutes.post(
 // Public routes (no auth middleware)
 // ============================================
 
+// checkInstallerSignSpend gates the (expensive) installer-signing path with
+// a per-(short-code OR enrollment-key id) bucket, on top of the per-IP cap
+// applied separately by callers. Without this, an attacker rotating source
+// IPs can exhaust the signing service / storage budget for a single key by
+// staying under the per-IP limit on each IP.
+//
+// Returns a Response on rate-limit hit or Redis failure (fail-closed), or
+// `null` to indicate "allowed — proceed with signing". 30 requests per hour
+// per bucket.
+export async function checkInstallerSignSpend(
+  c: Context,
+  bucketId: string,
+): Promise<Response | null> {
+  try {
+    const { getRedis } = await import("../services");
+    const { rateLimiter } = await import("../services/rate-limit");
+    const redis = getRedis();
+    if (!redis) {
+      console.error(
+        "[public-installer] sign-spend rate-limit unavailable: redis client missing",
+      );
+      return c.json({ error: "Service temporarily unavailable" }, 503);
+    }
+    const rateResult = await rateLimiter(
+      redis,
+      `install-sign:${bucketId}`,
+      30,
+      3600,
+    );
+    if (!rateResult.allowed) {
+      return c.json(
+        {
+          error:
+            "Installer signing rate limit reached for this enrollment link. Try again later.",
+        },
+        429,
+      );
+    }
+    return null;
+  } catch (err) {
+    console.error(
+      "[public-installer] sign-spend rate-limit check failed (failing closed):",
+      err instanceof Error ? err.message : err,
+    );
+    return c.json({ error: "Service temporarily unavailable" }, 503);
+  }
+}
+
 // serveInstaller is the shared helper for both public-download and short-link routes.
 // `rawToken` is the plaintext enrollment key to embed in the installer.
 // `keyRow`  is the already-resolved enrollment key row (for validation and usage tracking).
+// `signSpendBucketChecked` — when true, the caller has already debited the
+// per-(short-code OR enrollment-key id) signing budget (i.e. the /s/:code
+// path debited against the short code before the atomic claim). When false
+// (public-download path), we debit here using `keyRow.id` as the bucket key.
 async function serveInstaller(
   c: Context,
   keyRow: typeof enrollmentKeys.$inferSelect,
-  platform: 'windows' | 'macos',
+  platform: "windows" | "macos",
   rawToken: string,
   cleanupOnFailure = false,
+  signSpendBucketChecked = false,
 ): Promise<Response> {
-  const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
+  // Use getTrustedClientIp so spoofed `X-Forwarded-For` from untrusted
+  // clients does not let an attacker open unlimited rate-limit buckets.
+  // The 'unknown' fallback bucket is intentional fail-safe behavior:
+  // multiple unknown-IP requests share one bucket and rate-limit together.
+  const ip = getTrustedClientIp(c, "unknown");
 
-  // Rate limit by IP (10 per minute)
+  // Rate limit by IP (10 per minute). Fail CLOSED on Redis errors —
+  // an attacker who can DoS Redis must NOT be able to disable the
+  // limiter on this public endpoint.
   try {
-    const { getRedis } = await import('../services');
-    const { rateLimiter } = await import('../services/rate-limit');
+    const { getRedis } = await import("../services");
+    const { rateLimiter } = await import("../services/rate-limit");
     const redis = getRedis();
-    const rateResult = await rateLimiter(redis, `public-installer:${ip}`, 10, 60);
+    if (!redis) {
+      console.error(
+        "[public-installer] rate-limit unavailable: redis client missing",
+      );
+      return c.json({ error: "Service temporarily unavailable" }, 503);
+    }
+    const rateResult = await rateLimiter(
+      redis,
+      `public-installer:${ip}`,
+      10,
+      60,
+    );
     if (!rateResult.allowed) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+      return c.json(
+        { error: "Too many requests. Please try again later." },
+        429,
+      );
     }
   } catch (err) {
-    // Fail open for downloads (keep installers working during Redis outages),
-    // but log so the outage is visible in ops dashboards — otherwise rate
-    // limiting is silently disabled across the whole public endpoint.
     console.error(
-      '[public-installer] rate-limit check skipped:',
+      "[public-installer] rate-limit check failed (failing closed):",
       err instanceof Error ? err.message : err,
     );
+    return c.json({ error: "Service temporarily unavailable" }, 503);
+  }
+
+  // Per-enrollment-key signing-spend cap (30/hour). Skipped when the caller
+  // already debited the bucket against a short-code (see /s/:code).
+  if (!signSpendBucketChecked) {
+    const denied = await checkInstallerSignSpend(c, keyRow.id);
+    if (denied) return denied;
   }
 
   // Validate key is still usable
   if (keyRow.expiresAt && new Date(keyRow.expiresAt) < new Date()) {
-    return c.json({ error: 'This download link has expired' }, 410);
+    return c.json({ error: "This download link has expired" }, 410);
   }
   if (keyRow.maxUsage !== null && keyRow.usageCount >= keyRow.maxUsage) {
-    return c.json({ error: 'This download link has been used the maximum number of times' }, 410);
+    return c.json(
+      { error: "This download link has been used the maximum number of times" },
+      410,
+    );
   }
   if (!keyRow.siteId) {
-    return c.json({ error: 'Invalid enrollment key configuration' }, 400);
+    return c.json({ error: "Invalid enrollment key configuration" }, 400);
   }
 
   // Determine server URL
   const serverUrl = process.env.PUBLIC_API_URL || process.env.API_URL;
   if (!serverUrl) {
-    return c.json({ error: 'Server URL not configured' }, 500);
+    return c.json({ error: "Server URL not configured" }, 500);
   }
 
-  const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || '';
+  const globalSecret = process.env.AGENT_ENROLLMENT_SECRET || "";
 
   // Fetch binary only for the local-build paths. When the remote signing
   // service is configured for Windows, it builds and signs the MSI from
@@ -1340,14 +1674,14 @@ async function serveInstaller(
   const signingService = MsiSigningService.fromEnv();
   let binaryBuffer: Buffer | null = null;
   try {
-    if (platform === 'windows' && !signingService) {
+    if (platform === "windows" && !signingService) {
       binaryBuffer = await fetchRegularMsi();
-    } else if (platform === 'macos') {
-      binaryBuffer = await fetchMacosPkg();
     }
+    // macOS no longer fetches a binary here — the bundled install.sh downloads
+    // the architecture-matched pkg at install time.
   } catch (err) {
     console.error(`[public-download] Failed to fetch ${platform} binary:`, err);
-    return c.json({ error: 'Installer binary not available' }, 503);
+    return c.json({ error: "Installer binary not available" }, 503);
   }
 
   // Build installer BEFORE incrementing usage (don't burn usage on build failure)
@@ -1356,7 +1690,7 @@ async function serveInstaller(
     let contentType: string;
     let filename: string;
 
-    if (platform === 'windows') {
+    if (platform === "windows") {
       if (signingService) {
         resultBuffer = await signingService.buildAndSignMsi({
           version: signingServiceVersion(),
@@ -1366,11 +1700,11 @@ async function serveInstaller(
             ...(globalSecret ? { ENROLLMENT_SECRET: globalSecret } : {}),
           },
         });
-        contentType = 'application/octet-stream';
-        filename = 'breeze-agent.msi';
+        contentType = "application/octet-stream";
+        filename = "breeze-agent.msi";
       } else {
         resultBuffer = await buildWindowsInstallerZip(
-          ensureBuffer(binaryBuffer, 'public-download/windows zip'),
+          ensureBuffer(binaryBuffer, "public-download/windows zip"),
           {
             serverUrl,
             enrollmentKey: rawToken,
@@ -1378,22 +1712,20 @@ async function serveInstaller(
             siteId: keyRow.siteId,
           },
         );
-        contentType = 'application/zip';
-        filename = 'breeze-agent-windows.zip';
+        contentType = "application/zip";
+        filename = "breeze-agent-windows.zip";
       }
     } else {
-      // macOS
-      resultBuffer = await buildMacosInstallerZip(
-        ensureBuffer(binaryBuffer, 'public-download/macos zip'),
-        {
-          serverUrl,
-          enrollmentKey: rawToken,
-          enrollmentSecret: globalSecret,
-          siteId: keyRow.siteId,
-        },
-      );
-      contentType = 'application/zip';
-      filename = 'breeze-agent-macos.zip';
+      // macOS — install.sh downloads the architecture-matched pkg at install
+      // time; nothing is bundled (one zip serves Intel + Apple Silicon).
+      resultBuffer = await buildMacosInstallerZip({
+        serverUrl,
+        enrollmentKey: rawToken,
+        enrollmentSecret: globalSecret,
+        siteId: keyRow.siteId,
+      });
+      contentType = "application/zip";
+      filename = "breeze-agent-macos.zip";
     }
 
     // NOTE: we DO NOT bump keyRow.usageCount here. The child key's
@@ -1408,66 +1740,81 @@ async function serveInstaller(
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorId: 'public',
-      action: 'enrollment_key.public_download',
-      resourceType: 'enrollment_key',
+      actorId: "public",
+      action: "enrollment_key.public_download",
+      resourceType: "enrollment_key",
       resourceId: keyRow.id,
       resourceName: keyRow.name,
       details: { platform, ip, signed: !!signingService },
       ipAddress: ip,
-      userAgent: c.req.header('user-agent'),
-      result: 'success',
+      userAgent: c.req.header("user-agent"),
+      result: "success",
     });
 
-    c.header('Content-Type', contentType);
-    c.header('Content-Disposition', `attachment; filename="${filename}"`);
-    c.header('Content-Length', String(resultBuffer.length));
-    c.header('Cache-Control', 'no-store');
+    c.header("Content-Type", contentType);
+    c.header("Content-Disposition", `attachment; filename="${filename}"`);
+    c.header("Content-Length", String(resultBuffer.length));
+    c.header("Cache-Control", "no-store");
     return c.body(resultBuffer as unknown as ArrayBuffer);
   } catch (err) {
-    console.error('[public-download] Build failed:', err instanceof Error ? err.message : err);
+    console.error(
+      "[public-download] Build failed:",
+      err instanceof Error ? err.message : err,
+    );
     // Public endpoint — do NOT leak err.message in the response body, but
     // fire Sentry so operators can still see the underlying cause.
     captureException(err, c);
 
     if (cleanupOnFailure) {
-      await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, keyRow.id)).catch((cleanupErr) => {
-        console.error('[public-download] Failed to clean up orphaned child key:', keyRow.id, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
-      });
+      await db
+        .delete(enrollmentKeys)
+        .where(eq(enrollmentKeys.id, keyRow.id))
+        .catch((cleanupErr) => {
+          console.error(
+            "[public-download] Failed to clean up orphaned child key:",
+            keyRow.id,
+            cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+          );
+        });
     }
 
-    return c.json({ error: 'Failed to build installer' }, 500);
+    return c.json({ error: "Failed to build installer" }, 500);
   }
 }
 
 export const publicEnrollmentRoutes = new Hono();
 
-const publicDownloadQuerySchema = z.object({
-  h: z.string().regex(/^dlh_[a-f0-9]{32}$/).optional(),
-  token: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-}).refine((v) => v.h || v.token, { message: 'h or token is required' });
+const publicDownloadQuerySchema = z
+  .object({
+    h: z
+      .string()
+      .regex(/^dlh_[a-f0-9]{32}$/)
+      .optional(),
+  })
+  .refine((v) => v.h, { message: "h is required" });
 
 publicEnrollmentRoutes.get(
-  '/public-download/:platform',
-  zValidator('query', publicDownloadQuerySchema),
+  "/public-download/:platform",
+  zValidator("query", publicDownloadQuerySchema),
   async (c) => {
-    const platform = c.req.param('platform');
-    const { h, token } = c.req.valid('query');
+    const platform = c.req.param("platform");
+    const { h } = c.req.valid("query");
 
-    if (platform !== 'windows' && platform !== 'macos') {
-      return c.json({ error: 'Invalid platform. Must be "windows" or "macos".' }, 400);
+    if (platform !== "windows" && platform !== "macos") {
+      return c.json(
+        { error: 'Invalid platform. Must be "windows" or "macos".' },
+        400,
+      );
     }
 
     let rawToken: string | null = null;
     if (h) {
-      const { consumeDownloadHandle } = await import('../services/downloadHandle');
+      const { consumeDownloadHandle } =
+        await import("../services/downloadHandle");
       rawToken = await consumeDownloadHandle(h);
-    } else if (token) {
-      console.warn('[enrollmentKeys] public-download used legacy ?token= path; expected ?h=');
-      rawToken = token;
     }
     if (!rawToken) {
-      return c.json({ error: 'Invalid or expired download link' }, 404);
+      return c.json({ error: "Invalid or expired download link" }, 404);
     }
 
     // System context required: public endpoint with no authenticated user,
@@ -1476,23 +1823,25 @@ publicEnrollmentRoutes.get(
     // also scoped correctly — otherwise the breeze_app role's RLS UPDATE
     // policy silently drops the row modification and download quotas are
     // never enforced.
-    const keyHash = hashEnrollmentKey(rawToken);
+    // Try primary + legacy peppers so keys created before ENROLLMENT_KEY_PEPPER
+    // was mandatory still resolve.
+    const keyHashCandidates = hashEnrollmentKeyCandidates(rawToken);
     // Capture in const so the closure below has a non-null narrowed type.
     const finalToken = rawToken;
     return withSystemDbAccessContext(async () => {
       const [enrollmentKey] = await db
         .select()
         .from(enrollmentKeys)
-        .where(eq(enrollmentKeys.key, keyHash))
+        .where(inArray(enrollmentKeys.key, keyHashCandidates))
         .limit(1);
 
       if (!enrollmentKey) {
-        return c.json({ error: 'Invalid or expired download link' }, 404);
+        return c.json({ error: "Invalid or expired download link" }, 404);
       }
 
       return serveInstaller(c, enrollmentKey, platform, finalToken);
     });
-  }
+  },
 );
 
 // ============================================
@@ -1501,10 +1850,10 @@ publicEnrollmentRoutes.get(
 
 export const publicShortLinkRoutes = new Hono();
 
-publicShortLinkRoutes.get('/:code', async (c) => {
-  const code = c.req.param('code');
+publicShortLinkRoutes.get("/:code", async (c) => {
+  const code = c.req.param("code");
   if (!code || code.length > 12) {
-    return c.json({ error: 'Not found' }, 404);
+    return c.json({ error: "Not found" }, 404);
   }
 
   // System context required: public endpoint with no authenticated user, RLS has no org context
@@ -1516,12 +1865,26 @@ publicShortLinkRoutes.get('/:code', async (c) => {
       .limit(1);
 
     if (!row || !row.installerPlatform) {
-      return c.json({ error: 'Not found' }, 404);
+      return c.json({ error: "Not found" }, 404);
     }
 
-    if (row.installerPlatform !== 'windows' && row.installerPlatform !== 'macos') {
-      return c.json({ error: 'Not found' }, 404);
+    if (
+      row.installerPlatform !== "windows" &&
+      row.installerPlatform !== "macos"
+    ) {
+      return c.json({ error: "Not found" }, 404);
     }
+
+    // Per-short-code signing-spend cap (30/hour). Bound to the short code,
+    // not the source IP, so an attacker rotating IPs can NOT burn through
+    // the (expensive) signing-service budget for a single link.
+    //
+    // Placed AFTER the row lookup + platform validation (so requests for
+    // unknown / non-installer codes don't consume the bucket) and BEFORE the
+    // atomic usage-claim (so rate-limited requests don't burn enrollment
+    // slots either).
+    const signSpendDenied = await checkInstallerSignSpend(c, code);
+    if (signSpendDenied) return signSpendDenied;
 
     // Atomic claim: decrement usage budget with a combined WHERE that
     // includes the expiry check. If this matches zero rows, return 410
@@ -1544,7 +1907,10 @@ publicShortLinkRoutes.get('/:code', async (c) => {
       .returning({ id: enrollmentKeys.id });
 
     if (claim.length === 0) {
-      return c.json({ error: 'This link has expired or reached its maximum usage limit.' }, 410);
+      return c.json(
+        { error: "This link has expired or reached its maximum usage limit." },
+        410,
+      );
     }
 
     // Only now create the child key — no cleanup needed on failure.
@@ -1572,9 +1938,16 @@ publicShortLinkRoutes.get('/:code', async (c) => {
       .returning();
 
     if (!downloadKey) {
-      return c.json({ error: 'Failed to prepare installer' }, 500);
+      return c.json({ error: "Failed to prepare installer" }, 500);
     }
 
-    return serveInstaller(c, downloadKey, row.installerPlatform, rawToken, true);
+    return serveInstaller(
+      c,
+      downloadKey,
+      row.installerPlatform,
+      rawToken,
+      true,
+      true, // signSpendBucketChecked — debited against short code above
+    );
   });
 });

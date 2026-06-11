@@ -43,6 +43,10 @@ vi.mock('../db/schema', () => ({
 vi.mock('./secretCrypto', () => ({
   encryptSecret: (...args: unknown[]) => encryptSecretMock(...(args as [any])),
   decryptSecret: (...args: unknown[]) => decryptSecretMock(...(args as [any])),
+  // decryptForColumn ignores table/column in the mock and forwards to
+  // decryptSecret so existing test assertions on enc: prefixes still hold.
+  decryptForColumn: (_table: string, _column: string, value: string | null | undefined) =>
+    decryptSecretMock(value),
   isEncryptedSecret: (...args: unknown[]) => isEncryptedSecretMock(...(args as [any])),
 }));
 

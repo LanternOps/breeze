@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
+import { exitCodeSeverityMappingSchema } from '@breeze/shared';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { db } from '../db';
@@ -12,7 +13,7 @@ import {
   deviceCommands
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { sendCommandToAgent } from './agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
@@ -38,7 +39,7 @@ async function getScriptWithOrgCheck(scriptId: string, auth: { canAccessOrg: (or
   const [script] = await db
     .select()
     .from(scripts)
-    .where(eq(scripts.id, scriptId))
+    .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
     .limit(1);
 
   if (!script) {
@@ -69,6 +70,15 @@ function resolveScriptAuditOrgId(
   return scriptOrgId ?? deviceOrgId ?? auth.orgId ?? null;
 }
 
+function getAllowedSiteIds(c: { get: (key: string) => unknown }): string[] | undefined {
+  return (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+}
+
+function canAccessDeviceSite(siteId: string | null | undefined, userPerms: UserPermissions | undefined): boolean {
+  if (!userPerms?.allowedSiteIds) return true;
+  return typeof siteId === 'string' && canAccessSite(userPerms, siteId);
+}
+
 // Validation schemas
 const listScriptsSchema = z.object({
   page: z.string().optional(),
@@ -81,6 +91,11 @@ const listScriptsSchema = z.object({
   includeSystem: z.string().optional() // 'true' to include system scripts
 });
 
+// Feature #3 (severity-by-exit-code): the wire-format schema for the
+// exit-code → AlertSeverity map. Defined in @breeze/shared so the UI form,
+// the route handler, and tests all import the same shape. Runtime severity
+// derivation lives in services/scriptSeverity.ts.
+
 const createScriptSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
@@ -92,7 +107,8 @@ const createScriptSchema = z.object({
   parameters: z.any().optional(),
   timeoutSeconds: z.number().int().min(1).max(86400).default(300),
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),
-  isSystem: z.boolean().optional()
+  isSystem: z.boolean().optional(),
+  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional()
 });
 
 const updateScriptSchema = z.object({
@@ -104,7 +120,8 @@ const updateScriptSchema = z.object({
   content: z.string().min(1).optional(),
   parameters: z.any().optional(),
   timeoutSeconds: z.number().int().min(1).max(86400).optional(),
-  runAs: z.enum(['system', 'user', 'elevated']).optional()
+  runAs: z.enum(['system', 'user', 'elevated']).optional(),
+  exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional()
 });
 
 const executeScriptSchema = z.object({
@@ -142,6 +159,9 @@ scriptRoutes.get(
 
     // Build conditions array
     const conditions: ReturnType<typeof eq>[] = [];
+
+    // Exclude soft-deleted scripts
+    conditions.push(isNull(scripts.deletedAt) as ReturnType<typeof eq>);
 
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
@@ -270,7 +290,7 @@ scriptRoutes.get(
         language: scripts.language,
       })
       .from(scripts)
-      .where(eq(scripts.isSystem, true))
+      .where(and(eq(scripts.isSystem, true), isNull(scripts.deletedAt)))
       .orderBy(scripts.category, scripts.name);
 
     return c.json({ data: systemScripts });
@@ -294,7 +314,7 @@ scriptRoutes.post(
     const [source] = await db
       .select()
       .from(scripts)
-      .where(and(eq(scripts.id, sourceId), eq(scripts.isSystem, true)))
+      .where(and(eq(scripts.id, sourceId), eq(scripts.isSystem, true), isNull(scripts.deletedAt)))
       .limit(1);
 
     if (!source) {
@@ -335,7 +355,7 @@ scriptRoutes.post(
     const [existing] = await db
       .select({ id: scripts.id })
       .from(scripts)
-      .where(and(eq(scripts.orgId, orgId), eq(scripts.name, source.name)))
+      .where(and(eq(scripts.orgId, orgId), eq(scripts.name, source.name), isNull(scripts.deletedAt)))
       .limit(1);
 
     if (existing) {
@@ -451,6 +471,7 @@ scriptRoutes.post(
         runAs: data.runAs,
         isSystem,
         version: 1,
+        exitCodeSeverityMapping: data.exitCodeSeverityMapping ?? null,
         createdBy: auth.user.id
       })
       .returning();
@@ -510,6 +531,7 @@ scriptRoutes.put(
     if (data.parameters !== undefined) updates.parameters = data.parameters;
     if (data.timeoutSeconds !== undefined) updates.timeoutSeconds = data.timeoutSeconds;
     if (data.runAs !== undefined) updates.runAs = data.runAs;
+    if (data.exitCodeSeverityMapping !== undefined) updates.exitCodeSeverityMapping = data.exitCodeSeverityMapping;
 
     // Increment version if content changes
     if (data.content !== undefined && data.content !== script.content) {
@@ -580,12 +602,22 @@ scriptRoutes.delete(
       }, 409);
     }
 
-    // Soft delete by setting orgId to null and renaming (or use a deletedAt field if available)
-    // Since schema doesn't have deletedAt, we'll do a hard delete for now
-    // In production, you'd want to add a deletedAt column
-    await db
-      .delete(scripts)
-      .where(eq(scripts.id, scriptId));
+    // Soft delete: a hard `DELETE` throws an FK violation once the script has
+    // any execution history (script_executions / batches reference it), so we
+    // stamp deletedAt instead. Script listing/lookup paths filter
+    // `deletedAt IS NULL` to hide it; execution-history joins intentionally do
+    // not, so past runs still show the script name. The `isNull` guard in the
+    // WHERE makes a concurrent re-delete a genuine no-op the row-count catches.
+    const [deleted] = await db
+      .update(scripts)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
+      .returning({ id: scripts.id });
+
+    if (!deleted) {
+      // Lost a race with a concurrent delete; surface it instead of a false success.
+      return c.json({ error: 'Script not found' }, 404);
+    }
 
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, script.orgId),
@@ -629,9 +661,14 @@ scriptRoutes.post(
 
     // Check access to each device's org
     const validDevices: typeof deviceRecords = [];
+    const siteDeniedDeviceIds: string[] = [];
     for (const device of deviceRecords) {
       const hasAccess = ensureOrgAccess(device.orgId, auth);
       if (hasAccess) {
+        if (!canAccessDeviceSite(device.siteId, c.get('permissions') as UserPermissions | undefined)) {
+          siteDeniedDeviceIds.push(device.id);
+          continue;
+        }
         // Also check OS compatibility
         if (script.osTypes.includes(device.osType)) {
           // Don't execute on decommissioned devices
@@ -640,6 +677,10 @@ scriptRoutes.post(
           }
         }
       }
+    }
+
+    if (siteDeniedDeviceIds.length > 0) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     if (validDevices.length === 0) {
@@ -672,10 +713,15 @@ scriptRoutes.post(
     // Create batch if multiple devices
     let batchId: string | null = null;
     if (executableDevices.length > 1) {
+      // Denormalize the executing org onto the batch (RLS tenant axis). All
+      // executableDevices passed ensureOrgAccess above; for a built-in/system
+      // script (scripts.org_id is NULL) this is the only tenant linkage.
+      const batchOrgId = executableDevices[0]!.orgId;
       const [batch] = await db
         .insert(scriptExecutionBatches)
         .values({
           scriptId,
+          orgId: batchOrgId,
           triggeredBy: auth.user.id,
           triggerType,
           parameters,
@@ -827,12 +873,25 @@ scriptRoutes.get(
     }
 
     const whereCondition = and(...conditions);
+    const allowedSiteIds = getAllowedSiteIds(c);
+
+    if (allowedSiteIds?.length === 0) {
+      return c.json({
+        data: [],
+        pagination: { page, limit, total: 0 }
+      });
+    }
+
+    const siteRestrictedWhereCondition = allowedSiteIds
+      ? and(whereCondition, inArray(devices.siteId, allowedSiteIds))
+      : whereCondition;
 
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(scriptExecutions)
-      .where(whereCondition);
+      .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
+      .where(siteRestrictedWhereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
     // Get executions with device info
@@ -855,7 +914,7 @@ scriptRoutes.get(
       })
       .from(scriptExecutions)
       .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
-      .where(whereCondition)
+      .where(siteRestrictedWhereCondition)
       .orderBy(desc(scriptExecutions.createdAt))
       .limit(limit)
       .offset(offset);
@@ -898,7 +957,8 @@ scriptRoutes.get(
         scriptLanguage: scripts.language,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
-        deviceOrgId: devices.orgId
+        deviceOrgId: devices.orgId,
+        deviceSiteId: devices.siteId
       })
       .from(scriptExecutions)
       .leftJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
@@ -916,6 +976,9 @@ scriptRoutes.get(
       if (!hasAccess) {
         return c.json({ error: 'Access denied' }, 403);
       }
+    }
+    if (!canAccessDeviceSite(execution.deviceSiteId, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     return c.json(execution);
@@ -939,7 +1002,8 @@ scriptRoutes.post(
         id: scriptExecutions.id,
         status: scriptExecutions.status,
         deviceId: scriptExecutions.deviceId,
-        deviceOrgId: devices.orgId
+        deviceOrgId: devices.orgId,
+        deviceSiteId: devices.siteId
       })
       .from(scriptExecutions)
       .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
@@ -956,6 +1020,9 @@ scriptRoutes.post(
       if (!hasAccess) {
         return c.json({ error: 'Access denied' }, 403);
       }
+    }
+    if (!canAccessDeviceSite(execution.deviceSiteId, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Can only cancel pending, queued, or running executions

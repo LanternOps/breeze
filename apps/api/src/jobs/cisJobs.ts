@@ -463,12 +463,14 @@ export async function scheduleCisScan(
     ? Array.from(new Set(options.deviceIds.filter((id) => typeof id === 'string' && id.length > 0))).sort()
     : undefined;
   const slot = Math.floor(Date.now() / ON_DEMAND_CIS_SCAN_DEDUPE_WINDOW_MS).toString(36);
+  // '-' separator (not ':') — BullMQ rejects custom jobIds whose colon-split
+  // length !== 3, and this 4-part id would throw. See #1101.
   const jobId = [
     'cis-manual-scan',
     baselineId,
     normalizedDeviceIds ? normalizedDeviceIds.join(',') : 'all',
     slot,
-  ].join(':');
+  ].join('-');
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

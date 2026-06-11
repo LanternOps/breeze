@@ -392,7 +392,7 @@ describe('configurationPolicies patchJob routes', () => {
       expect(insertValuesMock.mock.calls[0]?.[0]?.targets?.deviceIds).toEqual([DEVICE_ID, device2]);
     });
 
-    it('creates separate jobs when devices belong to different orgs', async () => {
+    it('denies patch jobs when selected devices belong to another accessible org', async () => {
       const device2 = '66666666-6666-6666-6666-666666666666';
       const otherOrgId = '77777777-7777-7777-7777-777777777777';
       getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, status: 'active', orgId: ORG_ID, name: 'P1' });
@@ -420,19 +420,17 @@ describe('configurationPolicies patchJob routes', () => {
       });
       app.route('/', patchJobRoutes);
 
-      const insertValuesMock = vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
-      });
-      vi.mocked(db.insert).mockReturnValue({ values: insertValuesMock } as any);
-
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceIds: [DEVICE_ID, device2] }),
       });
 
-      expect(res.status).toBe(201);
-      expect(insertValuesMock).toHaveBeenCalledTimes(2);
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.error).toContain('policy organization');
+      expect(json.skipped.crossOrgDeviceIds).toEqual([device2]);
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

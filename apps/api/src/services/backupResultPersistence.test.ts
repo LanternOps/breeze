@@ -34,6 +34,7 @@ vi.mock('../db/schema', () => ({
     immutabilityEnforcement: 'backupSnapshots.immutabilityEnforcement',
     requestedImmutabilityEnforcement: 'backupSnapshots.requestedImmutabilityEnforcement',
     immutabilityFallbackReason: 'backupSnapshots.immutabilityFallbackReason',
+    encryptionKeyId: 'backupSnapshots.encryptionKeyId',
   },
   backupSnapshotFiles: {
     snapshotDbId: 'backupSnapshotFiles.snapshotDbId',
@@ -193,8 +194,16 @@ describe('backup result persistence', () => {
       result: {
         snapshotId: 'provider-snap-1',
         filesBackedUp: 4,
+        metadata: {
+          encryptionKeyId: '11111111-1111-4111-8111-111111111111',
+        },
       },
     });
+
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      encryptionKeyId: '11111111-1111-4111-8111-111111111111',
+    }));
 
     expect(db.update).toHaveBeenNthCalledWith(2, expect.anything());
     const protectionSet = vi.mocked(db.update).mock.results[1]?.value?.set;

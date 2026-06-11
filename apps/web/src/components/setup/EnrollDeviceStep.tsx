@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Check, Copy, Loader2, Download, Link, ArrowLeft, Info } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
+import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { showToast } from '../shared/Toast';
 
 type Platform = 'windows' | 'macos' | 'linux';
@@ -65,9 +67,8 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     try {
       const res = await fetchWithAuth('/devices/onboarding-token', { method: 'POST' });
       if (!res.ok) {
-        let msg = 'Failed to generate installation token';
-        try { const data = await res.json(); msg = data.error || data.message || msg; } catch { /* ignore */ }
-        setTokenError(msg);
+        const data = await res.json().catch(() => null);
+        setTokenError(extractApiError(data, 'Failed to generate installation token'));
         return;
       }
       const data = await res.json();
@@ -141,7 +142,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       }
 
       const blob = await dlRes.blob();
-      const filename = selectedPlatform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+      const filename =
+        filenameFromContentDisposition(dlRes.headers.get('Content-Disposition'))
+        ?? fallbackInstallerFilename(selectedPlatform);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

@@ -143,6 +143,34 @@ describe('EventDispatcher', () => {
     dispatcher.unregister('org-1', client2);
   });
 
+  it('broadcasts alert.acknowledged with the publisher payload to subscribed clients', () => {
+    const dispatcher = getEventDispatcher();
+    const ws = mockWs();
+    const client = { ws, userId: 'user-1', subscribedTypes: new Set(['alert.*']) };
+    dispatcher.register('org-1', client);
+
+    const event = {
+      id: 'evt-123',
+      type: 'alert.acknowledged',
+      orgId: 'org-1',
+      source: 'alerts-route',
+      priority: 'normal',
+      payload: { alertId: 'a1', deviceId: 'd1', acknowledgedBy: 'u1' },
+      metadata: { timestamp: '2026-05-07T00:00:00Z' },
+    };
+
+    (dispatcher as any).dispatch('org-1', JSON.stringify(event));
+
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(sent.type).toBe('event');
+    expect(sent.data.type).toBe('alert.acknowledged');
+    expect(sent.data.payload).toEqual({ alertId: 'a1', deviceId: 'd1', acknowledgedBy: 'u1' });
+    expect(sent.data.orgId).toBe('org-1');
+
+    dispatcher.unregister('org-1', client);
+  });
+
   it('unsubscribes from Redis when last client for org disconnects', () => {
     const dispatcher = getEventDispatcher();
     const ws = mockWs();

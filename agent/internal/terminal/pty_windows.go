@@ -96,13 +96,13 @@ func (s *Session) startPipes() error {
 	var cmd *exec.Cmd
 	shellBase := strings.ToLower(filepath.Base(s.Shell))
 	if shellBase == "powershell.exe" || shellBase == "pwsh.exe" {
-		cmd = exec.Command(s.Shell, "-NoExit", "-Command",
-			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "+
-				"$Host.UI.RawUI.ForegroundColor = 'Gray'")
+		cmd = exec.Command(s.Shell, "-NoExit", "-Command", powershellBootstrapCommand())
+	} else if shellBase == "cmd.exe" {
+		cmd = exec.Command(s.Shell, "/K", "chcp 65001 >nul")
 	} else {
 		cmd = exec.Command(s.Shell)
 	}
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = applyShellEnv(os.Environ())
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -130,35 +130,11 @@ func (s *Session) startPipes() error {
 	s.cmd = cmd
 	s.stdin = stdin
 
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stdout.Read(buf)
-			if n > 0 && s.onOutput != nil {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				s.onOutput(data)
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 && s.onOutput != nil {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				s.onOutput(data)
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	// Forward on UTF-8 rune boundaries so a multibyte char split across a
+	// 4096-byte read isn't decoded into U+FFFD downstream (streamUTF8 flushes
+	// any held tail on EOF).
+	go func() { _ = streamUTF8(stdout, s.onOutput, nil) }()
+	go func() { _ = streamUTF8(stderr, s.onOutput, nil) }()
 
 	go func() {
 		err := s.waitCmd()
@@ -190,8 +166,19 @@ func (s *Session) resize(cols, rows uint16) error {
 // buildCommandLine constructs the shell command line string.
 func buildCommandLine(shell string) string {
 	shellBase := strings.ToLower(filepath.Base(shell))
-	if shellBase == "powershell.exe" || shellBase == "pwsh.exe" {
-		return shell + ` -NoExit -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"`
+	switch shellBase {
+	case "powershell.exe", "pwsh.exe":
+		return shell + ` -NoExit -Command "` + powershellBootstrapCommand() + `"`
+	case "cmd.exe":
+		return shell + ` /K chcp 65001 >nul`
+	default:
+		return shell
 	}
-	return shell
+}
+
+// powershellBootstrapCommand configures UTF-8 console I/O and readable colors
+// on dark web-terminal backgrounds.
+func powershellBootstrapCommand() string {
+	return "[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+		"$Host.UI.RawUI.ForegroundColor = 'Gray'"
 }

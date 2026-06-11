@@ -1,0 +1,10 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import AuthOverlay from '../../components/auth/AuthOverlay';
+import AccountDeletionPage from '../../components/account/AccountDeletionPage';
+---
+
+<Layout title="Delete account">
+  <AuthOverlay client:load />
+  <AccountDeletionPage client:load />
+</Layout>

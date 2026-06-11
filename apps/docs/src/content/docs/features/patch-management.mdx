@@ -26,7 +26,7 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 | **`microsoft`** | Windows Update patches sourced from Microsoft, including cumulative updates, security fixes, and optional feature updates |
 | **`apple`** | macOS and iOS system updates distributed through Apple Software Update |
 | **`linux`** | Distribution packages managed via the native package manager (apt, yum, dnf, zypper, etc.) |
-| **`third_party`** | Software updates for non-OS applications such as browsers, runtimes, and productivity tools |
+| **`third_party`** | Updates for non-OS applications (browsers, runtimes, productivity tools) detected via winget on Windows devices. Enriched with vendor metadata and CVE data through the [Third-Party Package Catalog](#third-party-application-patching) |
 | **`custom`** | Internally published updates distributed through Breeze's custom patch channel |
 
 ### Severity Levels
@@ -60,6 +60,62 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 
 ---
 
+## Third-Party Application Patching
+
+Beyond operating-system updates, Breeze patches third-party applications detected via **winget** on Windows devices — browsers, runtimes, and productivity tools such as Chrome, Firefox, Edge, Zoom, Teams, Git, Node.js, Python, and Visual Studio Code. These patches flow through the same approval, deployment, and rollback workflow as OS patches.
+
+### The Package Catalog
+
+A curated **package catalog** standardises metadata for known third-party applications. It ships pre-seeded with around 20 common applications, and platform admins manage it at **Admin → Third-Party Catalog**.
+
+Each catalog entry pairs a winget package ID with a vendor, friendly name, category, and a default severity. When a device reports an available third-party update, Breeze matches it to the catalog so the patch shows the correct vendor and a sensible severity even before any vulnerability data is available. Updates from applications not in the catalog still appear in the patches list, but without this enrichment.
+
+To add or edit an entry:
+
+<Steps>
+
+1. Go to **Admin → Third-Party Catalog**.
+
+2. Click **Add package**, or the edit icon on an existing row.
+
+3. Set the winget package ID, vendor, friendly name, and default severity. Optionally add a homepage link, notes, and — to enable CVE lookups — an **OSV ecosystem** name (see below).
+
+4. Save. The catalog updates immediately and future third-party patches from that vendor are enriched.
+
+</Steps>
+
+Deleting an entry removes future enrichment for that vendor but does not delete patches that were already detected.
+
+### CVE Enrichment from OSV.dev
+
+Breeze automatically enriches third-party patches with vulnerability data from [OSV.dev](https://osv.dev), a free public vulnerability database. For any catalog entry that has an **OSV ecosystem** configured, a background job queries OSV roughly once a day, attaches the matching CVE identifiers to the patch, and raises the patch's severity if OSV reports a higher rating than the catalog default.
+
+In the **Patches** list, patches with known vulnerabilities show red **CVE chips** beneath the patch title (the first few CVEs, with a "+N more" indicator). Each chip links to the corresponding entry in the NIST National Vulnerability Database. **Source filter chips** at the top of the list let you narrow to Microsoft, Apple, Linux, or third-party patches and show the count for each.
+
+<Aside type="note">
+A third-party patch only receives CVE data if its catalog entry has an OSV ecosystem set (for example `npm`, `PyPI`, `Go`) **and** the patch has a version number. If CVE chips are missing, confirm both conditions before investigating further — the first enrichment pass can also take up to a day to run.
+</Aside>
+
+### Smoke Testing Releases (Optional)
+
+Breeze can optionally run an AI-assisted smoke test on a third-party release before you roll it out widely. The test installs the release via winget on a dedicated Windows test VM and uses an AI model to judge whether the upgrade succeeded from the command output.
+
+Smoke testing is **off by default** and only runs when the platform operator has configured a test VM. When enabled for a catalog entry (the **Breeze-tested** option), a re-test can be triggered manually:
+
+<Steps>
+
+1. Go to **Admin → Third-Party Catalog**.
+
+2. On a Breeze-tested entry, click the **re-test** action and enter the version to test.
+
+3. The result — **pass**, **fail**, **inconclusive**, or **skipped** (when no test VM is configured) — appears in the entry's **Last test** column within a few minutes.
+
+</Steps>
+
+A smoke test verifies installation only; it is not a substitute for validating the release in your own environment.
+
+---
+
 ## Scanning for Patches
 
 Trigger an on-demand patch scan by posting to `/patches/scan` with a list of device IDs. The `source` field is optional — omit it to scan all sources.
@@ -88,12 +144,15 @@ Scanning is asynchronous. The scan command is sent to the agent on each target d
 
 ## Reviewing and Approving Patches
 
+For all approval endpoints below, `orgId` is accepted either in the JSON body (as shown) or as the `?orgId=` query parameter. Organization-scoped tokens auto-resolve `orgId`. An optional `ringId` field (UUID) ties the approval to a specific deployment ring; if you don't pass it, approvals are not ring-scoped and the response returns `ringId: null`.
+
 ### Approving
 
 ```bash
 POST /patches/:id/approve
 {
   "orgId": "uuid",
+  "ringId": "ring-uuid",
   "note": "Reviewed — approved for production fleet"
 }
 ```
@@ -358,6 +417,14 @@ The response includes the IDs of all created jobs, total device counts, and skip
 | **GET** | `/patches/compliance/report` | Request compliance report (async) |
 | **GET** | `/patches/compliance/report/:id` | Check report status |
 | **GET** | `/patches/compliance/report/:id/download` | Download completed report |
+| **GET** | `/third-party-catalog` | List catalog entries (`?vendor=&breezeTested=&search=`) — platform admin |
+| **POST** | `/third-party-catalog` | Create a catalog entry — platform admin |
+| **GET** | `/third-party-catalog/:id` | Get a catalog entry — platform admin |
+| **PATCH** | `/third-party-catalog/:id` | Update a catalog entry — platform admin |
+| **DELETE** | `/third-party-catalog/:id` | Delete a catalog entry — platform admin |
+| **POST** | `/third-party-catalog/:id/test` | Queue a smoke test for a Breeze-tested entry (body `{ "version": "..." }`) — platform admin |
+
+The `GET /patches` response includes `source` (`microsoft`, `apple`, `linux`, `third_party`, `custom`), and for third-party patches also `version`, `vendor`, and a `cveIds` array populated by OSV enrichment. Filter to a single source with `?source=third_party`.
 
 ---
 

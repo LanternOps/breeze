@@ -1,8 +1,10 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { alertSeverityEnum } from './alerts';
 
 export const devicePlatformEnum = pgEnum('device_platform', ['ios', 'android']);
+
+export const mobileDeviceStatusEnum = pgEnum('mobile_device_status', ['active', 'blocked']);
 
 export const mobileDevices = pgTable('mobile_devices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -18,9 +20,19 @@ export const mobileDevices = pgTable('mobile_devices', {
   alertSeverities: alertSeverityEnum('alert_severities').array().notNull().default([]),
   quietHours: jsonb('quiet_hours'),
   lastActiveAt: timestamp('last_active_at'),
+  // Lifecycle: a device can be soft-blocked (lost-phone revocation, admin
+  // takeover). Blocked rows stay for audit; re-pairing creates a fresh row
+  // with a new deviceId. See migration 2026-05-07-mobile-device-and-oauth-
+  // lifecycle.sql for the schema rationale.
+  status: mobileDeviceStatusEnum('status').notNull().default('active'),
+  blockedAt: timestamp('blocked_at', { withTimezone: true }),
+  blockedByUserId: uuid('blocked_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  blockedReason: text('blocked_reason'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (t) => ({
+  userStatusIdx: index('mobile_devices_user_status_idx').on(t.userId, t.status),
+}));
 
 export const pushNotifications = pgTable('push_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),

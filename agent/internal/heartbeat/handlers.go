@@ -54,10 +54,15 @@ var handlerRegistry = map[string]CommandHandler{
 	tools.CmdShutdown:       handleShutdown,
 	tools.CmdLock:           handleLock,
 	tools.CmdRebootSafeMode: handleRebootSafeMode,
+	tools.CmdWakeOnLan:      handleWakeOnLan,
+
+	// On-demand inventory refresh
+	tools.CmdRefreshInventory: handleRefreshInventory,
 
 	// Software inventory
 	tools.CmdCollectSoftware:   handleCollectSoftware,
 	tools.CmdSoftwareUninstall: handleSoftwareUninstall,
+	tools.CmdSoftwareUpdate:    handleSoftwareUpdate,
 
 	// Boot performance
 	tools.CmdCollectBootPerformance:    handleCollectBootPerformance,
@@ -90,6 +95,9 @@ var handlerRegistry = map[string]CommandHandler{
 
 	// Log shipping
 	tools.CmdSetLogLevel: handleSetLogLevel,
+
+	// Auto-update management
+	tools.CmdSetAutoUpdate: handleSetAutoUpdate,
 }
 
 // dispatchCommand looks up the handler for a command type and executes it,
@@ -222,6 +230,41 @@ func handleLock(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.Lock(cmd.Payload)
 }
 
+func handleWakeOnLan(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.WakeOnLan(cmd.Payload)
+}
+
+// handleRefreshInventory triggers an immediate run of the full inventory cycle
+// (hardware, software, disk, network, configuration changes, sessions,
+// connections, patches, policy state, security status, Apple warranty). Each
+// collector is dispatched to its own goroutine via h.sendInventory(); the
+// returned result acknowledges the dispatch synchronously while data flows in
+// over the next 30s–2min as each collector completes.
+func handleRefreshInventory(h *Heartbeat, _ Command) tools.CommandResult {
+	start := time.Now()
+	if h.sendInventoryFn != nil {
+		h.sendInventoryFn()
+	} else {
+		h.sendInventory()
+	}
+	return tools.NewSuccessResult(map[string]any{
+		"dispatched": []string{
+			"hardware",
+			"software",
+			"disk",
+			"network",
+			"configuration_changes",
+			"session",
+			"connections",
+			"patch",
+			"policy_registry",
+			"policy_config",
+			"security_status",
+			"apple_warranty",
+		},
+	}, time.Since(start).Milliseconds())
+}
+
 func handleRebootSafeMode(h *Heartbeat, cmd Command) tools.CommandResult {
 	if h.sessionBroker != nil {
 		delay := tools.GetPayloadInt(cmd.Payload, "delay", 0)
@@ -248,6 +291,10 @@ func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleSoftwareUninstall(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.UninstallSoftware(cmd.Payload)
+}
+
+func handleSoftwareUpdate(_ *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.UpdateSoftware(cmd.Payload)
 }
 
 func handleFileList(_ *Heartbeat, cmd Command) tools.CommandResult {

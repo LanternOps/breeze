@@ -20,8 +20,16 @@ import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import {
+  encryptSnmpCommunities,
+  encryptSnmpCredentials,
+  maskSnmpCommunities,
+  maskSnmpCredentials,
+  mergeEncryptSnmpCommunities,
+  mergeEncryptSnmpCredentials,
+} from '../services/snmpSecrets';
 
 export const discoveryRoutes = new Hono();
 const requireDiscoveryRead = requirePermission(
@@ -136,6 +144,14 @@ async function validateRequestedDiscoveryAgent(
   return { ok: true } as const;
 }
 
+function serializeDiscoveryProfile(profile: typeof discoveryProfiles.$inferSelect) {
+  return {
+    ...profile,
+    snmpCommunities: maskSnmpCommunities(profile.snmpCommunities),
+    snmpCredentials: maskSnmpCredentials(profile.snmpCredentials),
+  };
+}
+
 // --- Zod Schemas ---
 
 const listProfilesSchema = z.object({
@@ -212,7 +228,8 @@ const updateProfileSchema = z.object({
 
 const scanSchema = z.object({
   profileId: z.string().uuid(),
-  agentId: z.string().optional()
+  agentId: z.string().optional(),
+  orgId: z.string().uuid().optional()
 });
 
 const listJobsSchema = z.object({
@@ -242,6 +259,7 @@ function getNextIntervalRun(lastRunAt: Date | null, intervalMinutes: number, now
 
 const listAssetsSchema = z.object({
   orgId: z.string().uuid().optional(),
+  siteId: z.string().uuid().optional(),
   approvalStatus: z.enum(['pending', 'approved', 'dismissed']).optional(),
   assetType: z.enum([
     'workstation', 'server', 'printer', 'router', 'switch',
@@ -346,8 +364,8 @@ discoveryRoutes.post(
       excludeIps: body.excludeIps ?? [],
       methods: body.methods as any,
       portRanges: body.portRanges ?? null,
-      snmpCommunities: body.snmpCommunities ?? [],
-      snmpCredentials: body.snmpCredentials ?? null,
+      snmpCommunities: encryptSnmpCommunities(body.snmpCommunities) ?? [],
+      snmpCredentials: body.snmpCredentials === undefined ? null : encryptSnmpCredentials(body.snmpCredentials),
       schedule: body.schedule,
       deepScan: body.deepScan ?? false,
       identifyOS: body.identifyOS ?? false,
@@ -365,7 +383,7 @@ discoveryRoutes.post(
       resourceName: profile?.name
     });
 
-    return c.json(profile, 201);
+    return c.json(profile ? serializeDiscoveryProfile(profile) : profile, 201);
   }
 );
 
@@ -376,7 +394,7 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
@@ -386,7 +404,7 @@ discoveryRoutes.get(
       .where(and(...conditions)).limit(1);
     if (!profile) return c.json({ error: 'Profile not found' }, 404);
 
-    return c.json(profile);
+    return c.json(serializeDiscoveryProfile(profile));
   }
 );
 
@@ -400,7 +418,7 @@ discoveryRoutes.patch(
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
     const updates = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     if (Object.keys(updates).length === 0) {
@@ -410,7 +428,11 @@ discoveryRoutes.patch(
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
     if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
 
-    const [existing] = await db.select({ id: discoveryProfiles.id }).from(discoveryProfiles)
+    const [existing] = await db.select({
+      id: discoveryProfiles.id,
+      snmpCommunities: discoveryProfiles.snmpCommunities,
+      snmpCredentials: discoveryProfiles.snmpCredentials,
+    }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
 
@@ -421,8 +443,8 @@ discoveryRoutes.patch(
     if (updates.excludeIps !== undefined) setValues.excludeIps = updates.excludeIps;
     if (updates.methods !== undefined) setValues.methods = updates.methods;
     if (updates.portRanges !== undefined) setValues.portRanges = updates.portRanges;
-    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = updates.snmpCommunities;
-    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = updates.snmpCredentials;
+    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = mergeEncryptSnmpCommunities(updates.snmpCommunities, existing.snmpCommunities);
+    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = mergeEncryptSnmpCredentials(updates.snmpCredentials, existing.snmpCredentials);
     if (updates.schedule !== undefined) setValues.schedule = updates.schedule;
     if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
     if (updates.deepScan !== undefined) setValues.deepScan = updates.deepScan;
@@ -446,7 +468,7 @@ discoveryRoutes.patch(
       details: { changedFields: Object.keys(updates) }
     });
 
-    return c.json(updated);
+    return c.json(updated ? serializeDiscoveryProfile(updated) : updated);
   }
 );
 
@@ -458,7 +480,7 @@ discoveryRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     const profileId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, profileId)];
@@ -501,7 +523,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryProfiles.id, body.profileId)];
@@ -708,7 +730,7 @@ discoveryRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryJobs.id, jobId)];
@@ -741,7 +763,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const jobId = c.req.param('id')!;
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [eq(discoveryJobs.id, jobId)];
@@ -802,12 +824,24 @@ discoveryRoutes.get(
   zValidator('query', listAssetsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: SQL[] = [];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+    if (query.siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      conditions.push(eq(discoveredAssets.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: [] });
+      }
+      conditions.push(inArray(discoveredAssets.siteId, perms.allowedSiteIds));
+    }
     if (query.approvalStatus) conditions.push(eq(discoveredAssets.approvalStatus, query.approvalStatus));
     if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
 
@@ -890,7 +924,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { assetIds } = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
@@ -920,7 +954,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { assetIds } = c.req.valid('json');
-    const orgResult = resolveOrgId(auth);
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
@@ -1032,6 +1066,19 @@ discoveryRoutes.post(
       return c.json({ error: 'Device does not belong to the same site as this asset' }, 403);
     }
 
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it. A
+    // site-restricted caller must be able to reach BOTH the asset's site and
+    // the target device's site (whichever are set).
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      if (typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      if (typeof targetDevice.siteId === 'string' && !canAccessSite(perms, targetDevice.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+    }
+
     const [updated] = await db.update(discoveredAssets)
       .set({
         approvalStatus: 'approved',
@@ -1131,11 +1178,18 @@ discoveryRoutes.delete(
     const [existing] = await db.select({
       id: discoveredAssets.id,
       orgId: discoveredAssets.orgId,
+      siteId: discoveredAssets.siteId,
       hostname: discoveredAssets.hostname,
       ipAddress: discoveredAssets.ipAddress
     }).from(discoveredAssets)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Asset not found' }, 404);
+
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     await db.transaction(async (tx) => {
       const monitoringDevices = await tx.select({ id: snmpDevices.id })

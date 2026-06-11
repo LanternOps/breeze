@@ -16,11 +16,13 @@ import {
   type DnsPolicyDomain,
   type DnsThreatCategory
 } from '../db/schema';
-import { createDnsProvider, type DnsEvent } from '../services/dnsProviders';
+import { createDnsProvider, DnsProviderHttpError, type DnsEvent } from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { decryptSecret } from '../services/secretCrypto';
+import { decryptForColumn } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
+import { redactLogMessage } from '../services/logRedaction';
+import { publishEvent, EVENT_TYPES } from '../services/eventBus';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -83,6 +85,64 @@ export function getDnsSyncQueue(): Queue<DnsSyncJobData> {
     });
   }
   return dnsSyncQueue;
+}
+
+/** Max length persisted to a tenant-visible sync-error column. */
+const SYNC_ERROR_MAX_LENGTH = 2000;
+
+/**
+ * Build the message to persist in a tenant-visible sync-error column
+ * (`dns_filter_integrations.lastSyncError` / `dns_policies.syncError`).
+ *
+ * SECURITY: For a {@link DnsProviderHttpError} we store ONLY the body-free
+ * `.message` (the `HTTP <status> <statusText>` status line). The upstream
+ * response body lives on `.responseBody` and is logged server-side by the
+ * caller — never returned to the tenant, because for self-hosted Pi-hole/AdGuard
+ * the tenant controls the endpoint host and an echoed body would be a
+ * partial-read oracle for arbitrary public hosts. Other error types
+ * (transport/SSRF/config) carry no upstream body, so their message is safe to
+ * store. `redactLogMessage` is still applied as defense-in-depth (e.g. a
+ * Pi-hole error could echo back the `?auth=<apiKey>` secret).
+ */
+export function tenantVisibleSyncError(error: unknown): string {
+  const message =
+    error instanceof DnsProviderHttpError
+      ? error.message // "HTTP <status> <statusText>", body-free by construction
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return redactLogMessage(message).slice(0, SYNC_ERROR_MAX_LENGTH);
+}
+
+/**
+ * Log full failure detail to the SERVER-SIDE log only. For an upstream HTTP
+ * error this includes the (redacted) response body that we deliberately keep
+ * out of the tenant-visible column.
+ */
+function logSyncFailureServerSide(
+  context: Record<string, unknown>,
+  error: unknown
+): void {
+  if (error instanceof DnsProviderHttpError) {
+    console.error(
+      '[DnsSyncJob] sync failed (upstream HTTP error)',
+      JSON.stringify({
+        ...context,
+        status: error.status,
+        statusText: error.statusText,
+        // Redacted: a Pi-hole upstream body can echo back `?auth=<apiKey>`.
+        responseBody: redactLogMessage(error.responseBody),
+      })
+    );
+    return;
+  }
+  console.error(
+    '[DnsSyncJob] sync failed',
+    JSON.stringify({
+      ...context,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    })
+  );
 }
 
 function parseIntegrationConfig(value: unknown): DnsIntegrationConfig {
@@ -211,6 +271,34 @@ function chunk<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(i, i + size));
   }
   return chunks;
+}
+
+/**
+ * Apply a per-domain provider mutation strictly sequentially — one provider
+ * API call at a time, never concurrently.
+ *
+ * The DNS provider add/remove domain methods are NOT safe to run in parallel:
+ * several providers expose only a "replace the entire rule array" API (e.g.
+ * AdGuard Home's `set_rules`), so each method performs a read-modify-write
+ * (GET current rules -> mutate -> POST full array). Running N of these
+ * concurrently means all N read the same baseline and each POSTs its own
+ * array — last write wins and silently drops the other N-1 domains' changes,
+ * while the policy-sync job still records `sync_status='synced'`. That is
+ * silent tenant data loss (issue #827).
+ *
+ * Sequential execution guarantees every call observes the previous call's
+ * write. Domain counts per policy are small and these are cheap HTTP calls,
+ * so serialization has negligible cost. Do NOT reintroduce concurrency here
+ * without a per-provider guarantee that the mutation API is incremental
+ * rather than full-array.
+ */
+export async function runSequentialDomainMutations(
+  domains: string[],
+  operation: (domain: string) => Promise<void>
+): Promise<void> {
+  for (const domain of domains) {
+    await operation(domain);
+  }
 }
 
 function syncIntervalMinutesFromConfig(config: DnsIntegrationConfig): number {
@@ -376,8 +464,8 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
   try {
     const provider = createDnsProvider({
       provider: integration.provider,
-      apiKey: decryptSecret(integration.apiKey),
-      apiSecret: decryptSecret(integration.apiSecret),
+      apiKey: decryptForColumn('dns_filter_integrations', 'api_key', integration.apiKey),
+      apiSecret: decryptForColumn('dns_filter_integrations', 'api_secret', integration.apiSecret),
       config
     });
 
@@ -477,6 +565,40 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
         if (row.action === 'blocked') current.blockedQueries += 1;
         if (row.action === 'allowed') current.allowedQueries += 1;
         aggregationMap.set(key, current);
+
+        // #829 — emit dns.threat.blocked so the existing event-bus
+        // subscribers (webhookDelivery, automationWorker, alert rules) can
+        // consume the signal. Only fire for actually-blocked threat events
+        // (action=blocked AND category present) so an "allowed" DNS query
+        // doesn't pollute the bus. Best-effort: failure to publish here
+        // must not abort sync — the event-bus internals already swallow
+        // local-handler errors with structured logging (#820), but we
+        // still wrap the call to suppress a hypothetical xadd reject.
+        if (row.action === 'blocked' && category) {
+          publishEvent(
+            EVENT_TYPES.DNS_THREAT_BLOCKED,
+            row.orgId,
+            {
+              deviceId: row.deviceId,
+              domain: row.domain,
+              category,
+              integrationId: row.integrationId,
+              timestamp: row.timestamp.toISOString(),
+            },
+            'dns-sync-job',
+            { priority: 'high' }
+          ).catch((err) => {
+            console.error(
+              '[DnsSyncJob] dns.threat.blocked publish failed',
+              JSON.stringify({
+                orgId: row.orgId,
+                domain: row.domain,
+                category,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            );
+          });
+        }
       }
     }
 
@@ -512,12 +634,18 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<{
       inserted: insertedCount
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Full detail (including the upstream response body, redacted) goes to the
+    // SERVER-SIDE log only.
+    logSyncFailureServerSide({ integrationId: integration.id, orgId: integration.orgId }, error);
+    // Store ONLY a body-free, redacted message in the tenant-visible column.
+    // Pi-hole puts the API key in the URL query string (?auth=<key>) and an
+    // upstream body could echo arbitrary public-host content (SSRF read
+    // oracle) — neither may land in dnsFilterIntegrations.lastSyncError.
     await db
       .update(dnsFilterIntegrations)
       .set({
         lastSyncStatus: 'error',
-        lastSyncError: message.slice(0, 2000),
+        lastSyncError: tenantVisibleSyncError(error),
         updatedAt: new Date()
       })
       .where(eq(dnsFilterIntegrations.id, integration.id));
@@ -549,8 +677,8 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
   try {
     const provider = createDnsProvider({
       provider: row.integration.provider,
-      apiKey: decryptSecret(row.integration.apiKey),
-      apiSecret: decryptSecret(row.integration.apiSecret),
+      apiKey: decryptForColumn('dns_filter_integrations', 'api_key', row.integration.apiKey),
+      apiSecret: decryptForColumn('dns_filter_integrations', 'api_secret', row.integration.apiSecret),
       config
     });
 
@@ -561,24 +689,14 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
       ? normalizeDomainList(data.operations.remove)
       : [];
 
-    const runBatched = async (
-      domains: string[],
-      operation: (domain: string) => Promise<void>,
-      concurrency = 10
-    ): Promise<void> => {
-      if (domains.length === 0) return;
-      for (let i = 0; i < domains.length; i += concurrency) {
-        const block = domains.slice(i, i + concurrency);
-        await Promise.all(block.map(operation));
-      }
-    };
-
+    // Mutations MUST run sequentially — see runSequentialDomainMutations for
+    // why concurrency here causes silent rule clobbering (issue #827).
     if (row.policy.type === 'blocklist') {
-      await runBatched(addDomains, (domain) => provider.addBlocklistDomain(domain), 10);
-      await runBatched(removeDomains, (domain) => provider.removeBlocklistDomain(domain), 10);
+      await runSequentialDomainMutations(addDomains, (domain) => provider.addBlocklistDomain(domain));
+      await runSequentialDomainMutations(removeDomains, (domain) => provider.removeBlocklistDomain(domain));
     } else {
-      await runBatched(addDomains, (domain) => provider.addAllowlistDomain(domain), 10);
-      await runBatched(removeDomains, (domain) => provider.removeAllowlistDomain(domain), 10);
+      await runSequentialDomainMutations(addDomains, (domain) => provider.addAllowlistDomain(domain));
+      await runSequentialDomainMutations(removeDomains, (domain) => provider.removeAllowlistDomain(domain));
     }
 
     await db
@@ -597,12 +715,14 @@ async function processPolicySync(data: SyncPolicyJobData): Promise<{
       removed: removeDomains.length
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Full detail (including the upstream response body, redacted) goes to the
+    // SERVER-SIDE log only; the tenant-visible column gets a body-free message.
+    logSyncFailureServerSide({ policyId: row.policy.id, orgId: row.integration.orgId }, error);
     await db
       .update(dnsPolicies)
       .set({
         syncStatus: 'error',
-        syncError: message.slice(0, 2000),
+        syncError: tenantVisibleSyncError(error),
         updatedAt: new Date()
       })
       .where(eq(dnsPolicies.id, row.policy.id));

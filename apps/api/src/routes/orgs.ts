@@ -7,7 +7,22 @@ import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
-import { PERMISSIONS } from '../services/permissions';
+import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import {
+  restoreOrganizationTenantAccess,
+  restorePartnerTenantAccess,
+  revokeOrganizationTenantAccess,
+  revokePartnerTenantAccess,
+} from '../services/tenantLifecycle';
+import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
+import { captureException } from '../services/sentry';
+import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
+import { isAllowedLauncherScheme } from '@breeze/shared';
+import type { IpAllowlistStatus } from '@breeze/shared';
+import { isValidIpOrCidr } from '../services/ipMatch';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -32,7 +47,50 @@ const createPartnerSchema = z.object({
   billingEmail: z.string().email().optional()
 });
 
-const updatePartnerSchema = createPartnerSchema.partial();
+// The system-scoped partner routes accept free-form settings (z.any()), but
+// security.ipAllowlist entries must still be valid IPs/CIDRs — otherwise a
+// platform-admin write would bypass the validation /partners/me enforces and
+// store entries the matcher can never satisfy (silent fail-open).
+function settingsAllowlistEntriesValid(settings: unknown): boolean {
+  if (settings === null || typeof settings !== 'object') return true;
+  const security = (settings as Record<string, unknown>).security;
+  if (security === null || typeof security !== 'object') return true;
+  const list = (security as Record<string, unknown>).ipAllowlist;
+  if (list === undefined) return true;
+  return Array.isArray(list) && list.every((entry) => typeof entry === 'string' && isValidIpOrCidr(entry));
+}
+
+const updatePartnerSchema = createPartnerSchema.partial().extend({
+  status: z.enum(['pending', 'active', 'suspended', 'churned']).optional(),
+  settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
+    message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
+  }),
+});
+
+// PATCH /partners/:id writes the settings column wholesale. A write whose
+// settings (or security object) simply omits `ipAllowlist` must not silently
+// delete an active allowlist (fail-open); an explicit `ipAllowlist: []` still
+// clears it deliberately. (/partners/me instead deep-merges `security`, which
+// gives the same guarantee there.)
+function preserveIpAllowlistOnOmit(
+  currentSettings: unknown,
+  incomingSettings: Record<string, unknown>,
+): Record<string, unknown> {
+  const currentSecurity = (currentSettings as Record<string, unknown> | null | undefined)?.security;
+  const currentList = (currentSecurity as Record<string, unknown> | null | undefined)?.ipAllowlist;
+  if (!Array.isArray(currentList) || currentList.length === 0) return incomingSettings;
+
+  const incomingSecurity = incomingSettings.security;
+  if (
+    incomingSecurity !== undefined
+    && (incomingSecurity === null || typeof incomingSecurity !== 'object' || Array.isArray(incomingSecurity))
+  ) {
+    return incomingSettings; // malformed security value — leave the write as-is
+  }
+  const security = (incomingSecurity ?? {}) as Record<string, unknown>;
+  if ('ipAllowlist' in security) return incomingSettings; // explicit value (incl. []) wins
+  return { ...incomingSettings, security: { ...security, ipAllowlist: currentList } };
+}
 
 const createOrganizationSchema = z.object({
   partnerId: z.string().uuid().optional(),
@@ -57,17 +115,42 @@ const listSitesSchema = z.object({
   limit: z.string().optional()
 });
 
+// Intl.supportedValuesOf('timeZone') omits UTC, GMT, and the Etc/* zones, so
+// a Set-membership check against that list rejects 'UTC' (the default).
+// Constructing Intl.DateTimeFormat throws RangeError on unknown zones and
+// accepts everything Intl recognizes, including those omissions.
+function isValidIanaTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Stored as-is into a JSONB column; `.passthrough()` keeps unknown keys for
+// forward compatibility. Email format is policed when present so downstream
+// `mailto:` consumers don't render garbage; empty string is accepted because
+// the form sends `''` for an absent value.
+const siteContactSchema = z
+  .object({
+    name: z.string().optional(),
+    email: z.union([z.string().email(), z.literal('')]).optional(),
+    phone: z.string().optional(),
+  })
+  .passthrough();
+
 const siteBaseSchema = z.object({
   orgId: z.string().uuid(),
   name: z.string().min(1),
   address: z.any().optional(),
-  timezone: z.string().optional(),
-  contact: z.any().optional(),
+  timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
+  contact: siteContactSchema.optional(),
   settings: z.any().optional()
 });
 
 const createSiteSchema = siteBaseSchema.extend({
-  timezone: z.string().default('UTC')
+  timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').default('UTC')
 });
 
 const updateSiteSchema = siteBaseSchema.partial().omit({ orgId: true });
@@ -243,7 +326,13 @@ const partnerSettingsSchema = z.object({
     allowedMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
     sessionTimeout: z.number().int().min(1).optional(),
     maxSessions: z.number().int().min(1).optional(),
-    ipAllowlist: z.array(z.string()).optional(),
+    ipAllowlist: z
+      .array(z.string())
+      .optional()
+      .refine(
+        (list) => !list || list.every((entry) => isValidIpOrCidr(entry)),
+        { message: 'Each IP allowlist entry must be a valid IP address or CIDR range' },
+      ),
   }).optional(),
   notifications: z.object({
     fromAddress: z.string().optional(),
@@ -257,6 +346,10 @@ const partnerSettingsSchema = z.object({
     slackChannel: z.string().optional(),
     webhooks: z.array(z.string()).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
+    pushoverAppToken: z.string().max(30).optional(),
+    pushoverDefaultUser: z.string().max(30).optional(),
+    pushoverDefaultSound: z.string().max(40).optional(),
+    pushoverDefaultPriority: z.number().int().min(-2).max(2).optional(),
   }).optional(),
   eventLogs: z.object({
     enabled: z.boolean().optional(),
@@ -294,6 +387,39 @@ const partnerSettingsSchema = z.object({
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
   }).optional(),
+  organizationOrder: z.array(z.string().uuid()).max(10_000).optional(),
+  remoteAccessProviders: z.object({
+    defaultProviderId: z.string().max(100).optional(),
+    providers: z.array(z.object({
+      id: z.string().min(1).max(100),
+      name: z.string().min(1).max(100),
+      // urlTemplate may be either a custom-scheme template
+      // (e.g. 'rustdesk://{id}?password={password}') or an https launcher
+      // (e.g. 'https://acme.screenconnect.com/Host#Access///{id}/Join').
+      // The browser auto-detects launch mode by prefix.
+      // {id} must appear or the launcher would always resolve to the same
+      // URL and ignore the per-device identifier.
+      // Dangerous schemes (javascript:, data:, vbscript:, file:, about:,
+      // chrome:, jar:, blob:, view-source:, filesystem:) are rejected by
+      // isAllowedLauncherScheme so a malicious partner admin cannot plant
+      // stored XSS that fires when an org-scope user clicks Connect Desktop.
+      // The web client repeats the same check before firing the URL.
+      urlTemplate: z.string()
+        .min(1)
+        .max(2000)
+        .refine(
+          (t) => t.includes('{id}'),
+          'Template must include the {id} placeholder for the per-device value',
+        )
+        .refine(
+          (t) => isAllowedLauncherScheme(t),
+          'Template must start with an allowed URL scheme (https, http, rustdesk, teamviewer, anydesk, splashtop, etc.); javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source:, filesystem: are rejected',
+        ),
+      customFieldKey: z.string().min(1).max(100),
+      password: z.string().max(2000).optional(),
+      enabled: z.boolean(),
+    })).max(50).optional(),
+  }).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -319,6 +445,25 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   return c.json(partner);
 });
 
+orgRoutes.get('/partners/me/ip-allowlist/status', requireScope('partner'), requirePartner, requireOrgRead, async (c) => {
+  const auth = c.get('auth');
+  const partnerId = auth.partnerId as string;
+
+  const currentIp = getTrustedClientIpOrUndefined(c) ?? null;
+  const allowlist = await readPartnerAllowlist(partnerId);
+  const enforced = ipAllowlistMode() === 'enforce' && allowlist.length > 0;
+  const proxyTrustOk = currentIp !== null;
+
+  // Typed against the shared contract so a field rename breaks this build too.
+  const status: IpAllowlistStatus = {
+    currentIp,
+    proxyTrustOk,
+    enforced,
+    active: enforced && proxyTrustOk,
+  };
+  return c.json(status);
+});
+
 // Update own partner settings (for partner-scoped users)
 orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSettingsSchema), async (c) => {
   const auth = c.get('auth');
@@ -335,14 +480,46 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  // Merge settings
+  // Merge settings (top-level shallow merge, except `security` below)
   const currentSettings = (current.settings as Record<string, unknown>) || {};
-  const newSettings = body.settings
+  const newSettings: Record<string, unknown> = body.settings
     ? { ...currentSettings, ...body.settings }
-    : currentSettings;
+    : { ...currentSettings };
 
+  // Deep-merge the `security` sub-object: it carries many sibling fields (MFA
+  // policy, session limits, ipAllowlist, ...), so a wholesale replace would let
+  // a PATCH that merely omits `ipAllowlist` silently delete an active allowlist
+  // (fail-open). Incoming security fields still override individually, and an
+  // explicit `ipAllowlist: []` still clears the list deliberately.
+  if (body.settings?.security) {
+    newSettings.security = {
+      ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.security,
+    };
+  }
+
+  // Enable-gate: turning the allowlist on (empty -> non-empty) requires that
+  // the API can actually see real client IPs, otherwise enforcement would
+  // silently fail open (false security).
+  const prevAllowlist = ((((current.settings as Record<string, unknown>)?.security) as Record<string, unknown>)?.ipAllowlist) as string[] | undefined;
+  const nextAllowlist = ((newSettings.security as Record<string, unknown>)?.ipAllowlist) as string[] | undefined;
+  const turningOn = (!prevAllowlist || prevAllowlist.length === 0) && Array.isArray(nextAllowlist) && nextAllowlist.length > 0;
+  if (turningOn && getTrustedClientIpOrUndefined(c) === undefined) {
+    return c.json(
+      {
+        code: 'proxy_trust_required',
+        error:
+          'Configure proxy trust (TRUST_PROXY_HEADERS + TRUSTED_PROXY_CIDRS) before enabling the IP allowlist, so the API can see real client IPs.',
+      },
+      400,
+    );
+  }
+
+  // Encrypt secret-bearing fields (e.g. remoteAccessProviders[*].password)
+  // BEFORE writing. Without this, every PATCH from the UI would regress the
+  // column to plaintext between deploy-day batch re-encrypt runs.
   const updateData: Record<string, unknown> = {
-    settings: newSettings,
+    settings: encryptColumnValueForWrite('partners', 'settings', newSettings),
     updatedAt: new Date()
   };
 
@@ -358,6 +535,12 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
+
+  // Invalidate the OAuth scope-policy cache so a change to
+  // `settings.oauth_scope_policy.mcp_allowed_scopes` takes effect on the
+  // next token mint without waiting for the 60s TTL.
+  clearPartnerScopePolicyCache(partner.id);
+  clearPartnerAllowlistCache(partner.id);
 
   const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
   writeRouteAudit(c, {
@@ -390,20 +573,35 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
   return c.json(partner);
 });
 
-orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
+orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
-  // Partner-scoped users may only update their own partner
-  if (auth.scope === 'partner' && auth.partnerId !== id) {
-    return c.json({ error: 'Forbidden' }, 403);
-  }
-
   const data = c.req.valid('json');
-  const updates = { ...data, updatedAt: new Date() };
+  const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
 
   if (Object.keys(data).length === 0) {
     return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  if (updates.settings !== undefined) {
+    // Wholesale settings write: keep an active security.ipAllowlist unless the
+    // caller explicitly clears it (see preserveIpAllowlistOnOmit).
+    if (updates.settings && typeof updates.settings === 'object' && !Array.isArray(updates.settings)) {
+      const [currentPartner] = await db
+        .select()
+        .from(partners)
+        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+        .limit(1);
+      if (currentPartner) {
+        updates.settings = preserveIpAllowlistOnOmit(
+          currentPartner.settings,
+          updates.settings as Record<string, unknown>,
+        );
+      }
+    }
+    // Encrypt secret-bearing fields in partners.settings before writing.
+    updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
   const [partner] = await db
@@ -414,6 +612,24 @@ orgRoutes.patch('/partners/:id', requireScope('system', 'partner'), requireOrgWr
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
+  }
+
+  // Invalidate the OAuth scope-policy cache (settings may have changed).
+  clearPartnerScopePolicyCache(partner.id);
+  // Settings writes can change security.ipAllowlist — drop the 30s cache so
+  // enforcement picks up the new list immediately (mirrors /partners/me).
+  if (data.settings !== undefined) {
+    clearPartnerAllowlistCache(partner.id);
+  }
+  // Only the terminal-ish states sever the fleet. `pending` is reversible
+  // (signup/billing limbo) and is already blocked for agents by the live
+  // tenant cascade (getActivePartner is strict) — severing here would expire
+  // enrollment keys irreversibly on a transient state.
+  if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
+    await revokePartnerTenantAccess(partner.id);
+  } else if ('status' in data && data.status === 'active') {
+    // Reactivation: restore agent tokens this partner's revoke suspended.
+    await restorePartnerTenantAccess(partner.id);
   }
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -439,13 +655,15 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
 
   const [partner] = await db
     .update(partners)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
     .returning();
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
+
+  await revokePartnerTenantAccess(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -510,11 +728,126 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     .offset(offset)
     .orderBy(organizations.createdAt);
 
+  // Apply the partner's preferred organization order, when one is set.
+  // - partner scope: load own partner settings.
+  // - system scope: only when a partnerId filter is in the query.
+  // - organization scope: list is at most one row, nothing to reorder.
+  let ordered = data;
+  let orderPartnerId: string | null = null;
+  if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
+  else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
+  if (orderPartnerId) {
+    try {
+      const settingsRow = await withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ settings: partners.settings })
+          .from(partners)
+          .where(and(eq(partners.id, orderPartnerId as string), isNull(partners.deletedAt)))
+          .limit(1);
+        return row;
+      });
+      const preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
+        ?.organizationOrder;
+      ordered = applyOrganizationOrder(data, preferredOrder);
+    } catch (err) {
+      // Soft-fail: if we can't load partner settings, fall back to createdAt
+      // order so the list still renders. Surface the failure to stderr and
+      // Sentry so a chronically broken partner_settings read is observable
+      // on-call rather than silently degrading every list response.
+      console.error('[orgs.list.partnerSettings] Failed to load partner settings for org ordering', {
+        partnerId: orderPartnerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c);
+    }
+  }
+
   return c.json({
-    data,
+    data: ordered,
     pagination: { page, limit, total: Number(count) }
   });
 });
+
+// PATCH /organizations/order — partner-level preferred order of org IDs.
+// Persists to partners.settings.organizationOrder. Idempotent; the request
+// body fully replaces the current order. Unknown IDs and IDs outside the
+// partner are silently dropped after server-side validation against the
+// partner's full org list.
+//
+// Path is a literal sub-segment (not /organizations/:id/...) so it must be
+// registered above the dynamic :id routes in this file; Hono matches in
+// registration order. Using `/order` rather than `/reorder` avoids any
+// literal-vs-param ambiguity with a future hypothetical `/:action`.
+const reorderOrganizationsSchema = z.object({
+  orderedIds: z.array(z.string().uuid()).max(10_000),
+});
+
+orgRoutes.patch(
+  '/organizations/order',
+  requireScope('partner'),
+  requirePartner,
+  requireOrgWrite,
+  zValidator('json', reorderOrganizationsSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { orderedIds } = c.req.valid('json');
+    const partnerId = auth.partnerId as string;
+
+    // Sanitize against the full set of non-deleted orgs that belong to this
+    // partner — NOT against auth.accessibleOrgIds. A partner-admin token with
+    // an RBAC-restricted org subset must still be able to persist an order
+    // that covers every partner org; otherwise legitimate orgs would be
+    // silently dropped from the saved order whenever the actor's scope is
+    // narrower than the partner's full org list.
+    //
+    // Use withSystemDbAccessContext to bypass RLS for this admin-level read;
+    // partner-scope authority has already been enforced by requireScope and
+    // requirePartner above.
+    const partnerOrgs = await withSystemDbAccessContext(async () =>
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.partnerId, partnerId), isNull(organizations.deletedAt)))
+    );
+    const validOrgIds = partnerOrgs.map((o) => o.id);
+    const sanitized = sanitizeOrganizationOrder(orderedIds, validOrgIds);
+
+    const [current] = await db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
+      .limit(1);
+    if (!current) {
+      return c.json({ error: 'Partner not found' }, 404);
+    }
+    const currentSettings = (current.settings as Record<string, unknown>) || {};
+    const newSettings = { ...currentSettings, organizationOrder: sanitized };
+
+    const [partner] = await db
+      .update(partners)
+      .set({
+        settings: encryptColumnValueForWrite('partners', 'settings', newSettings),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
+      .returning();
+    if (!partner) {
+      return c.json({ error: 'Partner not found' }, 404);
+    }
+
+    const auditOrgId = await resolveAuditOrgIdForPartner(partnerId);
+    writeRouteAudit(c, {
+      orgId: auditOrgId,
+      action: 'partner.organizationOrder.update',
+      resourceType: 'partner',
+      resourceId: partner.id,
+      resourceName: partner.name,
+      details: { count: sanitized.length },
+    });
+
+    return c.json({ organizationOrder: sanitized });
+  },
+);
 
 orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');
@@ -646,7 +979,11 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
   if (data.slug !== undefined) updates.slug = data.slug;
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
-  if (data.settings !== undefined) updates.settings = data.settings;
+  if (data.settings !== undefined) {
+    // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
+    // before writing organizations.settings. See encryptedColumnRegistry.
+    updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
+  }
   if (data.ssoConfig !== undefined) updates.ssoConfig = data.ssoConfig;
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
   if (data.contractStart !== undefined) {
@@ -666,6 +1003,13 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
+    await revokeOrganizationTenantAccess(organization.id);
+  } else if (data.status === 'active' || data.status === 'trial') {
+    // Reactivation: restore agent tokens this org's revoke suspended.
+    await restoreOrganizationTenantAccess(organization.id);
   }
 
   writeRouteAudit(c, {
@@ -695,13 +1039,15 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
   const [organization] = await db
     .update(organizations)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
     .where(conditions)
     .returning();
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
+
+  await revokeOrganizationTenantAccess(organization.id);
 
   writeRouteAudit(c, {
     orgId: organization.id,
@@ -720,8 +1066,15 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   const auth = c.get('auth') as AuthContext;
   const { orgId, organizationId, ...pagination } = c.req.valid('query');
 
-  // Support both orgId and organizationId parameter names
-  const effectiveOrgId = orgId || organizationId;
+  // Precedence: the explicit `organizationId` (the resource the page is
+  // managing) MUST win over `orgId`. `orgId` may be an *ambient* value the web
+  // client's fetchWithAuth auto-injects rather than a user-chosen scope;
+  // letting it shadow an explicit `organizationId` surfaced the wrong org's
+  // sites (issue #723). Access is still gated by ensureOrgAccess below — this
+  // is a precedence fix, not a tenant-isolation relaxation. See the orgId
+  // auto-injection in fetchWithAuth (apps/web/src/stores/auth.ts) for the
+  // mechanism that makes the ambient orgId show up here.
+  const effectiveOrgId = organizationId || orgId;
 
   const { page, limit, offset } = getPagination(pagination);
   let conditions;
@@ -752,7 +1105,21 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     }
   }
 
-  const whereCondition = conditions ?? sql`true`;
+  // Per-user site confinement. ensureOrgAccess (above) is org-axis only and
+  // RLS on `sites` is also org-axis only, so a site-confined user would
+  // otherwise enumerate every sibling site in the org. Intersect the org
+  // filter with allowedSiteIds. Mirrors the allowedSiteIds intersection in the
+  // GET /scripts/:id/executions list handler.
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  const allowedSiteIds = permissions?.allowedSiteIds;
+  if (allowedSiteIds?.length === 0) {
+    return c.json({ data: [], pagination: { page, limit, total: 0 } });
+  }
+
+  const baseCondition = conditions ?? sql`true`;
+  const whereCondition = allowedSiteIds
+    ? and(baseCondition, inArray(sites.id, allowedSiteIds))
+    : baseCondition;
 
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
@@ -825,6 +1192,11 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
   return c.json(site);
 });
 
@@ -852,9 +1224,21 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  // Encrypt secret-bearing fields inside sites.settings before writing —
+  // matches the registry walker so UI edits don't regress to plaintext.
+  const writeData: Record<string, unknown> = { ...data, updatedAt: new Date() };
+  if (writeData.settings !== undefined) {
+    writeData.settings = encryptColumnValueForWrite('sites', 'settings', writeData.settings);
+  }
+
   const [updated] = await db
     .update(sites)
-    .set({ ...data, updatedAt: new Date() })
+    .set(writeData)
     .where(eq(sites.id, id))
     .returning();
 
@@ -886,6 +1270,11 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
 
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
     return c.json({ error: 'Access to this site denied' }, 403);
   }
 

@@ -7,13 +7,15 @@ import {
   s1Actions,
   s1Agents,
   s1Integrations,
+  s1SiteMappings,
   s1Threats
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { decryptSecret } from '../services/secretCrypto';
-import { S1_THREAT_ACTIONS, SentinelOneClient, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
+import { decryptForColumn } from '../services/secretCrypto';
+import { S1_THREAT_ACTIONS, SentinelOneClient, SentinelOneHttpError, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
+import { redactLogMessage } from '../services/logRedaction';
 import { publishEvent } from '../services/eventBus';
 import {
   recordS1ActionDispatch,
@@ -73,6 +75,16 @@ interface IntegrationForSync {
   lastSyncAt: Date | null;
 }
 
+interface DeviceCandidates {
+  byHostname: Map<string, string>;
+  byIp: Map<string, string>;
+}
+
+interface AgentContext {
+  orgId: string;
+  deviceId: string | null;
+}
+
 function toObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -114,9 +126,46 @@ function isThreatAction(value: string): value is S1ThreatAction {
   return (S1_THREAT_ACTIONS as readonly string[]).includes(value);
 }
 
-function truncateError(err: unknown): string {
+export function truncateError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.slice(0, 2_000);
+  // Redact before truncating. S1 bearer tokens go in headers (not URL), but
+  // an HTTP error message can still echo back a Cookie or Authorization
+  // header — strip those before persisting to DB. For a SentinelOneHttpError
+  // the `.message` is body-free by construction (status line only), so the
+  // upstream response body never reaches the tenant-visible column.
+  return redactLogMessage(message).slice(0, 2_000);
+}
+
+/**
+ * Log full failure detail to the SERVER-SIDE log only. For an upstream HTTP
+ * error this includes the (redacted) response body that we deliberately keep
+ * out of the tenant-visible column (`s1_integrations.lastSyncError` /
+ * `s1_actions.error`). The tenant column is written separately via
+ * {@link truncateError}, which reads only the body-free `.message`.
+ */
+export function logSyncFailureServerSide(
+  context: Record<string, unknown>,
+  error: unknown
+): void {
+  if (error instanceof SentinelOneHttpError) {
+    console.error(
+      '[S1SyncJob] sync failed (upstream HTTP error)',
+      JSON.stringify({
+        ...context,
+        status: error.status,
+        // Redacted defense-in-depth: an upstream body could echo back a header.
+        responseBody: redactLogMessage(error.responseBody),
+      })
+    );
+    return;
+  }
+  console.error(
+    '[S1SyncJob] sync failed',
+    JSON.stringify({
+      ...context,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    })
+  );
 }
 
 export function dedupeThreatDetections<T extends { s1ThreatId: string }>(rows: T[]): T[] {
@@ -210,35 +259,6 @@ async function listActiveIntegrations(): Promise<IntegrationForSync[]> {
     .where(eq(s1Integrations.isActive, true));
 }
 
-async function mapDeviceCandidates(orgId: string): Promise<{
-  byHostname: Map<string, string>;
-  byIp: Map<string, string>;
-}> {
-  const rows = await db
-    .select({
-      deviceId: devices.id,
-      hostname: devices.hostname,
-      ipAddress: deviceNetwork.ipAddress
-    })
-    .from(devices)
-    .leftJoin(deviceNetwork, eq(deviceNetwork.deviceId, devices.id))
-    .where(eq(devices.orgId, orgId));
-
-  const byHostname = new Map<string, string>();
-  const byIp = new Map<string, string>();
-
-  for (const row of rows) {
-    if (row.hostname) {
-      byHostname.set(row.hostname.trim().toLowerCase(), row.deviceId);
-    }
-    if (row.ipAddress) {
-      byIp.set(row.ipAddress, row.deviceId);
-    }
-  }
-
-  return { byHostname, byIp };
-}
-
 /**
  * Match an S1 agent to a Breeze device by hostname (case-insensitive) then
  * by IP from any network interface. Returns null for unmatched agents, which
@@ -246,7 +266,7 @@ async function mapDeviceCandidates(orgId: string): Promise<{
  */
 export function resolveDeviceIdForAgent(
   agent: Record<string, unknown>,
-  candidates: { byHostname: Map<string, string>; byIp: Map<string, string> }
+  candidates: DeviceCandidates
 ): string | null {
   const hostname = typeof agent.computerName === 'string'
     ? agent.computerName.trim().toLowerCase()
@@ -272,11 +292,102 @@ export function resolveDeviceIdForAgent(
   return null;
 }
 
+export function normalizeS1SiteName(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+}
+
+export function resolveOrgIdForAgentSite(
+  siteName: unknown,
+  defaultOrgId: string,
+  siteOrgIds: Map<string, string>
+): string {
+  const normalized = normalizeS1SiteName(siteName);
+  if (!normalized) return defaultOrgId;
+  return siteOrgIds.get(normalized) ?? defaultOrgId;
+}
+
+export function resolveAgentSyncTarget(
+  agent: Record<string, unknown>,
+  defaultOrgId: string,
+  siteOrgIds: Map<string, string>,
+  candidatesByOrg: Map<string, DeviceCandidates>
+): AgentContext {
+  const orgId = resolveOrgIdForAgentSite(agent.siteName, defaultOrgId, siteOrgIds);
+  const candidates = candidatesByOrg.get(orgId) ?? { byHostname: new Map(), byIp: new Map() };
+  return {
+    orgId,
+    deviceId: resolveDeviceIdForAgent(agent, candidates)
+  };
+}
+
+export function resolveThreatSyncTarget(
+  agentId: string | null | undefined,
+  defaultOrgId: string,
+  agentContextByAgentId: Map<string, AgentContext>
+): AgentContext {
+  const agentContext = agentContextByAgentId.get(agentId ?? '');
+  return agentContext ?? { orgId: defaultOrgId, deviceId: null };
+}
+
+async function mapSiteOrgIds(integrationId: string): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      siteName: s1SiteMappings.siteName,
+      orgId: s1SiteMappings.orgId
+    })
+    .from(s1SiteMappings)
+    .where(eq(s1SiteMappings.integrationId, integrationId));
+
+  const result = new Map<string, string>();
+  for (const row of rows) {
+    const normalized = normalizeS1SiteName(row.siteName);
+    if (normalized) {
+      result.set(normalized, row.orgId);
+    }
+  }
+  return result;
+}
+
+async function mapDeviceCandidatesByOrg(orgIds: string[]): Promise<Map<string, DeviceCandidates>> {
+  const uniqueOrgIds = Array.from(new Set(orgIds));
+  if (uniqueOrgIds.length === 0) return new Map();
+
+  const rows = await db
+    .select({
+      orgId: devices.orgId,
+      deviceId: devices.id,
+      hostname: devices.hostname,
+      ipAddress: deviceNetwork.ipAddress
+    })
+    .from(devices)
+    .leftJoin(deviceNetwork, eq(deviceNetwork.deviceId, devices.id))
+    .where(inArray(devices.orgId, uniqueOrgIds));
+
+  const byOrg = new Map<string, DeviceCandidates>();
+  for (const orgId of uniqueOrgIds) {
+    byOrg.set(orgId, { byHostname: new Map(), byIp: new Map() });
+  }
+
+  for (const row of rows) {
+    const candidates = byOrg.get(row.orgId);
+    if (!candidates) continue;
+    if (row.hostname) {
+      candidates.byHostname.set(row.hostname.trim().toLowerCase(), row.deviceId);
+    }
+    if (row.ipAddress) {
+      candidates.byIp.set(row.ipAddress, row.deviceId);
+    }
+  }
+
+  return byOrg;
+}
+
 async function syncAgentsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
 ): Promise<{ fetched: number; upserted: number; truncated: boolean }> {
-  const candidates = await mapDeviceCandidates(integration.orgId);
+  const siteOrgIds = await mapSiteOrgIds(integration.id);
+  const candidatesByOrg = await mapDeviceCandidatesByOrg([integration.orgId, ...siteOrgIds.values()]);
   const agentResult = await client.listAgents(integration.lastSyncAt ?? undefined);
   const fetchedAgents = agentResult.results;
 
@@ -285,13 +396,18 @@ async function syncAgentsForIntegration(
     const batch = fetchedAgents.slice(i, i + 300);
 
     const values = batch.map((agent) => {
-      const resolvedDeviceId = resolveDeviceIdForAgent(agent as unknown as Record<string, unknown>, candidates);
+      const target = resolveAgentSyncTarget(
+        agent as unknown as Record<string, unknown>,
+        integration.orgId,
+        siteOrgIds,
+        candidatesByOrg
+      );
       const threatCount = Number(agent.activeThreats ?? 0);
       return {
-        orgId: integration.orgId,
+        orgId: target.orgId,
         integrationId: integration.id,
         s1AgentId: agent.id,
-        deviceId: resolvedDeviceId,
+        deviceId: target.deviceId,
         status: agent.isActive === false ? 'offline' : 'online',
         infected: agent.infected === true,
         threatCount: Number.isFinite(threatCount) ? Math.max(0, Math.round(threatCount)) : 0,
@@ -348,18 +464,19 @@ async function syncThreatsForIntegration(
   const agentRows = await db
     .select({
       s1AgentId: s1Agents.s1AgentId,
+      orgId: s1Agents.orgId,
       deviceId: s1Agents.deviceId
     })
     .from(s1Agents)
     .where(eq(s1Agents.integrationId, integration.id));
 
-  const deviceIdByAgentId = new Map<string, string | null>();
+  const agentContextByAgentId = new Map<string, AgentContext>();
   for (const row of agentRows) {
-    deviceIdByAgentId.set(row.s1AgentId, row.deviceId);
+    agentContextByAgentId.set(row.s1AgentId, { orgId: row.orgId, deviceId: row.deviceId });
   }
 
   const emitSince = integration.lastSyncAt ?? new Date(Date.now() - (24 * 60 * 60 * 1000));
-  const threatsToEmit: Array<{ s1ThreatId: string; severity: string; deviceId: string | null; detectedAt: Date | null }> = [];
+  const threatsToEmit: Array<{ s1ThreatId: string; orgId: string; severity: string; deviceId: string | null; detectedAt: Date | null }> = [];
 
   let upserted = 0;
   for (let i = 0; i < fetchedThreats.length; i += 300) {
@@ -369,20 +486,22 @@ async function syncThreatsForIntegration(
       const resolvedAt = toDateOrNull(threat.resolvedAt);
       const status = normalizeThreatStatus(threat.mitigationStatus);
       const severity = normalizeSeverity(threat.threatSeverity);
+      const target = resolveThreatSyncTarget(threat.agentId, integration.orgId, agentContextByAgentId);
 
       if (status === 'active' && detectedAt && detectedAt >= emitSince) {
         threatsToEmit.push({
           s1ThreatId: threat.id,
+          orgId: target.orgId,
           severity,
-          deviceId: deviceIdByAgentId.get(threat.agentId ?? '') ?? null,
+          deviceId: target.deviceId,
           detectedAt
         });
       }
 
       return {
-        orgId: integration.orgId,
+        orgId: target.orgId,
         integrationId: integration.id,
-        deviceId: deviceIdByAgentId.get(threat.agentId ?? '') ?? null,
+        deviceId: target.deviceId,
         s1ThreatId: threat.id,
         classification: threat.classification ?? null,
         severity,
@@ -433,7 +552,7 @@ async function syncThreatsForIntegration(
     try {
       await publishEvent(
         's1.threat_detected',
-        integration.orgId,
+        threat.orgId,
         {
           integrationId: integration.id,
           s1ThreatId: threat.s1ThreatId,
@@ -487,7 +606,7 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
     };
   }
 
-  const token = decryptSecret(integration.apiTokenEncrypted);
+  const token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
   if (!token) {
     throw new Error('SentinelOne integration is missing a decryptable API token');
   }
@@ -498,10 +617,12 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
   });
 
   try {
-    const [agentResult, threatResult] = await Promise.all([
-      data.syncAgents ? syncAgentsForIntegration(integration, client) : Promise.resolve({ fetched: 0, upserted: 0, truncated: false }),
-      data.syncThreats ? syncThreatsForIntegration(integration, client) : Promise.resolve({ fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false })
-    ]);
+    const agentResult = data.syncAgents
+      ? await syncAgentsForIntegration(integration, client)
+      : { fetched: 0, upserted: 0, truncated: false };
+    const threatResult = data.syncThreats
+      ? await syncThreatsForIntegration(integration, client)
+      : { fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false };
 
     const wasTruncated = agentResult.truncated || threatResult.truncated;
     await db
@@ -524,6 +645,10 @@ async function processSyncIntegration(data: SyncIntegrationJobData) {
       truncated: wasTruncated
     };
   } catch (error) {
+    // Full detail (including the upstream response body, redacted) goes to the
+    // SERVER-SIDE log only. The tenant-visible column gets a body-free message
+    // via truncateError — a SentinelOneHttpError's `.message` carries no body.
+    logSyncFailureServerSide({ integrationId: integration.id, orgId: integration.orgId }, error);
     try {
       await db
         .update(s1Integrations)
@@ -602,7 +727,7 @@ async function processPollActions() {
   for (const integration of integrations) {
     let token: string | null;
     try {
-      token = decryptSecret(integration.apiTokenEncrypted);
+      token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
     } catch (cryptoError) {
       // Permanent failure — don't retry actions tied to this org
       clientByOrg.set(integration.orgId, null);
@@ -719,7 +844,10 @@ async function processPollActions() {
         }
       }
     } catch (error) {
-      console.error('[S1SyncJob] Action status polling failed:', error);
+      // Full detail (incl. redacted upstream body) → server-side log only. The
+      // tenant-visible s1_actions.error is set via applyPollFailure →
+      // truncateError, which reads the body-free `.message`.
+      logSyncFailureServerSide({ actionId: action.id, orgId: action.orgId }, error);
       const failure = applyPollFailure(action.payload, error);
       const nextStatus: S1ActionStatus = failure.shouldFail ? 'failed' : 'in_progress';
 
@@ -934,7 +1062,7 @@ export async function dispatchS1ThreatAction(
     throw new Error('SentinelOne integration not found');
   }
 
-  const token = decryptSecret(integration.apiTokenEncrypted);
+  const token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
   if (!token) {
     throw new Error('SentinelOne integration token is missing or invalid');
   }
@@ -974,7 +1102,7 @@ export async function dispatchS1Isolation(
     throw new Error('SentinelOne integration not found');
   }
 
-  const token = decryptSecret(integration.apiTokenEncrypted);
+  const token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);
   if (!token) {
     throw new Error('SentinelOne integration token is missing or invalid');
   }

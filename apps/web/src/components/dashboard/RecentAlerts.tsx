@@ -92,7 +92,7 @@ export default function RecentAlerts() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Alerts</h3>
+          <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View all
           </a>
@@ -116,7 +116,7 @@ export default function RecentAlerts() {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Alerts</h3>
+          <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View all
           </a>
@@ -138,7 +138,7 @@ export default function RecentAlerts() {
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Recent Alerts</h3>
+        <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
         <a href="/alerts" className="text-sm text-primary hover:underline">
           View all
         </a>

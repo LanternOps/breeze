@@ -36,12 +36,13 @@ func TestAuthenticateRecoverySession(t *testing.T) {
 				SnapshotID:   "db-snapshot-1",
 				TargetConfig: map[string]any{},
 				Download: &AuthenticatedDownloadDescriptor{
-					Type:            "breeze_proxy",
-					Method:          "GET",
-					URL:             server.URL + "/api/v1/backup/bmr/recover/download",
-					PathQueryParam:  "path",
-					TokenQueryParam: "token",
-					PathPrefix:      "snapshots/provider-snapshot-1",
+					Type:              "breeze_proxy",
+					Method:            "GET",
+					URL:               server.URL + "/api/v1/backup/bmr/recover/download",
+					PathQueryParam:    "path",
+					TokenHeaderName:   "authorization",
+					TokenHeaderFormat: "Bearer <recovery-token>",
+					PathPrefix:        "snapshots/provider-snapshot-1",
 				},
 				Snapshot: &AuthenticatedSnapshot{
 					ID:         "snapshot-db-id",
@@ -182,12 +183,13 @@ func TestRunRecoveryWithToken_UsesAuthenticatedBootstrap(t *testing.T) {
 						},
 					},
 					Download: &AuthenticatedDownloadDescriptor{
-						Type:            "breeze_proxy",
-						Method:          "GET",
-						URL:             server.URL + "/api/v1/backup/bmr/recover/download",
-						PathQueryParam:  "path",
-						TokenQueryParam: "token",
-						PathPrefix:      "snapshots/provider-snapshot-1",
+						Type:              "breeze_proxy",
+						Method:            "GET",
+						URL:               server.URL + "/api/v1/backup/bmr/recover/download",
+						PathQueryParam:    "path",
+						TokenHeaderName:   "authorization",
+						TokenHeaderFormat: "Bearer <recovery-token>",
+						PathPrefix:        "snapshots/provider-snapshot-1",
 					},
 					Snapshot: &AuthenticatedSnapshot{
 						ID:         "snapshot-db-id",
@@ -196,8 +198,12 @@ func TestRunRecoveryWithToken_UsesAuthenticatedBootstrap(t *testing.T) {
 				},
 			})
 		case "/api/v1/backup/bmr/recover/download":
-			if got := r.URL.Query().Get("token"); got != "brz_rec_test" {
+			if got := r.Header.Get("Authorization"); got != "Bearer brz_rec_test" {
 				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
+			if got := r.URL.Query().Get("token"); got != "" {
+				http.Error(w, "token must not be in query", http.StatusBadRequest)
 				return
 			}
 			if got := r.URL.Query().Get("path"); got != "snapshots/provider-snapshot-1/manifest.json" {

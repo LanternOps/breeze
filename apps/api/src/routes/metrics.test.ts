@@ -274,4 +274,80 @@ describe('metrics routes', () => {
     );
     expect(body.backup_operations.low_readiness_devices).toBe(3);
   });
+
+  it('records anomaly counters with tenant attribution (non-production)', async () => {
+    // metricsRoutes is already imported in beforeEach, which registers the
+    // anomaly recorder; importing anomalyMetrics after that resolves to the
+    // same module instance under the current resetModules state.
+    const anomaly = await import('../services/anomalyMetrics');
+    anomaly.recordFailedLogin('invalid_password', 'org-1');
+    anomaly.recordFailedLogin('invalid_password', 'org-1');
+    anomaly.recordFailedLogin('rate_limited_ip');
+    anomaly.recordAgentEnrollment('success', 'partner-1');
+    anomaly.recordAgentEnrollment('denied');
+    anomaly.recordCommandDispatch('reboot', 'user', 'org-1');
+    anomaly.recordCommandDispatch('script', 'system');
+
+    const res = await app.request('/metrics', {
+      headers: { Authorization: 'Bearer token' }
+    });
+    const body = await res.text();
+
+    expect(
+      getMetricLine(body, 'breeze_failed_logins_total', { reason: 'invalid_password', tenant: 'org-1' })?.endsWith(' 2')
+    ).toBe(true);
+    // No tenant id supplied → 'unknown' (not redacted) outside production.
+    expect(
+      getMetricLine(body, 'breeze_failed_logins_total', { reason: 'rate_limited_ip', tenant: 'unknown' })?.endsWith(' 1')
+    ).toBe(true);
+    expect(
+      getMetricLine(body, 'breeze_agent_enrollments_total', { result: 'success', tenant: 'partner-1' })?.endsWith(' 1')
+    ).toBe(true);
+    expect(
+      getMetricLine(body, 'breeze_agent_enrollments_total', { result: 'denied', tenant: 'unknown' })?.endsWith(' 1')
+    ).toBe(true);
+    expect(
+      getMetricLine(body, 'breeze_commands_dispatched_total', { type: 'reboot', actor: 'user', tenant: 'org-1' })?.endsWith(' 1')
+    ).toBe(true);
+    expect(
+      getMetricLine(body, 'breeze_commands_dispatched_total', { type: 'script', actor: 'system', tenant: 'unknown' })?.endsWith(' 1')
+    ).toBe(true);
+  });
+
+  it('redacts the tenant label on anomaly counters in production', async () => {
+    const prevNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    process.env.METRICS_SCRAPE_TOKEN = 'test-scrape-token';
+    vi.resetModules();
+    try {
+      const metricsModule = await import('./metrics');
+      const anomaly = await import('../services/anomalyMetrics');
+      anomaly.recordFailedLogin('invalid_password', 'org-secret');
+      anomaly.recordAgentEnrollment('success', 'partner-secret');
+      anomaly.recordCommandDispatch('reboot', 'user', 'org-secret');
+
+      const prodApp = new Hono();
+      prodApp.route('/', metricsModule.metricsRoutes);
+      const res = await prodApp.request('/scrape', {
+        headers: { Authorization: 'Bearer test-scrape-token' }
+      });
+      const body = await res.text();
+
+      // Tenant ids must not leak into Prometheus labels in production.
+      expect(body).not.toContain('org-secret');
+      expect(body).not.toContain('partner-secret');
+      expect(
+        getMetricLine(body, 'breeze_failed_logins_total', { reason: 'invalid_password', tenant: 'redacted' })?.endsWith(' 1')
+      ).toBe(true);
+      expect(
+        getMetricLine(body, 'breeze_agent_enrollments_total', { result: 'success', tenant: 'redacted' })?.endsWith(' 1')
+      ).toBe(true);
+      expect(
+        getMetricLine(body, 'breeze_commands_dispatched_total', { type: 'reboot', actor: 'user', tenant: 'redacted' })?.endsWith(' 1')
+      ).toBe(true);
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv;
+      vi.resetModules();
+    }
+  });
 });

@@ -23,6 +23,20 @@ AGENT_ENROLLMENT_SECRET, METRICS_SCRAPE_TOKEN, PUBLIC_API_URL,
 GRAFANA_ADMIN_PASSWORD
 ```
 
+### API refuses to boot: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production`
+
+**Cause**: This variable is the trust anchor that the API uses to verify signed release manifests before serving binaries (so a compromised GitHub release alone can't deliver tampered binaries). It is **required in production** for both `BINARY_SOURCE=github` and `BINARY_SOURCE=local`. Older `.env` templates shipped it empty, so upgrades can surface this on first boot.
+
+**Fix**: For the official Breeze releases, use the published trust anchor:
+
+```bash
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=
+```
+
+This is a **public** key (also embedded in the agent and CI), so it is safe to commit. Only change it if you build and sign your own binaries. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias.
+
+**Do not auto-rotate or overwrite this value.** It is a deliberately pinned trust anchor — automatically replacing it with a "new" key defeats the protection, since the source of that key becomes the thing an attacker targets. If a real signing-key rotation ever ships, trust both keys during the overlap by comma-separating them (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=old,new`) rather than replacing.
+
 ### TLS certificate not provisioning
 
 **Cause**: DNS not pointing to server, or ports 80/443 blocked.
@@ -145,6 +159,41 @@ docker compose -f docker/docker-compose.prod.yml exec api \
 # Check readiness
 curl http://localhost:3001/health/ready
 ```
+
+## Installer Issues
+
+### "Generate Link" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`
+
+**Cause**: The API container can't see a `PUBLIC_API_URL` or `API_URL` env var, so it has no base URL to mint the installer share link against. The bundled `docker-compose.yml` derives this from `BREEZE_DOMAIN` (since [#613](https://github.com/LanternOps/breeze/pull/613) / v0.65.7+), so this only bites custom or older compose files.
+
+**Fix**:
+1. Set `PUBLIC_API_URL=https://<your-domain>` in `/opt/breeze/.env` (or wherever your compose `.env` lives).
+2. If you use a custom compose file, explicitly map the variable into the `api` service. Docker Compose only forwards env vars to a container when they appear in that service's `environment:` block — having the value in `.env` is necessary but not sufficient.
+
+   ```yaml
+   api:
+     environment:
+       PUBLIC_API_URL: ${PUBLIC_API_URL}
+   ```
+3. `docker compose up -d api` to recreate the container.
+
+### "Generate Link" fails with `MSI build pipeline not reachable. Retry`
+
+**Cause**: The release-manifest verifier is rejecting the live MSI because the manifest's `repository` field is `LanternOps/breeze` but the code default expects `lanternops/breeze` (case mismatch). Fix is on `main` ([#867](https://github.com/LanternOps/breeze/pull/867)) and will ship in the next release after v0.67.0.
+
+**Fix** (workaround on v0.67.0): add to `.env` and map into the `api` service.
+
+```
+BINARY_GITHUB_REPOSITORY=LanternOps/breeze
+```
+
+```yaml
+api:
+  environment:
+    BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY}
+```
+
+Then `docker compose up -d api`. Same workaround unblocks **Download Installer**, which hits the same code path silently.
 
 ## Getting Help
 

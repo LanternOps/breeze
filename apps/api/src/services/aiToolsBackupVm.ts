@@ -15,6 +15,7 @@ import { eq, and, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -62,6 +63,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['targetDeviceId'],
     definition: {
       name: 'restore_as_vm',
       description: 'Restore a backup snapshot as a virtual machine on a target device.',
@@ -121,11 +123,13 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [targetDevice] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
+      // Site axis (app-layer only; RLS does NOT enforce it).
+      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -204,6 +208,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['targetDeviceId'],
     definition: {
       name: 'instant_boot_vm',
       description: 'Instant boot a backup snapshot as a VM on a target device.',
@@ -252,11 +257,13 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [targetDevice] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
+      // Site axis (app-layer only; RLS does NOT enforce it).
+      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -356,11 +363,18 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
           size: backupSnapshots.size,
           metadata: backupSnapshots.metadata,
           hardwareProfile: backupSnapshots.hardwareProfile,
+          deviceId: backupSnapshots.deviceId,
         })
         .from(backupSnapshots)
         .where(and(...snapshotConditions))
         .limit(1);
       if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      // Site axis (app-layer only; RLS does NOT enforce it). The snapshot is
+      // device-keyed and this returns CPU/memory/disk/OS metadata — gate on the
+      // source device's site, matching the sibling verify_mssql_backup pattern.
+      if (await deviceIdSiteDenied(auth, snapshot.deviceId)) {
+        return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      }
 
       const hardwareProfile = snapshot.hardwareProfile as {
         cpuCores?: number;

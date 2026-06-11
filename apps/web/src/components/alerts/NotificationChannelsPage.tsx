@@ -2,9 +2,110 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, Trash2, GripVertical, ArrowUpDown, ChevronDown, ChevronRight } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
+import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import { extractApiError } from '@/lib/apiError';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
+
+// Exported for unit-testing without mounting the full component.
+export async function runChannelTest(
+  channel: { id: string; name: string },
+  deps: { fetchChannels: () => Promise<void>; onUnauthorized: () => void }
+): Promise<void> {
+  try {
+    // T shape only informs isApiFailure/extractApiError; return value is unused.
+    await runAction<{ testResult?: { success: boolean; message?: string } }>({
+      request: () => fetchWithAuth(`/alerts/channels/${channel.id}/test`, { method: 'POST' }),
+      successMessage: `Test notification sent to "${channel.name}"`,
+      errorFallback: 'Channel test failed',
+      onUnauthorized: deps.onUnauthorized,
+    });
+  } catch (err) {
+    // runAction already surfaced an ActionError via toast. Skip the refetch on
+    // 401 — onUnauthorized is redirecting to /login and the page is being
+    // replaced; a second authenticated request would be noise.
+    if (err instanceof ActionError && err.status === 401) return;
+    // A non-ActionError escaped runAction (e.g. onUnauthorized threw, or a bug
+    // in this wrapper). runAction never toasted it — surface it so the failure
+    // is not silent (the exact class WS-A exists to remove). Mirrors the
+    // catch pattern used by the sibling handlers in this file.
+    if (!(err instanceof ActionError)) {
+      showToast({ message: err instanceof Error ? err.message : 'Channel test failed', type: 'error' });
+    }
+    // ActionError non-401: already toasted by runAction — fall through to refetch.
+  }
+  await deps.fetchChannels();
+}
+
+// Exported for unit-testing without mounting the full component.
+export async function runChannelSave(
+  opts: { url: string; method: string; payload: unknown; channelName: string; isCreate: boolean },
+  deps: { onUnauthorized: () => void }
+): Promise<void> {
+  const name = opts.channelName;
+  await runAction({
+    request: () => fetchWithAuth(opts.url, { method: opts.method, body: JSON.stringify(opts.payload) }),
+    successMessage: opts.isCreate
+      ? (name ? `Channel "${name}" created` : 'Channel created')
+      : (name ? `Channel "${name}" saved` : 'Channel saved'),
+    errorFallback: 'Failed to save channel',
+    onUnauthorized: deps.onUnauthorized,
+  });
+}
+
+// Exported for unit-testing without mounting the full component.
+export async function runChannelDelete(
+  channel: { id: string; name: string },
+  deps: { onUnauthorized: () => void }
+): Promise<void> {
+  await runAction({
+    request: () => fetchWithAuth(`/alerts/channels/${channel.id}`, { method: 'DELETE' }),
+    successMessage: `Channel "${channel.name}" deleted`,
+    errorFallback: 'Failed to delete channel',
+    onUnauthorized: deps.onUnauthorized,
+  });
+}
+
+// Exported for unit-testing without mounting the full component.
+export async function runRoutingRuleSave(
+  rule: { id?: string; name: string; priority: number; conditions: unknown; channelIds: string[]; enabled: boolean },
+  deps: { onUnauthorized: () => void }
+): Promise<void> {
+  const isEdit = !!rule.id;
+  const url = isEdit ? `/alerts/routing-rules/${rule.id}` : '/alerts/routing-rules';
+  const method = isEdit ? 'PATCH' : 'POST';
+  await runAction({
+    request: () => fetchWithAuth(url, {
+      method,
+      body: JSON.stringify({
+        name: rule.name,
+        priority: rule.priority,
+        conditions: rule.conditions,
+        channelIds: rule.channelIds,
+        enabled: rule.enabled,
+      }),
+    }),
+    successMessage: isEdit ? 'Routing rule saved' : 'Routing rule created',
+    errorFallback: 'Failed to save routing rule',
+    onUnauthorized: deps.onUnauthorized,
+  });
+}
+
+// Exported for unit-testing without mounting the full component.
+export async function runRoutingRuleDelete(
+  ruleId: string,
+  deps: { onUnauthorized: () => void }
+): Promise<void> {
+  await runAction({
+    request: () => fetchWithAuth(`/alerts/routing-rules/${ruleId}`, { method: 'DELETE' }),
+    successMessage: 'Routing rule deleted',
+    errorFallback: 'Failed to delete routing rule',
+    onUnauthorized: deps.onUnauthorized,
+  });
+}
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -38,10 +139,18 @@ export default function NotificationChannelsPage() {
   const fetchRoutingRules = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/alerts/routing-rules');
-      if (!response.ok) return;
+      if (!response.ok) {
+        // Routing rules are a secondary panel; don't block the page. Log
+        // to console so failures are still debuggable.
+        const data = await response.json().catch(() => null);
+        console.warn('[NotificationChannelsPage]', extractApiError(data, `Failed to fetch routing rules (HTTP ${response.status})`));
+        return;
+      }
       const data = await response.json();
       setRoutingRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
-    } catch { /* non-critical */ }
+    } catch (err) {
+      console.warn('[NotificationChannelsPage] fetchRoutingRules', err);
+    }
   }, []);
 
   const fetchChannels = useCallback(async () => {
@@ -54,7 +163,8 @@ export default function NotificationChannelsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch notification channels');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to fetch notification channels'));
       }
       const data = await response.json();
       setChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
@@ -86,24 +196,10 @@ export default function NotificationChannelsPage() {
   };
 
   const handleTest = async (channel: NotificationChannel) => {
-    try {
-      const response = await fetchWithAuth(`/alerts/channels/${channel.id}/test`, {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        throw new Error('Test failed');
-      }
-
-      // Refresh to update test status
-      await fetchChannels();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Test failed');
-    }
+    await runChannelTest(channel, {
+      fetchChannels,
+      onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+    });
   };
 
   const handleCloseModal = () => {
@@ -165,6 +261,23 @@ export default function NotificationChannelsPage() {
         }
         if (values.smsMessagingServiceSid?.trim()) {
           config.messagingServiceSid = values.smsMessagingServiceSid.trim();
+        }
+        break;
+      case 'pushover':
+        config = {
+          user: values.pushoverUser?.trim() ?? ''
+        };
+        if (values.pushoverToken?.trim()) {
+          config.token = values.pushoverToken.trim();
+        }
+        if (values.pushoverDevice?.trim()) {
+          config.device = values.pushoverDevice.trim();
+        }
+        if (values.pushoverSound?.trim()) {
+          config.sound = values.pushoverSound.trim();
+        }
+        if (typeof values.pushoverPriority === 'number') {
+          config.priority = values.pushoverPriority;
         }
         break;
     }
@@ -232,45 +345,45 @@ export default function NotificationChannelsPage() {
         base.smsFrom = config.from as string;
         base.smsMessagingServiceSid = config.messagingServiceSid as string;
         break;
+      case 'pushover':
+        base.pushoverToken = (config.token as string) ?? '';
+        base.pushoverUser = (config.user as string) ?? '';
+        base.pushoverDevice = (config.device as string) ?? '';
+        base.pushoverSound = (config.sound as string) ?? '';
+        if (typeof config.priority === 'number') {
+          base.pushoverPriority = config.priority as -2 | -1 | 0 | 1 | 2;
+        }
+        break;
     }
 
     return base;
   };
 
+  const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
+
   const handleSubmit = async (values: NotificationChannelFormValues) => {
     setSubmitting(true);
     setError(undefined);
 
+    const payload = transformFormToPayload(values);
+    const isCreate = modalMode === 'create';
+    const url = isCreate ? '/alerts/channels' : `/alerts/channels/${selectedChannel?.id}`;
+    const method = isCreate ? 'POST' : 'PUT';
+    const requestPayload = isCreate && currentOrgId ? { ...payload, orgId: currentOrgId } : payload;
+
     try {
-      const payload = transformFormToPayload(values);
-      const url =
-        modalMode === 'create'
-          ? '/alerts/channels'
-          : `/alerts/channels/${selectedChannel?.id}`;
-      const method = modalMode === 'create' ? 'POST' : 'PUT';
-
-      const requestPayload = modalMode === 'create' && currentOrgId
-        ? { ...payload, orgId: currentOrgId }
-        : payload;
-
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(requestPayload)
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save channel');
-      }
-
+      await runChannelSave(
+        { url, method, payload: requestPayload, channelName: selectedChannel?.name ?? '', isCreate },
+        { onUnauthorized }
+      );
       await fetchChannels();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
+      // ActionError non-401: runAction already toasted
     } finally {
       setSubmitting(false);
     }
@@ -281,22 +394,15 @@ export default function NotificationChannelsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/alerts/channels/${selectedChannel.id}`, {
-        method: 'DELETE'
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        throw new Error('Failed to delete channel');
-      }
-
+      await runChannelDelete(selectedChannel, { onUnauthorized });
       await fetchChannels();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
+      // ActionError non-401: runAction already toasted
     } finally {
       setSubmitting(false);
     }
@@ -304,38 +410,29 @@ export default function NotificationChannelsPage() {
 
   const handleSaveRoutingRule = async (rule: Omit<RoutingRule, 'id'> & { id?: string }) => {
     try {
-      const isEdit = !!rule.id;
-      const url = isEdit ? `/alerts/routing-rules/${rule.id}` : '/alerts/routing-rules';
-      const method = isEdit ? 'PATCH' : 'POST';
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify({
-          name: rule.name,
-          priority: rule.priority,
-          conditions: rule.conditions,
-          channelIds: rule.channelIds,
-          enabled: rule.enabled,
-        }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save routing rule');
-      }
+      await runRoutingRuleSave(rule, { onUnauthorized });
       await fetchRoutingRules();
       setShowRuleForm(false);
       setEditingRule(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save routing rule');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to save routing rule');
+      }
+      // ActionError non-401: runAction already toasted
     }
   };
 
   const handleDeleteRoutingRule = async (ruleId: string) => {
     try {
-      const response = await fetchWithAuth(`/alerts/routing-rules/${ruleId}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error('Failed to delete routing rule');
+      await runRoutingRuleDelete(ruleId, { onUnauthorized });
       await fetchRoutingRules();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete routing rule');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to delete routing rule');
+      }
+      // ActionError non-401: runAction already toasted
     }
   };
 
@@ -367,6 +464,7 @@ export default function NotificationChannelsPage() {
 
   return (
     <div className="space-y-6">
+      <AlertsTabStrip />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Notification Channels</h1>

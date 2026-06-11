@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { extractApiError } from '@/lib/apiError';
 
 export interface UserPreferences {
   theme?: 'light' | 'dark' | 'system';
@@ -194,19 +195,34 @@ function buildApiUrl(path: string): string {
   // Ensure path starts with /
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
 
-  // Remove only the exact "/api" prefix boundary to avoid "/api/v1/api/..."
-  // while preserving legitimate paths like "/api-keys".
+  // Remove only the exact "/api" or "/api/v1" prefix boundary to avoid
+  // both "/api/v1/api/..." and "/api/v1/v1/..." while preserving legitimate
+  // paths like "/api-keys". The "/api/v1/" case matters for server-stored
+  // URLs (e.g. users.avatar_url = "/api/v1/users/:id/avatar") that the SPA
+  // round-trips through buildApiUrl.
   const cleanPath = normalizedPath === '/api'
     ? ''
-    : normalizedPath.startsWith('/api/')
-      ? normalizedPath.slice(4)
-      : normalizedPath;
+    : normalizedPath === '/api/v1'
+      ? ''
+      : normalizedPath.startsWith('/api/v1/')
+        ? normalizedPath.slice(7)
+        : normalizedPath.startsWith('/api/')
+          ? normalizedPath.slice(4)
+          : normalizedPath;
 
   const apiHost = resolveApiHost();
   return `${apiHost}/api/v1${cleanPath}`;
 }
 
-async function requestTokenRefresh(): Promise<Tokens | null> {
+const REFRESH_LOCK_NAME = 'breeze-token-refresh';
+
+// One low-level /auth/refresh attempt. Returns the new tokens on success, or a
+// discriminated result so the caller can tell a benign concurrent race (server
+// reason 'refresh_raced', #1107) — which is retryable — apart from a hard
+// failure. A raced 401 means the winning sibling already rotated the SHARED
+// refresh cookie and the server deliberately did NOT clear it or kill the
+// session family, so a retry picks up the fresh cookie.
+async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean }> {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   const csrfToken = readCookie(CSRF_COOKIE_NAME);
   if (csrfToken) {
@@ -226,17 +242,54 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
       signal: controller.signal,
     });
   } catch {
-    return null;
+    return { tokens: null, raced: false };
   } finally {
     clearTimeout(timeout);
   }
 
-  if (!refreshResponse.ok) {
-    return null;
+  if (refreshResponse.ok) {
+    const { tokens } = await refreshResponse.json().catch(() => ({ tokens: undefined })) as { tokens?: Tokens };
+    return { tokens: tokens?.accessToken ? tokens : null, raced: false };
   }
 
-  const { tokens } = await refreshResponse.json() as { tokens?: Tokens };
-  return tokens?.accessToken ? tokens : null;
+  if (refreshResponse.status === 401) {
+    const body = await refreshResponse.json().catch(() => null) as { reason?: string } | null;
+    if (body?.reason === 'refresh_raced') {
+      return { tokens: null, raced: true };
+    }
+  }
+
+  return { tokens: null, raced: false };
+}
+
+// Serialize refresh across tabs AND across reloads via the Web Locks API.
+// Multiple browser contexts share one refresh cookie jar; without a lock they
+// can fire concurrent rotations that replay each other's just-revoked jti and
+// (pre-#1107) tripped reuse-detection, logging everyone out on a hard refresh.
+// Falls back to a direct call where Web Locks are unavailable (older browsers).
+async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined'
+    ? (navigator as Navigator & { locks?: LockManager }).locks
+    : undefined;
+  if (!locks?.request) {
+    return fn();
+  }
+  return locks.request(REFRESH_LOCK_NAME, fn) as Promise<T>;
+}
+
+async function requestTokenRefresh(): Promise<Tokens | null> {
+  return withRefreshLock(async () => {
+    const first = await refreshFetchOnce();
+    if (first.tokens) return first.tokens;
+    if (!first.raced) return null;
+
+    // Benign race (#1107): a sibling context won the rotation. Give the
+    // winner's rotated cookie a beat to settle in the shared jar, then retry
+    // exactly once. The retry sends the now-current cookie and succeeds.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const second = await refreshFetchOnce();
+    return second.tokens;
+  });
 }
 
 let tokenRefreshInFlight: Promise<Tokens | null> | null = null;
@@ -253,6 +306,32 @@ async function requestTokenRefreshShared(): Promise<Tokens | null> {
   return tokenRefreshInFlight;
 }
 
+/**
+ * Resolve when any in-flight token refresh has settled. Used by reload-class
+ * code paths (OrgSwitcher, SiteSwitcher) to avoid the post-reload page racing
+ * the pre-reload page on the same refresh cookie jti — see #950.
+ *
+ * The v0.67.0 launch-readiness security sweep (#900) introduced NX-claim
+ * refresh-token reuse-detection: only ONE concurrent /auth/refresh wins;
+ * the loser gets 401 AND has its refresh cookie cleared. If OrgSwitcher
+ * fires window.location.reload() while a refresh is mid-flight, the
+ * post-reload page hydrates fresh, its Astro islands fire /auth/refresh,
+ * lose the race, get the cookie cleared, and the user is bounced to /login.
+ *
+ * Returns immediately if no refresh is in flight. Swallows refresh errors —
+ * we only care about serialization; if the pre-reload refresh failed, the
+ * post-reload page will get its own fresh attempt with no race.
+ */
+export async function waitForPendingRefresh(): Promise<void> {
+  if (tokenRefreshInFlight) {
+    try {
+      await tokenRefreshInFlight;
+    } catch {
+      // Intentionally swallowed — see comment above.
+    }
+  }
+}
+
 export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   try {
     const tokens = await requestTokenRefreshShared();
@@ -262,6 +341,54 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Bootstraps the auth store after a Cloudflare Access redirect login.
+ *
+ * The server's GET /api/v1/auth/cf-access-login endpoint mints a Breeze
+ * session and sets the HttpOnly refresh cookie, but there's no JSON body
+ * for the SPA to consume since it's a 302 redirect. This helper completes
+ * the handshake:
+ *
+ *   1. Trade the refresh cookie for a fresh access token (`/auth/refresh`)
+ *   2. Fetch the user record (`/users/me`) with that token
+ *   3. Populate the store via `login(user, tokens)`
+ *
+ * Returns true if the store was populated; false if any step failed (the
+ * caller should fall back to the regular login form).
+ */
+export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
+  const tokens = await requestTokenRefreshShared();
+  if (!tokens?.accessToken) return false;
+
+  let meResponse: Response;
+  try {
+    meResponse = await fetch(buildApiUrl('/users/me'), {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${tokens.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+    });
+  } catch {
+    return false;
+  }
+
+  if (!meResponse.ok) return false;
+
+  const user = (await meResponse.json()) as User | null;
+  if (!user || !user.id) return false;
+
+  useAuthStore.getState().login(user, tokens);
+
+  // Mirror what LoginPage does after a successful password login: pull
+  // /users/me into the store and apply the theme to the DOM. Without
+  // this, dark mode reverts to default and the onboarding tour reads
+  // an empty preferences object on first render.
+  await fetchAndApplyPreferences();
+  return true;
 }
 
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
@@ -293,7 +420,12 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
   }
 
-  headers.set('Content-Type', 'application/json');
+  // Don't force a JSON content-type on FormData uploads — the browser must set
+  // `multipart/form-data` itself so it can append the boundary. Forcing JSON
+  // here strips the boundary and the server can't parse the body (avatar upload).
+  if (!(options.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   // Use caller-provided signal or create a 30-second timeout to prevent indefinite hangs
   const externalSignal = options.signal;
@@ -349,6 +481,25 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     }
   }
 
+  // 428 Precondition Required → role-level force_mfa gate fired. The user
+  // must enroll MFA before they can hit any protected endpoint (except
+  // the small allowlist on the API side: logout, /users/me, MFA setup).
+  // Bounce them to the forced-enrollment page unless they're already on it.
+  if (response.status === 428 && typeof window !== 'undefined') {
+    try {
+      const cloned = response.clone();
+      const body = await cloned.json();
+      if (body?.error === 'mfa_enrollment_required') {
+        const path = window.location.pathname;
+        if (path !== '/auth/mfa/setup') {
+          window.location.href = '/auth/mfa/setup?forced=1';
+        }
+      }
+    } catch {
+      // Not JSON or parse failed — surface as a normal 428 to caller
+    }
+  }
+
   return response;
 }
 
@@ -376,7 +527,7 @@ export async function apiLogin(email: string, password: string): Promise<{
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Login failed' };
+      return { success: false, error: extractApiError(data, 'Login failed') };
     }
 
     if (data.mfaRequired) {
@@ -420,7 +571,7 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'MFA verification failed' };
+      return { success: false, error: extractApiError(data, 'MFA verification failed') };
     }
 
     const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
@@ -464,7 +615,7 @@ export async function apiRegister(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Registration failed' };
+      return { success: false, error: extractApiError(data, 'Registration failed') };
     }
 
     return {
@@ -502,7 +653,7 @@ export async function apiRegisterPartner(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Registration failed' };
+      return { success: false, error: extractApiError(data, 'Registration failed') };
     }
 
     return {
@@ -590,10 +741,10 @@ export async function apiForgotPassword(email: string): Promise<{
       body: JSON.stringify({ email })
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
-      return { success: false, error: data.error };
+      return { success: false, error: extractApiError(data, 'Failed to send reset email') };
     }
 
     return { success: true };
@@ -611,15 +762,62 @@ export async function apiResetPassword(token: string, password: string): Promise
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
+      referrerPolicy: 'no-referrer',
       body: JSON.stringify({ token, password })
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
+    if (!response.ok) {
+      return { success: false, error: extractApiError(data, 'Failed to reset password') };
+    }
+
+    return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiVerifyEmail(token: string): Promise<{
+  success: boolean;
+  error?: 'invalid' | 'expired' | 'consumed' | string;
+  partnerId?: string;
+  email?: string;
+  autoActivated?: boolean;
+}> {
+  try {
+    const response = await fetch(buildApiUrl('/auth/verify-email'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+
+    const data = await response.json();
     if (!response.ok) {
       return { success: false, error: data.error };
     }
 
+    return {
+      success: true,
+      partnerId: data.partnerId,
+      email: data.email,
+      autoActivated: data.autoActivated,
+    };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiResendVerification(): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetchWithAuth(buildApiUrl('/auth/resend-verification'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      return { success: false, error: extractApiError(data, 'Failed to resend verification email') };
+    }
     return { success: true };
   } catch {
     return { success: false, error: 'Network error' };
@@ -640,7 +838,7 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to send SMS code' };
+      return { success: false, error: extractApiError(data, 'Failed to send SMS code') };
     }
 
     return { success: true };
@@ -649,20 +847,20 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
   }
 }
 
-export async function apiVerifyPhone(phoneNumber: string): Promise<{
+export async function apiVerifyPhone(phoneNumber: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
 }> {
   try {
     const response = await fetchWithAuth('/auth/phone/verify', {
       method: 'POST',
-      body: JSON.stringify({ phoneNumber })
+      body: JSON.stringify({ phoneNumber, currentPassword })
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to send verification code' };
+      return { success: false, error: extractApiError(data, 'Failed to send verification code') };
     }
 
     return { success: true };
@@ -671,20 +869,20 @@ export async function apiVerifyPhone(phoneNumber: string): Promise<{
   }
 }
 
-export async function apiConfirmPhone(phoneNumber: string, code: string): Promise<{
+export async function apiConfirmPhone(phoneNumber: string, code: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
 }> {
   try {
     const response = await fetchWithAuth('/auth/phone/confirm', {
       method: 'POST',
-      body: JSON.stringify({ phoneNumber, code })
+      body: JSON.stringify({ phoneNumber, code, currentPassword })
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to verify phone' };
+      return { success: false, error: extractApiError(data, 'Failed to verify phone') };
     }
 
     return { success: true };
@@ -693,23 +891,58 @@ export async function apiConfirmPhone(phoneNumber: string, code: string): Promis
   }
 }
 
-export async function apiEnableSmsMfa(): Promise<{
+export async function apiEnableSmsMfa(currentPassword: string): Promise<{
   success: boolean;
   recoveryCodes?: string[];
   error?: string;
 }> {
   try {
     const response = await fetchWithAuth('/auth/mfa/sms/enable', {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({ currentPassword })
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to enable SMS MFA' };
+      return { success: false, error: extractApiError(data, 'Failed to enable SMS MFA') };
     }
 
     return { success: true, recoveryCodes: data.recoveryCodes };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiPreviewInvite(token: string): Promise<{
+  success: boolean;
+  email?: string;
+  name?: string;
+  orgName?: string;
+  partnerName?: string;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(buildApiUrl('/auth/invite/preview'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      referrerPolicy: 'no-referrer',
+      body: JSON.stringify({ token }),
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `Preview unavailable (${response.status})` };
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      email: data.email,
+      name: data.name,
+      orgName: data.orgName,
+      partnerName: data.partnerName,
+    };
   } catch {
     return { success: false, error: 'Network error' };
   }
@@ -726,13 +959,14 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
+      referrerPolicy: 'no-referrer',
       body: JSON.stringify({ token, password })
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to accept invite' };
+      return { success: false, error: extractApiError(data, 'Failed to accept invite') };
     }
 
     return { success: true, user: data.user, tokens: data.tokens };

@@ -4,10 +4,16 @@ import { Hono } from 'hono';
 const queueCommandForExecutionMock = vi.fn();
 const queueBackupStopCommandMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
+const authzState = vi.hoisted(() => ({
+  allowedPermissions: new Set<string>(['*:*']),
+}));
+const SITE_A = '11111111-1111-4111-8111-111111111111';
+const SITE_B = '22222222-2222-4222-8222-222222222222';
+let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -67,13 +73,22 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.org_id',
+    siteId: 'devices.site_id',
     status: 'devices.status',
   },
 }));
 
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) => {
+    if (
+      !authzState.allowedPermissions.has('*:*') &&
+      !authzState.allowedPermissions.has(`${resource}:${action}`)
+    ) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
@@ -100,10 +115,21 @@ describe('restore routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockImplementation(() => chainMock([]));
+    insertMock.mockReset();
+    insertMock.mockImplementation(() => chainMock([]));
+    updateMock.mockReset();
+    updateMock.mockImplementation(() => chainMock([]));
+    deleteMock.mockReset();
+    deleteMock.mockImplementation(() => chainMock([]));
+    permissionsState = undefined;
+    authzState.allowedPermissions.clear();
+    authzState.allowedPermissions.add('*:*');
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
-        user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+        user: { id: 'user-1', email: 'test@example.com', name: 'Test User', isPlatformAdmin: false },
         scope: 'organization',
         orgId: 'org-1',
         partnerId: null,
@@ -112,9 +138,73 @@ describe('restore routes', () => {
         orgCondition: () => undefined,
         token: { sub: 'user-1', scope: 'organization' } as any,
       });
+      if (permissionsState) {
+        c.set('permissions', permissionsState);
+      }
       await next();
     });
     app.route('/', restoreRoutes);
+  });
+
+  it('denies an explicit out-of-scope restore device filter for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    selectMock.mockReturnValueOnce(chainMock([
+      { id: 'device-in', siteId: SITE_A },
+    ]));
+
+    const res = await app.request('/restore?deviceId=device-out');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('narrows restore job lists to allowed target device sites for site-restricted users', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const allowedDevicesChain = chainMock([
+      { id: 'device-in', siteId: SITE_A },
+      { id: 'device-out', siteId: SITE_B },
+    ]);
+    const restoreChain = chainMock([makeRestoreJob({ id: 'restore-in', deviceId: 'device-in' })]);
+    selectMock
+      .mockReturnValueOnce(allowedDevicesChain)
+      .mockReturnValueOnce(restoreChain);
+
+    const res = await app.request('/restore');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+    expect(restoreChain.where).toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps unrestricted restore list behavior unchanged', async () => {
+    const restoreChain = chainMock([
+      makeRestoreJob({ id: 'restore-in', deviceId: 'device-in' }),
+      makeRestoreJob({ id: 'restore-out', deviceId: 'device-out' }),
+    ]);
+    selectMock.mockReturnValueOnce(restoreChain);
+
+    const res = await app.request('/restore');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(2);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies restore creation without backup read permission even when device execution is allowed', async () => {
+    authzState.allowedPermissions.clear();
+    authzState.allowedPermissions.add('devices:execute');
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('creates a restore job and persists the queued command id', async () => {
@@ -442,3 +532,24 @@ describe('restore routes', () => {
     expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
   });
 });
+
+function makeRestoreJob(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'restore-1',
+    snapshotId: 'snap-db-1',
+    deviceId: 'device-1',
+    restoreType: 'full',
+    selectedPaths: [],
+    status: 'running',
+    targetPath: null,
+    startedAt: null,
+    completedAt: null,
+    restoredSize: null,
+    restoredFiles: null,
+    targetConfig: null,
+    commandId: null,
+    createdAt: new Date('2026-04-01T00:00:00Z'),
+    updatedAt: new Date('2026-04-01T00:00:00Z'),
+    ...overrides,
+  };
+}

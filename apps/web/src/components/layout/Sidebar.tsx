@@ -32,15 +32,19 @@ import {
   ScanSearch,
   Usb,
   MessagesSquare,
+  Ticket,
   Key,
   X,
   Cloud,
   ShieldEllipsis,
+  UserX,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth } from '../../stores/auth';
 import { WEB_VERSION } from '../../lib/version';
+import { semverCompare } from '@breeze/shared';
+import { getJwtClaims } from '../../lib/authScope';
 import BrandHeader from './BrandHeader';
 
 interface SidebarProps {
@@ -72,7 +76,12 @@ function useCurrentPath(initialPath: string): string {
 // ---------------------------------------------------------------------------
 // Nav item type
 // ---------------------------------------------------------------------------
-type NavItem = { name: string; href: string; icon: React.ComponentType<{ className?: string }> };
+type NavItem = {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badgeKind?: 'deletion-requests';
+};
 
 // ---------------------------------------------------------------------------
 // Top-level items (always visible, 6-8 max)
@@ -81,6 +90,7 @@ const topLevelNav: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', href: '/devices', icon: Monitor },
   { name: 'Alerts', href: '/alerts', icon: Bell },
+  { name: 'Tickets', href: '/tickets', icon: Ticket },
   { name: 'Incidents', href: '/incidents', icon: ShieldAlert },
   { name: 'Remote Access', href: '/remote', icon: Terminal },
   { name: 'Scripts', href: '/scripts', icon: FileCode },
@@ -114,6 +124,8 @@ const navSections: NavSection[] = [
     items: [
       { name: 'Network Monitor', href: '/monitoring', icon: Activity },
       { name: 'Security', href: '/security', icon: ShieldCheck },
+      { name: 'DNS Security', href: '/dns-security', icon: Network },
+      { name: 'PAM', href: '/pam', icon: KeyRound },
       { name: 'Sensitive Data', href: '/sensitive-data', icon: ScanSearch },
       { name: 'Peripherals', href: '/peripherals', icon: Usb },
       { name: 'AI Risk Engine', href: '/ai-risk', icon: BrainCircuit },
@@ -160,6 +172,7 @@ const navSections: NavSection[] = [
       { name: 'Users', href: '/settings/users', icon: Users },
       { name: 'Roles', href: '/settings/roles', icon: KeyRound },
       { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
+      { name: 'Deletion requests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests' },
     ],
   },
 ];
@@ -215,6 +228,27 @@ function sectionForHref(href: string): string | null {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Badge counts (admin-only nav signals). Returns undefined while loading or
+// when the caller has no permission (silently swallowed).
+// ---------------------------------------------------------------------------
+function useDeletionRequestsBadge(): number | undefined {
+  const [count, setCount] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    fetchWithAuth('/admin/account-deletion-requests/pending-count')
+      .then(async (r) => {
+        if (cancelled) return;
+        if (!r.ok) return; // 401/403 quietly suppresses the badge
+        const data = (await r.json().catch(() => ({}))) as { count?: number };
+        if (!cancelled) setCount(typeof data.count === 'number' ? data.count : 0);
+      })
+      .catch(() => { /* network error — leave badge hidden */ });
+    return () => { cancelled = true; };
+  }, []);
+  return count;
+}
+
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
@@ -229,36 +263,35 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
 
-  // Fetch API version once
   const [apiVersion, setApiVersion] = useState<string | null>(null);
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
   useEffect(() => {
+    let cancelled = false;
     fetchWithAuth('/system/version')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((data: { version: string }) => setApiVersion(data.version))
+      .then((data: { version: string; latest: string | null }) => {
+        if (cancelled) return;
+        setApiVersion(data.version);
+        setLatestVersion(data.latest);
+      })
       .catch((err) => {
+        if (cancelled) return;
         console.warn('[Sidebar] Failed to fetch API version:', err);
         setApiVersion('unavailable');
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Fetch partner branding for the top-left header. Skipped when the JWT identifies
   // a non-partner scope; falls through to the server (which will 403) when the scope
   // cannot be decoded.
   useEffect(() => {
-    // Decode the JWT scope without verification (safe browser-side, used only to avoid a known 403).
-    const token = useAuthStore.getState().tokens?.accessToken;
-    let scope: string | null = null;
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        scope = typeof payload.scope === 'string' ? payload.scope : null;
-      } catch {
-        // If decode fails, fall through and let the server respond (it will 403 for non-partner).
-      }
-    }
+    const { scope } = getJwtClaims();
     if (scope !== null && scope !== 'partner') return;
 
     let cancelled = false;
@@ -369,11 +402,17 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return sectionId === activeSectionId;
   }, [expandedSections, activeSectionId]);
 
+  // Pending deletion-requests count for the admin badge. Hook is unconditional,
+  // but the badge is only rendered next to nav items that opt in via badgeKind.
+  const deletionRequestsCount = useDeletionRequestsBadge();
+
   // --- Render a single nav item -------------------------------------------
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;
     const narrow = forMobileOverlay ? false : isNarrow;
+    const badgeCount = item.badgeKind === 'deletion-requests' ? deletionRequestsCount : undefined;
+    const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     return (
       <a
         key={item.name}
@@ -388,7 +427,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         )}
       >
         <item.icon className="h-5 w-5 flex-shrink-0" />
-        {labels && <span className="truncate">{item.name}</span>}
+        {labels && <span className="truncate flex-1">{item.name}</span>}
+        {labels && showBadge && (
+          <span
+            className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500/20 px-1.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
+            aria-label={`${badgeCount} pending`}
+          >
+            {badgeCount! > 99 ? '99+' : badgeCount}
+          </span>
+        )}
       </a>
     );
   };
@@ -499,7 +546,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
       {showLabels && (
         <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/50">
-          <p>Web {WEB_VERSION}{apiVersion ? ` · API ${apiVersion}` : ''}</p>
+          <p>
+            Web <VersionSpan version={WEB_VERSION} latest={latestVersion} component="Web" />
+            {apiVersion && apiVersion !== 'unavailable' && (
+              <>
+                {' · '}API <VersionSpan version={apiVersion} latest={latestVersion} component="API" />
+              </>
+            )}
+            {apiVersion === 'unavailable' && ' · API unavailable'}
+          </p>
         </div>
       )}
     </aside>
@@ -553,4 +608,40 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }
 
   return sidebarContent;
+}
+
+export function VersionSpan({
+  version,
+  latest,
+  component,
+}: {
+  version: string;
+  latest: string | null;
+  component: 'Web' | 'API';
+}) {
+  if (!latest) {
+    return <span title={`${component} ${version} — latest version unknown`}>{version}</span>;
+  }
+  const cmp = semverCompare(version, latest);
+  if (cmp === null) {
+    return <span title={`${component} ${version} — latest version unknown`}>{version}</span>;
+  }
+  if (cmp < 0) {
+    return (
+      <span
+        className="text-red-500/80"
+        title={`${component} ${version} — update available (latest ${latest})`}
+      >
+        {version}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="text-green-500/70"
+      title={`${component} ${version} — up to date`}
+    >
+      {version}
+    </span>
+  );
 }

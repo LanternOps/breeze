@@ -1,4 +1,8 @@
 import 'dotenv/config';
+// Canonicalize NODE_ENV before any module reads it (some routes/services gate
+// on `NODE_ENV === 'production'` at import time). Must stay directly after
+// dotenv so .env is loaded first. See #917 (L-6).
+import './config/normalizeNodeEnv';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -13,18 +17,27 @@ import { bodyLimit } from 'hono/body-limit';
 import { securityMiddleware } from './middleware/security';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
+import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
 import { configRoutes } from './routes/config';
 import { externalServicesRoutes } from './routes/externalServices';
 import { agentRoutes } from './routes/agents';
 import { deviceRoutes } from './routes/devices';
+import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
 import { automationRoutes, automationWebhookRoutes } from './routes/automations';
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
+import { ticketsRoutes } from './routes/tickets';
+import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { orgRoutes } from './routes/orgs';
+import { oauthRoutes } from './routes/oauth';
+import { wellKnownRoutes } from './routes/oauthWellKnown';
+import { oauthInteractionRoutes } from './routes/oauthInteraction';
+import { connectedAppsRoutes } from './routes/connectedApps';
 import { userRoutes } from './routes/users';
 import { roleRoutes } from './routes/roles';
+import { permissionsCatalogRoutes } from './routes/permissionsCatalog';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { reportRoutes } from './routes/reports';
@@ -43,9 +56,13 @@ import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches/index';
+import { thirdPartyCatalogRoutes } from './routes/thirdPartyCatalog';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
 import { mobileRoutes } from './routes/mobile';
+import { approvalRoutes } from './routes/approvals';
+import { lifecycleRoutes, lifecycleAdminRoutes } from './routes/lifecycle';
+import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked';
 import { analyticsRoutes } from './routes/analytics';
 import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
@@ -86,6 +103,7 @@ import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
+import { mountInviteLandingRoutes } from './modules/mcpInvites';
 import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
@@ -101,7 +119,9 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { drRoutes } from './routes/dr';
-import { captureException } from './services/sentry';
+import { adminRoutes } from './routes/admin';
+import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
+import { captureException, flushSentry, initSentry } from './services/sentry';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
 
@@ -114,6 +134,13 @@ import { initializeAgentLogRetention, shutdownAgentLogRetention } from './jobs/a
 import { initializeLogCorrelationWorker, shutdownLogCorrelationWorker } from './jobs/logCorrelation';
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
+import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
+import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
+import {
+  initializeAuditChainVerifyWorker,
+  shutdownAuditChainVerifyWorker,
+} from './jobs/auditChainVerify';
+import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
@@ -128,11 +155,13 @@ import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/r
 import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
 import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
+import { initializeCveEnrichmentWorker, shutdownCveEnrichmentWorker } from './jobs/cveEnrichmentWorker';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
 import { initializeAuditBaselineJobs, shutdownAuditBaselineJobs } from './jobs/auditBaselineJobs';
 import { initializeBackupVerificationJobs, shutdownBackupVerificationJobs } from './jobs/backupVerificationJobs';
 import { initializeDnsSyncJob, shutdownDnsSyncJob } from './jobs/dnsSyncJob';
+import { registerDnsThreatAlertSubscriber } from './services/dnsThreatAlerts';
 import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
@@ -159,6 +188,9 @@ import {
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
+import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
+import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
@@ -166,6 +198,7 @@ import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
+import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { autoMigrate } from './db/autoMigrate';
@@ -227,7 +260,7 @@ app.use(
   secureHeaders({
     // Override defaults to match Breeze security policy:
     // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-    strictTransportSecurity: 'max-age=31536000; includeSubDomains',
+    strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
     // - X-Frame-Options: DENY (default is SAMEORIGIN)
     xFrameOptions: 'DENY',
     // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
@@ -236,6 +269,10 @@ app.use(
 );
 app.use('*', securityMiddleware());
 app.use('*', async (c, next) => {
+  // oidc-provider reads the raw Node IncomingMessage stream itself.
+  if (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/')) {
+    return next();
+  }
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (c.req.path.startsWith('/api/v1/dev/push')) {
     return bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'Binary too large (max 150MB)' }, 413) })(c, next);
@@ -345,13 +382,23 @@ app.route('/metrics', metricsRoutes);
 // Short link routes (enrollment short URLs at /s/<code>)
 app.route('/s', publicShortLinkRoutes);
 
-// MCP bootstrap activation routes (flag-gated). Mounted only when
-// MCP_BOOTSTRAP_ENABLED=true. Static import is fine — tsup bundles
-// statically regardless; the conditional mount is what matters.
-if (process.env.MCP_BOOTSTRAP_ENABLED === 'true') {
-  const { mountActivationRoutes, mountInviteLandingRoutes } = require('./modules/mcpBootstrap') as typeof import('./modules/mcpBootstrap');
-  mountActivationRoutes(app);
+// MCP bootstrap invite landing routes (flag-gated). Mount conditional on
+// IS_HOSTED so the routes only attach when the feature is on.
+// The module is statically imported above — tsup bundles it either way and
+// dynamic import broke both CJS production (top-level await) and ESM dev
+// (require()). The flag still gates whether the routes actually exist.
+// Note: mountActivationRoutes was removed in Phase 4 (activation flow deleted).
+if (process.env.IS_HOSTED === 'true') {
   mountInviteLandingRoutes(app);
+}
+
+// MCP OAuth routes (flag-gated). Mount conditional on MCP_OAUTH_ENABLED so
+// the catch-all only attaches when the feature is on.
+if (process.env.MCP_OAUTH_ENABLED === 'true') {
+  app.route('/oauth', oauthRoutes);
+  app.route('/.well-known', wellKnownRoutes);
+  app.route('/api/v1/oauth', oauthInteractionRoutes);
+  app.route('/api/v1/settings/connected-apps', connectedAppsRoutes);
 }
 
 // API routes
@@ -588,15 +635,19 @@ async function resolveFallbackOrgId(c: Context, path: string): Promise<string | 
   return null;
 }
 
-// Generic partner status guard — blocks non-active partners
+// Generic partner status guard — blocks non-active partners.
+// IMPORTANT: every branch MUST `return` the next()/partnerGuard() promise so
+// any Response (403 PARTNER_INACTIVE, 403 PARTNER_NOT_FOUND, 503 PARTNER_LOOKUP_UNAVAILABLE)
+// propagates back through Hono's compose chain. Discarding the return causes
+// Hono to throw "Context is not finalized" and the request collapses to 500.
 api.use('*', async (c, next) => {
   const path = c.req.path;
-  if (path.startsWith('/api/v1/auth')) { await next(); return; }
-  if (path === '/api/v1/config' || path.startsWith('/api/v1/config/')) { await next(); return; }
-  if (path.startsWith('/api/v1/users/me')) { await next(); return; }
-  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) { await next(); return; }
-  if (path.startsWith('/api/v1/agents/')) { await next(); return; }
-  await partnerGuard(c, next);
+  if (path.startsWith('/api/v1/auth')) return next();
+  if (path === '/api/v1/config' || path.startsWith('/api/v1/config/')) return next();
+  if (path.startsWith('/api/v1/users/me')) return next();
+  if (path === '/api/v1/partner/me' || path.startsWith('/api/v1/partner/me/')) return next();
+  if (path.startsWith('/api/v1/agents/')) return next();
+  return partnerGuard(c, next);
 });
 
 api.use('*', async (c, next) => {
@@ -659,15 +710,19 @@ api.route('/config', configRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
+api.route('/pam', pamRoutes);
 api.route('/scripts', scriptRoutes);
 api.route('/script-library', scriptLibraryRoutes);
 api.route('/automations/webhooks', automationWebhookRoutes);
 api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
+api.route('/tickets', ticketsRoutes);
+api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
+api.route('/permissions', permissionsCatalogRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/reports', reportRoutes);
@@ -694,9 +749,19 @@ api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
+api.route('/third-party-catalog', thirdPartyCatalogRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
+// Device-blocked check sits in front of mobile + approvals routes so a
+// blocked phone gets a structured 403 from EVERY mobile-app API call,
+// not just approval endpoints. The middleware only acts when the
+// X-Breeze-Mobile-Device-Id header is present, so non-mobile clients
+// (web dashboard, MCP) sail through unchanged.
+api.use('/mobile/*', mobileDeviceBlockedMiddleware);
 api.route('/mobile', mobileRoutes);
+api.route('/mobile/approvals', approvalRoutes);
+api.route('/', lifecycleRoutes);
+api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/discovery', discoveryRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
@@ -748,6 +813,8 @@ api.route('/browser-security', browserSecurityRoutes);
 api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
 api.route('/c2c', c2cRoutes);
 api.route('/dr', drRoutes);
+api.route('/admin', adminRoutes);
+api.route('/admin', accountDeletionAdminRoutes);
 
 app.route('/api/v1', api);
 
@@ -769,7 +836,11 @@ app.onError((err, c) => {
     );
   }
 
+  // Route unhandled errors to Sentry. Per-route `captureException(err, c)`
+  // calls only cover routes with explicit try/catch — anything that throws
+  // and falls through to onError was previously invisible to Sentry.
   console.error('Error:', err);
+  captureException(err, c);
   return c.json(
     {
       error: 'Internal Server Error',
@@ -790,6 +861,7 @@ export function getWorkerStatus(): Record<string, boolean> { return { ...workerS
 
 let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
+let auditRetryInterval: NodeJS.Timeout | null = null;
 
 function headersToRecord(headers: unknown): Record<string, string> {
   if (!headers) return {};
@@ -948,6 +1020,10 @@ async function initializeWorkers(): Promise<void> {
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
     ['changeLogRetention', initializeChangeLogRetention],
+    ['oauthCleanup', initializeOauthCleanupWorker],
+    ['auditRetention', initializeAuditRetentionWorker],
+    ['auditChainVerify', initializeAuditChainVerifyWorker],
+    ['tenantErasure', initializeTenantErasureWorker],
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['networkBaselineWorker', initializeNetworkBaselineWorker],
@@ -955,7 +1031,9 @@ async function initializeWorkers(): Promise<void> {
     ['monitorWorker', initializeMonitorWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
+    ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
     ['dnsSyncWorker', initializeDnsSyncJob],
+    ['dnsThreatAlertSubscriber', async () => { registerDnsThreatAlertSubscriber(); }],
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
     ['logForwardingWorker', initializeLogForwardingWorker],
@@ -975,6 +1053,9 @@ async function initializeWorkers(): Promise<void> {
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
+    ['pamJobs', initializePamJobs],
+    ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['ticketNotifyWorker', initializeTicketNotifyWorker],
   ];
 
   await Promise.allSettled(
@@ -1044,6 +1125,10 @@ async function runStartupChecks(): Promise<void> {
   if (REQUIRE_REDIS_ON_STARTUP && !redisOk) {
     throw new Error('Redis is required at startup but is unreachable');
   }
+
+  if (envFlag('MCP_OAUTH_ENABLED', false) && !redisOk) {
+    throw new Error('Redis is required at startup when MCP OAuth is enabled');
+  }
 }
 
 async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
@@ -1056,8 +1141,20 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
 
   stopTransferCleanup();
   getWebhookWorker().stop();
+  if (auditRetryInterval) {
+    clearInterval(auditRetryInterval);
+    auditRetryInterval = null;
+  }
 
   const shutdownTasks: Array<() => Promise<void>> = [
+    // Best-effort final drain of pending audit retries. Bounded by a hard
+    // 5s timeout so a stuck DB doesn't block the rest of shutdown.
+    async () => {
+      await Promise.race([
+        drainAuditRetryQueue().then(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    },
     shutdownLogForwardingWorker,
     shutdownPatchJobWorkers,
     shutdownBackupWorker,
@@ -1075,6 +1172,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownIncidentTimelineEnricher,
     shutdownIncidentCorrelationWorker,
     shutdownPatchComplianceReportWorker,
+    shutdownCveEnrichmentWorker,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,
@@ -1090,6 +1188,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownIPHistoryRetention,
     shutdownReliabilityRetention,
     shutdownChangeLogRetention,
+    shutdownOauthCleanupWorker,
+    shutdownAuditRetentionWorker,
+    shutdownAuditChainVerifyWorker,
+    shutdownTenantErasureWorker,
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
@@ -1105,6 +1207,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownOfflineDetector,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
+    shutdownPamJobs,
+    shutdownApprovalExpiryReaper,
+    shutdownTicketNotifyWorker,
     shutdownEventDispatcher,
     async () => getEventBus().close(),
     closeRedis,
@@ -1113,17 +1218,37 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       if (typeof closeDb === 'function') {
         await closeDb();
       }
-    }
+    },
+    // Drain any buffered Sentry events before the process exits (no-op if
+    // Sentry is disabled). Bounded internally by a 2s flush timeout.
+    () => flushSentry(),
   ];
+
+  // Stop accepting requests BEFORE tearing down workers/Redis/DB. Otherwise a
+  // heartbeat that arrives mid-shutdown hits an already-closed Postgres pool,
+  // returns HTTP 500, and permanently wedges the agent's heartbeat loop
+  // (cause of fleetwide false-offline after a restart).
+  if (server) {
+    const httpServer = server as unknown as import('http').Server;
+    // Make readiness fail so any load balancer stops routing to us.
+    readinessState.workersHealthy = false;
+    readinessState.checkedAt = new Date().toISOString();
+    httpServer.close();                 // stop accepting NEW connections
+    if (typeof httpServer.closeIdleConnections === 'function') {
+      httpServer.closeIdleConnections(); // drop idle keep-alive sockets now
+    }
+    // Bounded grace for in-flight requests to finish, then force-close stragglers
+    // so server.close() can't hang on keep-alive connections.
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Number(process.env.SHUTDOWN_DRAIN_MS ?? '5000'))
+    );
+    if (typeof httpServer.closeAllConnections === 'function') {
+      httpServer.closeAllConnections();
+    }
+  }
 
   const shutdownResults = await Promise.allSettled(shutdownTasks.map((task) => task()));
   const shutdownFailures = shutdownResults.filter((result) => result.status === 'rejected');
-
-  if (server) {
-    await new Promise<void>((resolve) => {
-      server?.close(() => resolve());
-    });
-  }
 
   if (shutdownFailures.length > 0) {
     console.error(`[shutdown] Completed with ${shutdownFailures.length} failure(s)`);
@@ -1166,6 +1291,11 @@ function installSignalHandlers(): void {
 async function bootstrap(): Promise<void> {
   console.log(`Breeze API starting on port ${port}...`);
 
+  // Initialize error reporting first so failures during the rest of startup
+  // (migrations, seeds, self-tests) and the global onError/unhandledRejection
+  // handlers are actually captured. No-op unless SENTRY_DSN is set.
+  initSentry();
+
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().
   const config = validateConfig();
@@ -1181,13 +1311,18 @@ async function bootstrap(): Promise<void> {
     await autoMigrate();
   }
 
+  try {
+    await bootstrapPlatformAdmins();
+  } catch (err) {
+    console.error('[startup] Platform admin bootstrap failed (non-fatal):', err);
+  }
+
   await runStartupChecks();
 
-  // Initialize MCP bootstrap module (no-op when MCP_BOOTSTRAP_ENABLED is false).
-  // Synchronous startup wait — if required envs are missing when the flag is
-  // on, checkMcpBootstrapStartup() throws here and aborts boot. This also
-  // eliminates the cold-start load-race where the first unauth request could
-  // see bootstrapModule === null and fall through to a 401.
+  // Initialize MCP bootstrap module. Loads auth tools (send_deployment_invites,
+  // configure_defaults) so they are ready before the first request. The unauth
+  // tools (create_tenant, verify_tenant, attach_payment_method) were deleted in
+  // Phase 3; the IS_HOSTED startup check is also gone.
   await initMcpBootstrapForStartup();
 
   try {
@@ -1226,12 +1361,33 @@ async function bootstrap(): Promise<void> {
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
+  const binarySource = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
   try {
     await runWithSystemDbAccess(async () => {
       await syncBinaries();
     });
   } catch (err) {
-    console.error('[startup] Binary sync failed (non-fatal):', err);
+    if (binarySource === 'local') {
+      console.error('[startup] Binary sync failed in BINARY_SOURCE=local mode (fatal):', err);
+      throw err;
+    }
+    console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
+  }
+
+  // Boot-time self-test for self-host BINARY_SOURCE=local: round-trip a
+  // synthetic manifest through sign + validate. If this fails, agent updates
+  // would silently 409 at runtime (#625). Fail fast so operators see the
+  // problem during `docker compose up` rather than after agents are stuck.
+  if ((process.env.BINARY_SOURCE || 'github').trim().toLowerCase() === 'local') {
+    try {
+      const { runManifestSelfTest } = await import('./services/binarySync.selftest');
+      await runWithSystemDbAccess(async () => {
+        await runManifestSelfTest();
+      });
+    } catch (err) {
+      console.error('[startup] Manifest signing self-test failed:', err);
+      throw err;
+    }
   }
 
   server = serve({
@@ -1246,6 +1402,20 @@ async function bootstrap(): Promise<void> {
 
   await initializeWorkers();
   initializeTransferCleanup();
+
+  // Periodically retry failed audit writes. The in-process queue is bounded
+  // (10k entries) and per-entry attempts are capped (3) with exponential
+  // backoff, so a long DB outage degrades to Sentry-capture rather than
+  // OOM. See `drainAuditRetryQueue` / `createAuditLogAsync` in
+  // `services/auditService.ts`.
+  auditRetryInterval = setInterval(() => {
+    void drainAuditRetryQueue().catch((err) => {
+      console.error('[audit-retry] drain failed:', err);
+    });
+  }, 30_000);
+  // Don't keep the event loop alive just for this timer.
+  auditRetryInterval.unref?.();
+
   installSignalHandlers();
 }
 

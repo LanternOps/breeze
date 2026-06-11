@@ -4,7 +4,8 @@ import { zValidator } from '@hono/zod-validator';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
-import { getDeviceWithOrgCheck, getPagination, asRecord, asString } from './helpers';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination, asRecord, asString } from './helpers';
 import { deviceIdParamSchema, serviceNameParamSchema, paginationQuerySchema } from './schemas';
 import type { ServiceInfo } from './types';
 
@@ -86,7 +87,10 @@ servicesRoutes.get(
     const { deviceId } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -138,7 +142,10 @@ servicesRoutes.get(
     const { deviceId, name } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -176,7 +183,10 @@ servicesRoutes.post(
     const { deviceId, name } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -194,7 +204,7 @@ servicesRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
       details: { name },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -221,7 +231,10 @@ servicesRoutes.post(
     const { deviceId, name } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -239,7 +252,7 @@ servicesRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
       details: { name },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });
@@ -266,7 +279,10 @@ servicesRoutes.post(
     const { deviceId, name } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -284,7 +300,7 @@ servicesRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.id,
       details: { name },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
       errorMessage: result.error
     });

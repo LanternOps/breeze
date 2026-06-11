@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 
@@ -17,6 +18,11 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     agentId: 'devices.agentId',
     agentTokenHash: 'devices.agentTokenHash',
+    previousTokenHash: 'devices.previousTokenHash',
+    previousTokenExpiresAt: 'devices.previousTokenExpiresAt',
+    watchdogTokenHash: 'devices.watchdogTokenHash',
+    previousWatchdogTokenHash: 'devices.previousWatchdogTokenHash',
+    previousWatchdogTokenExpiresAt: 'devices.previousWatchdogTokenExpiresAt',
     orgId: 'devices.orgId',
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
@@ -26,6 +32,7 @@ vi.mock('../db/schema', () => ({
     id: 'deviceCommands.id',
     deviceId: 'deviceCommands.deviceId',
     status: 'deviceCommands.status',
+    targetRole: 'deviceCommands.targetRole',
   },
   discoveryJobs: {
     id: 'discoveryJobs.id',
@@ -37,6 +44,13 @@ vi.mock('../db/schema', () => ({
     id: 'remoteSessions.id',
     deviceId: 'remoteSessions.deviceId',
     status: 'remoteSessions.status',
+  },
+  tunnelSessions: {
+    id: 'tunnelSessions.id',
+    deviceId: 'tunnelSessions.deviceId',
+    status: 'tunnelSessions.status',
+    errorMessage: 'tunnelSessions.errorMessage',
+    endedAt: 'tunnelSessions.endedAt',
   },
   scriptExecutions: {
     id: 'scriptExecutions.id',
@@ -81,6 +95,12 @@ vi.mock('./desktopWs', () => ({
   isDesktopSessionOwnedByAgent: vi.fn(() => true)
 }));
 
+vi.mock('./tunnelWs', () => ({
+  handleTunnelDataFromAgent: vi.fn(),
+  isTunnelOwnedByAgent: vi.fn(() => true),
+  registerTunnelOwnership: vi.fn(),
+}));
+
 vi.mock('../jobs/discoveryWorker', () => ({
   enqueueDiscoveryResults: vi.fn()
 }));
@@ -95,7 +115,16 @@ vi.mock('../jobs/monitorWorker', () => ({
 }));
 
 vi.mock('../services/redis', () => ({
-  isRedisAvailable: vi.fn(() => false)
+  isRedisAvailable: vi.fn(() => false),
+  getRedis: vi.fn(() => null)
+}));
+
+vi.mock('../services/viewerTokenRevocation', () => ({
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 5, resetAt: new Date() })
 }));
 
 vi.mock('../services/eventBus', () => ({
@@ -111,14 +140,38 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
 }));
 
+vi.mock('../services/auditService', () => ({
+  createAuditLogAsync: vi.fn().mockResolvedValue(undefined),
+  createAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
+  writeAuditEvent: vi.fn(),
+}));
+
+vi.mock('../services/tenantStatus', () => ({
+  isAgentTenantActive: vi.fn(async () => true),
+}));
+
 import { db } from '../db';
-import { createAgentWsHandlers } from './agentWs';
+import {
+  createAgentWsHandlers,
+  createAgentWsRoutes,
+  validateAgentToken,
+  __resetCrossTenantDropsForTest,
+  AGENT_WS_CAPABILITIES,
+} from './agentWs';
+import { isAgentTenantActive } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
 import { getActiveTerminalSession, handleTerminalOutput } from './terminalWs';
+import { registerTunnelOwnership } from './tunnelWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
+import { rateLimiter } from '../services/rate-limit';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 
 function wsMock() {
   return {
@@ -126,6 +179,53 @@ function wsMock() {
     close: vi.fn()
   };
 }
+
+describe('validateAgentToken — tenant-status gate', () => {
+  const TOKEN = 'brz_ws_test_token';
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    agentTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    watchdogTokenHash: null,
+    previousWatchdogTokenHash: null,
+    previousWatchdogTokenExpiresAt: null,
+    status: 'online',
+    agentTokenSuspendedAt: null,
+  };
+
+  function queueDeviceSelect(row: unknown | undefined) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) })),
+      })),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+  });
+
+  it('accepts a valid agent token for an active tenant', async () => {
+    queueDeviceSelect(deviceRow);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result).toEqual({ ok: true, ctx: { deviceId: 'device-1', orgId: 'org-1', role: 'agent' } });
+    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+  });
+
+  it('refuses the upgrade when the device tenant is not active', async () => {
+    queueDeviceSelect(deviceRow);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(false);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+});
 
 function selectOwnedCommandResult(rows: unknown[]) {
   return {
@@ -160,13 +260,66 @@ function selectWithInnerJoin(rows: unknown[]) {
 }
 
 function updateResult(rows: unknown[] = []) {
+  const returning = vi.fn().mockResolvedValue(rows);
   return {
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(rows),
-      returning: vi.fn().mockResolvedValue(rows),
+      where: vi.fn().mockReturnValue({ returning }),
+      returning,
     })
   };
 }
+
+describe('agent websocket handshake', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('advertises terminal_output_base64 in the connected message', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onOpen({}, ws as any);
+
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(payload.type).toBe('connected');
+    expect(payload.capabilities).toEqual([...AGENT_WS_CAPABILITIES]);
+  });
+
+  it('decodes base64 terminal_output and relays UTF-8 to the terminal consumer', async () => {
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(getActiveTerminalSession).mockReturnValue({
+      agentId: 'agent-123',
+      userId: 'user-1',
+      deviceId: 'device-123',
+      startedAt: new Date(),
+      lastPongAt: Date.now(),
+      userWs: wsMock() as any,
+    } as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    const base64Payload = Buffer.from('café\n', 'utf8').toString('base64');
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'terminal_output',
+        sessionId,
+        data: base64Payload,
+        encoding: 'base64',
+      }),
+    } as any, ws as any);
+
+    expect(vi.mocked(handleTerminalOutput)).toHaveBeenCalledWith(sessionId, 'café\n');
+  });
+});
 
 describe('agent websocket command results', () => {
   beforeEach(() => {
@@ -229,6 +382,39 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.update).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('rejects watchdog-targeted command results on the agent websocket', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-1',
+          type: 'update_agent',
+          payload: {},
+          deviceId: 'device-123',
+          targetRole: 'watchdog',
+        }
+      ]) as any);
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-1' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '33333333-3333-4333-8333-333333333333',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'spoofed'
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
@@ -329,6 +515,49 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.select).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('does not register tunnel ownership when a tunnel open result is not DB-bound to the authenticated device', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'tun-open-44444444-4444-4444-8444-444444444444',
+        status: 'completed'
+      })
+    } as any, ws as any);
+
+    expect(registerTunnelOwnership).not.toHaveBeenCalled();
+    expect(revokeViewerSession).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('registers tunnel ownership only after a DB-backed transition for the authenticated device', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([
+      { id: '44444444-4444-4444-8444-444444444444', deviceId: 'device-123' }
+    ]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'tun-open-44444444-4444-4444-8444-444444444444',
+        status: 'completed'
+      })
+    } as any, ws as any);
+
+    expect(registerTunnelOwnership).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444', 'agent-123');
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
@@ -589,5 +818,283 @@ describe('agent websocket command results', () => {
 
     expect(vi.mocked(enqueueSnmpPollResults)).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // H5: malformed term-* command_result is dropped without DB call
+  it('drops malformed term-* command_result without touching DB (H5)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Invalid status value — schema rejects before any DB lookup
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'term-start-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'totally-not-a-real-status',
+        result: { sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    // No ack on malformed fast-path messages — they are silently dropped after warn.
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Dropping malformed term-command_result'));
+    warnSpy.mockRestore();
+  });
+
+  it('drops malformed terminal_output without invoking handleTerminalOutput (H5)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Missing required `data` field
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'terminal_output',
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+      })
+    } as any, ws as any);
+
+    expect(vi.mocked(handleTerminalOutput)).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Dropping malformed terminal_output'));
+    warnSpy.mockRestore();
+  });
+
+  // M-D1: 10 cross-tenant drops within 5 min triggers warn
+  it('emits cross-tenant probe warning after threshold drops (M-D1)', async () => {
+    __resetCrossTenantDropsForTest();
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-malicious', preValidatedAgent);
+    const ws = wsMock();
+
+    // Owner mismatch: session belongs to a DIFFERENT agent
+    vi.mocked(getActiveTerminalSession).mockReturnValue({
+      agentId: 'other-agent',
+      userId: 'user-1',
+      deviceId: 'device-other',
+      startedAt: new Date(),
+      lastPongAt: Date.now(),
+      userWs: wsMock() as any,
+    } as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Send 10 schema-passing-but-ownership-failing terminal_output messages.
+    for (let i = 0; i < 10; i += 1) {
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'terminal_output',
+          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          data: 'probe',
+        })
+      } as any, ws as any);
+    }
+
+    // The probe-pattern warning is emitted exactly once after the threshold.
+    const probeWarnings = warnSpy.mock.calls.filter(call =>
+      typeof call[0] === 'string' && call[0].includes('cross-tenant probe pattern')
+    );
+    expect(probeWarnings.length).toBe(1);
+    expect(probeWarnings[0]?.[0]).toContain('agent=agent-malicious');
+    expect(probeWarnings[0]?.[0]).toContain('drops=10');
+    warnSpy.mockRestore();
+  });
+
+  // Task 18: 5 cross-tenant drops within 5 min auto-suspends the agent token.
+  describe('Task 18 — agent token auto-suspend on cross-tenant probe', () => {
+    it('suspends the agent token after SUSPEND_THRESHOLD (5) cross-tenant drops', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-abc', orgId: 'org-abc' };
+      const handlers = createAgentWsHandlers('agent-task18-suspend', preValidatedAgent);
+      const ws = wsMock();
+
+      // Owner mismatch: every terminal_output is for a session owned by
+      // somebody else, so each one increments the cross-tenant counter.
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+
+      // Capture the suspend UPDATE so we can assert it ran exactly once.
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Fire 5 probes — the 5th should trip the suspend.
+      for (let i = 0; i < 5; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+
+      // Let the fire-and-forget suspend microtask settle.
+      await new Promise((r) => setImmediate(r));
+
+      // The DB UPDATE fires once with the suspend columns set.
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      const updateArg = updateSet.mock.calls[0]?.[0];
+      expect(updateArg).toMatchObject({
+        agentTokenSuspendedReason: 'cross-tenant-probe',
+      });
+      expect(updateArg.agentTokenSuspendedAt).toBeInstanceOf(Date);
+
+      // Console log surfaced the suspension.
+      const suspendLogs = warnSpy.mock.calls.filter(call =>
+        typeof call[0] === 'string' && call[0].includes('auto-suspending agent token')
+      );
+      expect(suspendLogs.length).toBe(1);
+      expect(suspendLogs[0]?.[0]).toContain('device=device-abc');
+      expect(suspendLogs[0]?.[0]).toContain('drops=5');
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT suspend after only 4 drops (below the threshold)', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-not-yet', orgId: 'org-x' };
+      const handlers = createAgentWsHandlers('agent-task18-undercount', preValidatedAgent);
+      const ws = wsMock();
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      for (let i = 0; i < 4; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+
+      await new Promise((r) => setImmediate(r));
+
+      // No suspend yet — the counter is at 4, threshold is 5.
+      expect(updateSet).not.toHaveBeenCalled();
+      const suspendLogs = warnSpy.mock.calls.filter(call =>
+        typeof call[0] === 'string' && call[0].includes('auto-suspending agent token')
+      );
+      expect(suspendLogs.length).toBe(0);
+      warnSpy.mockRestore();
+    });
+
+    it('suspends only once even when probes continue past threshold', async () => {
+      __resetCrossTenantDropsForTest();
+      const preValidatedAgent = { deviceId: 'device-once', orgId: 'org-y' };
+      const handlers = createAgentWsHandlers('agent-task18-once', preValidatedAgent);
+      const ws = wsMock();
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // 15 probes — only the 5th should trip the suspend.
+      for (let i = 0; i < 15; i += 1) {
+        await handlers.onMessage({
+          data: JSON.stringify({
+            type: 'terminal_output',
+            sessionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            data: 'probe',
+          }),
+        } as any, ws as any);
+      }
+
+      await new Promise((r) => setImmediate(r));
+
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+  });
+
+  // H4: connection without Bearer header returns 401 (and rejects ?token=)
+  describe('H4 — agent WS auth', () => {
+    function makeStubUpgrade() {
+      // Stub upgradeWebSocket so route mounting doesn't require a real WS.
+      // If middleware lets the request through, this is what runs.
+      return (_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 });
+    }
+
+    it('rejects connection without Authorization: Bearer header', async () => {
+      const app = createAgentWsRoutes(makeStubUpgrade());
+      const res = await app.request('/00000000-0000-4000-8000-000000000000/ws');
+      expect(res.status).toBe(401);
+    });
+
+    it('does NOT accept token via ?token= query param (H4 fallback removed)', async () => {
+      const app = createAgentWsRoutes(makeStubUpgrade());
+      const res = await app.request('/00000000-0000-4000-8000-000000000000/ws?token=brz_should_be_ignored');
+      // Without a Bearer header we reject as 401 even when ?token= is supplied.
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // M-D2: rate limiter calls the Redis helper with the expected key/limit
+  it('M-D2 rate limiter delegates to Redis sliding-window helper', async () => {
+    const { getRedis } = await import('../services/redis');
+    // Pretend Redis is available so the helper is consulted (not in-memory fallback).
+    const fakeRedis = {} as any;
+    vi.mocked(getRedis).mockReturnValueOnce(fakeRedis);
+
+    const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
+    await app.request('/agent-xyz/ws');
+
+    expect(rateLimiter).toHaveBeenCalledWith(
+      fakeRedis,
+      'agentws:conn:agent-xyz',
+      6,
+      60
+    );
+  });
+
+  it('M-D2 rejects with 429 when Redis rate-limit helper returns not allowed', async () => {
+    const { getRedis } = await import('../services/redis');
+    vi.mocked(getRedis).mockReturnValueOnce({} as any);
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
+    const res = await app.request('/agent-overlimit/ws');
+    expect(res.status).toBe(429);
   });
 });

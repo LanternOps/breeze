@@ -192,6 +192,63 @@ func TestCreateSnapshot_EmptyFileSlice(t *testing.T) {
 	}
 }
 
+func TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix(t *testing.T) {
+	provider := newMockProvider()
+	oldSnapshot := Snapshot{
+		ID:        "snapshot-abc",
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	adjacentSnapshot := Snapshot{
+		ID:        "snapshot-abc2",
+		Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+	newSnapshot := Snapshot{
+		ID:        "snapshot-def",
+		Timestamp: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+	}
+
+	for _, snapshot := range []Snapshot{oldSnapshot, adjacentSnapshot, newSnapshot} {
+		manifest, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatalf("marshal snapshot: %v", err)
+		}
+		provider.files[path.Join(snapshotRootDir, snapshot.ID, snapshotManifestKey)] = manifest
+		provider.files[path.Join(snapshotRootDir, snapshot.ID, snapshotFilesDir, "data.txt.gz")] = []byte(snapshot.ID)
+	}
+
+	if err := DeleteSnapshot(provider, 2); err != nil {
+		t.Fatalf("DeleteSnapshot failed: %v", err)
+	}
+
+	deleted := map[string]bool{}
+	for _, key := range provider.deleteCalls {
+		deleted[key] = true
+		if strings.Contains(key, "snapshot-abc2/") {
+			t.Fatalf("deleted adjacent-prefix key %q", key)
+		}
+	}
+
+	for _, key := range []string{
+		path.Join(snapshotRootDir, oldSnapshot.ID, snapshotManifestKey),
+		path.Join(snapshotRootDir, oldSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
+	} {
+		if !deleted[key] {
+			t.Fatalf("expected old snapshot key %q to be deleted; calls=%v", key, provider.deleteCalls)
+		}
+	}
+
+	for _, key := range []string{
+		path.Join(snapshotRootDir, adjacentSnapshot.ID, snapshotManifestKey),
+		path.Join(snapshotRootDir, adjacentSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
+		path.Join(snapshotRootDir, newSnapshot.ID, snapshotManifestKey),
+		path.Join(snapshotRootDir, newSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
+	} {
+		if _, ok := provider.files[key]; !ok {
+			t.Fatalf("expected retained key %q to remain", key)
+		}
+	}
+}
+
 func TestCreateSnapshot_PartialUploadFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "good.txt", "good content")

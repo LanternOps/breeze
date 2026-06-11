@@ -168,7 +168,7 @@ MINIO_SECRET_KEY=minioadmin
 **1. Start infrastructure services:**
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d postgres redis
 ```
 
 This starts:

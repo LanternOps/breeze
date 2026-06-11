@@ -61,4 +61,4 @@ The integration emits normalized events on the Breeze event bus:
 - Integration management and manual sync endpoints require authenticated org write access and MFA.
 - Webhook ingestion is unauthenticated by user session but cryptographically validated via HMAC-SHA256 signature.
 - Integration health and incident read APIs remain org-scoped for partner/system contexts.
-- The `apiBaseUrl` field is restricted to HTTPS URLs on `*.huntress.io` to prevent SSRF.
+- The `apiBaseUrl` field is restricted to HTTPS URLs on `*.huntress.io`, and every outbound Huntress request is made through the SSRF-safe HTTP client (`safeFetch`: DNS-pinned to the resolved public IP, with no redirect following). The hostname allowlist alone is insufficient — DNS rebinding or an upstream redirect could otherwise reach an internal address — so the pinned, no-redirect transport is what actually prevents SSRF.

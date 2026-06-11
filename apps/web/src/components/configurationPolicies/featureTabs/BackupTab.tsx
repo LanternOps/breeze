@@ -17,6 +17,7 @@ import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 import { fetchWithAuth } from '../../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -536,8 +537,8 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
       });
 
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to create backup config');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to create backup config'));
       }
 
       const created = await response.json();

@@ -8,6 +8,7 @@ const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID_2 = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
+const SITE_ALLOWED = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 vi.mock('../services', () => ({}));
 
@@ -76,7 +77,8 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
     hostname: 'hostname',
-    displayName: 'displayName'
+    displayName: 'displayName',
+    siteId: 'devices.siteId'
   }
 }));
 
@@ -90,6 +92,8 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
     });
+    const restrictedSite = c.req.header('x-restrict-site');
+    if (restrictedSite) c.set('permissions', { allowedSiteIds: [restrictedSite] });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -130,6 +134,12 @@ const validCreatePayload = {
   rolloutConfig: { type: 'immediate' as const, respectMaintenanceWindows: false }
 };
 
+function conditionText(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) =>
+    typeof nested === 'function' ? '[function]' : nested
+  );
+}
+
 
 describe('deployment routes', () => {
   let app: Hono;
@@ -145,6 +155,8 @@ describe('deployment routes', () => {
         accessibleOrgIds: [ORG_ID],
         canAccessOrg: (orgId: string) => orgId === ORG_ID
       });
+      const restrictedSite = c.req.header('x-restrict-site');
+      if (restrictedSite) c.set('permissions', { allowedSiteIds: [restrictedSite] });
       return next();
     });
     app = new Hono();
@@ -209,6 +221,60 @@ describe('deployment routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].deviceId).toBe(DEVICE_ID);
       expect(body.total).toBe(1);
+    });
+
+    it('narrows deployment devices and count to devices in the caller site allowlist', async () => {
+      let countWhere: unknown;
+      let listWhere: unknown;
+
+      vi.mocked(db.select)
+        // getDeploymentWithAccess
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeDeployment()])
+            })
+          })
+        } as any)
+        // count with device join
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                countWhere = condition;
+                return Promise.resolve([{ count: 0 }]);
+              })
+            })
+          })
+        } as any)
+        // device list
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((condition: unknown) => {
+                listWhere = condition;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([])
+                    })
+                  })
+                };
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/deployments/${DEPLOYMENT_ID_1}/devices`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED }
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionText(countWhere)).toContain('devices.siteId');
+      expect(conditionText(countWhere)).toContain(SITE_ALLOWED);
+      expect(conditionText(listWhere)).toContain('devices.siteId');
+      expect(conditionText(listWhere)).toContain(SITE_ALLOWED);
     });
 
     it('should return 404 for non-existent deployment', async () => {

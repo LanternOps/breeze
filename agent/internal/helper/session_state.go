@@ -22,8 +22,8 @@ type sessionState struct {
 	configPath  string
 	statusPath  string
 	lastConfig  *Config
-	pid         int       // from status file (via refreshPID)
-	spawnedPID  int       // PID we actually spawned (not overwritten by refreshPID)
+	pid         int // from status file (via refreshPID)
+	spawnedPID  int // PID we actually spawned (not overwritten by refreshPID)
 	watcher     *watcher
 	lastApplied time.Time
 

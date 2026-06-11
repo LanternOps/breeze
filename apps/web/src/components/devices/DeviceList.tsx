@@ -1,13 +1,36 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2 } from 'lucide-react';
-import type { DesktopAccessState, FilterConditionGroup, RemoteAccessPolicy } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { createPortal } from 'react-dom';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Rows3, Rows4, AlignJustify } from 'lucide-react';
+import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
-import { widthPercentClass } from '@/lib/utils';
+import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
 import { DEVICE_ROLES, getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
+import {
+  PAGE_SIZE_OPTIONS,
+  readPageSizePreference,
+  writePageSizePreference,
+} from './pageSizePreference';
+import {
+  COLUMN_IDS,
+  COLUMN_LABELS,
+  readColumnOrder,
+  readColumnVisibility,
+  writeColumnOrder,
+  writeColumnVisibility,
+  type ColumnId,
+} from './columnVisibility';
+import {
+  DENSITY_OPTIONS,
+  densityTableClasses,
+  readDensity,
+  subscribeDensity,
+  writeDensity,
+  type Density,
+} from '@/lib/density';
+import { OSIcon } from './osIcons';
 
-export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
+export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type OSType = 'windows' | 'macos' | 'linux';
 
 export type Device = {
@@ -15,6 +38,8 @@ export type Device = {
   hostname: string;
   os: OSType;
   osVersion: string;
+  osBuild?: string;
+  architecture?: string;
   status: DeviceStatus;
   cpuPercent: number;
   ramPercent: number;
@@ -27,12 +52,34 @@ export type Device = {
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
+  enrolledAt?: string;
   deviceRole?: DeviceRole;
   deviceRoleSource?: string;
   displayName?: string;
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
+  /**
+   * Server-detected asymmetry: timestamp at which the API stopped
+   * receiving main-agent heartbeats while the watchdog is still
+   * reporting in. Set by the heartbeat handler (#851 / Layer C).
+   * Null when the agent is heartbeating normally or has fully gone
+   * silent (watchdog included).
+   */
+  mainAgentSilentSince?: string | null;
+  /**
+   * Watchdog reachability as last reported. 'connected' = normal,
+   * 'failover' = watchdog took over because main-agent stopped,
+   * 'offline' = we haven't heard from the watchdog either (in which
+   * case `status === 'offline'` is the load-bearing signal).
+   */
+  watchdogStatus?: 'connected' | 'failover' | 'offline' | null;
+  hardware?: {
+    cpuModel?: string;
+    cpuCores?: number;
+    ramTotalMb?: number;
+    diskTotalGb?: number;
+  };
 };
 
 type DeviceListProps = {
@@ -48,8 +95,15 @@ type DeviceListProps = {
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
+  // Initial page size if the user has no stored preference for this browser.
+  // Once the component mounts, the live page size comes from localStorage
+  // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
   pageSize?: number;
-  serverFilter?: FilterConditionGroup | null;
+  // Pre-resolved advanced-filter id set (null = no advanced filter active).
+  // Resolution lives in DevicesPage via useAdvancedFilterIds so the list and
+  // grid views filter against the same complete, uncapped id set.
+  serverFilterIds?: Set<string> | null;
+  serverFilterLoading?: boolean;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -58,17 +112,56 @@ const statusColors: Record<DeviceStatus, string> = {
   maintenance: 'bg-warning/15 text-warning border-warning/30',
   decommissioned: 'bg-muted text-muted-foreground border-border',
   quarantined: 'bg-warning/15 text-warning border-warning/30',
-  updating: 'bg-info/15 text-info border-info/30'
+  updating: 'bg-info/15 text-info border-info/30',
+  pending: 'bg-muted text-muted-foreground border-border'
 };
 
+// Compact pill label; full name on the title attribute for hover.
 const statusLabels: Record<DeviceStatus, string> = {
+  online: 'Up',
+  offline: 'Down',
+  maintenance: 'Maint',
+  decommissioned: 'Decom',
+  quarantined: 'Quar',
+  updating: 'Upd',
+  pending: 'Pend'
+};
+const statusFullLabels: Record<DeviceStatus, string> = {
   online: 'Online',
   offline: 'Offline',
   maintenance: 'Maintenance',
   decommissioned: 'Decommissioned',
   quarantined: 'Quarantined',
-  updating: 'Updating'
+  updating: 'Updating',
+  pending: 'Pending'
 };
+
+// Cap visible tag chips per row; the rest collapse into a +N chip, with the
+// full comma-joined list on the cell's title attribute (same overflow trick
+// as the status pill). Keeps row height and column width bounded.
+const TAG_CHIP_CAP = 3;
+
+/**
+ * "Agent silent (watchdog OK)" amber badge. Fires when the server-side
+ * asymmetry detector (#851 / Layer C) has marked `mainAgentSilentSince`
+ * AND the watchdog is still reporting in (`watchdogStatus !== 'offline'`).
+ * That state means the main agent has wedged but the box is alive — a
+ * different failure mode from a fully-offline device, and the distinction
+ * is the whole point of #800.
+ *
+ * Returns null when no asymmetry is present so the cell stays clean.
+ */
+function shouldShowAgentSilentBadge(device: Pick<Device, 'mainAgentSilentSince' | 'watchdogStatus'>): boolean {
+  return Boolean(device.mainAgentSilentSince) && device.watchdogStatus !== 'offline';
+}
+
+function formatSilentDuration(silentSince: string): string {
+  const minutes = Math.max(1, Math.floor((Date.now() - new Date(silentSince).getTime()) / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
 
 const osLabels: Record<OSType, string> = {
   windows: 'Windows',
@@ -93,7 +186,8 @@ export default function DeviceList({
   onAction,
   onBulkAction,
   pageSize = 10,
-  serverFilter = null
+  serverFilterIds = null,
+  serverFilterLoading = false
 }: DeviceListProps) {
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -108,12 +202,42 @@ export default function DeviceList({
   const [groupDropdownOpen, setGroupDropdownOpen] = useState(false);
   const groupDropdownRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  // Live, user-controllable page size. Initialized from localStorage; the
+  // pageSize prop is just the fallback when no preference is stored.
+  const [effectivePageSize, setEffectivePageSize] = useState<number>(() =>
+    readPageSizePreference(pageSize),
+  );
+  // Checkbox + Actions are always-on first/last; the rest live in
+  // COLUMN_IDS and the order in columnOrder controls render sequence.
+  const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
+    () => new Set(readColumnVisibility()),
+  );
+  const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => readColumnOrder());
+  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const columnsMenuRef = useRef<HTMLDivElement>(null);
+  // Table density preference (account-wide via localStorage). Subscribe so
+  // a sibling instance on the same page that flips density updates this
+  // one without a reload.
+  const [density, setDensity] = useState<Density>(() => readDensity());
+  useEffect(() => subscribeDensity(setDensity), []);
+  const handleDensityChange = (next: Density) => {
+    setDensity(next);
+    writeDensity(next);
+  };
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
+  // Flip the row dropdown direction when the click happens close to the
+  // viewport bottom — the menu has ~7 items × ~36px, so any row whose
+  // kebab sits <300px from the viewport bottom would otherwise render
+  // its dropdown into the area below the table and get clipped.
+  const [rowMenuFlipUp, setRowMenuFlipUp] = useState(false);
+  // Viewport-relative anchor for the portaled row menu. The menu is rendered into
+  // document.body (not inside the overflow-x-auto table wrapper, which would clip it),
+  // so it positions itself with `fixed` coordinates derived from the kebab button.
+  const [rowMenuAnchor, setRowMenuAnchor] = useState<{ top: number; bottom: number; right: number } | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
-  const [serverFilterIds, setServerFilterIds] = useState<Set<string> | null>(null);
-  const [serverFilterLoading, setServerFilterLoading] = useState(false);
+  const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -122,12 +246,21 @@ export default function DeviceList({
   useEffect(() => {
     if (!rowMenuOpenId) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) {
-        setRowMenuOpenId(null);
-      }
+      const target = e.target as Node;
+      // The menu is portaled outside the trigger, so check both the menu and the button.
+      if (rowMenuRef.current?.contains(target) || rowMenuButtonRef.current?.contains(target)) return;
+      setRowMenuOpenId(null);
     };
+    // The menu is fixed-positioned from a captured anchor; scrolling would detach it, so close instead.
+    const handleScroll = () => setRowMenuOpenId(null);
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleScroll);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleScroll);
+    };
   }, [rowMenuOpenId]);
 
   // Close group dropdown on outside click
@@ -142,6 +275,49 @@ export default function DeviceList({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [groupDropdownOpen]);
 
+  // Close columns visibility menu on outside click
+  useEffect(() => {
+    if (!columnsMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target as Node)) {
+        setColumnsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [columnsMenuOpen]);
+
+  // Hiding does not change columnOrder, so re-showing restores the slot.
+  const toggleColumn = (id: ColumnId) => {
+    setVisibleColumns(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      writeColumnVisibility(next);
+      return next;
+    });
+  };
+
+  // Neighbor is the visible column above/below; hidden columns in
+  // columnOrder are skipped so the swap matches what the user sees.
+  const moveColumn = (id: ColumnId, direction: -1 | 1) => {
+    setColumnOrder(prev => {
+      const visibleIds = prev.filter(c => visibleColumns.has(c));
+      const visibleIdx = visibleIds.indexOf(id);
+      if (visibleIdx === -1) return prev;
+      const targetVisibleIdx = visibleIdx + direction;
+      if (targetVisibleIdx < 0 || targetVisibleIdx >= visibleIds.length) return prev;
+      const swapWith = visibleIds[targetVisibleIdx];
+      const a = prev.indexOf(id);
+      const b = prev.indexOf(swapWith);
+      const next = [...prev];
+      next[a] = swapWith;
+      next[b] = id;
+      writeColumnOrder(next);
+      return next;
+    });
+  };
+
   // Auto-select a newly created group
   useEffect(() => {
     if (autoSelectGroupId && groups.some(g => g.id === autoSelectGroupId)) {
@@ -151,50 +327,6 @@ export default function DeviceList({
       onAutoSelectConsumed?.();
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
-
-  // Fetch matching device IDs from server when advanced filter changes
-  useEffect(() => {
-    if (!serverFilter) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    const hasValidConditions = serverFilter.conditions.some(c => {
-      if ('conditions' in c) return true;
-      return c.value !== '' && c.value !== null && c.value !== undefined;
-    });
-
-    if (!hasValidConditions) {
-      setServerFilterIds(null);
-      return;
-    }
-
-    setServerFilterLoading(true);
-    const controller = new AbortController();
-
-    fetchWithAuth('/filters/preview', {
-      method: 'POST',
-      body: JSON.stringify({ conditions: serverFilter, limit: 100 }),
-      signal: controller.signal
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const result = data.data ?? data;
-          const ids = new Set<string>((result.devices ?? []).map((d: { id: string }) => d.id));
-          setServerFilterIds(ids);
-        }
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.error('Filter preview failed:', err);
-          setServerFilterIds(null);
-        }
-      })
-      .finally(() => setServerFilterLoading(false));
-
-    return () => controller.abort();
-  }, [serverFilter]);
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -264,9 +396,26 @@ export default function DeviceList({
 
   const moreFiltersCount = [roleFilter, orgFilter, siteFilter].filter(f => f !== 'all').length + (groupFilter.length > 0 ? 1 : 0);
 
-  const totalPages = Math.ceil(sortedDevices.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
-  const paginatedDevices = sortedDevices.slice(startIndex, startIndex + pageSize);
+  const totalPages = Math.ceil(sortedDevices.length / effectivePageSize);
+
+  // Adjust currentPage during render when filters/search shrink the result
+  // set below it. Setting state during render is React's documented way to
+  // correct derived state without a flash of stale UI — React discards the
+  // in-progress render and re-runs with the corrected value.
+  if (totalPages > 0 && currentPage > totalPages) {
+    setCurrentPage(1);
+  }
+
+  const startIndex = (currentPage - 1) * effectivePageSize;
+  const paginatedDevices = sortedDevices.slice(startIndex, startIndex + effectivePageSize);
+
+  const handlePageSizeChange = (newSize: number) => {
+    setEffectivePageSize(newSize);
+    writePageSizePreference(newSize);
+    // Reset to page 1 so the user doesn't land out-of-range when shrinking
+    // the page (and gets a coherent first-page view when growing it).
+    setCurrentPage(1);
+  };
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -295,6 +444,300 @@ export default function DeviceList({
 
   const allSelected = paginatedDevices.length > 0 && paginatedDevices.every(d => selectedIds.has(d.id));
   const someSelected = paginatedDevices.some(d => selectedIds.has(d.id));
+
+  // Effective render sequence: user-chosen order, filtered to visible.
+  // Checkbox and Actions are rendered separately as the first/last cells.
+  const renderedColumns = columnOrder.filter(id => visibleColumns.has(id));
+
+  // sortHeader factors out the repeated header pattern for sortable
+  // columns to keep the column-defs table below readable.
+  const sortHeader = (id: ColumnId, label: string, sortKey: SortField, hint: string) => (
+    <th
+      key={id}
+      className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
+      title={hint}
+      onClick={() => handleSort(sortKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {sortField === sortKey ? (
+          sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-30" />
+        )}
+      </span>
+    </th>
+  );
+
+  // metricBar renders the colored CPU/RAM percent bar with em-dash
+  // fallback for non-online devices. Extracted so the cpu and ram column
+  // cells stay small.
+  const metricBar = (percent: number, online: boolean) =>
+    online ? (
+      <div className="flex items-center gap-2">
+        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
+          <div
+            className={`h-full rounded-full ${percent > 80 ? 'bg-destructive' : percent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(percent)}`}
+          />
+        </div>
+        <span className="w-10 text-right tabular-nums">{percent}%</span>
+      </div>
+    ) : (
+      <span className="text-muted-foreground">&mdash;</span>
+    );
+
+  // Format helpers for hardware columns. RAM is reported in MB; convert
+  // to GB rounded to one decimal. Disk is already reported in GB.
+  const fmtRamGb = (mb: number | undefined) =>
+    typeof mb === 'number' ? `${(mb / 1024).toFixed(1)} GB` : null;
+  const fmtDiskGb = (gb: number | undefined) =>
+    typeof gb === 'number' ? `${gb} GB` : null;
+  const fmtDate = (iso: string | undefined) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+  };
+
+  // columnDefs is the single source of truth for each toggleable column's
+  // header and per-row cell. The thead and tbody iterate `renderedColumns`
+  // and pick from this table, so adding a new column means adding one
+  // entry here plus the corresponding id to COLUMN_IDS / COLUMN_LABELS.
+  const dash = <span className="text-muted-foreground">&mdash;</span>;
+  const columnDefs: Record<ColumnId, { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }> = {
+    hostname: {
+      header: () => sortHeader('hostname', 'Hostname', 'hostname', 'Sort by hostname'),
+      cell: (device) => (
+        <td key="hostname" className="max-w-[200px] px-3 py-3 text-sm font-medium">
+          <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
+        </td>
+      ),
+    },
+    organization: {
+      header: () => <th key="organization" className="px-3 py-3">Organization</th>,
+      cell: (device) => (
+        <td key="organization" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.orgName}>{device.orgName}</span>
+        </td>
+      ),
+    },
+    site: {
+      header: () => <th key="site" className="px-3 py-3">Site</th>,
+      cell: (device) => (
+        <td key="site" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.siteName}>{device.siteName}</span>
+        </td>
+      ),
+    },
+    os: {
+      header: () => <th key="os" className="px-3 py-3">OS</th>,
+      cell: (device) => (
+        <td key="os" className="px-3 py-3 text-sm">
+          <OSIcon os={device.os} className="h-4 w-4 text-muted-foreground" />
+        </td>
+      ),
+    },
+    osVersion: {
+      header: () => <th key="osVersion" className="px-3 py-3">OS Version</th>,
+      cell: (device) => (
+        <td key="osVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.osVersion || dash}
+        </td>
+      ),
+    },
+    osBuild: {
+      header: () => <th key="osBuild" className="px-3 py-3">OS Build</th>,
+      cell: (device) => (
+        <td key="osBuild" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.osBuild || dash}
+        </td>
+      ),
+    },
+    architecture: {
+      header: () => <th key="architecture" className="px-3 py-3">Arch</th>,
+      cell: (device) => (
+        <td key="architecture" className="px-3 py-3 text-sm text-muted-foreground">
+          {device.architecture || dash}
+        </td>
+      ),
+    },
+    role: {
+      header: () => <th key="role" className="px-3 py-3">Role</th>,
+      cell: (device) => {
+        const role = device.deviceRole ?? 'unknown';
+        const RoleIcon = getDeviceRoleIcon(role);
+        const roleLabel = getDeviceRoleLabel(role);
+        return (
+          <td key="role" className="px-3 py-3 text-sm">
+            <span
+              className="inline-flex items-center justify-center rounded-full border bg-muted/50 p-1.5"
+              title={roleLabel}
+              aria-label={roleLabel}
+            >
+              <RoleIcon className="h-3.5 w-3.5" />
+            </span>
+          </td>
+        );
+      },
+    },
+    isHeadless: {
+      header: () => <th key="isHeadless" className="px-3 py-3">Headless</th>,
+      cell: (device) => (
+        <td key="isHeadless" className="px-3 py-3 text-sm text-muted-foreground">
+          {typeof device.isHeadless === 'boolean' ? (device.isHeadless ? 'Yes' : 'No') : dash}
+        </td>
+      ),
+    },
+    status: {
+      header: () => sortHeader('status', 'Status', 'status', 'Sort by status'),
+      cell: (device) => (
+        <td key="status" className="px-3 py-3 text-sm">
+          <div className="flex flex-wrap items-center gap-1">
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
+              title={statusFullLabels[device.status]}
+            >
+              {statusLabels[device.status]}
+            </span>
+            {shouldShowAgentSilentBadge(device) && (
+              <span
+                data-testid={`device-${device.id}-agent-silent-badge`}
+                title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
+              </span>
+            )}
+          </div>
+        </td>
+      ),
+    },
+    cpu: {
+      header: () => sortHeader('cpu', 'CPU %', 'cpuPercent', 'Sort by CPU usage'),
+      cell: (device) => (
+        <td key="cpu" className="px-3 py-3 text-sm">{metricBar(device.cpuPercent, device.status === 'online')}</td>
+      ),
+    },
+    ram: {
+      header: () => sortHeader('ram', 'RAM %', 'ramPercent', 'Sort by RAM usage'),
+      cell: (device) => (
+        <td key="ram" className="px-3 py-3 text-sm">{metricBar(device.ramPercent, device.status === 'online')}</td>
+      ),
+    },
+    cpuModel: {
+      header: () => <th key="cpuModel" className="px-3 py-3">CPU Model</th>,
+      cell: (device) => (
+        <td key="cpuModel" className="max-w-[220px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.hardware?.cpuModel ?? ''}>
+            {device.hardware?.cpuModel || dash}
+          </span>
+        </td>
+      ),
+    },
+    cores: {
+      header: () => <th key="cores" className="px-3 py-3 text-right">Cores</th>,
+      cell: (device) => (
+        <td key="cores" className="px-3 py-3 text-right text-sm tabular-nums">
+          {typeof device.hardware?.cpuCores === 'number' ? device.hardware.cpuCores : dash}
+        </td>
+      ),
+    },
+    ramTotal: {
+      header: () => <th key="ramTotal" className="px-3 py-3 text-right">RAM</th>,
+      cell: (device) => (
+        <td key="ramTotal" className="px-3 py-3 text-right text-sm tabular-nums">
+          {fmtRamGb(device.hardware?.ramTotalMb) ?? dash}
+        </td>
+      ),
+    },
+    diskTotal: {
+      header: () => <th key="diskTotal" className="px-3 py-3 text-right">Disk</th>,
+      cell: (device) => (
+        <td key="diskTotal" className="px-3 py-3 text-right text-sm tabular-nums">
+          {fmtDiskGb(device.hardware?.diskTotalGb) ?? dash}
+        </td>
+      ),
+    },
+    lastSeen: {
+      header: () => sortHeader('lastSeen', 'Last Seen', 'lastSeen', 'Sort by last seen time'),
+      cell: (device) => (
+        <td key="lastSeen" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {formatLastSeen(device.lastSeen, effectiveTimezone)}
+        </td>
+      ),
+    },
+    agentVersion: {
+      header: () => <th key="agentVersion" className="px-3 py-3">Agent Version</th>,
+      cell: (device) => (
+        <td key="agentVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.agentVersion || dash}
+        </td>
+      ),
+    },
+    tags: {
+      header: () => <th key="tags" className="px-3 py-3">Tags</th>,
+      cell: (device) => (
+        <td key="tags" className="max-w-[220px] px-3 py-3 text-sm text-muted-foreground">
+          {device.tags && device.tags.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1" title={device.tags.join(', ')}>
+              {device.tags.slice(0, TAG_CHIP_CAP).map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium text-foreground"
+                >
+                  {tag}
+                </span>
+              ))}
+              {device.tags.length > TAG_CHIP_CAP && (
+                <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  +{device.tags.length - TAG_CHIP_CAP}
+                </span>
+              )}
+            </div>
+          ) : dash}
+        </td>
+      ),
+    },
+    lastUser: {
+      header: () => <th key="lastUser" className="px-3 py-3">Last User</th>,
+      cell: (device) => (
+        <td key="lastUser" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
+          <span className="block truncate" title={device.lastUser ?? ''}>{device.lastUser || dash}</span>
+        </td>
+      ),
+    },
+    uptime: {
+      header: () => <th key="uptime" className="px-3 py-3">Uptime</th>,
+      cell: (device) => (
+        <td key="uptime" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {device.status === 'online' && device.uptimeSeconds != null
+            ? formatUptime(device.uptimeSeconds)
+            : dash}
+        </td>
+      ),
+    },
+    enrolled: {
+      header: () => <th key="enrolled" className="px-3 py-3">Enrolled</th>,
+      cell: (device) => (
+        <td key="enrolled" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
+          {fmtDate(device.enrolledAt) ?? dash}
+        </td>
+      ),
+    },
+    desktopAccess: {
+      header: () => <th key="desktopAccess" className="px-3 py-3">Desktop Access</th>,
+      cell: (device) => {
+        const da = device.desktopAccess;
+        if (!da) return <td key="desktopAccess" className="px-3 py-3 text-sm text-muted-foreground">{dash}</td>;
+        return (
+          <td key="desktopAccess" className="px-3 py-3 text-sm text-muted-foreground">
+            <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium" title={`mode=${da.mode}; loginUi=${da.loginUiReachable}; virtualDisplay=${da.virtualDisplayReady}`}>
+              {da.mode}
+            </span>
+          </td>
+        );
+      },
+    },
+  };
 
   return (
     <div>
@@ -366,6 +809,107 @@ export default function DeviceList({
                 </span>
               )}
             </button>
+            {/* Density toggle: comfortable / compact / dense. Single
+                account-wide preference (breeze.density in localStorage),
+                applied to descendant td/th via Tailwind arbitrary
+                variants on the table element. */}
+            <div className="inline-flex h-10 items-center rounded-md border" role="group" aria-label="Row density">
+              {DENSITY_OPTIONS.map((opt, idx) => {
+                const Icon = opt === 'comfortable' ? Rows3 : opt === 'compact' ? Rows4 : AlignJustify;
+                const label = opt.charAt(0).toUpperCase() + opt.slice(1);
+                const isActive = density === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => handleDensityChange(opt)}
+                    aria-pressed={isActive}
+                    aria-label={`${label} row density`}
+                    title={`${label} row density`}
+                    className={`flex h-full items-center justify-center px-2.5 text-sm transition ${
+                      isActive ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60'
+                    } ${idx === 0 ? 'rounded-l-md' : ''} ${idx === DENSITY_OPTIONS.length - 1 ? 'rounded-r-md' : 'border-r'}`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                );
+              })}
+            </div>
+            <div className="relative" ref={columnsMenuRef}>
+              <button
+                type="button"
+                onClick={() => setColumnsMenuOpen(o => !o)}
+                aria-haspopup="true"
+                aria-expanded={columnsMenuOpen}
+                className="h-10 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
+              >
+                <Columns3 className="h-3.5 w-3.5" />
+                Columns
+              </button>
+              {columnsMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 z-20 mt-1 max-h-96 w-72 overflow-y-auto rounded-md border bg-card p-1 shadow-md"
+                >
+                  <p className="px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Visible (in order)
+                  </p>
+                  {columnOrder.filter(id => visibleColumns.has(id)).map((id, idx, arr) => (
+                    <div
+                      key={id}
+                      className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                    >
+                      <input
+                        type="checkbox"
+                        checked
+                        onChange={() => toggleColumn(id)}
+                        className="h-4 w-4 rounded border-border"
+                        aria-label={`Hide ${COLUMN_LABELS[id]}`}
+                      />
+                      <span className="flex-1 cursor-default">{COLUMN_LABELS[id]}</span>
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => moveColumn(id, -1)}
+                        className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
+                        aria-label={`Move ${COLUMN_LABELS[id]} up`}
+                        title="Move up"
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === arr.length - 1}
+                        onClick={() => moveColumn(id, 1)}
+                        className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
+                        aria-label={`Move ${COLUMN_LABELS[id]} down`}
+                        title="Move down"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  <hr className="my-1" />
+                  <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Hidden
+                  </p>
+                  {columnOrder.filter(id => !visibleColumns.has(id)).map(id => (
+                    <label
+                      key={id}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={false}
+                        onChange={() => toggleColumn(id)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                      <span>{COLUMN_LABELS[id]}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
             {(query || statusFilter !== 'all' || osFilter !== 'all' || roleFilter !== 'all' || orgFilter !== 'all' || siteFilter !== 'all' || groupFilter.length > 0) && (
               <button
                 type="button"
@@ -558,6 +1102,14 @@ export default function DeviceList({
                 <hr className="my-1" />
                 <button
                   type="button"
+                  onClick={() => handleBulkAction('wake')}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  Wake Selected
+                </button>
+                <hr className="my-1" />
+                <button
+                  type="button"
                   onClick={() => handleBulkAction('decommission')}
                   className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                 >
@@ -576,8 +1128,8 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 rounded-md border">
-        <table className="w-full divide-y">
+      <div className="mt-6 overflow-x-auto rounded-md border">
+        <table className={`w-full divide-y ${densityTableClasses(density)}`}>
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-3">
@@ -592,87 +1144,17 @@ export default function DeviceList({
                   className="h-4 w-4 rounded border-border"
                 />
               </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by hostname"
-                onClick={() => handleSort('hostname')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  Hostname
-                  {sortField === 'hostname' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th className="px-3 py-3">Organization</th>
-              <th className="px-3 py-3">Site</th>
-              <th className="px-3 py-3">OS</th>
-              <th className="px-3 py-3">Role</th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by status"
-                onClick={() => handleSort('status')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  Status
-                  {sortField === 'status' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by CPU usage"
-                onClick={() => handleSort('cpuPercent')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  CPU %
-                  {sortField === 'cpuPercent' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by RAM usage"
-                onClick={() => handleSort('ramPercent')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  RAM %
-                  {sortField === 'ramPercent' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
-              <th
-                className="px-3 py-3 cursor-pointer select-none hover:text-foreground"
-                title="Sort by last seen time"
-                onClick={() => handleSort('lastSeen')}
-              >
-                <span className="inline-flex items-center gap-1">
-                  Last Seen
-                  {sortField === 'lastSeen' ? (
-                    sortDirection === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                  ) : (
-                    <ArrowUpDown className="h-3 w-3 opacity-30" />
-                  )}
-                </span>
-              </th>
+              {renderedColumns.map(id => columnDefs[id].header())}
               <th className="px-3 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {paginatedDevices.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                <td
+                  colSpan={visibleColumns.size + 2 /* checkbox + Actions */}
+                  className="px-3 py-6 text-center text-sm text-muted-foreground"
+                >
                   No devices found. Try adjusting your search or filters.
                 </td>
               </tr>
@@ -700,64 +1182,7 @@ export default function DeviceList({
                       className="h-4 w-4 rounded border-border"
                     />
                   </td>
-                  <td className="max-w-[200px] px-3 py-3 text-sm font-medium">
-                    <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
-                  </td>
-                  <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                    <span className="block truncate" title={device.orgName}>{device.orgName}</span>
-                  </td>
-                  <td className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground">
-                    <span className="block truncate" title={device.siteName}>{device.siteName}</span>
-                  </td>
-                  <td className="px-3 py-3 text-sm">{osLabels[device.os]}</td>
-                  <td className="px-3 py-3 text-sm">
-                    {(() => {
-                      const role = device.deviceRole ?? 'unknown';
-                      const RoleIcon = getDeviceRoleIcon(role);
-                      return (
-                        <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium">
-                          <RoleIcon className="h-3 w-3" />
-                          {getDeviceRoleLabel(role)}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-3 py-3 text-sm">
-                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}>
-                      {statusLabels[device.status]}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3 text-sm">
-                    {device.status === 'online' ? (
-                      <div className="flex items-center gap-2">
-                        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className={`h-full rounded-full ${device.cpuPercent > 80 ? 'bg-destructive' : device.cpuPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.cpuPercent)}`}
-                          />
-                        </div>
-                        <span className="w-10 text-right tabular-nums">{device.cpuPercent}%</span>
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">&mdash;</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 text-sm">
-                    {device.status === 'online' ? (
-                      <div className="flex items-center gap-2">
-                        <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className={`h-full rounded-full ${device.ramPercent > 80 ? 'bg-destructive' : device.ramPercent > 60 ? 'bg-warning' : 'bg-success'} ${widthPercentClass(device.ramPercent)}`}
-                          />
-                        </div>
-                        <span className="w-10 text-right tabular-nums">{device.ramPercent}%</span>
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">&mdash;</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                    {formatLastSeen(device.lastSeen, effectiveTimezone)}
-                  </td>
+                  {renderedColumns.map(id => columnDefs[id].cell(device))}
                   <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <ConnectDesktopButton
@@ -768,16 +1193,37 @@ export default function DeviceList({
                         desktopAccess={device.desktopAccess}
                         remoteAccessPolicy={device.remoteAccessPolicy}
                       />
-                      <div className="relative" ref={rowMenuOpenId === device.id ? rowMenuRef : undefined}>
+                      <div className="relative">
                         <button
                           type="button"
-                          onClick={() => setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id)}
+                          aria-label="Device actions"
+                          ref={rowMenuOpenId === device.id ? rowMenuButtonRef : undefined}
+                          onClick={(e) => {
+                            if (rowMenuOpenId !== device.id) {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              // ~280px dropdown height (7 items × ~36px + padding/divider).
+                              // Flip up when the space below the button is less than that.
+                              setRowMenuFlipUp(window.innerHeight - rect.bottom < 300);
+                              setRowMenuAnchor({ top: rect.top, bottom: rect.bottom, right: rect.right });
+                            }
+                            setRowMenuOpenId(rowMenuOpenId === device.id ? null : device.id);
+                          }}
                           className="flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted"
                         >
                           <MoreVertical className="h-4 w-4" />
                         </button>
-                        {rowMenuOpenId === device.id && (
-                          <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-md border bg-card shadow-lg">
+                        {rowMenuOpenId === device.id && rowMenuAnchor && createPortal(
+                          <div
+                            ref={rowMenuRef}
+                            style={{
+                              position: 'fixed',
+                              right: window.innerWidth - rowMenuAnchor.right,
+                              ...(rowMenuFlipUp
+                                ? { bottom: window.innerHeight - rowMenuAnchor.top + 4 }
+                                : { top: rowMenuAnchor.bottom + 4 }),
+                            }}
+                            className="z-50 w-48 rounded-md border bg-card shadow-lg"
+                          >
                             <button
                               type="button"
                               disabled={device.status !== 'online'}
@@ -813,6 +1259,20 @@ export default function DeviceList({
                               <RotateCcw className="h-4 w-4" />
                               Reboot
                             </button>
+                            {device.status === 'offline' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onAction?.('wake', device);
+                                  setRowMenuOpenId(null);
+                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                                title="Send a Wake-on-LAN packet via an online peer agent on the device's LAN"
+                              >
+                                <Zap className="h-4 w-4" />
+                                Wake
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
@@ -850,7 +1310,8 @@ export default function DeviceList({
                                 Decommission
                               </button>
                             )}
-                          </div>
+                          </div>,
+                          document.body
                         )}
                       </div>
                     </div>
@@ -862,32 +1323,54 @@ export default function DeviceList({
         </table>
       </div>
 
-      {totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Showing {startIndex + 1} to {Math.min(startIndex + pageSize, sortedDevices.length)} of {sortedDevices.length}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="text-sm">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+      {sortedDevices.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-muted-foreground">
+              Showing {startIndex + 1} to {Math.min(startIndex + effectivePageSize, sortedDevices.length)} of {sortedDevices.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <label htmlFor="device-page-size" className="text-sm text-muted-foreground">
+                Per page
+              </label>
+              <select
+                id="device-page-size"
+                value={effectivePageSize}
+                aria-label="Devices per page"
+                onChange={event => handlePageSizeChange(Number(event.target.value))}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+              >
+                {PAGE_SIZE_OPTIONS.map(opt => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="text-sm">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

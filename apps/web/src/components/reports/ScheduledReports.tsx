@@ -17,6 +17,7 @@ import {
   Plus
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getSafeHttpHref } from '@/lib/safeHref';
 import type { Report } from './ReportsList';
 
 const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -202,7 +203,7 @@ type RunHistoryModalProps = {
   timezone?: string;
 };
 
-function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezone }: RunHistoryModalProps) {
+export function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezone }: RunHistoryModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
       <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
@@ -275,16 +276,36 @@ function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezon
                         {formatDateTime(run.completedAt, timezone)}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {run.status === 'completed' && run.outputUrl ? (
-                          <a
-                            href={run.outputUrl}
-                            className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted"
-                          >
-                            Download
-                          </a>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">-</span>
-                        )}
+                        {(() => {
+                          const downloadHref =
+                            run.status === 'completed' ? getSafeHttpHref(run.outputUrl) : null;
+                          if (downloadHref) {
+                            return (
+                              <a
+                                href={downloadHref}
+                                className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted"
+                              >
+                                Download
+                              </a>
+                            );
+                          }
+                          if (run.status === 'completed' && run.outputUrl) {
+                            // Completed with a URL the origin allowlist rejected — show a
+                            // disabled label instead of a live/broken link. This should
+                            // never happen for trusted server-issued URLs, so leave a
+                            // breadcrumb to aid investigation.
+                            console.warn('[ScheduledReports] rejected outputUrl for run', run.id);
+                            return (
+                              <span
+                                className="inline-flex h-8 cursor-not-allowed items-center gap-1 rounded-md border px-3 text-sm text-muted-foreground opacity-60"
+                                title="This report's download link was blocked for security reasons"
+                              >
+                                Download
+                              </span>
+                            );
+                          }
+                          return <span className="text-xs text-muted-foreground">-</span>;
+                        })()}
                       </td>
                     </tr>
                   );

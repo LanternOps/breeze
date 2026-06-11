@@ -7,8 +7,36 @@ import { db } from '../../db';
 import { devices, securityScans } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
 import { CommandTypes, queueCommand } from '../../services/commandQueue';
+import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
+import type { AuthContext } from '../../middleware/auth';
+import type { Context } from 'hono';
 import { deviceIdParamSchema, scanRequestSchema, listScansQuerySchema } from './schemas';
 import { getPagination, paginate, parseDateRange, matchDateRange } from './helpers';
+
+/**
+ * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
+ * not see/touch a device in a site they cannot access. RLS does not defend
+ * the site axis — mirrors the SP2 launch-readiness sweep (PR #864/#868).
+ * Returns true when access is granted, false (and writes a 403 response)
+ * otherwise.
+ */
+async function canAccessDeviceSite(
+  c: Context,
+  auth: Pick<AuthContext, 'user' | 'partnerId' | 'orgId'>,
+  deviceSiteId: string | null,
+): Promise<boolean> {
+  let userPerms = c.get('permissions') as UserPermissions | undefined;
+  if (!userPerms) {
+    const fetched = await getUserPermissions(auth.user.id, {
+      partnerId: auth.partnerId || undefined,
+      orgId: auth.orgId || undefined,
+    });
+    userPerms = fetched || undefined;
+  }
+  if (!userPerms?.allowedSiteIds) return true;
+  if (typeof deviceSiteId !== 'string') return false;
+  return canAccessSite(userPerms, deviceSiteId);
+}
 
 export const scansRoutes = new Hono();
 
@@ -27,13 +55,16 @@ scansRoutes.post(
     if (orgCondition) conditions.push(orgCondition);
 
     const [device] = await db
-      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId })
+      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(and(...conditions))
       .limit(1);
 
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!(await canAccessDeviceSite(c, auth, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const scanId = randomUUID();
@@ -96,13 +127,16 @@ scansRoutes.get(
     if (orgCondition) conditions.push(orgCondition);
 
     const [device] = await db
-      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId })
+      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(and(...conditions))
       .limit(1);
 
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!(await canAccessDeviceSite(c, auth, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     let scans = await db

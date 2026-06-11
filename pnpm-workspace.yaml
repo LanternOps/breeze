@@ -1,3 +1,9 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# pnpm 11+ refuses to run install scripts unless they're in this allowlist.
+# Add packages here only after confirming what their install script does:
+#   - esbuild downloads its native binary on install (required for tsup, vitest, etc.)
+onlyBuiltDependencies:
+  - esbuild

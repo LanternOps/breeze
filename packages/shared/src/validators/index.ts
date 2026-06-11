@@ -13,6 +13,9 @@ import {
 
 export * from './reliability';
 export * from './businessEmail';
+export * from './remoteAccessLauncherScheme';
+export * from './remoteAccessInlineSettings';
+export * from './safeRelativePath';
 
 // ============================================
 // Device Roles
@@ -118,7 +121,10 @@ export const createRoleSchema = z.object({
 // ============================================
 
 export const updateDeviceSchema = z.object({
-  displayName: z.string().max(255).optional(),
+  // Nullable so callers can explicitly clear the display name; the
+  // devices.display_name column is nullable. Keep in sync with the route
+  // schema in apps/api/src/routes/devices/schemas.ts.
+  displayName: z.string().max(255).nullable().optional(),
   siteId: z.string().uuid().optional(),
   tags: z.array(z.string().max(50)).max(20).optional()
 });
@@ -142,6 +148,18 @@ export const deviceQuerySchema = paginationSchema.extend({
 // ============================================
 // Script Validators
 // ============================================
+
+// Feature #3 (severity-by-exit-code): exit code → AlertSeverity (or null = no alert).
+// Keys must be non-negative integer strings (e.g. "0", "1", "2"). Negative or
+// fractional codes are runtime-only (SIGKILL = -9 on Unix); the schema only
+// accepts the canonical wire-format representation.
+//
+// Lives here so route handlers, UI forms, and tests all import the same shape.
+export const alertSeverityValueSchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
+export const exitCodeSeverityMappingSchema = z.record(
+  z.string().regex(/^\d+$/, 'Exit codes must be non-negative integer strings'),
+  alertSeverityValueSchema.nullable()
+);
 
 export const createScriptSchema = z.object({
   name: z.string().min(1).max(255),
@@ -181,7 +199,7 @@ export const automationTriggerSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('webhook'),
-    secret: z.string().optional()
+    secret: z.string().min(1)
   }),
   z.object({
     type: z.literal('manual')
@@ -270,7 +288,7 @@ export const orgLogForwardingSettingsSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['elasticsearchUrl'],
-      message: 'Elasticsearch URL is required when log forwarding is enabled',
+      message: 'Log endpoint URL is required when log forwarding is enabled',
     });
   } else {
     try {
@@ -279,14 +297,14 @@ export const orgLogForwardingSettingsSchema = z.object({
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['elasticsearchUrl'],
-          message: 'Elasticsearch URL must use HTTPS',
+          message: 'Log endpoint URL must use HTTPS',
         });
       }
     } catch {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['elasticsearchUrl'],
-        message: 'Elasticsearch URL must be a valid URL',
+        message: 'Log endpoint URL must be a valid URL',
       });
     }
   }
@@ -306,7 +324,7 @@ export const orgLogForwardingSettingsSchema = z.object({
   if (!hasApiKey && !(hasBasicUser && hasBasicPassword)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Either API key or username+password required for Elasticsearch auth',
+      message: 'Either API key or username+password required for log endpoint auth',
     });
   }
 });
@@ -569,6 +587,12 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().u
 // ============================================
 
 export * from './ai';
+
+// ============================================
+// Ticket Validators
+// ============================================
+
+export * from './tickets';
 
 // ============================================
 // Backup Target Validators

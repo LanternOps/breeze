@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
+import { runOutsideDbContext } from '../db';
 
 // Event types for type safety
 export type EventType =
@@ -10,6 +11,7 @@ export type EventType =
   | 'device.offline'
   | 'device.updated'
   | 'device.decommissioned'
+  | 'device.main_agent_silent' // #800: watchdog OK, main agent silent
   // Alert events
   | 'alert.triggered'
   | 'alert.acknowledged'
@@ -65,6 +67,8 @@ export type EventType =
   | 'compliance.sensitive_data_found'
   | 'compliance.credential_exposed'
   | 'compliance.sensitive_data_remediated'
+  // DNS Security events (#829)
+  | 'dns.threat.blocked'
   // Browser security events
   | 'compliance.browser_policy_applied'
   // Peripheral control events
@@ -87,7 +91,16 @@ export type EventType =
   | 'session.logout'
   // Service & process monitoring events
   | 'monitoring.check_failed'
-  | 'monitoring.check_recovered';
+  | 'monitoring.check_recovered'
+  // PAM elevation lifecycle events (#1163). Consumed by the /pam admin UI
+  // (#1159) via the events WS and by the Brain context feed (#1160).
+  | 'elevation.requested'
+  | 'elevation.auto_approved'
+  | 'elevation.approved'
+  | 'elevation.denied'
+  | 'elevation.activated'
+  | 'elevation.expired'
+  | 'elevation.revoked';
 
 export type EventPriority = 'low' | 'normal' | 'high' | 'critical';
 
@@ -173,7 +186,6 @@ class EventBus {
     source: string,
     options: PublishOptions = {}
   ): Promise<string> {
-    const redis = this.getOrCreateRedis();
     const eventId = randomUUID();
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
@@ -192,37 +204,58 @@ class EventBus {
       }
     };
 
-    // Add to Redis Stream
-    await redis.xadd(
-      streamKey,
-      'MAXLEN',
-      '~',
-      MAX_STREAM_LENGTH.toString(),
-      '*',
-      'event',
-      JSON.stringify(event)
-    );
+    // Escape any active AsyncLocalStorage DB transaction context before doing
+    // Redis-bound work. Otherwise a publishEvent call made from inside a
+    // transaction (e.g. alertWorker, createAlert, publishEvent) holds the
+    // Postgres connection in `idle in transaction` for as long as Redis takes.
+    // Any local handler (e.g. webhookDelivery / automationWorker `*`
+    // subscribers that queue BullMQ deliveries) compounds that wait. Under a
+    // Redis stall this manifested as Postgres pool exhaustion and login
+    // lockout on 2026-05-21.
+    return runOutsideDbContext(async () => {
+      const redis = this.getOrCreateRedis();
 
-    // Also publish to pub/sub for real-time subscribers
-    await redis.publish(`${STREAM_PREFIX}:live:${orgId}`, JSON.stringify(event));
+      // Add to Redis Stream
+      await redis.xadd(
+        streamKey,
+        'MAXLEN',
+        '~',
+        MAX_STREAM_LENGTH.toString(),
+        '*',
+        'event',
+        JSON.stringify(event)
+      );
 
-    // Publish to global channel for cross-org subscribers (webhooks, etc.)
-    await redis.publish(`${STREAM_PREFIX}:global`, JSON.stringify(event));
+      // Also publish to pub/sub for real-time subscribers
+      await redis.publish(`${STREAM_PREFIX}:live:${orgId}`, JSON.stringify(event));
 
-    if (type !== 'monitoring.check_failed' && type !== 'monitoring.check_recovered') {
-      console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
-    }
+      // Publish to global channel for cross-org subscribers (webhooks, etc.)
+      await redis.publish(`${STREAM_PREFIX}:global`, JSON.stringify(event));
 
-    // Invoke local in-process handlers immediately
-    // This handles the case where startConsuming() hasn't been called
-    await this.invokeLocalHandlers(event as BreezeEvent);
+      if (type !== 'monitoring.check_failed' && type !== 'monitoring.check_recovered') {
+        console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
+      }
 
-    return eventId;
+      // Invoke local in-process handlers immediately
+      // This handles the case where startConsuming() hasn't been called
+      await this.invokeLocalHandlers(event as BreezeEvent);
+
+      return eventId;
+    });
   }
 
   /**
    * Invoke local in-process handlers for an event
-   * Called when publishing to handle local subscribers immediately
+   * Called when publishing to handle local subscribers immediately.
+   *
+   * Failures here are swallowed (not rethrown) so one buggy subscriber
+   * can't take down the publishEvent path — the BullMQ subscribers in
+   * webhookDelivery.ts and automationWorker.ts depend on this. The
+   * tradeoff is silent failure of e.g. a dropped delivery enqueue, so
+   * each failure is emitted as a structured log line (JSON-shaped via
+   * console.error) that carries enough context (event.id, event.orgId,
+   * event.source, event.type, handler index) to be searchable by an
+   * operator and pulled into ops dashboards. See issue #820.
    */
   private async invokeLocalHandlers(event: BreezeEvent): Promise<void> {
     const typeHandlers = this.handlers.get(event.type) || new Set();
@@ -231,12 +264,30 @@ class EventBus {
 
     if (allHandlers.length === 0) return;
 
+    let handlerIndex = 0;
     for (const handler of allHandlers) {
       try {
         await handler(event);
       } catch (err) {
-        console.error(`[EventBus] Local handler failed for ${event.type}:`, err);
+        // Structured shape so ops can grep / aggregate / forward to a
+        // log aggregator. Keep using console.error rather than throw so
+        // a single failing subscriber doesn't stop the publish loop.
+        console.error(
+          '[EventBus] local-handler-failed',
+          JSON.stringify({
+            errorId: 'EVENT_BUS_LOCAL_HANDLER_FAILED',
+            eventId: event.id,
+            eventType: event.type,
+            orgId: event.orgId,
+            source: event.source,
+            handlerIndex,
+            error: err instanceof Error
+              ? { name: err.name, message: err.message, stack: err.stack }
+              : String(err),
+          }),
+        );
       }
+      handlerIndex += 1;
     }
   }
 
@@ -500,6 +551,8 @@ export const EVENT_TYPES = {
   DEVICE_OFFLINE: 'device.offline' as const,
   DEVICE_UPDATED: 'device.updated' as const,
   DEVICE_DECOMMISSIONED: 'device.decommissioned' as const,
+  // #800: server-detected asymmetry (watchdog OK, main agent silent past threshold)
+  DEVICE_MAIN_AGENT_SILENT: 'device.main_agent_silent' as const,
   // Alert
   ALERT_TRIGGERED: 'alert.triggered' as const,
   ALERT_ACKNOWLEDGED: 'alert.acknowledged' as const,
@@ -542,6 +595,8 @@ export const EVENT_TYPES = {
   COMPLIANCE_SENSITIVE_DATA_FOUND: 'compliance.sensitive_data_found' as const,
   COMPLIANCE_CREDENTIAL_EXPOSED: 'compliance.credential_exposed' as const,
   COMPLIANCE_SENSITIVE_DATA_REMEDIATED: 'compliance.sensitive_data_remediated' as const,
+  // DNS Security (#829)
+  DNS_THREAT_BLOCKED: 'dns.threat.blocked' as const,
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,

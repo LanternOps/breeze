@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Building2, MapPin, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 interface OrgData {
   partner?: { id: string; name: string; slug: string };
@@ -113,9 +114,8 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
             body: JSON.stringify({ name: orgName })
           });
           if (!res.ok) {
-            let msg = 'Failed to update organization name';
-            try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
-            setError(msg);
+            const data = await res.json().catch(() => null);
+            setError(extractApiError(data, 'Failed to update organization name'));
             setSaving(false);
             return;
           }
@@ -128,9 +128,8 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           body: JSON.stringify({ name, slug: slugify(name) })
         });
         if (!res.ok) {
-          let msg = 'Failed to create organization';
-          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
-          setError(msg);
+          const data = await res.json().catch(() => null);
+          setError(extractApiError(data, 'Failed to create organization'));
           setSaving(false);
           return;
         }
@@ -146,9 +145,8 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
             body: JSON.stringify({ name: siteName })
           });
           if (!res.ok) {
-            let msg = 'Failed to update site name';
-            try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
-            setError(msg);
+            const data = await res.json().catch(() => null);
+            setError(extractApiError(data, 'Failed to update site name'));
             setSaving(false);
             return;
           }
@@ -161,9 +159,8 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           body: JSON.stringify({ orgId: finalOrgId, name })
         });
         if (!res.ok) {
-          let msg = 'Failed to create site';
-          try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore */ }
-          setError(msg);
+          const data = await res.json().catch(() => null);
+          setError(extractApiError(data, 'Failed to create site'));
           setSaving(false);
           return;
         }

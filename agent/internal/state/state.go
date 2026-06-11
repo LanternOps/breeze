@@ -11,6 +11,13 @@ import (
 const FileName = "agent.state"
 
 const (
+	// StatusStarting is written early in startup, before the agent is fully
+	// initialized, so the watchdog records THIS process's live PID rather than
+	// a stale PID from a prior run if startup wedges. It flips to
+	// StatusRunning once startup completes. The watchdog does not branch on
+	// Status (only PID / LastHeartbeat / IPC drive health decisions), so this
+	// is purely an accurate-PID and diagnostic signal.
+	StatusStarting = "starting"
 	StatusRunning  = "running"
 	StatusStopping = "stopping"
 	StatusStopped  = "stopped"

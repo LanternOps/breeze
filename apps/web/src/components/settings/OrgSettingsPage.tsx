@@ -21,6 +21,7 @@ import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, ActionError } from '@/lib/runAction';
 
 const tabs = [
   {
@@ -162,6 +163,24 @@ type OrgSettingsPageProps = {
   orgId?: string;
 };
 
+// Exported for unit-testing without mounting the full component.
+export async function runOrgNameSave(
+  orgId: string,
+  name: string,
+  deps: { onUnauthorized: () => void }
+): Promise<OrgDetails> {
+  return runAction<OrgDetails>({
+    request: () =>
+      fetchWithAuth(`/orgs/organizations/${orgId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name })
+      }),
+    successMessage: 'Organization name saved',
+    errorFallback: 'Failed to save organization name',
+    onUnauthorized: deps.onUnauthorized
+  });
+}
+
 export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPageProps) {
   const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
 
@@ -185,6 +204,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [copiedOrgId, setCopiedOrgId] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
 
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
@@ -208,6 +229,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       }
       const data = await response.json();
       setOrgDetails(data);
+      setNameDraft(data.name ?? '');
 
       // Fetch effective settings to determine partner-locked fields
       const effRes = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}/effective-settings`);
@@ -257,6 +279,28 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       setError(err instanceof Error ? err.message : 'Failed to save settings');
     }
   }, [effectiveOrgId, orgDetails, fetchOrgDetails]);
+
+  const handleSaveName = useCallback(async () => {
+    if (!effectiveOrgId) return;
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === orgDetails?.name) return;
+
+    try {
+      setSavingName(true);
+      setError(undefined);
+      await runOrgNameSave(effectiveOrgId, trimmed, {
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
+      });
+      await fetchOrgDetails();
+    } catch (err) {
+      // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to save organization name');
+      }
+    } finally {
+      setSavingName(false);
+    }
+  }, [effectiveOrgId, nameDraft, orgDetails, fetchOrgDetails]);
 
   // Fallback display data — prefer fetched orgDetails; when accessed via URL prop the org
   // might not be in the store's organizations array, so fall back to a minimal object.
@@ -384,8 +428,34 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               </div>
               <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2">
                 <div className="rounded-md border bg-muted/40 p-4">
-                  <dt className="text-xs uppercase text-muted-foreground">Organization</dt>
-                  <dd className="mt-2 text-base font-semibold">{displayOrg.name}</dd>
+                  <dt className="text-xs uppercase text-muted-foreground">Organization name</dt>
+                  <dd className="mt-2 flex items-center gap-2">
+                    <input
+                      type="text"
+                      data-testid="org-name-input"
+                      value={nameDraft}
+                      onChange={(e) => setNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          // handleSaveName guards empty/unchanged internally.
+                          void handleSaveName();
+                        }
+                      }}
+                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-primary"
+                      placeholder="Organization name"
+                      aria-label="Organization name"
+                    />
+                    <button
+                      type="button"
+                      data-testid="org-name-save"
+                      onClick={() => void handleSaveName()}
+                      disabled={savingName || !nameDraft.trim() || nameDraft.trim() === orgDetails?.name}
+                      className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {savingName ? 'Saving…' : 'Save'}
+                    </button>
+                  </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {orgDetails?.slug || displayOrg.id}
                   </p>

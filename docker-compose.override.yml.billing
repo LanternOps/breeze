@@ -8,10 +8,13 @@ services:
   billing:
     build:
       context: ../breeze-billing
-      dockerfile: Dockerfile
-    image: breeze-billing:local
+      dockerfile: Dockerfile.dev
+    image: breeze-billing:dev
     container_name: breeze-billing
     restart: unless-stopped
+    volumes:
+      - ../breeze-billing/src:/app/src
+      - ../breeze-billing/tsconfig.json:/app/tsconfig.json
     environment:
       NODE_ENV: development
       BILLING_PORT: 3002

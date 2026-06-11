@@ -1,12 +1,17 @@
-import archiver from 'archiver';
-import StreamZip from 'node-stream-zip';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import archiver from "archiver";
+import StreamZip from "node-stream-zip";
+import { writeFile, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 export interface RenameAppInZipOpts {
-  oldAppName: string;  // e.g. "Breeze Installer.app"
-  newAppName: string;  // e.g. "Breeze Installer [A7K2XQ@us.2breeze.app].app"
+  oldAppName: string; // e.g. "Breeze Installer.app"
+  newAppName: string; // e.g. "Breeze Installer [A7K2XQ@us.2breeze.app].app"
+  extraFiles?: Array<{
+    path: string;
+    data: Buffer | string;
+    mode?: number;
+  }>;
 }
 
 /**
@@ -27,20 +32,20 @@ export async function renameAppInZip(
   sourceZip: Buffer,
   opts: RenameAppInZipOpts,
 ): Promise<Buffer> {
-  const workDir = await mkdtemp(join(tmpdir(), 'installer-app-zip-'));
-  const inputPath = join(workDir, 'in.zip');
+  const workDir = await mkdtemp(join(tmpdir(), "installer-app-zip-"));
+  const inputPath = join(workDir, "in.zip");
   await writeFile(inputPath, sourceZip);
   try {
     const reader = new StreamZip.async({ file: inputPath });
     const entries = await reader.entries();
     let matched = 0;
 
-    const out = archiver('zip', { zlib: { level: 0 } }); // store-only; .app contents already small or pre-compressed
+    const out = archiver("zip", { zlib: { level: 0 } }); // store-only; .app contents already small or pre-compressed
     const chunks: Buffer[] = [];
-    out.on('data', (c: Buffer) => chunks.push(c));
+    out.on("data", (c: Buffer) => chunks.push(c));
     const done = new Promise<void>((resolve, reject) => {
-      out.on('end', () => resolve());
-      out.on('error', reject);
+      out.on("end", () => resolve());
+      out.on("error", reject);
     });
 
     for (const entry of Object.values(entries)) {
@@ -53,12 +58,22 @@ export async function renameAppInZip(
         newPath = opts.newAppName + entry.name.slice(opts.oldAppName.length);
         matched++;
       }
+      // node-stream-zip exposes external file attributes as a raw uint32
+      // (Unix mode is in the high 16 bits, type+mode bits packed). archiver
+      // expects a plain 9-bit Unix permission integer. Passing entry.attr
+      // directly garbles the mode to 0 → unreadable directories ("zero-byte
+      // .app" symptom). Extract perms or fall back to sane defaults.
+      const unixMode = (entry.attr >>> 16) & 0o777;
+      const mode = unixMode || (entry.isDirectory ? 0o755 : 0o644);
       if (entry.isDirectory) {
-        out.append('', { name: newPath, mode: entry.attr });
+        out.append("", { name: newPath, mode });
       } else {
         const data = await reader.entryData(entry.name);
-        out.append(data, { name: newPath, mode: entry.attr });
+        out.append(data, { name: newPath, mode });
       }
+    }
+    for (const file of opts.extraFiles ?? []) {
+      out.append(file.data, { name: file.path, mode: file.mode ?? 0o600 });
     }
     await reader.close();
 

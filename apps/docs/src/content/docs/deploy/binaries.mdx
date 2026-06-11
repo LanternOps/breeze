@@ -32,6 +32,18 @@ The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If ne
 
 On startup, the API calls GitHub's Releases API to register the current version's checksums in the `agent_versions` table, so agents know when a new version is available.
 
+#### Manifest trust root
+
+In production, GitHub mode requires the `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` env var. This is the base64 SPKI of the Ed25519 public key that signs our release manifests. The API verifies every fetched manifest against this key before trusting its checksums, so a compromised GitHub release alone can't deliver tampered binaries.
+
+For the official Breeze releases, use the published trust anchor:
+
+```bash
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=
+```
+
+This is a public key (also embedded in the agent and CI), so it is safe to commit. Only override it if you build and sign your own binaries. The API refuses to start in production without it. During a signing-key rotation you can trust multiple keys at once by comma-separating them (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=old,new`).
+
 ### Local Mode
 
 Binaries are served from disk. The API reads from these directories:

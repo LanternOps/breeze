@@ -1,5 +1,25 @@
 [
   {
+    "path": "/agents/advanced-install/",
+    "title": "Advanced Install Methods",
+    "description": "Alternate, scripted, and unattended ways to install the Breeze agent — ZIP bundles, MSI properties, direct binary + enroll, and the full enroll/service flag reference.",
+    "headings": [
+      "Picking a Method",
+      "ZIP Bundle (MSI + enrollment.json + install.bat)",
+      "Windows zip contents",
+      "macOS zip contents",
+      "Running the bundle",
+      "`enrollment.json` schema",
+      "MSI with Properties (Silent Install)",
+      "Direct Binary + Manual Enroll",
+      "`breeze-agent enroll` — flag reference",
+      "`breeze-agent service install` — flag reference",
+      "Pre-Staging Without Enrollment",
+      "Programmatic Bundle Generation"
+    ],
+    "section": "agents"
+  },
+  {
     "path": "/agents/building/",
     "title": "Building from Source",
     "description": "Compile the Breeze agent from source for any platform.",
@@ -45,6 +65,8 @@
       "`reboot` / `shutdown`",
       "`lock`",
       "`reboot_safe_mode`",
+      "`set_auto_update`",
+      "`refresh_inventory`",
       "File Operations",
       "`file_list`",
       "`file_read`",
@@ -122,6 +144,7 @@
       "Downloading from the Dashboard",
       "Downloading via API",
       "Public Download Links",
+      "Short Codes (`/s/<code>`)",
       "Enrollment Key Lifecycle",
       "Creating a Key",
       "Listing Keys",
@@ -157,7 +180,8 @@
       "Token Security",
       "Enrollment Keys",
       "Bulk Enrollment",
-      "Re-enrollment"
+      "Re-enrollment",
+      "Reusing a hostname for a decommissioned device"
     ],
     "section": "agents"
   },
@@ -209,6 +233,9 @@
       "Quick Install",
       "Pre-Configured Installers",
       "Public Installer Links",
+      "Short Enrollment Links",
+      "macOS GUI Installer",
+      "Pre-Provisioning Devices",
       "What Gets Installed",
       "What Enrollment Does",
       "Verifying Installation",
@@ -524,6 +551,36 @@
     "section": "deploy"
   },
   {
+    "path": "/deploy/cloudflare-access-trust/",
+    "title": "Cloudflare Access JWT trust",
+    "description": "Skip the Breeze login form when a deployment sits behind Cloudflare Access using the same identity provider.",
+    "headings": [
+      "How it works",
+      "Failure semantics",
+      "MFA",
+      "Configuration",
+      "Recommended Cloudflare Access setup",
+      "Disabling"
+    ],
+    "section": "deploy"
+  },
+  {
+    "path": "/deploy/cloudflare-tunnel/",
+    "title": "Cloudflare Tunnel",
+    "description": "Run Breeze behind a Cloudflare Tunnel with no inbound ports, and optionally lock the dashboard behind Cloudflare Access.",
+    "headings": [
+      "Traffic Chain",
+      "TLS Termination: HTTP Origin Required",
+      "Option A — Caddy in HTTP mode (recommended)",
+      "Option B — Bypass Caddy",
+      "Prerequisites",
+      "Setup",
+      "Restricting the Dashboard with Cloudflare Access",
+      "Troubleshooting"
+    ],
+    "section": "deploy"
+  },
+  {
     "path": "/deploy/code-signing/",
     "title": "Code Signing",
     "description": "Code signing for Breeze agent, viewer, and helper binaries on Windows and macOS.",
@@ -536,6 +593,9 @@
       "macOS Code Signing & Notarization",
       "How it works",
       "Gatekeeper Verification",
+      "Installer Download Signing",
+      "How it works",
+      "Configuration",
       "Verifying Signatures",
       "Windows",
       "macOS",
@@ -560,12 +620,16 @@
       "Monitoring",
       "Sentry",
       "Rate Limiting",
+      "Database",
       "File Transfer & Remote Sessions",
       "Feature Flags",
       "MCP Server",
       "Cloudflare mTLS",
+      "Cloudflare Access JWT trust",
       "Cloud-to-Cloud Backup (M365)",
       "Docker Deployment",
+      "MSI Installer Signing",
+      "Billing",
       "AI"
     ],
     "section": "deploy"
@@ -630,6 +694,7 @@
       "Agent Updates",
       "Linux Binary-In-Use Handling",
       "Watchdog Recovery",
+      "Disabling Auto-Update on Specific Devices",
       "Migration Failure Recovery",
       "Zero-Downtime Upgrades",
       "Rolling Back",
@@ -721,6 +786,7 @@
       "Organisation toggle",
       "AI Cost Tracking",
       "Viewing costs",
+      "Billing credit integration",
       "AI Input Sanitization",
       "Backup AI Tools",
       "Incident Response AI Tools",
@@ -1255,6 +1321,7 @@
       "Querying Events",
       "Event Query Parameters",
       "Event Response Fields",
+      "Automatic Threat Alerts",
       "Statistics and Analytics",
       "Summary Statistics",
       "Top Blocked Domains",
@@ -1547,11 +1614,14 @@
     "headings": [
       "How MCP works",
       "Transport",
+      "Finding your MCP URL",
       "Authentication",
       "Creating an API key",
       "Key format",
+      "OAuth 2.1 (preview)",
       "Connecting Claude Desktop",
       "Connecting Cursor",
+      "MCP Bootstrap (preview)",
       "Available tools",
       "Device tools",
       "Alert tools",
@@ -1573,6 +1643,7 @@
       "Security considerations",
       "Organization isolation",
       "Guardrails",
+      "Step-up approval (out-of-band)",
       "Production allowlist for destructive tools",
       "Audit logging",
       "Input validation",
@@ -1612,6 +1683,12 @@
       "Registration Flow",
       "Notification Handling",
       "Notification Settings",
+      "Approval Mode",
+      "Risk Tiers and Statuses",
+      "Approval Flow",
+      "Reporting a Suspicious Request",
+      "Trusted Devices",
+      "`approval_requests` table",
       "Authentication",
       "JWT-Based Login",
       "Biometric Authentication",
@@ -1622,6 +1699,7 @@
       "Mobile Device Registration",
       "Alert Operations",
       "Device Operations",
+      "Approval Operations",
       "Fleet Summary",
       "Pagination",
       "Multi-Tenant Access Control",
@@ -1757,7 +1835,7 @@
   {
     "path": "/features/notifications/",
     "title": "Notifications",
-    "description": "Configure notification channels and deliver alerts via email, Slack, Teams, PagerDuty, SMS, webhook, and in-app notifications.",
+    "description": "Configure notification channels and deliver alerts via email, Slack, Teams, PagerDuty, SMS, Pushover, webhook, and in-app notifications.",
     "headings": [
       "Notification Channels",
       "Supported channel types",
@@ -1767,6 +1845,7 @@
       "Slack and Teams",
       "PagerDuty",
       "SMS",
+      "Pushover",
       "In-App",
       "In-App Notification Management",
       "Listing notifications",
@@ -1781,6 +1860,7 @@
       "API Reference",
       "In-App Notification Endpoints",
       "Notification Channel Endpoints",
+      "Per-channel throttle",
       "Creating a channel",
       "Testing a channel",
       "Troubleshooting"
@@ -1797,6 +1877,10 @@
       "Severity Levels",
       "Approval States",
       "Device Patch Status",
+      "Third-Party Application Patching",
+      "The Package Catalog",
+      "CVE Enrichment from OSV.dev",
+      "Smoke Testing Releases (Optional)",
       "Scanning for Patches",
       "Reviewing and Approving Patches",
       "Approving",
@@ -2064,11 +2148,13 @@
       "Audio Streaming",
       "Secure Desktop Capture",
       "GPU-Accelerated Streaming",
-      "VNC Fallback (macOS)",
+      "VNC Fallback and In-Window Switcher (macOS)",
       "Session Switcher",
       "OS Keyboard Shortcuts",
       "Login Screen Input (macOS)",
       "Network Proxy",
+      "Wake-on-LAN",
+      "Pluggable Remote-Desktop Launcher",
       "Remote Terminal",
       "Starting a terminal session",
       "Connection flow",
@@ -2086,6 +2172,7 @@
       "Sessions",
       "File Transfers",
       "Network Proxy Tunnels",
+      "Wake-on-LAN & Remote-Desktop Launcher",
       "Events",
       "Troubleshooting"
     ],
@@ -2186,6 +2273,7 @@
       "Privilege Levels",
       "Execution Status",
       "Trigger Types",
+      "Severity by Exit Code",
       "Creating Scripts via API",
       "Executing Scripts via API",
       "Single device execution",
@@ -2216,6 +2304,7 @@
     "title": "Security",
     "description": "Monitor endpoint security posture, detect threats, enforce compliance, and get AI-powered security recommendations.",
     "headings": [
+      "Admin IP Allowlist",
       "Security Status",
       "Collected Fields",
       "Detection Methods by Platform",
@@ -2535,6 +2624,22 @@
     "section": "features"
   },
   {
+    "path": "/features/ticketing/",
+    "title": "Ticketing",
+    "description": "Built-in ticketing for MSP workflows -- a triage queue, public replies and internal notes, SLA chips, and tickets linked to alerts and devices.",
+    "headings": [
+      "The Queue",
+      "Working a Ticket",
+      "Replies and Internal Notes",
+      "Keyboard Shortcuts",
+      "Bulk Actions",
+      "Creating Tickets",
+      "Categories and SLAs",
+      "Tickets on a Device"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/update-rings/",
     "title": "Update Rings",
     "description": "Control patch rollout velocity with staged deployment rings, deferral periods, and per-category approval rules.",
@@ -2641,6 +2746,7 @@
       "State transitions",
       "Recovery",
       "Failover",
+      "Agent-Silent Detection",
       "Health Journal",
       "Configuration",
       "Watchdog Logs API",
@@ -2849,6 +2955,22 @@
     "section": "reference"
   },
   {
+    "path": "/reference/account-deletion/",
+    "title": "Account Deletion",
+    "description": "Self-service account deletion requests, the 30-day grace period, and the administrator review queue.",
+    "headings": [
+      "Requesting deletion (user)",
+      "Reviewing requests (administrator)",
+      "Status lifecycle",
+      "API reference",
+      "User endpoints",
+      "Administrator endpoints",
+      "Audit trail",
+      "Schema: `account_deletion_requests`"
+    ],
+    "section": "reference"
+  },
+  {
     "path": "/reference/api-keys/",
     "title": "API Keys & Enrollment Keys",
     "description": "Generate and manage API keys for programmatic access and enrollment keys for agent onboarding.",
@@ -2915,6 +3037,7 @@
       "Script Library",
       "Automations",
       "Patching",
+      "Third-Party Package Catalog",
       "Patch Policies",
       "Security",
       "Software Inventory",
@@ -2962,6 +3085,7 @@
       "Actor Types",
       "Action Categories",
       "Security Actions",
+      "Tamper Evidence",
       "Compliance Actions",
       "Writing Audit Events",
       "Filtering and Searching",
@@ -3178,6 +3302,7 @@
     "headings": [
       "Deployment Issues",
       "Deploy script fails with \"Missing required env var\"",
+      "API refuses to boot: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production`",
       "TLS certificate not provisioning",
       "Database migration fails",
       "Agent Issues",
@@ -3191,6 +3316,9 @@
       "Container Issues",
       "Container won't start",
       "Health check failing",
+      "Installer Issues",
+      "\"Generate Link\" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`",
+      "\"Generate Link\" fails with `MSI build pipeline not reachable. Retry`",
       "Getting Help"
     ],
     "section": "reference"
@@ -3280,6 +3408,21 @@
     "section": "security"
   },
   {
+    "path": "/security/error-tracking/",
+    "title": "Error Tracking & Privacy",
+    "description": "Optional Sentry integration for the API and web app, what's collected, and how to disable.",
+    "headings": [
+      "What gets sent",
+      "API (`SENTRY_DSN`)",
+      "Web (`PUBLIC_SENTRY_DSN_WEB`)",
+      "Enabling",
+      "Optional: source maps upload",
+      "Disabling",
+      "Customizing scrubbing"
+    ],
+    "section": "security"
+  },
+  {
     "path": "/security/hardening/",
     "title": "Security Hardening",
     "description": "Production security checklist and hardening guide for Breeze RMM.",
@@ -3291,9 +3434,11 @@
       "Container Security",
       "Authentication",
       "Agent Security",
+      "Outbound Request Safety (SSRF)",
       "Monitoring",
       "Firewall Configuration",
       "Audit Logging",
+      "Tamper evidence",
       "Rate Limiting"
     ],
     "section": "security"

@@ -221,12 +221,3 @@ func (c *ConnectionsCollector) parseAddress(addr string) (string, int) {
 
 	return addr, 0
 }
-
-func sanitizeConnectionInfo(conn ConnectionInfo) ConnectionInfo {
-	conn.Protocol = truncateCollectorString(conn.Protocol)
-	conn.LocalAddr = truncateCollectorString(conn.LocalAddr)
-	conn.RemoteAddr = truncateCollectorString(conn.RemoteAddr)
-	conn.State = truncateCollectorString(conn.State)
-	conn.ProcessName = truncateCollectorString(conn.ProcessName)
-	return conn
-}

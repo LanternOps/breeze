@@ -3,7 +3,7 @@
  *
  * Tier 3+ destructive tool. Flag-independent — registered into the standard
  * authed aiTools registry, available to MCP agents and the in-app assistant
- * regardless of `MCP_BOOTSTRAP_ENABLED`.
+ * regardless of `IS_HOSTED`.
  *
  * Safety rails:
  *   1. `tenant_id` MUST equal the API key's partnerId → cross-tenant deletion
@@ -25,6 +25,7 @@ import { partners } from '../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
+import { revokePartnerTenantAccess } from './tenantLifecycle';
 
 interface DeleteTenantInput {
   tenant_id: string;
@@ -90,6 +91,8 @@ export async function runDeleteTenant(
     .update(partners)
     .set({ status: 'churned', deletedAt: now, updatedAt: now })
     .where(eq(partners.id, input.tenant_id));
+
+  await revokePartnerTenantAccess(input.tenant_id);
 
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {

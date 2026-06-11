@@ -3,8 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, inArray, desc } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
-import { queueCommand, queueCommandForExecution } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { queueCommandForExecution } from '../../services/commandQueue';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   patches,
   devicePatches,
@@ -16,6 +16,11 @@ import { scanSchema, listJobsSchema, patchIdParamSchema, rollbackSchema } from '
 import { getPagination, writePatchAuditForOrgIds } from './helpers';
 
 export const operationsRoutes = new Hono();
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
 
 // POST /patches/scan - Trigger patch scan for devices
 operationsRoutes.post(
@@ -31,7 +36,8 @@ operationsRoutes.post(
     const requestedDevices = await db
       .select({
         id: devices.id,
-        orgId: devices.orgId
+        orgId: devices.orgId,
+        siteId: devices.siteId
       })
       .from(devices)
       .where(inArray(devices.id, data.deviceIds));
@@ -39,9 +45,12 @@ operationsRoutes.post(
     const foundDeviceIDs = new Set(requestedDevices.map((d) => d.id));
     const missingDeviceIDs = data.deviceIds.filter((id) => !foundDeviceIDs.has(id));
 
-    const accessibleDevices = requestedDevices.filter((device) => auth.canAccessOrg(device.orgId));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const accessibleDevices = requestedDevices.filter((device) =>
+      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions)
+    );
     const inaccessibleDeviceIDs = requestedDevices
-      .filter((device) => !auth.canAccessOrg(device.orgId))
+      .filter((device) => !auth.canAccessOrg(device.orgId) || !canAccessDeviceSite(device, permissions))
       .map((device) => device.id);
 
     const queueResults = await Promise.all(
@@ -187,14 +196,15 @@ operationsRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    let candidateDevices: Array<{ id: string; orgId: string }> = [];
+    let candidateDevices: Array<{ id: string; orgId: string; siteId: string | null }> = [];
     let missingDeviceIds: string[] = [];
 
     if (data.deviceIds && data.deviceIds.length > 0) {
       candidateDevices = await db
         .select({
           id: devices.id,
-          orgId: devices.orgId
+          orgId: devices.orgId,
+          siteId: devices.siteId
         })
         .from(devices)
         .where(inArray(devices.id, data.deviceIds));
@@ -205,7 +215,8 @@ operationsRoutes.post(
       candidateDevices = await db
         .select({
           id: devices.id,
-          orgId: devices.orgId
+          orgId: devices.orgId,
+          siteId: devices.siteId
         })
         .from(devicePatches)
         .innerJoin(devices, eq(devicePatches.deviceId, devices.id))
@@ -217,9 +228,12 @@ operationsRoutes.post(
         );
     }
 
-    const accessibleDevices = candidateDevices.filter((device) => auth.canAccessOrg(device.orgId));
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const accessibleDevices = candidateDevices.filter((device) =>
+      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions)
+    );
     const inaccessibleDeviceIds = candidateDevices
-      .filter((device) => !auth.canAccessOrg(device.orgId))
+      .filter((device) => !auth.canAccessOrg(device.orgId) || !canAccessDeviceSite(device, permissions))
       .map((device) => device.id);
 
     if (accessibleDevices.length === 0) {
@@ -235,7 +249,7 @@ operationsRoutes.post(
     const queueResults = await Promise.all(
       accessibleDevices.map(async (device) => {
         try {
-          const command = await queueCommand(
+          const queued = await queueCommandForExecution(
             device.id,
             'rollback_patches',
             {
@@ -243,17 +257,37 @@ operationsRoutes.post(
               patches: [patch],
               reason: data.reason ?? null
             },
-            auth.user.id
+            {
+              userId: auth.user.id,
+              preferHeartbeat: false
+            }
           );
 
-          return { ok: true as const, deviceId: device.id, commandId: command.id };
+          if (!queued.command) {
+            return { ok: false as const, deviceId: device.id };
+          }
+
+          return {
+            ok: true as const,
+            deviceId: device.id,
+            commandId: queued.command.id,
+            commandStatus: queued.command.status
+          };
         } catch {
           return { ok: false as const, deviceId: device.id };
         }
       })
     );
 
-    const queued = queueResults.filter((result): result is { ok: true; deviceId: string; commandId: string } => result.ok);
+    const queued = queueResults
+      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok);
+    const queuedCommandIds = queued.map((entry) => entry.commandId);
+    const dispatchedCommandIds = queueResults
+      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok && result.commandStatus === 'sent')
+      .map((result) => result.commandId);
+    const pendingCommandIds = queueResults
+      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok && result.commandStatus !== 'sent')
+      .map((result) => result.commandId);
     const failedDeviceIds = queueResults
       .filter((result): result is { ok: false; deviceId: string } => !result.ok)
       .map((result) => result.deviceId);
@@ -280,8 +314,11 @@ operationsRoutes.post(
         resourceType: 'patch',
         resourceId: id,
         resourceName: patch.title,
+        result: queued.length === 0 ? 'failure' : 'success',
         details: {
-          queuedCommandIds: queued.map((entry) => entry.commandId),
+          queuedCommandIds,
+          dispatchedCommandIds,
+          pendingCommandIds,
           deviceCount: accessibleDevices.length,
           failedDeviceIds,
           reason: data.reason ?? null
@@ -292,7 +329,9 @@ operationsRoutes.post(
     return c.json({
       success: failedDeviceIds.length === 0,
       patchId: id,
-      queuedCommandIds: queued.map((entry) => entry.commandId),
+      queuedCommandIds,
+      dispatchedCommandIds,
+      pendingCommandIds,
       deviceCount: accessibleDevices.length,
       failedDeviceIds,
       skipped: {

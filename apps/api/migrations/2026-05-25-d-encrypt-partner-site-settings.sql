@@ -1,0 +1,26 @@
+-- Registry-change marker for issue #716.
+--
+-- `partners.settings` and `sites.settings` now appear in
+-- encryptedColumnRegistry.ts. The actual re-encryption of existing rows is
+-- performed by the application script (idempotent — skips already-encrypted
+-- values via `shouldReencryptSecret`):
+--
+--     pnpm --filter @breeze/api secrets:reencrypt
+--
+-- Deploy order:
+--   1. Apply this migration (no-op SQL, just records the registry change).
+--   2. Run the re-encrypt script.
+--   3. Confirm with:
+--        SELECT id, settings->'remoteAccessProviders'->0->>'password'
+--        FROM partners
+--        WHERE jsonb_typeof(settings->'remoteAccessProviders') = 'array'
+--        LIMIT 5;
+--      All non-empty values should begin with 'enc:v2:'.
+--
+-- Same pattern as the existing organizations.settings entry — no schema change
+-- is required because the values are JSONB and SECRET_JSON_KEYS already
+-- includes 'password'. The launcher (apps/api/src/services/remoteAccessLauncher.ts)
+-- was updated in the same commit to call decryptSecret() on read, with a
+-- backwards-compatible passthrough for pre-migration plaintext.
+
+SELECT 1;

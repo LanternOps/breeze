@@ -2,8 +2,19 @@
 
 This guide deploys Breeze with TLS, hardened container settings, monitoring, and logging using:
 
-- `docker/docker-compose.prod.yml`
+- `deploy/docker-compose.prod.yml`
 - `scripts/prod/deploy.sh`
+
+## Which deploy path?
+
+Breeze ships two Compose configurations:
+
+| Path | Files | When to use |
+|------|-------|-------------|
+| **Simple self-host** | `docker-compose.yml` + `.env.example` (repo root) | Single-host self-hosted deploys behind your own TLS reverse proxy. Tag-pinned images by default (override with digests for higher assurance). Uses the `*_IMAGE_REF` variable schema. |
+| **Strict production** *(this doc)* | `deploy/docker-compose.prod.yml` + `deploy/.env.example` | Production rollouts with Cloudflare Tunnel, hardened ACLs, monitoring/logging, and **mandatory** digest-pinned images. Uses the `*_IMAGE_DIGEST` variable schema (Breeze images) and `*_IMAGE_REF` (third-party). The hardening check (`scripts/security/check-supply-chain-hardening.sh`) refuses to ship a release with mutable tags in this path. |
+
+The two paths use **different variable names** intentionally — they are not interchangeable. If you copied `.env` from one path, do not point it at the other Compose file.
 
 ## Prerequisites
 
@@ -15,19 +26,63 @@ This guide deploys Breeze with TLS, hardened container settings, monitoring, and
 ## 1) Prepare Environment
 
 ```bash
-cp .env.example .env.prod
+cp deploy/.env.example .env.prod
 ```
 
 Set at least these values in `.env.prod`:
 
 - `BREEZE_DOMAIN`
 - `ACME_EMAIL`
-- `POSTGRES_PASSWORD`
+- `BREEZE_VERSION`
+- `BREEZE_API_IMAGE_DIGEST`
+- `BREEZE_WEB_IMAGE_DIGEST`
+- `BREEZE_BINARIES_IMAGE_DIGEST`
+- `CADDY_IMAGE_REF`
+- `CLOUDFLARED_IMAGE_REF`
+- `REDIS_IMAGE_REF`
+- `COTURN_IMAGE_REF`
+- `BILLING_IMAGE_REF`
+- `DATABASE_URL`
+- `REDIS_PASSWORD`
 - `JWT_SECRET`
 - `AGENT_ENROLLMENT_SECRET`
+- `APP_ENCRYPTION_KEY`
+- `MFA_ENCRYPTION_KEY`
+- `ENROLLMENT_KEY_PEPPER`
+- `MFA_RECOVERY_CODE_PEPPER`
+- `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`
+- `BREEZE_BOOTSTRAP_ADMIN_EMAIL` (first boot only, when the users table is empty)
+- `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` (first boot only; generate a one-time value with `openssl rand -base64 32`)
 - `METRICS_SCRAPE_TOKEN`
 - `PUBLIC_API_URL` (example: `https://app.example.com/api/v1`)
 - `GRAFANA_ADMIN_PASSWORD`
+
+### Obtaining image digests
+
+`BREEZE_*_IMAGE_DIGEST` values are `sha256:<64hex>` strings — not full image refs. The Compose file prepends `ghcr.io/lanternops/breeze/<name>@` automatically.
+
+```bash
+# Replace 0.67.1 with the release you intend to deploy.
+TAG=0.67.1
+for img in api web binaries; do
+  digest=$(docker buildx imagetools inspect "ghcr.io/lanternops/breeze/$img:$TAG" \
+    --format '{{json .Manifest}}' | jq -r .digest)
+  echo "BREEZE_${img^^}_IMAGE_DIGEST=$digest"
+done
+```
+
+Third-party `*_IMAGE_REF` values are full digest-pinned refs (`name@sha256:<64hex>`):
+
+```bash
+docker buildx imagetools inspect caddy:2-alpine \
+  --format 'caddy@{{json .Manifest | fromjson | .digest}}' | tr -d '"'
+```
+
+Browse current releases at <https://github.com/orgs/LanternOps/packages?repo_name=breeze>.
+
+The bootstrap admin password is not logged by the API. If these values are missing on first boot against an empty production database, the API refuses to seed a default admin. After the initial admin signs in and completes setup, remove `BREEZE_BOOTSTRAP_ADMIN_EMAIL` and `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` from the production environment.
+
+Production compose intentionally does not run Watchtower or mount the Docker socket. Rollouts should be done by updating the digest-pinned image values above and running the deploy script through the normal release process.
 
 ## 2) Deploy
 
@@ -37,11 +92,11 @@ Set at least these values in `.env.prod`:
 
 What the script does:
 
-1. Validates required env vars.
-2. Writes `monitoring/secrets/metrics_scrape_token` for Prometheus scrape auth.
-3. Starts PostgreSQL/Redis and waits for readiness.
-4. Runs `pnpm db:migrate` against production DB.
-5. Builds/starts full stack (edge, app, monitoring, Loki/Promtail).
+1. Validates required env vars and digest-pinned image refs.
+2. Validates the production Compose configuration.
+3. Starts Redis and waits for readiness.
+4. Runs `pnpm db:migrate` against `DATABASE_URL`.
+5. Starts the full stack (edge, app, billing, monitoring, Loki/Promtail).
 6. Runs smoke checks.
 
 ## 3) Verify
@@ -59,6 +114,7 @@ You can also run:
 
 ## 4) Notes
 
-- `postgres`, `redis`, `prometheus`, `grafana`, `alertmanager`, `loki`, and `promtail` bind to `127.0.0.1` only.
+- `redis` is not host-published. `prometheus`, `grafana`, `alertmanager`, `loki`, and `promtail` bind to `127.0.0.1` only.
 - Public ingress is only through Caddy on `80/443`.
+- In Cloudflare Tunnel mode, Caddy trusts client-IP headers only from the configured `BREEZE_CLOUDFLARED_IP`, and the API trusts forwarded headers only from `BREEZE_CADDY_IP`. Keep `CADDY_TRUSTED_PROXIES` and `TRUSTED_PROXY_CIDRS` pinned to exact proxy hops, not broad private ranges.
 - Container resource limits, restart policies, and no-new-privileges are configured in prod compose.

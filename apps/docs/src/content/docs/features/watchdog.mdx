@@ -13,11 +13,15 @@ The watchdog is installed automatically alongside the agent during normal instal
   As of **v0.60.1**, the watchdog service is bundled in all platform installers — Windows MSI, macOS PKG, and Linux install scripts. New installs get automatic crash recovery out of the box with no separate installation step needed. Devices installed with earlier versions can upgrade their installer package to add the watchdog.
 </Aside>
 
+<Aside>
+  As of **v0.62.25**, running `breeze-agent service install` from the CLI also auto-bootstraps the watchdog process, so unattended scripted installs are protected against agent crashes without an extra step. On macOS, agent auto-updates re-bootstrap the desktop helper and watchdog so remote control stays available across upgrades.
+</Aside>
+
 ---
 
 ## How It Works
 
-The watchdog runs as a separate system service (`breeze-watchdog`) and monitors the agent through three independent health checks:
+The watchdog runs as a separate system service (`breeze-watchdog` on Linux, `BreezeWatchdog` on Windows) and monitors the agent through three independent health checks:
 
 1. **Process liveness** — Is the agent process still running? Detects crashes and unexpected exits.
 2. **IPC connectivity** — Can the watchdog reach the agent over its local IPC socket? Detects hangs and deadlocks.
@@ -96,6 +100,16 @@ Failover keeps the device manageable even when the agent process is completely d
 <Aside type="tip">
   If a device shows `watchdog_status: failover` in the dashboard, it means the agent on that device has crashed and could not be automatically recovered. Use the **Restart Agent** action from the device detail page — the watchdog will receive and execute this command.
 </Aside>
+
+---
+
+## Agent-Silent Detection
+
+The watchdog reports its own health to the server through its own connection. That means the watchdog can be perfectly healthy while the main agent has gone quiet — a "silent agent" condition that earlier versions of Breeze couldn't distinguish from a fully-offline device.
+
+The server now watches for this asymmetry on every device. When the main agent stops checking in but the watchdog stays online, the device row shows an amber **Agent silent (watchdog OK)** badge in the dashboard. The badge tells you the device is still reachable through the watchdog and a remote **Restart Agent** action will work — versus a fully-offline device where neither component is responding.
+
+The agent also supervises itself. If its main loop stops making forward progress for an extended period, the agent self-restarts before the watchdog needs to step in, keeping recovery fast for the common transient-stuck case.
 
 ---
 
@@ -180,7 +194,7 @@ These fields update as the watchdog reports its state through heartbeats and fai
 The agent process crashed and could not be automatically recovered after the configured number of attempts. Use the **Restart Agent** action from the device detail page, or SSH into the device and manually restart the agent service. Check the watchdog logs for recovery failure details: `GET /devices/:id/watchdog-logs?level=error`.
 
 **Watchdog status shows `offline`.**
-The watchdog service itself is not running. Check the system service manager on the device (`systemctl status breeze-watchdog` on Linux, `launchctl list | grep breeze-watchdog` on macOS, `Get-Service breeze-watchdog` on Windows).
+The watchdog service itself is not running. Check the system service manager on the device (`systemctl status breeze-watchdog` on Linux, `launchctl list | grep breeze-watchdog` on macOS, `Get-Service BreezeWatchdog` on Windows).
 
 **Agent keeps restarting in a loop.**
 The watchdog recovers the agent, but it immediately crashes again. This is usually caused by a bad configuration file or a corrupted binary. Check the agent's own diagnostic logs for startup errors. The watchdog will eventually exhaust its recovery attempts and enter failover, preventing an infinite restart loop.

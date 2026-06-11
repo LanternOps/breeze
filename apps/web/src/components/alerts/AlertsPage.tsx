@@ -3,8 +3,10 @@ import { CheckCircle, Settings2 } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import AlertsSummary from './AlertsSummary';
+import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { navigateTo } from '@/lib/navigation';
@@ -28,6 +30,13 @@ export default function AlertsPage() {
   const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
 
+  // Honor the global Current/All-orgs scope toggle: when it flips (or the
+  // current org changes), re-run the fetches so the list reflects the new
+  // scope. fetchWithAuth's chokepoint already drops orgId when scope is 'all';
+  // this just makes the page refetch instead of showing the previous scope.
+  const orgScope = useOrgStore((s) => s.orgScope);
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+
   const fetchAlerts = useCallback(async () => {
     try {
       setLoading(true);
@@ -47,7 +56,7 @@ export default function AlertsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [orgScope, currentOrgId]);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -65,7 +74,7 @@ export default function AlertsPage() {
     } catch (err) {
       console.error('Failed to fetch devices:', err);
     }
-  }, []);
+  }, [orgScope, currentOrgId]);
 
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
@@ -317,6 +326,7 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-5">
+      <AlertsTabStrip />
       <div>
         <h1 className="text-xl font-bold tracking-tight">Alerts</h1>
         <p className="text-sm text-muted-foreground mt-1">

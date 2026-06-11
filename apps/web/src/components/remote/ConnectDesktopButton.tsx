@@ -1,8 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Monitor, MonitorOff, ExternalLink, Download, X, Globe } from 'lucide-react';
+import * as Sentry from '@sentry/astro';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
+import { isAllowedLauncherScheme } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownload';
+import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
+import { extractApiError } from '@/lib/apiError';
+import { showToast } from '@/components/shared/Toast';
 
 interface Props {
   deviceId: string;
@@ -82,7 +87,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   const [error, setError] = useState<string | null>(null);
   // Populated when the VNC auto-fallback path times out — carries the info needed
   // for the "Open in Browser" fallback card so we don't navigate away automatically.
-  const [vncFallback, setVncFallback] = useState<{ tunnelId: string; wsUrl: string } | null>(null);
+  const [vncFallback, setVncFallback] = useState<{ tunnelId: string } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const autoDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sessionIdRef = useRef<string | null>(null);
@@ -110,14 +115,141 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       // WebRTC is now available. Re-fetch the device record right before
       // deciding so the click always uses fresh state.
       let liveDesktopAccess: DesktopAccessState | null = desktopAccess ?? null;
+      let hasRemoteAccessLauncher = false;
+      // Populated when the partner HAS a launcher configured but it can't fire
+      // for THIS device (most often `missing_device_identifier`). We toast and
+      // continue to WebRTC so the user understands why the third-party tool
+      // didn't launch, rather than wondering why their RustDesk/ScreenConnect
+      // default was silently ignored.
+      let launcherSkipReason: string | null = null;
       try {
         const devRes = await fetchWithAuth(`/devices/${deviceId}`);
         if (devRes.ok) {
-          const devBody = await devRes.json() as { desktopAccess?: DesktopAccessState | null };
+          const devBody = await devRes.json() as {
+            desktopAccess?: DesktopAccessState | null;
+            hasRemoteAccessLauncher?: boolean;
+            remoteAccessLaunchSkipReason?: string | null;
+          };
           liveDesktopAccess = devBody.desktopAccess ?? null;
+          hasRemoteAccessLauncher = devBody.hasRemoteAccessLauncher === true;
+          launcherSkipReason = devBody.remoteAccessLaunchSkipReason ?? null;
         }
       } catch {
         // Network blip — fall back to the prop so the connect flow still runs.
+      }
+
+      // The partner has a launcher configured but this specific device can't
+      // use it. Toast the reason and fall through to WebRTC so the user
+      // doesn't silently get the wrong remote tool. `no_provider_configured`
+      // is intentionally NOT toasted — that's the expected-empty case.
+      // `scheme_not_allowed` would be a 422 on the launch POST, so it's
+      // surfaced loudly there rather than here.
+      if (!hasRemoteAccessLauncher && launcherSkipReason && launcherSkipReason !== 'no_provider_configured') {
+        const friendly =
+          launcherSkipReason === 'missing_device_identifier'
+            ? 'This device is missing the per-device identifier the partner-configured remote tool needs (e.g. the RustDesk peer ID). Falling back to built-in remote desktop. Set the identifier in Device Settings → Custom Fields.'
+            : launcherSkipReason === 'provider_disabled'
+              ? 'The partner-configured remote tool for this device is currently disabled. Falling back to built-in remote desktop.'
+              : launcherSkipReason === 'empty_url_template'
+                ? 'The partner-configured remote tool has no URL template set. Falling back to built-in remote desktop.'
+                : launcherSkipReason === 'config_error'
+                  ? 'Could not resolve the partner-configured remote tool (config error). Falling back to built-in remote desktop.'
+                  : null;
+        if (friendly) {
+          // 'error' type matches the loud-failure styling the other launcher
+          // paths in this component use (422 / 500). The Toast component
+          // currently only supports success | error | undo (Toast.tsx:7);
+          // 'error' is the closest match for "your preferred remote tool
+          // didn't fire — here's why" without being a hard blocker.
+          showToast({ type: 'error', message: friendly });
+        }
+      }
+
+      // If the partner has configured a third-party remote-tool provider
+      // (RustDesk, ScreenConnect, TeamViewer, etc.) and this device has the
+      // matching per-device identifier in its custom_fields, request the
+      // one-shot launch URL from POST /devices/:id/remote-access-launch.
+      // The URL (with any preset password substituted and percent-encoded)
+      // is never embedded in the GET response so we only get it back in
+      // response to an explicit click. Each issuance is audited server-side.
+      //
+      // Auto-detect launch mode by URL prefix:
+      //   - http(s):// → open in a new browser tab (ScreenConnect, web-launchers)
+      //   - any other scheme → hand off to the OS protocol handler (RustDesk, etc.)
+      // Either way, skip the built-in WebRTC desktop flow.
+      //
+      // Defense in depth: the API rejects javascript:, data:, vbscript:,
+      // file:, etc. at write time AND re-checks the substituted URL before
+      // returning 422. We still re-check on the client so a tampered
+      // response can't execute a hostile scheme in the partner's origin.
+      if (hasRemoteAccessLauncher) {
+        const launchRes = await fetchWithAuth(`/devices/${deviceId}/remote-access-launch`, {
+          method: 'POST',
+        });
+
+        if (launchRes.status === 422) {
+          // Server detected a tampered template that resolved to a
+          // disallowed scheme after substitution. The server already
+          // emitted an audit event and Sentry capture. Surface a loud
+          // user-facing error rather than silently falling back.
+          const body = await launchRes.json().catch(() => ({} as { code?: string }));
+          Sentry.captureMessage(
+            'Remote-access launcher rejected by scheme policy',
+            { level: 'warning', extra: { deviceId, code: body?.code } },
+          );
+          showToast({
+            type: 'error',
+            message: 'Remote launch unavailable: security check failed. Please contact your administrator.',
+          });
+          setError('Remote launch blocked by security policy');
+          setStatus('idle');
+          return;
+        }
+
+        if (launchRes.ok) {
+          const body = await launchRes.json() as { launchUrl?: string; scheme?: string };
+          const url = body?.launchUrl;
+          if (typeof url === 'string' && isAllowedLauncherScheme(url)) {
+            setStatus('launching');
+            if (/^https?:\/\//i.test(url)) {
+              window.open(url, '_blank', 'noopener,noreferrer');
+            } else {
+              tryDeepLink(url);
+            }
+            setTimeout(() => setStatus('idle'), 1500);
+            return;
+          }
+          // Defense in depth: server should have returned 422, but the
+          // URL we got back has a disallowed scheme. Refuse the click.
+          Sentry.captureMessage(
+            'Remote-access launcher returned disallowed scheme client-side',
+            { level: 'warning', extra: { deviceId } },
+          );
+          showToast({
+            type: 'error',
+            message: 'Remote launch unavailable: security check failed. Please contact your administrator.',
+          });
+          setError('Remote launch blocked by security policy');
+          setStatus('idle');
+          return;
+        }
+        // Non-OK, non-422. Fail loudly to match the 422 path's "config
+        // visibility over network-blip tolerance" framing. A 500 most
+        // likely indicates a partner DB lookup error the admin needs to
+        // see; a 404 means the device record changed since this UI
+        // loaded and the user should refresh. In both cases, falling
+        // through to WebRTC would mask the real failure mode.
+        Sentry.captureMessage(
+          'Remote-access launcher POST failed unexpectedly',
+          { level: 'warning', extra: { deviceId, status: launchRes.status } },
+        );
+        const friendly = launchRes.status === 404
+          ? 'Remote launch failed: device record changed. Please refresh and try again.'
+          : 'Remote launch failed: server error. Please contact your administrator.';
+        showToast({ type: 'error', message: friendly });
+        setError(`Remote launch failed (HTTP ${launchRes.status})`);
+        setStatus('idle');
+        return;
       }
 
       // Auto-detect: fall back to VNC when the WebRTC path can't work but VNC relay is enabled.
@@ -138,24 +270,6 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         }
 
         const tunnel = await tunnelRes.json();
-
-        // Get WS ticket — retained for the browser-fallback noVNC path
-        const ticketRes = await fetchWithAuth(`/tunnels/${tunnel.id}/ws-ticket`, {
-          method: 'POST',
-        });
-        if (!ticketRes.ok) {
-          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
-          throw new Error('Failed to obtain VNC tunnel ticket');
-        }
-        const ticketData = await ticketRes.json();
-        const ticket = ticketData.ticket?.ticket;
-        if (!ticket) {
-          fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
-          throw new Error('Invalid ticket response from server');
-        }
-
-        // Build the browser-fallback URL (kept for the "Open in Browser" card below)
-        const wsUrl = `wss://${window.location.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket}`;
 
         // Issue a short-lived connect code for the Tauri viewer deep link (keeps JWT out of URL)
         const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
@@ -193,7 +307,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                 return;
               }
               if (data.status === 'failed') {
-                setError(data.errorMessage || 'VNC tunnel failed to open');
+                setError(extractApiError(data, 'VNC tunnel failed to open'));
                 setStatus('idle');
                 return;
               }
@@ -203,7 +317,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           if (vncPollCount >= vncMaxPolls) {
             // Viewer didn't pick it up in time — show the fallback card so the
             // user can choose to open noVNC in the browser instead.
-            setVncFallback({ tunnelId: tunnel.id, wsUrl });
+            setVncFallback({ tunnelId: tunnel.id });
             setStatus((cur) => cur === 'launching' ? 'fallback' : cur);
 
             if (autoDismissTimerRef.current) clearTimeout(autoDismissTimerRef.current);
@@ -328,8 +442,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // VNC-specific: open noVNC in the browser when the viewer didn't pick up
   const handleOpenInBrowser = useCallback(() => {
     if (vncFallback) {
-      const viewerUrl = `/remote/vnc/${vncFallback.tunnelId}?ws=${encodeURIComponent(vncFallback.wsUrl)}`;
-      window.open(viewerUrl, '_blank');
+      window.open(buildRemoteVncPageUrl(vncFallback.tunnelId), '_blank');
     }
     setVncFallback(null);
     setStatus('idle');

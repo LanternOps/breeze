@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { db } from '../db';
 import { apiKeys } from '../db/schema';
+import { validateSupportedApiKeyScopes } from './apiKeyScopes';
 
 /**
  * Input for `mintApiKey`.
@@ -18,7 +19,6 @@ export interface MintApiKeyInput {
   defaultOrgId: string;
   createdByUserId: string;
   name: string;
-  scopeState: 'readonly' | 'full';
   scopes: string[];
   source: 'mcp_provisioning' | 'manual';
 }
@@ -26,6 +26,11 @@ export interface MintApiKeyInput {
 export async function mintApiKey(
   input: MintApiKeyInput,
 ): Promise<{ id: string; rawKey: string }> {
+  const scopeValidation = validateSupportedApiKeyScopes(input.scopes);
+  if (!scopeValidation.ok) {
+    throw new Error(scopeValidation.error);
+  }
+
   const rawKey = `brz_${randomBytes(24).toString('hex')}`;
   const keyHash = createHash('sha256').update(rawKey).digest('hex');
   const keyPrefix = rawKey.slice(0, 8);
@@ -37,8 +42,7 @@ export async function mintApiKey(
       name: input.name,
       keyHash,
       keyPrefix,
-      scopes: input.scopes,
-      scopeState: input.scopeState,
+      scopes: scopeValidation.scopes,
       status: 'active',
       source: input.source,
       createdBy: input.createdByUserId,

@@ -25,11 +25,21 @@ export const users = pgTable('users', {
   phoneVerified: boolean('phone_verified').notNull().default(false),
   mfaMethod: mfaMethodEnum('mfa_method'),
   status: userStatusEnum('status').notNull().default('invited'),
+  // Why the user is disabled. 'partner_suspended' is set by partner suspension
+  // so unsuspend re-enables exactly those users; NULL means disabled for some
+  // other reason (compromise, off-boarding, manual admin action) and unsuspend
+  // must leave them alone. See #917 (L-5).
+  disabledReason: text('disabled_reason'),
   avatarUrl: text('avatar_url'),
   lastLoginAt: timestamp('last_login_at'),
   passwordChangedAt: timestamp('password_changed_at'),
   setupCompletedAt: timestamp('setup_completed_at'),
   preferences: jsonb('preferences'),
+  emailVerifiedAt: timestamp('email_verified_at'),
+  // Platform-level admin flag — bootstrapped from BREEZE_PLATFORM_ADMINS env
+  // var at API startup, gates the cross-tenant /admin/* endpoints (e.g.
+  // suspend-for-abuse). Intentionally lives outside the partner role system.
+  isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -43,6 +53,12 @@ export const roles = pgTable('roles', {
   name: varchar('name', { length: 100 }).notNull(),
   description: text('description'),
   isSystem: boolean('is_system').notNull().default(false),
+  // When true, members of this role must have MFA enabled — the auth
+  // middleware short-circuits to 428 Precondition Required until they
+  // complete enrollment. Used to satisfy the cyber-insurance baseline
+  // "MFA enforced on admin accounts." Seeded true for the privileged
+  // partner-admin slug.
+  forceMfa: boolean('force_mfa').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

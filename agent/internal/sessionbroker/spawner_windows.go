@@ -4,7 +4,6 @@ package sessionbroker
 
 import (
 	"fmt"
-	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -14,9 +13,15 @@ import (
 // contains the PID and a duplicated process handle so callers can wait for
 // the process to exit and inspect its exit code. Close() must be called to
 // release the handle.
+//
+// BinaryPath records the executable the spawner actually launched so callers
+// can distinguish the GUI-subsystem sibling (breeze-user-helper.exe) from
+// the console-subsystem agent fallback when logging spawn outcomes — useful
+// when chasing reports of the logon console flash regression.
 type SpawnedHelper struct {
-	PID    uint32
-	Handle windows.Handle
+	PID        uint32
+	Handle     windows.Handle
+	BinaryPath string
 }
 
 // Close releases the duplicated process handle. Safe to call more than once.
@@ -97,12 +102,15 @@ func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 		return nil, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
 	}
 
-	// 4. Build the command line: same binary, "user-helper" subcommand.
-	exePath, err := os.Executable()
+	// 4. Build the command line. We launch the GUI-subsystem sibling binary
+	// (breeze-user-helper.exe) so the kernel does not allocate a console
+	// window in the user session. Falls back to the agent exe if the sibling
+	// is missing — see userHelperExePath documentation.
+	exePath, err := userHelperExePath()
 	if err != nil {
-		return nil, fmt.Errorf("os.Executable: %w", err)
+		return nil, fmt.Errorf("userHelperExePath: %w", err)
 	}
-	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper`, exePath))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(exePath, "system"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -147,7 +155,7 @@ func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 		"pid", pi.ProcessId,
 		"exe", exePath,
 	)
-	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process}, nil
+	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process, BinaryPath: exePath}, nil
 }
 
 // SpawnUserHelperInSession launches a user-helper process using the logged-in
@@ -169,12 +177,13 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	// Build command line with --role user flag.
-	exePath, err := os.Executable()
+	// Build command line with --role user flag. Use the GUI-subsystem sibling
+	// binary so no console window flashes in the user session.
+	exePath, err := userHelperExePath()
 	if err != nil {
-		return nil, fmt.Errorf("os.Executable: %w", err)
+		return nil, fmt.Errorf("userHelperExePath: %w", err)
 	}
-	cmdLine, err := windows.UTF16PtrFromString(fmt.Sprintf(`"%s" user-helper --role user`, exePath))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(exePath, "user"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -215,5 +224,5 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 		"exe", exePath,
 		"tokenSource", method,
 	)
-	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process}, nil
+	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process, BinaryPath: exePath}, nil
 }

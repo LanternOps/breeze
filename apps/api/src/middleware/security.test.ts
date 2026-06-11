@@ -133,4 +133,59 @@ describe('securityMiddleware', () => {
       expect(await res.text()).toBe('ok');
     });
   });
+
+  describe('connect-src tightening (LOW-H3)', () => {
+    it('production CSP does NOT include open ws:/wss: wildcards', async () => {
+      const app = createApp({ nodeEnv: 'production' });
+      const res = await app.request('/test');
+      const csp = res.headers.get('Content-Security-Policy');
+      // Must NOT contain the bare scheme allowlists that permit any host.
+      expect(csp).not.toMatch(/connect-src[^;]*\bws:(?!\/)/);
+      expect(csp).not.toMatch(/connect-src[^;]*\bwss:(?!\/)/);
+      // Must restrict to explicit host(s).
+      expect(csp).toMatch(/connect-src 'self' wss:\/\//);
+    });
+
+    it('production CSP defaults to wss://*.2breeze.app when no env override', async () => {
+      const app = createApp({ nodeEnv: 'production', cspConnectHosts: '' });
+      const res = await app.request('/test');
+      const csp = res.headers.get('Content-Security-Policy');
+      expect(csp).toContain("connect-src 'self' wss://*.2breeze.app");
+    });
+
+    it('production CSP honors CSP_CONNECT_HOSTS allowlist', async () => {
+      const app = createApp({
+        nodeEnv: 'production',
+        cspConnectHosts: 'wss://us.example.com,wss://eu.example.com',
+      });
+      const res = await app.request('/test');
+      const csp = res.headers.get('Content-Security-Policy');
+      expect(csp).toContain("connect-src 'self' wss://us.example.com wss://eu.example.com");
+    });
+
+    it('non-production CSP keeps open ws: wss: for localhost dev', async () => {
+      const app = createApp({ nodeEnv: 'development' });
+      const res = await app.request('/test');
+      const csp = res.headers.get('Content-Security-Policy');
+      expect(csp).toContain("connect-src 'self' ws: wss:");
+    });
+  });
+
+  describe('CSP_ALLOW_UNSAFE_INLINE production lockdown', () => {
+    it('refuses to enable unsafe-inline in production even if env var is true', async () => {
+      const app = createApp({ nodeEnv: 'production', allowUnsafeInline: 'true' });
+      const res = await app.request('/test');
+      const csp = res.headers.get('Content-Security-Policy');
+      expect(csp).not.toContain("'unsafe-inline'");
+      expect(csp).toContain("script-src 'self'");
+      expect(csp).toContain("style-src 'self'");
+    });
+
+    it('still permits unsafe-inline in development when explicitly enabled', async () => {
+      const app = createApp({ nodeEnv: 'development', allowUnsafeInline: 'true' });
+      const res = await app.request('/test');
+      const csp = res.headers.get('Content-Security-Policy');
+      expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+    });
+  });
 });

@@ -122,8 +122,8 @@ const QUICK_ACTIONS: Array<{
   },
   {
     key: 'action:manage-config-policies',
-    title: 'Configuration policies',
-    description: 'Manage alert rules in Configuration Policies',
+    title: 'Alert rules',
+    description: 'Manage alerting in Configuration Policies',
     href: '/configuration-policies',
     icon: Bell
   }
@@ -294,9 +294,12 @@ export default function CommandPalette() {
         if (!isActive) return;
 
         if (!response.ok) {
-          // Handle auth errors silently - user not logged in
+          // Auth errors mean an expired/absent session, not "no matches" — say
+          // so explicitly instead of rendering the empty-results copy, which
+          // would imply the data is gone.
           if (response.status === 401 || response.status === 403) {
             setResults([]);
+            setErrorMessage('Your session expired. Sign in to search.');
             return;
           }
           throw new Error('Search failed');
@@ -531,21 +534,32 @@ export default function CommandPalette() {
 
   return (
     <>
+      {/* Compact icon trigger on phones (no physical keyboard, space is tight);
+          the full search bar takes over at sm+. Both open the same palette. */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex h-9 w-80 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring"
+        className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring xl:hidden"
+        aria-label="Search"
       >
-        <Search className="h-4 w-4" />
-        <span className="flex-1 text-left">Search devices, scripts, alerts, users, settings</span>
-        <span className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+        <Search className="h-4 w-4 shrink-0" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="hidden h-9 w-full min-w-0 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring xl:flex"
+        aria-label="Search"
+      >
+        <Search className="h-4 w-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">Search devices, scripts, alerts, users, settings</span>
+        <span className="shrink-0 rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
           {modifierLabel ? `${modifierLabel}+K` : 'K'}
         </span>
       </button>
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 px-4 py-8"
+          className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 px-4 py-8"
           onClick={() => setOpen(false)}
         >
           <div

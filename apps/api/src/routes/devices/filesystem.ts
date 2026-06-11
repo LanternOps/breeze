@@ -16,7 +16,7 @@ import {
   safeCleanupCategories,
 } from '../../services/filesystemAnalysis';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
 export const filesystemRoutes = new Hono();
 
@@ -93,12 +93,16 @@ function getDefaultScanPathForOs(osType: unknown): string {
 filesystemRoutes.get(
   '/:id/filesystem',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -145,7 +149,10 @@ filesystemRoutes.post(
     const { id: deviceId } = c.req.valid('param');
     const payload = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -259,7 +266,10 @@ filesystemRoutes.post(
     const { id: deviceId } = c.req.valid('param');
     const { categories } = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -321,7 +331,10 @@ filesystemRoutes.post(
     const { id: deviceId } = c.req.valid('param');
     const { paths } = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

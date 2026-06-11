@@ -7,6 +7,11 @@ import { remoteSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
+import { logSessionAudit } from './remote/helpers';
+import { getTrustedClientIp } from '../services/clientIp';
+import { createAuditLogAsync } from '../services/auditService';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -22,10 +27,23 @@ interface TerminalSession {
   agentId: string;
   userId: string;
   deviceId: string;
+  orgId: string;
   startedAt: Date;
   pingInterval?: ReturnType<typeof setInterval>;
   lastPongAt: number;
+  // Per-session input rate limiting (sliding window)
+  // E2: 200 messages/min OR 1MB total bytes/min, whichever first
+  msgTimestamps: number[];
+  msgByteTimestamps: Array<{ ts: number; bytes: number }>;
+  // E2: audit summary counters
+  bytesIn: number;
+  bytesOut: number;
 }
+
+// E2: per-session input limits
+const TERMINAL_MSG_WINDOW_MS = 60_000;
+const TERMINAL_MSG_LIMIT = 200; // messages per minute
+const TERMINAL_BYTES_LIMIT = 1_048_576; // 1MB per minute
 
 const activeTerminalSessions = new Map<string, TerminalSession>();
 
@@ -38,61 +56,59 @@ const terminalOutputCallbacks = new Map<string, TerminalOutputCallback>();
 const PING_INTERVAL_MS = 30_000; // Send ping every 30 seconds
 const PONG_TIMEOUT_MS = 10_000; // Close if no pong within 10 seconds
 
-// In-memory sliding window rate limiter for user WS upgrades
-const USER_WS_RATE_WINDOW_MS = 60_000; // 1 minute window
-const USER_WS_RATE_MAX_CONNECTIONS = 10; // max 10 connections per user per minute
-const userWsConnTimestamps = new Map<string, number[]>();
+// E1: Redis-backed sliding window rate limiter for user WS upgrades.
+// Decision: fail closed on Redis outage (matches `rateLimiter` helper default).
+// Rationale: user-initiated WS — users can retry; an open door during a Redis
+// blip is a bigger risk than a temporary 4029 for a real user.
+const USER_WS_RATE_LIMIT = 10; // max 10 connections per user per minute
+const USER_WS_RATE_WINDOW_SECONDS = 60;
 
-function isUserTerminalWsRateLimited(userId: string): boolean {
-  const now = Date.now();
-  const cutoff = now - USER_WS_RATE_WINDOW_MS;
-  let timestamps = userWsConnTimestamps.get(userId);
-
-  if (timestamps) {
-    timestamps = timestamps.filter(t => t > cutoff);
-  } else {
-    timestamps = [];
-  }
-
-  if (timestamps.length >= USER_WS_RATE_MAX_CONNECTIONS) {
-    userWsConnTimestamps.set(userId, timestamps);
-    return true;
-  }
-
-  timestamps.push(now);
-  userWsConnTimestamps.set(userId, timestamps);
-  return false;
+async function isUserTerminalWsRateLimited(userId: string): Promise<boolean> {
+  const redis = getRedis();
+  const result = await rateLimiter(
+    redis,
+    `terminalws:conn:${userId}`,
+    USER_WS_RATE_LIMIT,
+    USER_WS_RATE_WINDOW_SECONDS
+  );
+  return !result.allowed;
 }
-
-// Periodic cleanup of stale rate-limit entries
-setInterval(() => {
-  const cutoff = Date.now() - USER_WS_RATE_WINDOW_MS * 2;
-  for (const [userId, timestamps] of userWsConnTimestamps) {
-    if (timestamps.length === 0 || timestamps[timestamps.length - 1]! < cutoff) {
-      userWsConnTimestamps.delete(userId);
-    }
-  }
-}, 120_000);
 
 /**
  * Validate one-time WS ticket and session access
  */
 async function validateTerminalAccess(
   sessionId: string,
-  ticket: string | undefined
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
 ): Promise<{ valid: boolean; error?: string; session?: typeof remoteSessions.$inferSelect; device?: typeof devices.$inferSelect; userId?: string }> {
   if (!ticket) {
     return { valid: false, error: 'Missing connection ticket' };
   }
 
-  const ticketRecord = await consumeWsTicket(ticket);
-  if (!ticketRecord) {
+  const consumed = await consumeWsTicket(ticket, caller);
+  if (!consumed.ok) {
+    // Audit-log the rejection reason for ops visibility. We log a prefix
+    // of the ticket (not the whole secret) for correlation with the issue
+    // log.
+    void createAuditLogAsync({
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      action: 'ws.ticket.rejected',
+      resourceType: 'ws_ticket',
+      resourceName: ticket.slice(0, 8),
+      details: { reason: consumed.reason, sessionType: 'terminal', sessionId },
+      ipAddress: caller.ip,
+      userAgent: caller.userAgent,
+      result: 'denied',
+    });
     return { valid: false, error: 'Invalid or expired connection ticket' };
   }
 
-  if (ticketRecord.sessionId !== sessionId || ticketRecord.sessionType !== 'terminal') {
+  if (consumed.sessionId !== sessionId || consumed.sessionType !== 'terminal') {
     return { valid: false, error: 'Connection ticket does not match terminal session' };
   }
+  const ticketRecord = consumed;
 
   // Ticket consumption is the entire auth boundary for terminal WS — the
   // WS routes mount before auth middleware. Run lookups in system DB
@@ -192,9 +208,13 @@ export function getActiveTerminalSession(sessionId: string): TerminalSession | u
 /**
  * Create WebSocket handlers for terminal session
  */
-function createTerminalWsHandlers(sessionId: string, ticket: string | undefined) {
+function createTerminalWsHandlers(
+  sessionId: string,
+  ticket: string | undefined,
+  caller: { ip: string; userAgent: string }
+) {
   let validationResult: Awaited<ReturnType<typeof validateTerminalAccess>> | null = null;
-  const validationPromise = validateTerminalAccess(sessionId, ticket).then(result => {
+  const validationPromise = validateTerminalAccess(sessionId, ticket, caller).then(result => {
     validationResult = result;
   });
 
@@ -237,8 +257,8 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
         }
         console.log(`Agent ${device.agentId} is connected`);
 
-        // Rate limit user WS connections
-        if (isUserTerminalWsRateLimited(userId)) {
+        // Rate limit user WS connections (E1: Redis-backed, fail-closed)
+        if (await isUserTerminalWsRateLimited(userId)) {
           console.warn(`Terminal WebSocket rate limited for user ${userId}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -259,13 +279,22 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
           agentId: device.agentId,
           userId,
           deviceId: device.id,
+          orgId: device.orgId,
           startedAt: new Date(),
           lastPongAt: now,
+          msgTimestamps: [],
+          msgByteTimestamps: [],
+          bytesIn: 0,
+          bytesOut: 0,
         });
 
-        // Register callback for terminal output
+        // Register callback for terminal output (track bytesOut for audit summary)
         registerTerminalOutputCallback(sessionId, (data: string) => {
           try {
+            const sess = activeTerminalSessions.get(sessionId);
+            if (sess) {
+              sess.bytesOut += Buffer.byteLength(data, 'utf8');
+            }
             ws.send(JSON.stringify({ type: 'output', data }));
           } catch (error) {
             console.error(`Failed to send terminal output to session ${sessionId}:`, error);
@@ -427,7 +456,41 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
         const message = parsed.data;
 
         switch (message.type) {
-          case 'data':
+          case 'data': {
+            // E2: Per-session input rate limiting (200 msgs/min OR 1MB/min).
+            // On breach: close session with policy-violation code 1008 and
+            // emit a rate-limit audit log.
+            const nowMs = Date.now();
+            const cutoff = nowMs - TERMINAL_MSG_WINDOW_MS;
+            termSession.msgTimestamps = termSession.msgTimestamps.filter(t => t > cutoff);
+            termSession.msgByteTimestamps = termSession.msgByteTimestamps.filter(e => e.ts > cutoff);
+
+            const incomingBytes = Buffer.byteLength(message.data, 'utf8');
+            termSession.msgTimestamps.push(nowMs);
+            termSession.msgByteTimestamps.push({ ts: nowMs, bytes: incomingBytes });
+            termSession.bytesIn += incomingBytes;
+
+            const totalBytes = termSession.msgByteTimestamps.reduce((acc, e) => acc + e.bytes, 0);
+            if (
+              termSession.msgTimestamps.length > TERMINAL_MSG_LIMIT ||
+              totalBytes > TERMINAL_BYTES_LIMIT
+            ) {
+              console.warn(
+                `Terminal session ${sessionId} input rate-limited (msgs=${termSession.msgTimestamps.length}, bytes=${totalBytes})`
+              );
+              try {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  code: 'INPUT_RATE_LIMITED',
+                  message: 'Input rate limit exceeded'
+                }));
+              } catch {
+                // best-effort
+              }
+              ws.close(1008, 'input_rate_limited');
+              return;
+            }
+
             // Send terminal input to agent
             sendCommandToAgent(termSession.agentId, {
               id: `term-data-${Date.now()}`,
@@ -438,6 +501,7 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
               }
             });
             break;
+          }
 
           case 'resize':
             // Send resize command to agent
@@ -504,6 +568,24 @@ function createTerminalWsHandlers(sessionId: string, ticket: string | undefined)
             .where(eq(remoteSessions.id, sessionId));
         });
 
+        // E2: write a session summary audit row on close.
+        try {
+          await logSessionAudit(
+            'terminal.session.summary',
+            termSession.userId,
+            termSession.orgId,
+            {
+              sessionId,
+              deviceId: termSession.deviceId,
+              bytesIn: termSession.bytesIn,
+              bytesOut: termSession.bytesOut,
+              durationMs: endedAt.getTime() - startedAt.getTime(),
+            }
+          );
+        } catch (auditErr) {
+          console.error(`[TerminalWs] Failed to write session summary for ${sessionId}:`, auditErr);
+        }
+
         console.log(`Terminal session ${sessionId} disconnected (duration: ${durationSeconds}s)`);
       }
     },
@@ -553,10 +635,23 @@ export function createTerminalWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/remote/sessions/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
-    upgradeWebSocket((c: { req: { param: (key: string) => string; query: (key: string) => string | undefined } }) => {
+    upgradeWebSocket((c: {
+      req: {
+        param: (key: string) => string;
+        query: (key: string) => string | undefined;
+        header: (key: string) => string | undefined;
+      };
+    }) => {
       const sessionId = c.req.param('id');
       const ticket = c.req.query('ticket');
-      return createTerminalWsHandlers(sessionId, ticket);
+      // Bind ticket consumption to the upgrade request's trusted IP + UA
+      // (Task 16) — a stolen 60-second ticket consumed from a different
+      // network position is rejected.
+      const caller = {
+        ip: getTrustedClientIp(c as Parameters<typeof getTrustedClientIp>[0]),
+        userAgent: c.req.header('user-agent') ?? '',
+      };
+      return createTerminalWsHandlers(sessionId, ticket, caller);
     })
   );
 

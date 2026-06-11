@@ -3,9 +3,8 @@ import Layout from '../../../layouts/Layout.astro';
 import VncViewerPage from '../../../components/remote/VncViewerPage';
 
 const { tunnelId } = Astro.params;
-const wsUrl = Astro.url.searchParams.get('ws') || '';
 
-if (!tunnelId || !wsUrl) {
+if (!tunnelId) {
   return Astro.redirect('/remote');
 }
 ---
@@ -14,7 +13,6 @@ if (!tunnelId || !wsUrl) {
   <div class="h-[calc(100vh-1rem)]">
     <VncViewerPage
       tunnelId={tunnelId}
-      wsUrl={wsUrl}
       client:only="react"
     />
   </div>

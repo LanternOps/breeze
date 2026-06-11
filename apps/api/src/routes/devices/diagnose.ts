@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { db } from '../../db';
-import { devices, deviceHardware, deviceMetrics, alerts } from '../../db/schema';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { deviceHardware, deviceMetrics, alerts } from '../../db/schema';
+import { eq, and, desc } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { executeCommand } from '../../services/commandQueue';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
 const diagnoseRoutes = new Hono();
 
@@ -20,12 +21,10 @@ diagnoseRoutes.post(
     const deviceId = c.req.param('id')!;
 
     try {
-      // Verify device access
-      const conditions: SQL[] = [eq(devices.id, deviceId)];
-      const orgCond = auth.orgCondition(devices.orgId);
-      if (orgCond) conditions.push(orgCond);
-      const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
-
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found or access denied' }, 404);
       }

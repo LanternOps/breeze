@@ -3,11 +3,17 @@ package heartbeat
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/websocket"
+)
+
+const (
+	maxTunnelRelayFrameBytes  = 1_000_000
+	maxTunnelRelayBase64Bytes = ((maxTunnelRelayFrameBytes + 2) / 3) * 4
 )
 
 func init() {
@@ -162,9 +168,21 @@ func handleTunnelData(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.CommandResult{Status: "failed", Error: "missing tunnelId or data"}
 	}
 
-	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if len(dataB64) > maxTunnelRelayBase64Bytes {
+		return tools.CommandResult{Status: "failed", Error: "tunnel data exceeds encoded frame limit"}
+	}
+
+	if strings.ContainsAny(dataB64, "\r\n\t ") {
+		return tools.CommandResult{Status: "failed", Error: "invalid base64 data: whitespace not permitted"}
+	}
+
+	data, err := base64.StdEncoding.Strict().DecodeString(dataB64)
 	if err != nil {
 		return tools.CommandResult{Status: "failed", Error: "invalid base64 data: " + err.Error()}
+	}
+
+	if len(data) > maxTunnelRelayFrameBytes {
+		return tools.CommandResult{Status: "failed", Error: "tunnel data exceeds decoded frame limit"}
 	}
 
 	if h.tunnelMgr == nil {

@@ -1,4 +1,4 @@
-import { Clock, Globe, Link2, Shield, User, X } from 'lucide-react';
+import { Clock, Globe, Shield, User, X } from 'lucide-react';
 
 export type AuditLogEntry = {
   id: string;
@@ -37,24 +37,24 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-5xl rounded-lg border bg-card shadow-sm">
+      <div className="flex max-h-[calc(100vh-4rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
         <div className="flex items-center justify-between border-b px-6 py-4">
-          <div>
+          <div className="min-w-0">
             <h2 className="text-lg font-semibold">Audit Log Detail</h2>
-            <p className="text-sm text-muted-foreground">
+            <p className="truncate text-sm text-muted-foreground">
               {entry.action} on {entry.resource}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition hover:text-foreground"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-muted-foreground transition hover:text-foreground"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="grid gap-6 p-6 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="space-y-6">
+        <div className="grid flex-1 gap-6 overflow-y-auto p-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+          <div className="min-w-0 space-y-6">
             <div className="rounded-lg border bg-background p-4">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <Clock className="h-4 w-4 text-muted-foreground" />
@@ -100,16 +100,16 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
             </div>
           </div>
 
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             <div className="rounded-lg border bg-background p-4">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <User className="h-4 w-4 text-muted-foreground" />
                 User Info
               </div>
               <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-                <p className="text-base font-semibold text-foreground">{entry.user.name}</p>
-                <p>{entry.user.email}</p>
-                <p>
+                <p className="break-words text-base font-semibold text-foreground">{entry.user.name}</p>
+                <p className="break-all">{entry.user.email}</p>
+                <p className="break-words">
                   {entry.user.role} - {entry.user.department}
                 </p>
               </div>
@@ -121,32 +121,19 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
                 Request Metadata
               </div>
               <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-                <p>
-                  <span className="font-medium text-foreground">IP:</span> {entry.ipAddress}
+                <p className="break-all">
+                  <span className="font-medium text-foreground">IP:</span>{' '}
+                  {entry.ipAddress && entry.ipAddress.trim() ? entry.ipAddress : '-'}
                 </p>
-                <p>
-                  <span className="font-medium text-foreground">User Agent:</span> {entry.userAgent}
+                <p className="break-all">
+                  <span className="font-medium text-foreground">User Agent:</span>{' '}
+                  {entry.userAgent || '-'}
                 </p>
-                <p>
-                  <span className="font-medium text-foreground">Session:</span> {entry.sessionId}
+                <p className="break-all">
+                  <span className="font-medium text-foreground">Session:</span>{' '}
+                  {entry.sessionId || '-'}
                 </p>
               </div>
-            </div>
-
-            <div className="rounded-lg border bg-background p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                <Link2 className="h-4 w-4 text-muted-foreground" />
-                Related Events
-              </div>
-              <p className="mt-3 text-sm text-muted-foreground">
-                View correlated activity for this session.
-              </p>
-              <a
-                href={entry.relatedEventId ? `/audit/events/${entry.relatedEventId}` : '#'}
-                className="mt-3 inline-flex items-center text-sm font-medium text-primary hover:underline"
-              >
-                Open related event
-              </a>
             </div>
           </div>
         </div>

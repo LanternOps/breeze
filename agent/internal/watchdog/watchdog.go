@@ -29,8 +29,8 @@ const (
 // transitions is the static transition table: state → event → nextState.
 var transitions = map[string]map[string]string{
 	StateConnecting: {
-		EventIPCConnected:  StateMonitoring,
-		EventAgentNotFound: StateRecovering,
+		EventIPCConnected:   StateMonitoring,
+		EventAgentNotFound:  StateRecovering,
 		EventAgentUnhealthy: StateRecovering,
 	},
 	StateMonitoring: {

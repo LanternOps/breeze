@@ -30,6 +30,7 @@ import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendor
 import { buildEventFingerprint } from '../services/networkBaseline';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
+import { decryptSnmpCommunities, decryptSnmpCredentials } from '../services/snmpSecrets';
 import {
   discoveryQueueJobDataSchema,
   type DiscoveryQueueJobData,
@@ -271,7 +272,7 @@ async function insertDiscoveryChangeEvent(values: typeof networkChangeEvents.$in
       profilePredicate,
       eq(networkChangeEvents.eventType, values.eventType),
       eq(networkChangeEvents.ipAddress, values.ipAddress),
-      sql`${networkChangeEvents.detectedAt} >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000)}`
+      sql`${networkChangeEvents.detectedAt} >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()}`
     ))
     .limit(25);
 
@@ -546,7 +547,8 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       excludeIps: profile.excludeIps ?? [],
       methods: profile.methods ?? [],
       portRanges: profile.portRanges ?? [],
-      snmpCommunities: profile.snmpCommunities ?? [],
+      snmpCommunities: decryptSnmpCommunities(profile.snmpCommunities),
+      snmpCredentials: decryptSnmpCredentials(profile.snmpCredentials),
       deepScan: profile.deepScan ?? false,
       identifyOS: profile.identifyOS ?? false,
       resolveHostnames: profile.resolveHostnames ?? false,

@@ -1,0 +1,12 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import AuthOverlay from '../../components/auth/AuthOverlay';
+import ToastContainer from '../../components/shared/Toast';
+import MyConnectedAppsPage from '../../components/account/MyConnectedAppsPage';
+---
+
+<Layout title="Connected apps">
+  <AuthOverlay client:load />
+  <MyConnectedAppsPage client:load />
+  <ToastContainer client:load />
+</Layout>

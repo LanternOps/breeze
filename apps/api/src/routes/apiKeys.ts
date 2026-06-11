@@ -7,7 +7,9 @@ import { apiKeys } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { createHash, randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
-import { PERMISSIONS } from '../services/permissions';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 
 export const apiKeyRoutes = new Hono();
 
@@ -71,10 +73,29 @@ function writeApiKeyAudit(
     resourceId: event.keyId,
     resourceName: event.keyName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
+}
+
+function validateRequestedScopes(c: any, scopes: string[]) {
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  const result = validateApiKeyScopeDelegation(scopes, permissions);
+
+  if (!result.ok) {
+    return {
+      response: c.json(
+        {
+          error: result.error,
+          ...(result.details ? { details: result.details } : {}),
+        },
+        result.status,
+      ),
+    };
+  }
+
+  return { scopes: result.scopes };
 }
 
 // ============================================
@@ -230,6 +251,11 @@ apiKeyRoutes.post(
     }
     // System scope can create keys for any org
 
+    const scopeValidation = validateRequestedScopes(c, data.scopes);
+    if ('response' in scopeValidation) {
+      return scopeValidation.response;
+    }
+
     // Generate the API key
     const { fullKey, keyPrefix, keyHash } = generateApiKey();
 
@@ -241,7 +267,7 @@ apiKeyRoutes.post(
         name: data.name,
         keyHash,
         keyPrefix,
-        scopes: data.scopes,
+        scopes: scopeValidation.scopes,
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
         rateLimit: data.rateLimit,
         createdBy: auth.user.id,
@@ -372,7 +398,13 @@ apiKeyRoutes.patch(
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (data.name !== undefined) updates.name = data.name;
-    if (data.scopes !== undefined) updates.scopes = data.scopes;
+    if (data.scopes !== undefined) {
+      const scopeValidation = validateRequestedScopes(c, data.scopes);
+      if ('response' in scopeValidation) {
+        return scopeValidation.response;
+      }
+      updates.scopes = scopeValidation.scopes;
+    }
     if (data.rateLimit !== undefined) updates.rateLimit = data.rateLimit;
 
     const [updated] = await db

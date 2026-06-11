@@ -18,6 +18,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/users', docsPath: '/reference/users-and-roles/', label: 'Users & Roles' },
   { pattern: '/settings/enrollment-keys', docsPath: '/agents/enrollment-keys/', label: 'Enrollment Keys' },
   { pattern: '/settings/api-keys', docsPath: '/reference/api-keys/', label: 'API Keys' },
+  { pattern: '/settings/connected-apps', docsPath: '/features/mcp-server/', label: 'Connected Apps & MCP' },
   { pattern: '/settings/organization', docsPath: '/reference/organizations-and-sites/', label: 'Organizations & Sites' },
   { pattern: '/settings/sso', docsPath: '/reference/sso/', label: 'Single Sign-On' },
   { pattern: '/settings/ai-usage', docsPath: '/features/ai/', label: 'AI Assistant' },
@@ -37,10 +38,13 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/partner', docsPath: '/reference/partner-management/', label: 'Partner Settings' },
   { pattern: '/settings/roles', docsPath: '/reference/users-and-roles/', label: 'Roles' },
   { pattern: '/settings/profile', docsPath: '/reference/users-and-roles/', label: 'Profile' },
+  { pattern: '/settings/ticketing', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/settings', docsPath: '/reference/users-and-roles/', label: 'Settings' },
 
   // Admin / Partner
   { pattern: '/partner', docsPath: '/reference/partner-management/', label: 'Partner Management' },
+  { pattern: '/admin/third-party-catalog', docsPath: '/features/patch-management/', label: 'Third-Party Catalog' },
+  { pattern: '/admin/account-deletion-requests', docsPath: '/reference/account-deletion/', label: 'Account Deletion Requests' },
   { pattern: '/admin', docsPath: '/reference/partner-management/', label: 'Administration' },
 
   // Feature pages — specific sub-routes first
@@ -49,6 +53,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/alerts/rules', docsPath: '/features/alert-templates/', label: 'Alert Rules' },
   { pattern: '/alerts/channels', docsPath: '/features/alerts/', label: 'Notification Channels' },
   { pattern: '/alerts', docsPath: '/features/alerts/', label: 'Alerts' },
+  { pattern: '/tickets', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
   { pattern: '/remote/tools', docsPath: '/features/system-tools/', label: 'System Tools' },
@@ -81,6 +86,12 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/logs', docsPath: '/features/log-shipping/', label: 'Log Shipping' },
   { pattern: '/fleet', docsPath: '/features/ai/', label: 'Fleet Orchestration' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
+
+  // Account
+  { pattern: '/account/delete', docsPath: '/reference/account-deletion/', label: 'Account Deletion' },
+  { pattern: '/account/devices', docsPath: '/features/mobile/', label: 'Trusted Devices' },
+  { pattern: '/account/test-approval', docsPath: '/features/mobile/', label: 'Approval Mode' },
+  { pattern: '/account/connected-apps', docsPath: '/features/mcp-server/', label: 'Connected Apps & MCP' },
 
   // Standalone pages
   { pattern: '/setup', docsPath: '/features/setup-wizard/', label: 'Setup Wizard' },

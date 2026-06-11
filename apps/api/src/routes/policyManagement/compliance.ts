@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   automationPolicies,
@@ -9,12 +9,13 @@ import {
   configurationPolicies,
   devices,
 } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
 import {
   AuthContext,
   listComplianceSchema,
   policyIdSchema,
 } from './schemas';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   ensureOrgAccess,
@@ -488,10 +489,15 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/:id/compliance',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it, not authMiddleware/requireScope). DEVICES_READ is
+  // granted to every device-viewing role, so this adds no lockout.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', policyIdSchema),
   zValidator('query', listComplianceSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -501,18 +507,57 @@ complianceRoutes.get(
 
     if (policy) {
       // --- Legacy automation policy compliance ---
-      const conditions: ReturnType<typeof eq>[] = [eq(automationPolicyCompliance.policyId, id)];
+      const conditions: SQL[] = [eq(automationPolicyCompliance.policyId, id)];
 
       if (query.status) {
         conditions.push(eq(automationPolicyCompliance.status, query.status));
       }
+      if (perms?.allowedSiteIds) {
+        if (perms.allowedSiteIds.length === 0) {
+          const compliance = buildComplianceSummary([]);
+          return c.json({
+            data: [],
+            pagination: { page, limit, total: 0 },
+            overall: {
+              total: 0,
+              compliant: 0,
+              nonCompliant: 0,
+              unknown: 0,
+            },
+            trend: [],
+            policies: [
+              {
+                policyId: id,
+                policyName: policy.name,
+                enforcementLevel: policy.enforcement,
+                source: 'legacy' as const,
+                compliance: {
+                  total: compliance.total,
+                  compliant: compliance.compliant,
+                  nonCompliant: compliance.nonCompliant,
+                  unknown: compliance.unknown,
+                },
+              },
+            ],
+            nonCompliantDevices: [],
+            policyName: policy.name,
+          });
+        }
+        conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+      }
 
       const whereCondition = and(...conditions);
 
-      const countResult = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(automationPolicyCompliance)
-        .where(whereCondition);
+      const countResult = perms?.allowedSiteIds
+        ? await db
+          .select({ count: sql<number>`count(*)` })
+          .from(automationPolicyCompliance)
+          .innerJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+          .where(whereCondition)
+        : await db
+          .select({ count: sql<number>`count(*)` })
+          .from(automationPolicyCompliance)
+          .where(whereCondition);
 
       const total = Number(countResult[0]?.count ?? 0);
 
@@ -621,7 +666,7 @@ complianceRoutes.get(
     const featureLinkIds = featureLinks.map((link) => link.id);
 
     // Build conditions for config policy compliance rows
-    const configConditions: ReturnType<typeof eq>[] = [
+    const configConditions: SQL[] = [
       isNull(automationPolicyCompliance.policyId),
       isNotNull(automationPolicyCompliance.configPolicyId),
     ];
@@ -665,13 +710,52 @@ complianceRoutes.get(
     if (query.status) {
       configConditions.push(eq(automationPolicyCompliance.status, query.status));
     }
+    if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        const emptyCompliance = buildComplianceSummary([]);
+        return c.json({
+          data: [],
+          pagination: { page, limit, total: 0 },
+          overall: {
+            total: 0,
+            compliant: 0,
+            nonCompliant: 0,
+            unknown: 0,
+          },
+          trend: [],
+          policies: [
+            {
+              policyId: id,
+              policyName: configPolicy.name,
+              enforcementLevel: 'monitor',
+              source: 'config_policy' as const,
+              compliance: {
+                total: emptyCompliance.total,
+                compliant: emptyCompliance.compliant,
+                nonCompliant: emptyCompliance.nonCompliant,
+                unknown: emptyCompliance.unknown,
+              },
+            },
+          ],
+          nonCompliantDevices: [],
+          policyName: configPolicy.name,
+        });
+      }
+      configConditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+    }
 
     const configWhereCondition = and(...configConditions);
 
-    const configCountResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(automationPolicyCompliance)
-      .where(configWhereCondition);
+    const configCountResult = perms?.allowedSiteIds
+      ? await db
+        .select({ count: sql<number>`count(*)` })
+        .from(automationPolicyCompliance)
+        .innerJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
+        .where(configWhereCondition)
+      : await db
+        .select({ count: sql<number>`count(*)` })
+        .from(automationPolicyCompliance)
+        .where(configWhereCondition);
 
     const configTotal = Number(configCountResult[0]?.count ?? 0);
 

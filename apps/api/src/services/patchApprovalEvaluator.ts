@@ -6,7 +6,7 @@
  */
 
 import { db } from '../db';
-import { devicePatches, patches, patchApprovals } from '../db/schema';
+import { devicePatches, patches, patchApprovals, OUTSTANDING_DEVICE_PATCH_STATUSES } from '../db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 
 // ============================================
@@ -47,7 +47,9 @@ export async function resolveApprovedPatchesForDevice(
   orgId: string,
   ringConfig: RingConfig
 ): Promise<ApprovedPatch[]> {
-  // 1. Query devicePatches with status pending or missing, joined with patch details
+  // 1. Query outstanding (needs-install) devicePatches, joined with patch details.
+  //    Only 'pending' is outstanding — 'missing' is a stale tombstone (see
+  //    OUTSTANDING_DEVICE_PATCH_STATUSES); automation must never try to install it.
   const pendingPatches = await db
     .select({
       devicePatchId: devicePatches.id,
@@ -64,7 +66,7 @@ export async function resolveApprovedPatchesForDevice(
     .where(
       and(
         eq(devicePatches.deviceId, deviceId),
-        inArray(devicePatches.status, ['pending', 'missing'])
+        inArray(devicePatches.status, [...OUTSTANDING_DEVICE_PATCH_STATUSES])
       )
     );
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -311,9 +312,9 @@ func TestTrimEnrollInputs(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                                   string
-		inKey, inServer, inSecret              string
-		wantKey, wantServer, wantSecret        string
+		name                            string
+		inKey, inServer, inSecret       string
+		wantKey, wantServer, wantSecret string
 	}{
 		{
 			name:       "all clean",
@@ -528,6 +529,39 @@ func TestWaitForEnrollment_IgnoresTornWrite(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("waitForEnrollment did not unblock after secrets.yaml was written")
+	}
+}
+
+// TestUserHelperRoleDefault locks in the cobra default for `breeze-agent
+// user-helper --role`. The Windows AgentUserHelper Scheduled Task invokes
+// `breeze-agent user-helper` (historically with no flags) under
+// BUILTIN\Users at LeastPrivilege, so the default must be "user". The
+// previous "system" default caused the helper to claim HelperRoleSystem,
+// which the sessionbroker correctly rejected with "system role requires
+// SYSTEM identity", crash-looping every Windows customer on 0.63.x/0.64.x.
+// The legitimate desktop-capture path uses the separate `desktop-helper`
+// cobra command. On Unix/macOS it must not claim system role unless it is
+// actually running as UID 0.
+func TestUserHelperRoleDefault(t *testing.T) {
+	roleFlag := userHelperCmd.Flags().Lookup("role")
+	if roleFlag == nil {
+		t.Fatal("role flag not registered on userHelperCmd")
+	}
+	if roleFlag.DefValue != "user" {
+		t.Errorf("user-helper --role default = %q, want %q (system role requires SYSTEM identity; user-mode helpers must default to user)", roleFlag.DefValue, "user")
+	}
+}
+
+func TestDesktopHelperRoleDoesNotClaimSystemOnDarwin(t *testing.T) {
+	got := desktopHelperRole()
+	if runtime.GOOS == "darwin" {
+		if got != "user" {
+			t.Fatalf("desktopHelperRole() = %q on darwin, want user", got)
+		}
+		return
+	}
+	if got != "system" {
+		t.Fatalf("desktopHelperRole() = %q on %s, want system", got, runtime.GOOS)
 	}
 }
 

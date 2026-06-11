@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, Clock, AlertTriangle, PlayCircle, X, ArrowRight, CalendarClock, Filter } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { widthPercentClass } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
@@ -185,7 +186,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
       const response = await fetchWithAuth(`/discovery/jobs/${jobId}/cancel`, { method: 'POST' });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error ?? 'Failed to cancel job');
+        throw new Error(extractApiError(data, 'Failed to cancel job'));
       }
       await fetchJobs(false);
     } catch (err) {

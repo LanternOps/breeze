@@ -23,6 +23,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/helper"
+	"github.com/breeze-rmm/agent/internal/procoutput"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
@@ -566,6 +567,7 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 
 	cmd := osexec.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
+	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		log.Warn("failed to launch process", "binary", req.BinaryPath, "args", req.Args, "error", err.Error())
 		c.conn.SendTyped(env.ID, ipc.TypeLaunchResult, ipc.LaunchProcessResult{
@@ -776,10 +778,12 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 
 	timeoutSec := getIntOrDefault(payload, "timeoutSeconds", 300)
 	proc := osexec.Command(name, args...)
+	proc.Env = procoutput.ApplyEnv(os.Environ())
 
 	var stdout, stderr bytes.Buffer
 	proc.Stdout = &stdout
 	proc.Stderr = &stderr
+	hideWindow(proc)
 
 	done := make(chan error, 1)
 	if err := proc.Start(); err != nil {
@@ -799,8 +803,8 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		}
 		resultJSON, err := json.Marshal(map[string]any{
 			"exitCode": exitCode,
-			"stdout":   executor.SanitizeOutput(stdout.String()),
-			"stderr":   executor.SanitizeOutput(stderr.String()),
+			"stdout":   executor.SanitizeOutput(procoutput.BytesToUTF8(stdout.Bytes())),
+			"stderr":   executor.SanitizeOutput(procoutput.BytesToUTF8(stderr.Bytes())),
 		})
 		if err != nil {
 			return ipc.IPCCommandResult{CommandID: cmd.CommandID, Status: "failed", Error: fmt.Sprintf("marshal result: %v", err)}

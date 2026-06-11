@@ -17,6 +17,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
 import AuditFilters from './AuditFilters';
 import { navigateTo } from '@/lib/navigation';
+import { formatAuditAction, formatAuditDetails } from '@/lib/auditFormat';
 
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
@@ -160,6 +161,14 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
         if (filters.search) params.set('q', filters.search);
       }
 
+      // Fast-path: on page 1 with no active filters, skip the slow count(*)
+      // and let the API use its LATERAL fast-path. From page 2 onward we
+      // pay the count once so pagination shows accurate totals.
+      const useSkipCount = page === 1 && !hasActiveFilters(filters);
+      if (useSkipCount) {
+        params.set('skipCount', 'true');
+      }
+
       const endpoint = params.has('q') ? '/audit-logs/search' : '/audit-logs';
       const response = await fetchWithAuth(`${endpoint}?${params.toString()}`);
 
@@ -175,8 +184,10 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
       const data = await response.json();
       setEntries(data.entries || data.data || data.logs || []);
       if (data.pagination) {
-        setTotalPages(data.pagination.totalPages || 1);
-        setTotalCount(data.pagination.total || 0);
+        // When skipCount=true the API returns -1 sentinels; preserve them so
+        // the UI can show "1 of ?" instead of a misleading "1 of 0".
+        setTotalPages(data.pagination.totalPages ?? 1);
+        setTotalCount(data.pagination.total ?? 0);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load audit logs');
@@ -446,7 +457,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                           )}
                         >
                           <ShieldCheck className="h-3.5 w-3.5" />
-                          {entry.action}
+                          {formatAuditAction(entry.action)}
                         </span>
                       </td>
                       <td className="px-4 py-4 text-sm">
@@ -457,7 +468,9 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                       </td>
                       <td className="px-4 py-4 text-sm">
                         <div className="flex flex-col gap-2">
-                          <p className="max-w-[220px] truncate text-muted-foreground">{entry.details}</p>
+                          <p className="max-w-[260px] truncate text-muted-foreground">
+                            {formatAuditDetails(entry.details) || '-'}
+                          </p>
                           <button
                             type="button"
                             onClick={() => setSelectedEntry(entry)}
@@ -469,13 +482,17 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                         </div>
                       </td>
                       <td className="px-4 py-4 text-sm text-muted-foreground">
-                        <span className="flex items-center gap-2">
-                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted">
-                          <Globe className="h-3.5 w-3.5 text-muted-foreground" />
-                        </span>
-                        {entry.ipAddress}
-                      </span>
-                    </td>
+                        {entry.ipAddress && entry.ipAddress.trim() ? (
+                          <span className="flex items-center gap-2">
+                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted">
+                              <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+                            </span>
+                            {entry.ipAddress}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
                     </tr>
                     {isExpanded && (
                       <tr className="bg-muted/20">
@@ -485,7 +502,9 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
                               <p className="text-xs font-semibold uppercase text-muted-foreground">
                                 Full Details
                               </p>
-                              <p className="mt-2 text-sm text-foreground">{entry.details}</p>
+                              <p className="mt-2 text-sm text-foreground">
+                                {formatAuditDetails(entry.details) || '-'}
+                              </p>
                             </div>
                             <div className="rounded-md border bg-background p-3">
                               <p className="text-xs font-semibold uppercase text-muted-foreground">
@@ -521,11 +540,20 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
         </table>
       </div>
 
-      {totalCount > 0 && (
+      {(totalCount > 0 || totalCount === -1) && (
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="text-sm text-muted-foreground">
-            Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalCount)} of{' '}
-            {totalCount}
+            {totalCount === -1 ? (
+              <>
+                Showing {(currentPage - 1) * pageSize + 1}-
+                {(currentPage - 1) * pageSize + entries.length}
+              </>
+            ) : (
+              <>
+                Showing {(currentPage - 1) * pageSize + 1}-
+                {Math.min(currentPage * pageSize, totalCount)} of {totalCount}
+              </>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -536,37 +564,47 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
             >
               Previous
             </button>
-            {Array.from({ length: Math.min(totalPages, 7) }, (_, index) => {
-              let page: number;
-              if (totalPages <= 7) {
-                page = index + 1;
-              } else if (currentPage <= 4) {
-                page = index + 1;
-              } else if (currentPage >= totalPages - 3) {
-                page = totalPages - 6 + index;
-              } else {
-                page = currentPage - 3 + index;
-              }
-              return (
-                <button
-                  key={page}
-                  type="button"
-                  onClick={() => setCurrentPage(page)}
-                  className={cn(
-                    'h-9 w-9 rounded-md border text-sm font-medium',
-                    currentPage === page
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {page}
-                </button>
-              );
-            })}
+            {totalPages > 0 &&
+              Array.from({ length: Math.min(totalPages, 7) }, (_, index) => {
+                let page: number;
+                if (totalPages <= 7) {
+                  page = index + 1;
+                } else if (currentPage <= 4) {
+                  page = index + 1;
+                } else if (currentPage >= totalPages - 3) {
+                  page = totalPages - 6 + index;
+                } else {
+                  page = currentPage - 3 + index;
+                }
+                return (
+                  <button
+                    key={page}
+                    type="button"
+                    onClick={() => setCurrentPage(page)}
+                    className={cn(
+                      'h-9 w-9 rounded-md border text-sm font-medium',
+                      currentPage === page
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {page}
+                  </button>
+                );
+              })}
+            {totalCount === -1 && (
+              <span className="px-2 text-sm font-medium text-muted-foreground">
+                Page {currentPage}
+              </span>
+            )}
             <button
               type="button"
-              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-              disabled={currentPage === totalPages}
+              onClick={() => setCurrentPage(prev => prev + 1)}
+              disabled={
+                totalCount === -1
+                  ? entries.length < pageSize
+                  : currentPage === totalPages
+              }
               className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
               Next

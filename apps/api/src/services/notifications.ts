@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import admin from 'firebase-admin';
 import { db } from '../db';
 import { alerts, mobileDevices, organizationUsers, pushNotifications, users } from '../db/schema';
@@ -174,7 +175,11 @@ export async function sendFCM(token: string, payload: PushPayload): Promise<Push
 }
 
 export async function sendAPNS(token: string, payload: PushPayload): Promise<PushSendResult> {
-  console.warn('[Notifications] APNS sending is not implemented yet.', { token, title: payload.title });
+  const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+  console.warn('[Notifications] APNS sending is not implemented yet.', {
+    tokenFingerprint,
+    title: payload.title,
+  });
   return { messageId: `apns-stub-${Date.now()}`, status: 'stubbed' };
 }
 

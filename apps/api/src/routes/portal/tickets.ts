@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq, sql } from 'drizzle-orm';
-import { nanoid } from 'nanoid';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets, ticketComments } from '../../db/schema';
 import {
@@ -18,25 +17,9 @@ import {
   validatePortalCookieCsrfRequest,
   writePortalAudit,
 } from './helpers';
+import { createTicket, TicketServiceError } from '../../services/ticketService';
 
 export const ticketRoutes = new Hono();
-
-async function generateTicketNumber(): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = nanoid(10).toUpperCase();
-    const [existing] = await db
-      .select({ id: tickets.id })
-      .from(tickets)
-      .where(eq(tickets.ticketNumber, candidate))
-      .limit(1);
-
-    if (!existing) {
-      return candidate;
-    }
-  }
-
-  return nanoid(12).toUpperCase();
-}
 
 ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
   const auth = c.get('portalAuth');
@@ -99,36 +82,45 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
 
   const auth = c.get('portalAuth');
   const payload = c.req.valid('json');
-  const now = new Date();
-  const ticketNumber = await generateTicketNumber();
 
-  const [ticket] = await db
-    .insert(tickets)
-    .values({
-      orgId: auth.user.orgId,
-      ticketNumber,
-      submittedBy: auth.user.id,
-      submitterEmail: auth.user.email,
-      submitterName: auth.user.name ?? auth.user.email,
-      subject: payload.subject,
-      description: payload.description,
-      priority: payload.priority,
-      createdAt: now,
-      updatedAt: now
-    })
-    .returning({
-      id: tickets.id,
-      ticketNumber: tickets.ticketNumber,
-      subject: tickets.subject,
-      description: tickets.description,
-      status: tickets.status,
-      priority: tickets.priority,
-      createdAt: tickets.createdAt,
-      updatedAt: tickets.updatedAt
-    });
-  if (!ticket) {
-    return c.json({ error: 'Failed to create ticket' }, 500);
+  let created: Awaited<ReturnType<typeof createTicket>>;
+  try {
+    // NOTE: the actor `userId` here is a portal_users id, NOT a users.id. The
+    // ticket service only uses it for audit/event metadata (no FK). It must
+    // never be routed into a column that FKs users.id — in particular, do NOT
+    // call addTicketComment from portal handlers (it writes actor.userId →
+    // ticket_comments.user_id). Portal comments set portal_user_id directly
+    // (see the POST /tickets/:id/comments handler below).
+    created = await createTicket(
+      {
+        orgId: auth.user.orgId,
+        subject: payload.subject,
+        description: payload.description,
+        priority: payload.priority,
+        source: 'portal',
+        submittedBy: auth.user.id,
+        submitterEmail: auth.user.email,
+        submitterName: auth.user.name ?? auth.user.email,
+      },
+      { userId: auth.user.id, name: auth.user.name ?? auth.user.email, email: auth.user.email }
+    );
+  } catch (err) {
+    if (err instanceof TicketServiceError) {
+      return c.json({ error: err.message }, err.status);
+    }
+    throw err;
   }
+
+  const ticket = {
+    id: created.id,
+    ticketNumber: created.ticketNumber,
+    subject: created.subject,
+    description: created.description,
+    status: created.status,
+    priority: created.priority,
+    createdAt: created.createdAt,
+    updatedAt: created.updatedAt,
+  };
 
   writePortalAudit(c, {
     orgId: auth.user.orgId,
@@ -185,7 +177,11 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       createdAt: ticketComments.createdAt
     })
     .from(ticketComments)
-    .where(and(eq(ticketComments.ticketId, ticket.id), eq(ticketComments.isPublic, true)))
+    .where(and(
+      eq(ticketComments.ticketId, ticket.id),
+      eq(ticketComments.isPublic, true),
+      isNull(ticketComments.deletedAt)
+    ))
     .orderBy(desc(ticketComments.createdAt));
 
   const payload = { ticket: { ...ticket, comments } };
@@ -254,6 +250,13 @@ ticketRoutes.post(
         createdAt: ticketComments.createdAt
       });
     if (!comment) {
+      // Near-impossible (an insert that neither throws nor returns a row), but
+      // every other failure on this route flows through onError+Sentry — make
+      // this branch visible too rather than returning a silent 500.
+      console.error('[portal] ticket_comments insert returned no row', {
+        ticketId: ticket.id,
+        orgId: auth.user.orgId,
+      });
       return c.json({ error: 'Failed to create ticket comment' }, 500);
     }
 

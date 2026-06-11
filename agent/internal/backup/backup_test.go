@@ -480,10 +480,22 @@ func TestRunBackup_WithRetention(t *testing.T) {
 	// Run backup twice, modifying the file between runs to ensure the
 	// incremental cutoff doesn't skip it.
 	for i := 0; i < 2; i++ {
+		// Sleep BEFORE the second write so the file's mtime is strictly after
+		// the prior snapshot.Timestamp. The 10ms post-write sleep below is not
+		// enough on its own: snapshot.Timestamp is set inside
+		// CreateSnapshotContext (snapshot.go) before the mock provider upload,
+		// so on a fast runner iter 2's WriteFile can land within the same
+		// filesystem-mtime tick as iter 1's snapshot timestamp, causing the
+		// incremental cutoff to skip the file (observed on GitHub Actions
+		// Linux runners, e.g. https://github.com/LanternOps/breeze/pull/890).
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
 		if err := os.WriteFile(filePath, []byte(fmt.Sprintf("retention test run %d", i)), 0644); err != nil {
 			t.Fatalf("failed to write file for run %d: %v", i+1, err)
 		}
-		// Ensure modTime is after lastSnapshotTime
+		// Belt-and-suspenders: also wait after the write so the cutoff (set
+		// during this RunBackup) is comfortably after the file mtime.
 		time.Sleep(10 * time.Millisecond)
 
 		job, err := mgr.RunBackup()

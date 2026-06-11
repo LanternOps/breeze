@@ -13,8 +13,22 @@ import {
   resolveSingleOrgId,
   searchFleetLogs,
 } from './logSearch';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * Resolve the device-id set a site-restricted caller may read across its org.
+ * Returns `null` for unrestricted callers (no narrowing) and `[]` for a
+ * site-restricted caller with zero in-scope devices (caller/query short-circuits
+ * to empty). The site axis is app-layer authz — Postgres RLS does NOT enforce it.
+ */
+async function resolveSiteScopedDeviceIds(auth: AuthContext): Promise<string[] | null> {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+  if (!orgId) return null;
+  return resolveSiteAllowedDeviceIds(orgId, auth);
+}
 
 export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -23,6 +37,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'search_logs',
       description:
@@ -63,7 +78,25 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input: Record<string, unknown>, auth: AuthContext) => {
       try {
+        // Site axis (app-layer only; RLS does NOT enforce it): narrow a
+        // site-restricted caller to its in-scope device set before searching.
+        const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
+        if (allowedDeviceIds != null && allowedDeviceIds.length === 0) {
+          // Restricted caller with zero in-scope devices — no logs are reachable.
+          return JSON.stringify({
+            total: 0,
+            totalMode: 'exact',
+            showing: 0,
+            limit: Math.min(Number(input.limit) || 50, 500),
+            offset: Math.max(0, Number(input.offset) || 0),
+            hasMore: false,
+            nextCursor: null,
+            logs: [],
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
+          });
+        }
         const result = await searchFleetLogs(auth, {
+          allowedDeviceIds,
           query: typeof input.query === 'string' ? input.query : undefined,
           timeRange: typeof input.timeRange === 'object' && input.timeRange !== null
             ? {
@@ -128,6 +161,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'get_log_trends',
       description:
@@ -173,7 +207,33 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
             }
           : {};
 
+        // Site axis (app-layer only; RLS does NOT enforce it): narrow a
+        // site-restricted caller to its in-scope device set.
+        const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth);
+        if (allowedDeviceIds != null && allowedDeviceIds.length === 0) {
+          // Restricted caller with zero in-scope devices — no trend data reachable.
+          const end = timeRange.end ?? new Date().toISOString();
+          const start = timeRange.start
+            ?? new Date(new Date(end).getTime() - 24 * 60 * 60 * 1000).toISOString();
+          return JSON.stringify({
+            trends: {
+              start,
+              end,
+              minLevel: typeof input.minLevel === 'string' ? input.minLevel : 'info',
+              levelDistribution: [],
+              topSources: [],
+              topDevices: [],
+              errorTimeline: [],
+              spikes: [],
+              spikeThreshold: 3,
+            },
+            grouped: undefined,
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
+          });
+        }
+
         const trends = await getLogTrends(auth, {
+          allowedDeviceIds,
           start: timeRange.start,
           end: timeRange.end,
           minLevel: typeof input.minLevel === 'string'
@@ -188,6 +248,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
         let groupingSummary: Awaited<ReturnType<typeof getLogAggregation>> | undefined;
         if (typeof input.groupBy === 'string') {
           groupingSummary = await getLogAggregation(auth, {
+            allowedDeviceIds,
             start: trends.start,
             end: trends.end,
             bucket: 'hour',
@@ -240,9 +301,18 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'orgId is required for this scope' });
         }
 
+        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+        // caller may only correlate across its in-scope devices. Resolve against
+        // the chosen org (not auth.orgId) so partner/system scope narrows too.
+        const allowedDeviceIds =
+          auth.allowedSiteIds && auth.canAccessSite
+            ? await resolveSiteAllowedDeviceIds(orgId, auth)
+            : null;
+
         const pattern = typeof input.pattern === 'string' ? input.pattern : '';
         const result = await detectPatternCorrelation({
           orgId,
+          allowedDeviceIds,
           pattern,
           isRegex: Boolean(input.isRegex),
           timeWindowSeconds: Number(input.timeWindow) || 300,
@@ -251,9 +321,13 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
         });
 
         if (!result) {
+          // Distinguish "nothing matched" from "the caller's site access covers
+          // zero devices" (detectPatternCorrelation short-circuits to null).
+          const scopeLimited = allowedDeviceIds != null && allowedDeviceIds.length === 0;
           return JSON.stringify({
             detected: false,
             message: 'No correlation matched the requested thresholds for this pattern.',
+            ...(scopeLimited ? { scopeNote: SITE_SCOPE_EMPTY_NOTE } : {}),
           });
         }
 

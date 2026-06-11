@@ -10,21 +10,23 @@ import (
 )
 
 // DXGI_OUTPUT_DESC layout:
-//   WCHAR DeviceName[32]  — 64 bytes (UTF-16)
-//   RECT  DesktopCoordinates — 16 bytes (left, top, right, bottom int32)
-//   BOOL  AttachedToDesktop  — 4 bytes
-//   DXGI_MODE_ROTATION — 4 bytes
-//   HMONITOR — 8 bytes (pointer)
+//
+//	WCHAR DeviceName[32]  — 64 bytes (UTF-16)
+//	RECT  DesktopCoordinates — 16 bytes (left, top, right, bottom int32)
+//	BOOL  AttachedToDesktop  — 4 bytes
+//	DXGI_MODE_ROTATION — 4 bytes
+//	HMONITOR — 8 bytes (pointer)
+//
 // Total: 96 bytes
 type dxgiOutputDesc struct {
-	DeviceName         [32]uint16
-	Left               int32
-	Top                int32
-	Right              int32
-	Bottom             int32
-	AttachedToDesktop  int32
-	Rotation           uint32
-	Monitor            uintptr
+	DeviceName        [32]uint16
+	Left              int32
+	Top               int32
+	Right             int32
+	Bottom            int32
+	AttachedToDesktop int32
+	Rotation          uint32
+	Monitor           uintptr
 }
 
 const (

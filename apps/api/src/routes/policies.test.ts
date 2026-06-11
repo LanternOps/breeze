@@ -91,7 +91,10 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'Forbidden' }, 403);
     }
     return next();
-  })
+  }),
+  // policyManagement/compliance.ts gained requirePermission(DEVICES_READ) in
+  // #1042; the mock must export it (pass-through) or the module fails to load.
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';

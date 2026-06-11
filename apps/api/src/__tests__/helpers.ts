@@ -29,7 +29,10 @@ export function createTestUser(overrides: Record<string, unknown> = {}) {
     email: 'test@example.com',
     name: 'Test User',
     status: 'active',
-    mfaEnabled: false,
+    // Default to enrolled so tests don't accidentally trip the role-level
+    // force_mfa gate added in auth middleware (Task 8). Pass
+    // `mfaEnabled: false` explicitly for gate-specific tests.
+    mfaEnabled: true,
     mfaSecret: null,
     createdAt: new Date(),
     updatedAt: new Date(),

@@ -18,7 +18,19 @@ const connectionString =
   || process.env.DATABASE_URL
   || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
+// Pool sizing: postgres-js defaults to max=10, which causes cascading 504s
+// under heartbeat storms (e.g. a 1000-agent fleet reconnecting at once).
+// Default to 30 and allow tuning via DB_POOL_MAX.
+function getDbPoolMax(): number {
+  const raw = Number.parseInt(process.env.DB_POOL_MAX ?? '', 10);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 30;
+  }
+  return raw;
+}
+
 const client = postgres(connectionString, {
+  max: getDbPoolMax(),
   idle_timeout: 20,
   max_lifetime: 60 * 30,
   connect_timeout: 10,
@@ -111,6 +123,19 @@ export async function withSystemDbAccessContext<T>(fn: () => Promise<T>): Promis
   return withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, fn);
 }
 
+/**
+ * True when the current async scope is inside an active
+ * `withDbAccessContext` / `withSystemDbAccessContext` call. Use to assert
+ * RLS context is established before a tenant-scoped query in code paths
+ * where a bare-pool fallback would be a silent security bug
+ * (e.g. PAM auto-elevation lookups — a missing context falls back to the
+ * unprivileged `breeze_app` role with no GUC, RLS denies, and the caller
+ * sees a silent empty result instead of an auto-deny).
+ */
+export function hasDbAccessContext(): boolean {
+  return dbContextStorage.getStore() !== undefined;
+}
+
 export type RunOutsideDbContextFn = <T>(fn: () => T) => T;
 
 /**
@@ -140,6 +165,21 @@ export const db = Object.assign(proxiedDb, {
 
 export type Database = typeof db;
 
+// Dedicated audit-admin pool (issue #915). Re-exported here so the
+// retention worker has a single db import surface. See auditAdminPool.ts
+// for the rationale (connection-level privilege separation).
+export {
+  getAuditAdminDb,
+  hasDedicatedAuditAdminPool,
+  logAuditAdminPoolMode,
+  closeAuditAdminPool,
+  type AuditAdminDb,
+} from './auditAdminPool';
+
+import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';
+
 export async function closeDb(): Promise<void> {
-  await client.end();
+  // Drain the dedicated audit-admin pool (#915) alongside the main pool so a
+  // graceful shutdown doesn't leak its connection.
+  await Promise.all([client.end(), closeAuditAdminPoolInternal()]);
 }

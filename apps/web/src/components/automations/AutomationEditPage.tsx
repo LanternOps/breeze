@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import type { DeploymentTargetConfig } from '@breeze/shared';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
@@ -272,7 +273,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save automation');
+        throw new Error(extractApiError(data, 'Failed to save automation'));
       }
 
       void navigateTo('/automations');

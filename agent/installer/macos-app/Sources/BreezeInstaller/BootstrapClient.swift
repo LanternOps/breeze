@@ -1,6 +1,6 @@
 import Foundation
 
-/// Fetches the enrollment payload from the Plan A bootstrap endpoint.
+/// Fetches the enrollment payload from the bootstrap endpoint.
 struct BootstrapClient {
     struct Payload: Decodable {
         let serverUrl: String
@@ -36,12 +36,14 @@ struct BootstrapClient {
     }
 
     func fetch(token: String, apiHost: String) async throws -> Payload {
-        guard let url = URL(string: "https://\(apiHost)/api/v1/installer/bootstrap/\(token)") else {
+        guard let url = URL(string: "https://\(apiHost)/api/v1/installer/bootstrap") else {
             throw Error.http(status: 0, body: "constructed URL is invalid")
         }
         var req = URLRequest(url: url)
+        req.httpMethod = "POST"
         req.timeoutInterval = 30
         req.setValue("BreezeInstaller/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue(token, forHTTPHeaderField: "X-Breeze-Bootstrap-Token")
 
         let (data, response): (Data, URLResponse)
         do {

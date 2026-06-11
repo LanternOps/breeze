@@ -28,6 +28,8 @@ export type Patch = {
   releaseDate: string;
   approvalStatus: PatchApprovalStatus;
   description?: string;
+  vendor?: string | null;
+  cveIds?: string[];
 };
 
 type PatchListProps = {
@@ -411,7 +413,38 @@ export default function PatchList({
                         </button>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="font-medium text-foreground">{patch.title}</div>
+                        <div className="font-medium text-foreground">
+                          {patch.title}
+                          {patch.source === 'third_party' && patch.vendor && (
+                            <span
+                              data-testid={`patch-row-${patch.id}-vendor`}
+                              className="ml-2 text-xs text-muted-foreground font-normal"
+                            >
+                              by {patch.vendor}
+                            </span>
+                          )}
+                        </div>
+                        {patch.cveIds && patch.cveIds.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {patch.cveIds.slice(0, 3).map((cve) => (
+                              <a
+                                key={cve}
+                                data-testid={`patch-row-${patch.id}-cve-${cve}`}
+                                href={`https://nvd.nist.gov/vuln/detail/${cve}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-100 text-red-700 hover:bg-red-200"
+                              >
+                                {cve}
+                              </a>
+                            ))}
+                            {patch.cveIds.length > 3 && (
+                              <span className="text-[10px] text-muted-foreground">
+                                +{patch.cveIds.length - 3} more
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {patch.description && (
                           <div className="text-xs text-muted-foreground">{patch.description}</div>
                         )}

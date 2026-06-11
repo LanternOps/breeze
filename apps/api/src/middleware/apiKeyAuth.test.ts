@@ -32,6 +32,10 @@ vi.mock('../services', () => ({
   rateLimiter: vi.fn()
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn().mockResolvedValue({ orgId: 'org-1', partnerId: 'partner-1' })
+}));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((left, right) => ({ left, right })),
   and: vi.fn()
@@ -40,9 +44,10 @@ vi.mock('drizzle-orm', () => ({
 import type { Context } from 'hono';
 import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
+import { getActiveOrgTenant } from '../services/tenantStatus';
 import * as apiKeyAuthModule from './apiKeyAuth';
 
-const { apiKeyAuthMiddleware, requireApiKeyScope, eitherAuthMiddleware } = apiKeyAuthModule;
+const { apiKeyAuthMiddleware, requireApiKeyScope } = apiKeyAuthModule;
 
 type TestContext = Context & {
   _getResponseHeaders: () => Record<string, string>;
@@ -82,6 +87,13 @@ const buildSelectMock = (result: unknown[]) =>
 describe('apiKeyAuth middleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getActiveOrgTenant).mockResolvedValue({ orgId: 'org-1', partnerId: 'partner-1' });
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 299,
+      resetAt: new Date(Date.now() + 60_000)
+    });
   });
 
   it('rejects when X-API-Key header is missing', async () => {
@@ -102,6 +114,8 @@ describe('apiKeyAuth middleware', () => {
       status: 401,
       message: 'Invalid API key format'
     });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(rateLimiter).toHaveBeenCalledWith({}, 'api_key_probe:unknown', 300, 60);
   });
 
   it('rejects when API key is not found', async () => {
@@ -113,6 +127,26 @@ describe('apiKeyAuth middleware', () => {
       status: 401,
       message: 'Invalid API key'
     });
+  });
+
+  it('rate limits API key probes before DB lookup', async () => {
+    const resetAt = new Date(Date.now() + 60_000);
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt
+    });
+    const c = createContext({ 'X-API-Key': 'brz_missing' });
+    const next = vi.fn();
+
+    await expect(apiKeyAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 429,
+      message: 'Too many API key authentication attempts'
+    });
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(rateLimiter).toHaveBeenCalledWith({}, 'api_key_probe:unknown', 300, 60);
   });
 
   it('rejects when API key is inactive', async () => {
@@ -195,12 +229,17 @@ describe('apiKeyAuth middleware', () => {
       }
     ]);
 
-    vi.mocked(getRedis).mockReturnValue({} as any);
-    vi.mocked(rateLimiter).mockResolvedValue({
-      allowed: false,
-      remaining: 0,
-      resetAt
-    });
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({
+        allowed: true,
+        remaining: 299,
+        resetAt
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt
+      });
 
     const c = createContext({ 'X-API-Key': 'brz_rate' });
     const next = vi.fn();
@@ -219,6 +258,34 @@ describe('apiKeyAuth middleware', () => {
     expect(headers['X-RateLimit-Remaining']).toBe('0');
     expect(headers['X-RateLimit-Reset']).toBe(String(Math.ceil(resetAt.getTime() / 1000)));
     expect(headers['Retry-After']).toBe(String(Math.ceil((resetAt.getTime() - now) / 1000)));
+  });
+
+  it('rejects existing API keys whose owning organization or partner is inactive/deleted', async () => {
+    buildSelectMock([
+      {
+        id: 'key-inactive-owner',
+        orgId: 'org-deleted',
+        name: 'Key',
+        keyPrefix: 'brz_',
+        keyHash: 'hash',
+        scopes: ['read'],
+        expiresAt: null,
+        rateLimit: 10,
+        usageCount: 0,
+        status: 'active',
+        createdBy: 'user-1'
+      }
+    ]);
+    vi.mocked(getActiveOrgTenant).mockResolvedValue(null);
+
+    const c = createContext({ 'X-API-Key': 'brz_owner_deleted' });
+    const next = vi.fn();
+
+    await expect(apiKeyAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'API key owner is not active'
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('sets context, headers, and calls next when API key is valid', async () => {
@@ -267,6 +334,7 @@ describe('apiKeyAuth middleware', () => {
     expect(c.get('apiKey')).toMatchObject({
       id: 'key-4',
       orgId: 'org-2',
+      partnerId: null,
       scopes: ['read'],
       rateLimit: 5,
       createdBy: 'user-2'
@@ -286,7 +354,7 @@ describe('apiKeyAuth middleware', () => {
   });
 
   it('populates accessiblePartnerIds for MCP-provisioning keys so partner-axis RLS sees the key', async () => {
-    // First select: api_keys lookup. Second select: organizations -> partnerId.
+    vi.mocked(getActiveOrgTenant).mockResolvedValue({ orgId: 'org-3', partnerId: 'partner-7' });
     const fromFn = vi.fn();
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -308,13 +376,6 @@ describe('apiKeyAuth middleware', () => {
                 source: 'mcp_provisioning'
               }
             ])
-          })
-        })
-      } as any)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-7' }])
           })
         })
       } as any);
@@ -393,7 +454,7 @@ describe('apiKeyAuth middleware', () => {
       },
       expect.any(Function)
     );
-    // api_keys lookup only — no organizations→partnerId lookup on hot path.
+    // api_keys lookup only — owner status is delegated to tenantStatus.
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 });
@@ -433,13 +494,16 @@ describe('requireApiKeyScope middleware', () => {
     });
   });
 
-  it('allows access when wildcard scope is present', async () => {
+  it('does not honor wildcard scopes', async () => {
     const c = createContext();
     c.set('apiKey', { scopes: ['*'] } as any);
     const next = vi.fn();
 
-    await requireApiKeyScope('admin')(c, next);
-    expect(next).toHaveBeenCalled();
+    await expect(requireApiKeyScope('admin')(c, next)).rejects.toMatchObject({
+      status: 403,
+      message: 'API key does not have required permissions'
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('allows access when any required scope is present', async () => {
@@ -463,41 +527,28 @@ describe('requireApiKeyScope middleware', () => {
   });
 });
 
-describe('eitherAuth middleware', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('rejects when neither Authorization nor X-API-Key headers are present', async () => {
+describe('API key auth + requireMfa interaction (intentional break)', () => {
+  // E.7: API-key-authenticated requests do NOT set the `auth` context value;
+  // they set `apiKey` instead. `requireMfa()` reads `auth` and rejects 401
+  // when missing — so any route gated with `requireMfa()` is effectively
+  // off-limits to API keys. This is intentional: API keys are unattended
+  // service-account credentials with no MFA factor, and silently waiving MFA
+  // for them would defeat the gate. If we ever want service-account access
+  // to MFA-gated routes, the right fix is a dedicated mechanism (signed
+  // intent, scoped capability), not a quiet bypass. This test exists so any
+  // future patch that "fixes" the 401 by short-circuiting requireMfa fails
+  // CI loudly.
+  it('API key auth cannot satisfy requireMfa (intentional break — service accounts need a dedicated path)', async () => {
+    const { requireMfa } = await import('./auth');
+    // Build a context that mimics a request handled by apiKeyAuthMiddleware:
+    // `apiKey` is set, but `auth` is NOT.
     const c = createContext();
+    c.set('apiKey', { id: 'k', scopes: ['devices:write'] } as any);
     const next = vi.fn();
 
-    await expect(eitherAuthMiddleware(c, next)).rejects.toMatchObject({
+    await expect(requireMfa()(c, next)).rejects.toMatchObject({
       status: 401,
-      message: 'Authentication required. Provide either Authorization header or X-API-Key header.'
     });
-  });
-
-  it.skip('prefers API key auth when X-API-Key is provided', async () => {
-    // Skipped: Complex spy mock required
-    const c = createContext({ 'X-API-Key': 'brz_key', Authorization: 'Bearer token' });
-    const next = vi.fn();
-    const apiKeySpy = vi
-      .spyOn(apiKeyAuthModule, 'apiKeyAuthMiddleware')
-      .mockResolvedValue(undefined as unknown as void);
-
-    await eitherAuthMiddleware(c, next);
-
-    expect(apiKeySpy).toHaveBeenCalledWith(c, next);
     expect(next).not.toHaveBeenCalled();
-  });
-
-  it('falls through to next middleware when only Authorization header is provided', async () => {
-    const c = createContext({ Authorization: 'Bearer token' });
-    const next = vi.fn();
-
-    await eitherAuthMiddleware(c, next);
-
-    expect(next).toHaveBeenCalled();
   });
 });

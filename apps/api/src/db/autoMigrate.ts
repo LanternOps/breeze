@@ -1,3 +1,6 @@
+// Canonicalize NODE_ENV before anything reads it — this is a standalone CLI
+// entrypoint (db:migrate) that, via seed, gates on NODE_ENV. See #917 (L-6).
+import '../config/normalizeNodeEnv';
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -15,6 +18,163 @@ const MIGRATION_TABLE = 'breeze_migrations';
  */
 export function hashSql(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Known, verified-safe in-place edits to ALREADY-SHIPPED migrations.
+ *
+ * The checksum guard (step 6) normally refuses to boot if an applied
+ * migration's file content changed — editing shipped migrations is forbidden.
+ * The rare exception is a forward-fix that is provably equivalent/idempotent
+ * for any DB that already applied the original. For those, we heal the recorded
+ * checksum (from -> to) instead of crashing the upgrade.
+ *
+ * Each entry MUST be a deliberate, reviewed pair of exact checksums. A mismatch
+ * that is NOT an exact from->to match still throws. Only DBs that recorded the
+ * `from` checksum are touched — fresh installs / DBs that never applied the
+ * original are unaffected (they apply the current file normally).
+ *
+ * #994 edited 2026-05-25-b/c (`::bytea` -> `convert_to(payload, 'UTF8')`) to fix
+ * audit-chain hashing; the change is equivalent for already-chained rows. Only
+ * v0.67.1 DBs recorded the originals, so without this they crash on the
+ * v0.68.x upgrade with a checksum mismatch.
+ */
+export const CHECKSUM_RECONCILIATIONS: Record<
+  string,
+  { from: string; to: string; reason: string }
+> = {
+  '2026-05-25-b-audit-log-checksum-chain.sql': {
+    from: 'ccb3893ad6a659bcbebd759c9f3caef777f62ab0b9bc72b1d7a7bf7a6448fd7b',
+    to: '813160a82318e5e8da0320749efc2e47ee3319d949b9fc68e2447398c5313fdc',
+    reason: "#994: ::bytea -> convert_to(payload,'UTF8') for audit-chain hashing",
+  },
+  '2026-05-25-c-audit-log-checksum-canonical-fix.sql': {
+    from: '71df754e3171079848092df7fda360a3619e8760e288d219bdb76071fa6b0cde',
+    to: '214ebca196629d81d54610bad9ff79fef8b2b5bfb19c0b024a4cf2a6b230f693',
+    reason: '#994: canonical audit-chain fix (companion to 2026-05-25-b)',
+  },
+};
+
+/**
+ * True if a migration file opts out of the default transactional apply.
+ *
+ * Detection: the directive `-- @no-transaction` must appear at the start
+ * of a line (leading whitespace permitted) anywhere in the file. The
+ * marker is a plain SQL comment so the file remains executable through
+ * stock psql tooling. Statements like `CREATE INDEX CONCURRENTLY`,
+ * `REINDEX CONCURRENTLY`, and `VACUUM` are forbidden inside a tx by
+ * Postgres and require this opt-out.
+ *
+ * Exported for unit testing.
+ */
+export function hasNoTransactionDirective(content: string): boolean {
+  return /^\s*--\s*@no-transaction\b/m.test(content);
+}
+
+/**
+ * Split a SQL file into individual statements for no-transaction execution.
+ *
+ * Postgres's simple-query protocol wraps multi-statement single queries
+ * in an implicit transaction — fatal for `CREATE INDEX CONCURRENTLY`,
+ * which Postgres refuses to run inside any transaction (CI proved this
+ * the first time we tried). The fix is to send each statement as its
+ * own command on the wire.
+ *
+ * This is a small targeted splitter, not a full SQL lexer. It handles
+ * the shapes used by no-transaction migrations in this repo:
+ *   - Line comments (`-- ...`) — stripped before splitting.
+ *   - Single- and double-quoted literals — `;` inside is preserved.
+ *   - Dollar-quoted blocks (`$$ ... $$`, `$tag$ ... $tag$`) — `;` inside is preserved.
+ *
+ * Returns the statements in original order with surrounding whitespace
+ * stripped and empty fragments removed.
+ *
+ * Exported for unit testing.
+ */
+export function splitSqlStatements(content: string): string[] {
+  // 1. Strip line comments — they can carry stray semicolons.
+  const stripped = content.replace(/--[^\n]*$/gm, '');
+
+  const out: string[] = [];
+  let buf = '';
+  let i = 0;
+  while (i < stripped.length) {
+    const ch = stripped[i]!;
+
+    // Single-quoted string literal: 'foo''bar'
+    if (ch === "'") {
+      buf += ch;
+      i++;
+      while (i < stripped.length) {
+        const c = stripped[i]!;
+        buf += c;
+        i++;
+        if (c === "'") {
+          if (stripped[i] === "'") {
+            buf += stripped[i]!;
+            i++;
+          } else {
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Double-quoted identifier: "foo""bar"
+    if (ch === '"') {
+      buf += ch;
+      i++;
+      while (i < stripped.length) {
+        const c = stripped[i]!;
+        buf += c;
+        i++;
+        if (c === '"') {
+          if (stripped[i] === '"') {
+            buf += stripped[i]!;
+            i++;
+          } else {
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Dollar-quoted: $$...$$ or $tag$...$tag$
+    if (ch === '$') {
+      const tagMatch = stripped.slice(i).match(/^\$([A-Za-z_][A-Za-z0-9_]*)?\$/);
+      if (tagMatch) {
+        const close = tagMatch[0];
+        buf += close;
+        i += close.length;
+        const end = stripped.indexOf(close, i);
+        if (end === -1) {
+          buf += stripped.slice(i);
+          i = stripped.length;
+        } else {
+          buf += stripped.slice(i, end + close.length);
+          i = end + close.length;
+        }
+        continue;
+      }
+    }
+
+    if (ch === ';') {
+      const trimmed = buf.trim();
+      if (trimmed.length > 0) out.push(trimmed);
+      buf = '';
+      i++;
+      continue;
+    }
+
+    buf += ch;
+    i++;
+  }
+
+  const tail = buf.trim();
+  if (tail.length > 0) out.push(tail);
+  return out;
 }
 
 /**
@@ -117,7 +277,7 @@ async function recordMigration(
 }
 
 /** The highest legacy migration number that should be marked as applied for legacy DBs. */
-const LEGACY_CUTOFF = 65;
+export const LEGACY_CUTOFF = 65;
 
 /**
  * Single-track migration runner for Breeze.
@@ -227,12 +387,40 @@ export async function autoMigrate(): Promise<void> {
       const currentChecksum = hashSql(content);
 
       if (priorChecksum !== currentChecksum) {
+        const reconciliation = CHECKSUM_RECONCILIATIONS[filename];
+        if (
+          reconciliation &&
+          reconciliation.from === priorChecksum &&
+          reconciliation.to === currentChecksum
+        ) {
+          // Known, verified-safe forward-fix to a shipped migration: heal the
+          // recorded checksum instead of crashing the upgrade. Exact from->to
+          // match only; any other change still throws below.
+          await client.unsafe(
+            `UPDATE ${MIGRATION_TABLE} SET checksum = $1 WHERE filename = $2`,
+            [currentChecksum, filename],
+          );
+          applied.set(filename, currentChecksum);
+          console.log(
+            `[auto-migrate] Reconciled checksum for ${filename} (known forward-fix: ${reconciliation.reason})`,
+          );
+          continue;
+        }
         throw new Error(
           `Migration checksum mismatch for ${filename}. ` +
             'The file changed after being applied. Add a new migration instead.',
         );
       }
     }
+
+    // ── 6b. Ensure the unprivileged `breeze_app` role exists BEFORE applying
+    //        post-baseline migrations. Several migrations declare RLS
+    //        policies with `FOR ALL TO breeze_app`; on a truly fresh DB those
+    //        statements fail with `role "breeze_app" does not exist` if the
+    //        role isn't created first. Idempotent — safe on every run. We
+    //        still call ensureAppRole again at step 7b so any tables created
+    //        in this loop receive the privilege grants.
+    await ensureAppRole();
 
     // ── 7. Apply pending migrations ──────────────────────────────────────
     let appliedCount = 0;
@@ -243,14 +431,50 @@ export async function autoMigrate(): Promise<void> {
       const content = await readFile(sqlPath, 'utf8');
       const checksum = hashSql(content);
 
-      console.log(`[auto-migrate] Applying: ${filename}`);
-      await client.begin(async (tx) => {
-        await tx.unsafe(content);
-        await tx.unsafe(
+      // Migrations marked with `-- @no-transaction` at the top run OUTSIDE
+      // a transaction. Required for statements Postgres forbids inside a
+      // tx — most notably `CREATE INDEX CONCURRENTLY`, which is the
+      // non-blocking variant we need on hot multi-million-row tables
+      // (devices, audit_logs, agent_logs) where a normal CREATE INDEX
+      // takes a SHARE lock and stalls every agent heartbeat / log ship /
+      // audit write for the duration of the build (#753 P0).
+      //
+      // Idempotency contract: a no-transaction migration MUST be safe to
+      // re-apply on partial failure — every statement should use
+      // `IF NOT EXISTS` / `IF EXISTS` / `CREATE OR REPLACE`. If the SQL
+      // succeeds but the breeze_migrations INSERT fails, the next run
+      // will re-apply the file; that's why `CREATE INDEX CONCURRENTLY IF
+      // NOT EXISTS` is the canonical pattern here. Recovery from a
+      // failed CONCURRENTLY (which leaves an invalid index) requires an
+      // operator to `DROP INDEX <name>` before the next deploy.
+      const isNoTransaction = hasNoTransactionDirective(content);
+      console.log(
+        `[auto-migrate] Applying: ${filename}${isNoTransaction ? ' (no-transaction)' : ''}`,
+      );
+      if (isNoTransaction) {
+        // Send statements one at a time so each command leaves the
+        // driver as its own simple-query exchange. Sending the whole
+        // file via `client.unsafe(content)` would group the statements
+        // and Postgres treats a multi-statement simple query as an
+        // implicit transaction — which `CREATE INDEX CONCURRENTLY`
+        // refuses to run inside.
+        const statements = splitSqlStatements(content);
+        for (const stmt of statements) {
+          await client.unsafe(stmt);
+        }
+        await client.unsafe(
           `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
           [filename, checksum],
         );
-      });
+      } else {
+        await client.begin(async (tx) => {
+          await tx.unsafe(content);
+          await tx.unsafe(
+            `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+            [filename, checksum],
+          );
+        });
+      }
       appliedCount++;
     }
 
@@ -260,10 +484,8 @@ export async function autoMigrate(): Promise<void> {
       console.log('[auto-migrate] All migrations already applied');
     }
 
-    // ── 7b. Ensure unprivileged app role exists, then verify the app
-    //        connection is NOT a superuser. Runs here (and not at general
-    //        startup) because autoMigrate is the one place that already holds
-    //        an admin connection and runs before the main app connects.
+    // ── 7b. Re-run ensureAppRole so any tables created in step 7 receive
+    //        the standard privilege grants. Idempotent.
     await ensureAppRole();
 
     // Resolve the app connection string. Preference order:

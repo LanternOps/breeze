@@ -5,10 +5,10 @@ type PatchInfo struct {
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	CurrentVer  string `json:"currentVersion,omitempty"`
-	Category    string `json:"category"` // "system", "security", "application", "homebrew"
+	Category    string `json:"category"`           // "system", "security", "application", "homebrew"
 	Severity    string `json:"severity,omitempty"` // "critical", "important", "moderate", "low"
 	KBNumber    string `json:"kbNumber,omitempty"` // Windows KB number
-	Size        int64  `json:"size,omitempty"` // Size in bytes
+	Size        int64  `json:"size,omitempty"`     // Size in bytes
 	IsRestart   bool   `json:"requiresRestart,omitempty"`
 	ReleaseDate string `json:"releaseDate,omitempty"`
 	Description string `json:"description,omitempty"`

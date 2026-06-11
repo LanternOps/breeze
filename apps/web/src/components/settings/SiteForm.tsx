@@ -3,18 +3,22 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
+// Only `name` is required server-side (timezone defaults to 'UTC' in the API).
+// The empty-string branch on contactEmail is load-bearing: react-hook-form
+// sends `''` for unfilled inputs, so `z.string().email().optional()` alone
+// would block submit on a name-only form.
 const siteSchema = z.object({
   name: z.string().min(1, 'Site name is required'),
-  timezone: z.string().min(1, 'Timezone is required'),
-  addressLine1: z.string().min(1, 'Address line 1 is required'),
+  timezone: z.string().optional(),
+  addressLine1: z.string().optional(),
   addressLine2: z.string().optional(),
-  city: z.string().min(1, 'City is required'),
-  state: z.string().min(1, 'State/Region is required'),
-  postalCode: z.string().min(1, 'Postal code is required'),
-  country: z.string().min(1, 'Country is required'),
-  contactName: z.string().min(1, 'Contact name is required'),
-  contactEmail: z.string().email('Enter a valid email address'),
-  contactPhone: z.string().min(7, 'Enter a phone number')
+  city: z.string().optional(),
+  state: z.string().optional(),
+  postalCode: z.string().optional(),
+  country: z.string().optional(),
+  contactName: z.string().optional(),
+  contactEmail: z.union([z.string().email('Enter a valid email address'), z.literal('')]).optional(),
+  contactPhone: z.string().optional()
 });
 
 type SiteFormValues = z.infer<typeof siteSchema>;
@@ -78,6 +82,9 @@ export default function SiteForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
     >
+      <p className="text-sm text-muted-foreground">
+        Only the site name is required. Address and contact are optional — you can fill these in later.
+      </p>
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="site-name" className="text-sm font-medium">

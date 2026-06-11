@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
+import McpUrlCard from '../shared/McpUrlCard';
 import { useAuthStore, apiLogin, apiVerifyMFA, apiSendSmsMfaCode, fetchAndApplyPreferences } from '../../stores/auth';
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { getSafeNext } from '../../lib/authNext';
 
 function getRegistrationDisabledNotice(): string | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -13,7 +15,40 @@ function getRegistrationDisabledNotice(): string | undefined {
   }
 }
 
-export default function LoginPage() {
+function shouldSkipCfAccessRedirect(): boolean {
+  if (typeof window === 'undefined') return true;
+  const params = new URLSearchParams(window.location.search);
+  // Don't loop:
+  // - error=cf-access  → we just bounced off a failed JWT verification
+  // - cf-access-login=success → we just succeeded; AuthOverlay handles the rest
+  // - signedOut=1 → the user just hit Sign out; respect that intent
+  if (params.get('error') === 'cf-access') return true;
+  if (params.get('cf-access-login') === 'success') return true;
+  if (params.get('signedOut') === '1') return true;
+  return false;
+}
+
+async function checkCfAccessLoginEnabled(): Promise<boolean> {
+  try {
+    const apiHost = import.meta.env.PUBLIC_API_URL || '';
+    const res = await fetch(`${apiHost}/api/v1/config`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { cfAccessLogin?: { enabled?: boolean } };
+    return !!body.cfAccessLogin?.enabled;
+  } catch {
+    return false;
+  }
+}
+
+interface LoginPageProps {
+  next?: string;
+}
+
+export default function LoginPage({ next }: LoginPageProps = {}) {
+  const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
   const registrationNotice = getRegistrationDisabledNotice();
   const [loading, setLoading] = useState(false);
@@ -23,8 +58,29 @@ export default function LoginPage() {
   const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
+  const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(shouldSkipCfAccessRedirect());
 
   const login = useAuthStore((state) => state.login);
+
+  // CF Access trust mode: if the deployment has it on AND we're not already
+  // in the post-redirect bounce (which AuthOverlay handles), top-level
+  // navigate to the redirect endpoint. The browser's redirect-following
+  // behaviour resolves CF Access's per-app cookie handshake silently when
+  // the user has an active session at the root app with the same IdP.
+  useEffect(() => {
+    if (cfAccessRedirectChecked) return;
+    let cancelled = false;
+    void checkCfAccessLoginEnabled().then((enabled) => {
+      if (cancelled) return;
+      if (enabled) {
+        const nextParam = safeNext === '/' ? '' : `?next=${encodeURIComponent(safeNext)}`;
+        window.location.assign(`/api/v1/auth/cf-access-login${nextParam}`);
+        return;
+      }
+      setCfAccessRedirectChecked(true);
+    });
+    return () => { cancelled = true; };
+  }, [cfAccessRedirectChecked, safeNext]);
 
   const handleLogin = async (values: { email: string; password: string }) => {
     setLoading(true);
@@ -51,7 +107,8 @@ export default function LoginPage() {
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      await navigateTo(result.requiresSetup ? '/setup' : '/');
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
       return;
     }
 
@@ -75,7 +132,8 @@ export default function LoginPage() {
     if (result.user && result.tokens) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      await navigateTo(result.requiresSetup ? '/setup' : '/');
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
       return;
     }
 
@@ -99,6 +157,12 @@ export default function LoginPage() {
     setSmsSending(false);
   };
 
+  // While the CF Access config check is in flight, render an empty placeholder
+  // so the user doesn't see the password form flash before a redirect kicks in.
+  if (!cfAccessRedirectChecked) {
+    return <div data-testid="login-cf-access-check" className="min-h-[160px]" />;
+  }
+
   if (mfaRequired) {
     return (
       <div>
@@ -121,10 +185,10 @@ export default function LoginPage() {
   }
 
   return (
-    <div>
+    <div data-testid="login-page">
       <div className="mb-8">
         <p className="text-sm font-medium text-muted-foreground">Welcome back</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight">Sign in to Breeze</h1>
+        <h1 data-testid="login-heading" className="mt-1 text-2xl font-bold tracking-tight">Sign in to Breeze</h1>
       </div>
 
       {registrationNotice && (
@@ -137,6 +201,7 @@ export default function LoginPage() {
         errorMessage={error}
         loading={loading}
       />
+      <McpUrlCard variant="compact" requireOAuth className="mt-8" />
     </div>
   );
 }

@@ -28,6 +28,7 @@ import {
   getS1MetricsSnapshot,
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
+import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 
 export {
   recordBackupCommandTimeout,
@@ -240,6 +241,32 @@ const s1ActionPollTransitionsTotal = new Counter({
   registers: [register]
 });
 
+// Anomaly-detection signals (launch-readiness CRITICAL #5). The `tenant` label
+// carries a partner identifier so a single noisy/attacked partner doesn't mask
+// the rest of the fleet, but it is redacted in production by default (same policy
+// as `org_id` on http_requests_total) so Prometheus never persists a tenant
+// identifier unless the operator opts in via METRICS_INCLUDE_ORG_ID.
+const failedLoginsTotal = new Counter({
+  name: 'breeze_failed_logins_total',
+  help: 'Failed login attempts by reason and tenant',
+  labelNames: ['reason', 'tenant'] as const,
+  registers: [register]
+});
+
+const agentEnrollmentsTotal = new Counter({
+  name: 'breeze_agent_enrollments_total',
+  help: 'Agent enrollment attempts by result and tenant (partner)',
+  labelNames: ['result', 'tenant'] as const,
+  registers: [register]
+});
+
+const commandsDispatchedTotal = new Counter({
+  name: 'breeze_commands_dispatched_total',
+  help: 'Commands dispatched to agents by type, actor kind, and tenant',
+  labelNames: ['type', 'actor', 'tenant'] as const,
+  registers: [register]
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -274,6 +301,9 @@ softwareRemediationDecisionsTotal.labels('queued').inc(0);
 s1SyncRunsTotal.labels('sync-integration', 'success').inc(0);
 s1ActionDispatchTotal.labels('isolate', 'accepted').inc(0);
 s1ActionPollTransitionsTotal.labels('queued').inc(0);
+failedLoginsTotal.labels('invalid_password', 'redacted').inc(0);
+agentEnrollmentsTotal.labels('success', 'redacted').inc(0);
+commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
 nodejsVersionInfoGauge.labels(process.version).set(1);
 
 interface CounterValue {
@@ -387,6 +417,35 @@ export function updateBusinessMetrics(metrics: {
 export function recordCommand(type = 'script'): void {
   commandsTotalCounter.labels(type).inc();
   commandsTotal += 1;
+}
+
+// Resolve the `tenant` label for anomaly counters. Redacted in production by
+// default (METRICS_INCLUDE_ORG_ID) so a partner identifier never lands in
+// Prometheus unless explicitly enabled. `null`/`undefined` becomes 'unknown'
+// so an unattributable event is still counted rather than dropped.
+function tenantLabel(id: string | null | undefined): string {
+  if (!METRICS_INCLUDE_ORG_ID) return 'redacted';
+  const trimmed = id?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : 'unknown';
+}
+
+function recordFailedLoginMetric(reason: string, tenantId?: string | null): void {
+  failedLoginsTotal.labels(normalizeMetricLabel(reason, 'unknown'), tenantLabel(tenantId)).inc();
+}
+
+function recordAgentEnrollmentMetric(
+  result: 'success' | 'denied' | 'error',
+  partnerId?: string | null
+): void {
+  agentEnrollmentsTotal.labels(result, tenantLabel(partnerId)).inc();
+}
+
+function recordCommandDispatchMetric(
+  type: string,
+  actor: 'user' | 'system',
+  orgId?: string | null
+): void {
+  commandsDispatchedTotal.labels(normalizeMetricLabel(type, 'unknown'), actor, tenantLabel(orgId)).inc();
 }
 
 export function recordAlert(severity = 'info'): void {
@@ -554,6 +613,12 @@ setBackupMetricsRecorder({
   onLowReadinessDevices: setLowReadinessDevicesMetric,
 });
 
+setAnomalyMetricsRecorder({
+  onFailedLogin: recordFailedLoginMetric,
+  onAgentEnrollment: recordAgentEnrollmentMetric,
+  onCommandDispatch: recordCommandDispatchMetric,
+});
+
 async function refreshBackupOperationalGauges(): Promise<void> {
   try {
     const [row] = await db
@@ -602,14 +667,18 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     let total = 0;
     let online = 0;
     let offline = 0;
+    let pending = 0;
     for (const row of statusCounts) {
       const n = Number(row.count);
       total += n;
       if (row.status === 'online') online = n;
       if (row.status === 'offline' || row.status === 'maintenance') offline += n;
+      if (row.status === 'pending') pending = n;
     }
 
-    const uptime = total > 0 ? Math.round((online / total) * 1000) / 10 : 0;
+    // Exclude pending (admin pre-created, not yet enrolled) from uptime denominator
+    const enrolledTotal = total - pending;
+    const uptime = enrolledTotal > 0 ? Math.round((online / enrolledTotal) * 1000) / 10 : 0;
 
     const activeSessionCondition = orgCondition
       ? and(eq(remoteSessions.status, 'active'), orgCondition)
@@ -637,10 +706,11 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
         uptime,
         remoteSessions: activeSessions,
         sessions: totalSessions,
-        devices: { total, online, offline },
+        devices: { total, online, offline, pending },
         business_metrics: {
           devices_total: total,
-          devices_active: online
+          devices_active: online,
+          devices_pending: pending
         }
       }
     });

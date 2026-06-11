@@ -19,7 +19,7 @@ import {
   type PatchRingResolution,
 } from '../../services/configPolicyPatching';
 import { enqueuePatchJob } from '../../jobs/patchJobExecutor';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 
 export const patchJobRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -114,12 +114,22 @@ patchJobRoutes.post(
     const inaccessibleDeviceIds = targetDevices
       .filter((d) => !auth.canAccessOrg(d.orgId))
       .map((d) => d.id);
+    const crossOrgDeviceIds = accessibleDevices
+      .filter((d) => d.orgId !== policy.orgId)
+      .map((d) => d.id);
 
     if (accessibleDevices.length === 0) {
       return c.json({
         error: 'No accessible devices found for patch job',
         skipped: { missingDeviceIds, inaccessibleDeviceIds },
       }, 404);
+    }
+
+    if (crossOrgDeviceIds.length > 0) {
+      return c.json({
+        error: 'Configuration policy patch jobs can only target devices in the policy organization',
+        skipped: { missingDeviceIds, inaccessibleDeviceIds, crossOrgDeviceIds },
+      }, 403);
     }
 
     const maintenanceSuppressedDeviceIds: string[] = [];
@@ -297,7 +307,7 @@ patchJobRoutes.get(
     }
 
     const [device] = await db
-      .select({ orgId: devices.orgId })
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1);
@@ -307,6 +317,14 @@ patchJobRoutes.get(
     }
     if (!auth.canAccessOrg(device.orgId)) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    // Site-scope gate: `requireConfigPolicyRead` populated permissions in
+    // context; enforce `allowedSiteIds` here since RLS does not defend the
+    // site axis. Mirrors the SP2 launch-readiness sweep (PR #864/#868).
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const policyLocal = await loadPolicyLocalPatchConfig(configPolicyId);

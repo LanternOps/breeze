@@ -9,10 +9,11 @@ import {
   deviceHardware,
   users
 } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requireScope, requirePermission } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
-import { checkRemoteAccess } from '../../services/remoteAccessPolicy';
+import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
+import { getTrustedClientIp, getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   createSessionSchema,
   listSessionsSchema,
@@ -33,18 +34,31 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
+import { revokeViewerSession } from '../../services/viewerTokenRevocation';
+import { normalizeRecordingUrl } from './recordingUrl';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 
 export const sessionRoutes = new Hono();
 
 const sessionIdParamSchema = z.object({ id: z.string().uuid() });
+const iceServersQuerySchema = z.object({ sessionId: z.string().uuid() });
+
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
 
 // DELETE /remote/sessions/stale - Cleanup stale sessions, optionally scoped to a device
 sessionRoutes.delete(
   '/sessions/stale',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.query('deviceId');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const activeStatuses: Array<'pending' | 'connecting' | 'active'> = ['pending', 'connecting', 'active'];
 
     const conditions: ReturnType<typeof eq>[] = [
@@ -53,11 +67,34 @@ sessionRoutes.delete(
 
     // Scope by device if specified
     if (deviceId) {
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      const device = await getDeviceWithOrgCheck(deviceId, auth, perms);
+      if (device === 'SITE_ACCESS_DENIED') {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       if (!device) {
         return c.json({ error: 'Device not found or access denied' }, 404);
       }
       conditions.push(eq(remoteSessions.deviceId, deviceId));
+    } else if (perms?.allowedSiteIds) {
+      // Site-scope is an app-layer-only authz axis; RLS does NOT defend it.
+      // Without a deviceId the org-only scoping below would disconnect ALL
+      // stale sessions in the org regardless of site, so narrow to devices in
+      // the caller's allowed sites. `allowedSiteIds` is only set for org-scope
+      // users, so `auth.orgId` is present here. Finding #1.
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, auth.orgId));
+      const allowedDeviceIds = orgDevices
+        .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
+        .map((d) => d.id);
+      if (allowedDeviceIds.length === 0) {
+        return c.json({ cleaned: 0, ids: [] });
+      }
+      conditions.push(inArray(remoteSessions.deviceId, allowedDeviceIds));
     }
 
     // Scope by org access
@@ -92,6 +129,8 @@ sessionRoutes.delete(
       .where(inArray(remoteSessions.id, scopedSessionIds))
       .returning({ id: remoteSessions.id });
 
+    await Promise.all(result.map((row) => revokeViewerSession(row.id)));
+
     return c.json({ cleaned: result.length, ids: result.map(r => r.id) });
   }
 );
@@ -106,7 +145,10 @@ sessionRoutes.post(
     const data = c.req.valid('json');
 
     // Verify device access
-    const device = await getDeviceWithOrgCheck(data.deviceId, auth);
+    const device = await getDeviceWithOrgCheck(data.deviceId, auth, c.get('permissions') as UserPermissions | undefined);
+    if (device === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -157,7 +199,7 @@ sessionRoutes.post(
     // hard-refresh may not fire the WS onClose, leaving stale rows that
     // block new connections or confuse the agent's session broker.
     try {
-      await db
+      const staleUpdate = db
         .update(remoteSessions)
         .set({ status: 'disconnected', endedAt: new Date() })
         .where(
@@ -166,7 +208,16 @@ sessionRoutes.post(
             eq(remoteSessions.type, data.type),
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
-        );
+        ) as unknown as Promise<unknown> & {
+          returning?: (fields: { id: typeof remoteSessions.id }) => Promise<Array<{ id: string }>>;
+        };
+
+      if (typeof staleUpdate.returning === 'function') {
+        const revoked = await staleUpdate.returning({ id: remoteSessions.id });
+        await Promise.all(revoked.map((row) => revokeViewerSession(row.id)));
+      } else {
+        await staleUpdate;
+      }
     } catch (err) {
       console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
     }
@@ -199,7 +250,7 @@ sessionRoutes.post(
         deviceHostname: device.hostname,
         type: data.type
       },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({
@@ -222,9 +273,12 @@ sessionRoutes.post(
 sessionRoutes.get(
   '/sessions',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listSessionsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -250,6 +304,23 @@ sessionRoutes.get(
 
     if (auth.scope !== 'system') {
       conditions.push(eq(remoteSessions.userId, auth.user.id));
+    }
+
+    if (perms?.allowedSiteIds) {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: { page, limit, total: 0 }
+        });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     // Additional filters
@@ -338,9 +409,12 @@ sessionRoutes.get(
 sessionRoutes.get(
   '/sessions/history',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', sessionHistorySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -367,6 +441,24 @@ sessionRoutes.get(
 
     if (auth.scope !== 'system') {
       conditions.push(eq(remoteSessions.userId, auth.user.id));
+    }
+
+    if (perms?.allowedSiteIds) {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: { page, limit, total: 0 },
+          stats: { totalSessions: 0, totalDurationSeconds: 0, avgDurationSeconds: 0 }
+        });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     // Additional filters
@@ -478,6 +570,8 @@ sessionRoutes.get(
 sessionRoutes.get(
   '/sessions/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -494,6 +588,16 @@ sessionRoutes.get(
     }
 
     const { session, device } = result;
+
+    // Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`);
+    // RLS does NOT defend it. `getSessionWithOrgCheck` only org-gates (unlike
+    // `getDeviceWithOrgCheck`), so re-enforce site scope here before returning
+    // webrtcOffer/answer/iceCandidates/recordingUrl. Fail closed on null siteId.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (!hasSessionOrTransferOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
@@ -566,7 +670,11 @@ sessionRoutes.post(
       const ticket = await createWsTicket({
         sessionId: session.id,
         sessionType: session.type,
-        userId: auth.user.id
+        userId: auth.user.id,
+        // Task 16: bind to issuer's trusted IP + UA so a stolen 60s
+        // ticket can't be redeemed from a different network position.
+        ip: getTrustedClientIp(c),
+        userAgent: c.req.header('user-agent') ?? '',
       });
       return c.json(ticket);
     } catch (error) {
@@ -625,8 +733,39 @@ sessionRoutes.post(
 sessionRoutes.get(
   '/ice-servers',
   requireScope('organization', 'partner', 'system'),
+  zValidator('query', iceServersQuerySchema),
   async (c) => {
-    return c.json({ iceServers: getIceServers() });
+    const auth = c.get('auth');
+    const { sessionId } = c.req.valid('query');
+
+    const result = await getSessionWithOrgCheck(sessionId, auth);
+    if (!result) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const { session } = result;
+    if (session.type !== 'desktop') {
+      return c.json({ error: 'ICE servers are only available for desktop sessions' }, 400);
+    }
+
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (!['pending', 'connecting', 'active', 'disconnected'].includes(session.status)) {
+      return c.json({
+        error: 'Cannot fetch ICE servers for session in current state',
+        status: session.status
+      }, 400);
+    }
+
+    return c.json({
+      iceServers: getIceServers({
+        sessionId: session.id,
+        userId: session.userId,
+        deviceId: session.deviceId,
+      })
+    });
   }
 );
 
@@ -634,6 +773,8 @@ sessionRoutes.get(
 sessionRoutes.post(
   '/sessions/:id/offer',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', sessionIdParamSchema),
   zValidator('json', webrtcOfferSchema),
   async (c) => {
@@ -647,12 +788,43 @@ sessionRoutes.post(
     }
 
     const { session, device } = result;
+
+    // Site-scope is an app-layer-only authz axis (`permissions.allowedSiteIds`);
+    // RLS does NOT defend it. `getSessionWithOrgCheck` only org-gates, unlike
+    // `getDeviceWithOrgCheck`, so re-enforce site scope here. A null device
+    // siteId is treated as denied for a site-restricted caller. Finding #2.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (!hasSessionOrTransferOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Allow offer in pending, connecting, active, or disconnected state (reconnect)
-    if (!['pending', 'connecting', 'active', 'disconnected'].includes(session.status)) {
+    // Re-enforce the remote-access policy at offer time, not just at session
+    // creation. Disabling the webrtcDesktop / remoteTools policy must stop a
+    // holder of an existing session from (re)starting a live stream — the
+    // creation-time check (POST /sessions) is otherwise the only gate and is
+    // bypassed by re-offering on an existing session id. Finding #1.
+    {
+      const capability = session.type === 'desktop' ? 'webrtcDesktop' as const : 'remoteTools' as const;
+      const policyCheck = await checkRemoteAccess(device.id, capability);
+      if (!policyCheck.allowed) {
+        return c.json({
+          error: policyCheck.reason,
+          code: 'REMOTE_ACCESS_POLICY_DENIED',
+          capability,
+          policyName: policyCheck.policyName,
+        }, 403);
+      }
+    }
+
+    // Never resurrect an ended session: a 'disconnected'/'failed' row must not
+    // be flipped back to connecting by a lingering offer/token — the client
+    // creates a fresh session to reconnect. Only genuine in-flight states are
+    // accepted. Finding #5.
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
       return c.json({
         error: 'Cannot submit offer for session in current state',
         status: session.status
@@ -665,7 +837,7 @@ sessionRoutes.post(
         webrtcOffer: data.offer,
         webrtcAnswer: null,
         status: 'connecting',
-        ...(session.status === 'disconnected' || session.status === 'active' ? { endedAt: null } : {}),
+        ...(session.status === 'active' ? { endedAt: null } : {}),
       })
       .where(eq(remoteSessions.id, sessionId))
       .returning();
@@ -680,7 +852,7 @@ sessionRoutes.post(
       auth.user.id,
       device.orgId,
       { sessionId, type: session.type },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     // Send start_desktop command to agent with the offer and ICE servers
@@ -709,10 +881,24 @@ sessionRoutes.post(
       }
     } catch { /* non-fatal — encoder auto-detects */ }
 
+    // Resolve the agent-enforced desktop policy (clipboard direction gates +
+    // idle / max-duration limits) and ship it in the start payload so the agent
+    // can enforce it locally — the viewer is untrusted. Findings #2 and #7.
+    const desktopPolicy = await resolveDesktopSessionPolicy(device.id);
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: `desk-start-${sessionId}`,
       type: 'start_desktop',
-      payload: { sessionId, offer: data.offer, iceServers: getIceServers(), ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}), ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}), ...(gpuVendor ? { gpuVendor } : {}) }
+      payload: {
+        sessionId,
+        offer: data.offer,
+        iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
+        clipboard: desktopPolicy.clipboard,
+        idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
+        maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
+        ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
+        ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
+        ...(gpuVendor ? { gpuVendor } : {})
+      }
     });
 
     if (!agentReachable) {
@@ -777,7 +963,7 @@ sessionRoutes.post(
       auth.user.id,
       device.orgId,
       { sessionId, type: session.type },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({
@@ -849,7 +1035,9 @@ sessionRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: sessionId } = c.req.valid('param');
-    const body = await c.req.json<{ bytesTransferred?: number; recordingUrl?: string }>().catch(() => ({}));
+    const body: { bytesTransferred?: number; recordingUrl?: string } = await c.req
+      .json<{ bytesTransferred?: number; recordingUrl?: string }>()
+      .catch(() => ({}));
 
     const result = await getSessionWithOrgCheck(sessionId, auth);
     if (!result) {
@@ -873,8 +1061,14 @@ sessionRoutes.post(
     const startedAt = session.startedAt || session.createdAt;
     const durationSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
 
-    // Type guard for body properties
-    const typedBody = body as { bytesTransferred?: number; recordingUrl?: string };
+    let recordingUrl: string | null;
+    try {
+      recordingUrl = normalizeRecordingUrl(body.recordingUrl, {
+        requestOrigin: new URL(c.req.url).origin,
+      });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid recordingUrl' }, 400);
+    }
 
     const [updated] = await db
       .update(remoteSessions)
@@ -882,14 +1076,35 @@ sessionRoutes.post(
         status: 'disconnected',
         endedAt,
         durationSeconds,
-        bytesTransferred: typedBody.bytesTransferred !== undefined ? BigInt(typedBody.bytesTransferred) : session.bytesTransferred,
-        recordingUrl: typedBody.recordingUrl || session.recordingUrl
+        bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
+        recordingUrl: recordingUrl ?? session.recordingUrl
       })
       .where(eq(remoteSessions.id, sessionId))
       .returning();
 
     if (!updated) {
       return c.json({ error: 'Failed to update session' }, 500);
+    }
+
+    // Revoke the viewer token immediately on End. Without this, a minted viewer
+    // token stays valid for its full lifetime (VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS
+    // in services/jwt.ts — not a hard-coded "2h" here so the two can't drift)
+    // and could be replayed to reconnect after the operator clicked End.
+    await revokeViewerSession(sessionId);
+
+    // Tell the agent to tear down the live stream. Revoking the viewer token
+    // only blocks NEW/reconnecting viewers and the legacy WS path; the WebRTC
+    // (Flow B) media + input + clipboard flow peer-to-peer to the agent's
+    // capture helper with the server out of the loop, so without an explicit
+    // stop the operator keeps screen + input + clipboard control after "End".
+    // The agent's handleStopDesktop tears down both the direct and the
+    // SYSTEM-helper sessions. Finding #2.
+    if (session.type === 'desktop' && device.agentId) {
+      sendCommandToAgent(device.agentId, {
+        id: `desk-stop-${sessionId}`,
+        type: 'stop_desktop',
+        payload: { sessionId },
+      });
     }
 
     // Log audit event
@@ -904,7 +1119,7 @@ sessionRoutes.post(
         type: session.type,
         durationSeconds
       },
-      c.req.header('X-Forwarded-For') || c.req.header('X-Real-IP')
+      getTrustedClientIpOrUndefined(c)
     );
 
     return c.json({

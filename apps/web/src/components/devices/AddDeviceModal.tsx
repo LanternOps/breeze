@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Download, Copy, Loader2, Check, Link } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { navigateTo } from '@/lib/navigation';
 
 function detectUserOS(): 'windows' | 'macos' | 'linux' {
@@ -12,6 +13,42 @@ function detectUserOS(): 'windows' | 'macos' | 'linux' {
   if (ua.includes('win')) return 'windows';
   if (ua.includes('mac')) return 'macos';
   return 'linux';
+}
+
+/**
+ * Pull a human-readable message out of an API error body. Handles three
+ * shapes: a plain `{ error: string }` / `{ message: string }`, and the
+ * @hono/zod-validator 400 shape `{ error: { issues: [{ message }] } }`
+ * (where `error` is a serialized ZodError, not a string). Without the
+ * last case, validation failures collapse to a bare status code and the
+ * server's specific message (e.g. the ttlMinutes/expiresAt conflict) is
+ * lost — see PR #739 review.
+ */
+function extractApiError(body: unknown): string {
+  if (!body || typeof body !== 'object') return '';
+  const b = body as { message?: unknown; error?: unknown };
+  if (typeof b.message === 'string' && b.message) return b.message;
+  if (typeof b.error === 'string' && b.error) return b.error;
+  const zodIssue = (b.error as { issues?: Array<{ message?: unknown }> } | undefined)
+    ?.issues?.[0]?.message;
+  if (typeof zodIssue === 'string' && zodIssue) return zodIssue;
+  return '';
+}
+
+/**
+ * Render a CLI onboarding token's expiry as friendly relative text (#1108).
+ * Falls back to the absolute local time for windows beyond a day so the copy
+ * never silently claims "24 hours" when the real TTL differs.
+ */
+function formatTokenExpiry(iso: string): string {
+  const expiresMs = new Date(iso).getTime();
+  if (!Number.isFinite(expiresMs)) return 'after a short period';
+  const diffMinutes = Math.round((expiresMs - Date.now()) / 60000);
+  if (diffMinutes <= 0) return 'shortly';
+  if (diffMinutes < 60) return `in about ${diffMinutes} minute${diffMinutes === 1 ? '' : 's'}`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 48) return `in about ${diffHours} hour${diffHours === 1 ? '' : 's'}`;
+  return `on ${new Date(expiresMs).toLocaleString()}`;
 }
 
 interface AddDeviceModalProps {
@@ -38,6 +75,15 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   );
   const [selectedSiteId, setSelectedSiteId] = useState('');
   const [deviceCount, setDeviceCount] = useState(1);
+  // Lifetime of the installer / shared link the admin distributes. Sent to
+  // the child-key mint routes (installer download + installer-link), where
+  // the server resolves it to a fresh absolute expiry measured from mint
+  // time — not the transient parent key. 24h is the product default (it
+  // happens to coincide with the server's CHILD_ENROLLMENT_KEY_TTL_MINUTES
+  // fallback, but is set explicitly here, not inherited). "Never expires"
+  // is intentionally omitted until the partner-level cap
+  // (maxEnrollmentLinkTtlMinutes) lands in a sibling PR.
+  const [ttlMinutes, setTtlMinutes] = useState<number>(1440);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string>();
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -55,6 +101,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
+  // #1108: how many machines this CLI token may enroll, and its real expiry,
+  // both reported by the server so the UI never advertises a stale single-use
+  // token as good for the whole fleet.
+  const [cliDeviceCount, setCliDeviceCount] = useState(1);
+  const [tokenMaxUsage, setTokenMaxUsage] = useState<number | null>(null);
+  const [tokenExpiresAt, setTokenExpiresAt] = useState<string | null>(null);
   const [selectedOS, setSelectedOS] = useState<'windows' | 'macos' | 'linux'>(userOS);
   const [sha256s, setSha256s] = useState<Record<string, string>>({});
 
@@ -91,26 +143,46 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       setDownloadError(undefined);
       setDownloadSuccess(false);
       setDeviceCount(1);
+      setTtlMinutes(1440);
       setCliInitialized(false);
       setOnboardingToken('');
       setTokenError(undefined);
+      setCliDeviceCount(1);
+      setTokenMaxUsage(null);
+      setTokenExpiresAt(null);
       setGeneratedLink('');
       setLinkError(undefined);
       setLinkCopied(false);
     }
   }, [isOpen]);
 
-  // Lazy-load CLI token when CLI tab is first opened
-  const initializeCli = useCallback(async () => {
-    if (cliInitialized) return;
+  // Guards against overlapping CLI token fetches (the auto-init effect racing a
+  // manual "Generate new token", or a fast double-click). A ref, not state, so
+  // the check is synchronous and never stale inside the useCallback. Without it
+  // two in-flight POSTs could resolve out of order and display a token whose
+  // real maxUsage disagrees with the UI — the exact defect #1108 fixes.
+  const cliFetchInFlight = useRef(false);
+
+  // Fetch a CLI onboarding token for `count` machines (#1108). The once-per-open
+  // gating lives in the auto-init effect; the "Generate new token" button and
+  // error-retry call this directly to re-mint, so it only self-guards against
+  // concurrent runs rather than against being called again.
+  const initializeCli = useCallback(async (count: number) => {
+    if (cliFetchInFlight.current) return;
+    cliFetchInFlight.current = true;
     setCliInitialized(true);
     setTokenLoading(true);
     setOnboardingToken('');
     setEnrollmentSecret('');
     setTokenError(undefined);
+    setTokenMaxUsage(null);
+    setTokenExpiresAt(null);
 
     try {
-      const response = await fetchWithAuth('/devices/onboarding-token', { method: 'POST' });
+      const response = await fetchWithAuth('/devices/onboarding-token', {
+        method: 'POST',
+        body: JSON.stringify({ count }),
+      });
 
       if (!response.ok) {
         if (response.status === 401) {
@@ -143,6 +215,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
         return;
       }
       setOnboardingToken(data.token);
+      if (typeof data.maxUsage === 'number') {
+        setTokenMaxUsage(data.maxUsage);
+      }
+      if (typeof data.expiresAt === 'string') {
+        setTokenExpiresAt(data.expiresAt);
+      }
       if (data.enrollmentSecret) {
         setEnrollmentSecret(data.enrollmentSecret);
       }
@@ -152,8 +230,16 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       );
     } finally {
       setTokenLoading(false);
+      cliFetchInFlight.current = false;
     }
-  }, [cliInitialized]);
+  }, []);
+
+  // Re-mint the CLI token, e.g. after the operator bumps the device count or
+  // wants a fresh one mid-session (#1108).
+  const regenerateCliToken = useCallback((count: number) => {
+    setTokenCopied(false);
+    void initializeCli(count);
+  }, [initializeCli]);
 
   // Exchange a raw enrollment key token for a short-lived one-time handle, then
   // navigate to the public-download URL. This keeps the raw token out of browser
@@ -169,11 +255,17 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
     window.location.href = `/api/v1/enrollment-keys/public-download/${platform}?h=${encodeURIComponent(handle)}`;
   }
 
+  // Auto-load the CLI token whenever the CLI tab is showing and we haven't
+  // minted one yet. This single effect covers both an explicit tab click and
+  // the Linux default where the CLI tab is already active on open (#1108).
+  useEffect(() => {
+    if (isOpen && activeTab === 'cli' && !cliInitialized) {
+      void initializeCli(cliDeviceCount);
+    }
+  }, [isOpen, activeTab, cliInitialized, cliDeviceCount, initializeCli]);
+
   const handleTabChange = (tab: 'installer' | 'cli') => {
     setActiveTab(tab);
-    if (tab === 'cli') {
-      void initializeCli();
-    }
   };
 
   // --- Installer download ---
@@ -199,7 +291,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
       if (!keyRes.ok) {
         const body = await keyRes.json().catch(() => ({ error: 'Failed to create enrollment key' }));
-        const rawMessage = body.message || body.error || '';
+        const rawMessage = extractApiError(body);
         if (keyRes.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
           setDownloadError('MFA_REQUIRED');
         } else {
@@ -217,7 +309,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       let dlRes: Response;
       try {
         dlRes = await fetchWithAuth(
-          `/enrollment-keys/${parentKeyId}/installer/${selectedPlatform}?count=${deviceCount}`,
+          `/enrollment-keys/${parentKeyId}/installer/${selectedPlatform}?count=${deviceCount}&ttlMinutes=${ttlMinutes}`,
           { signal: dlController.signal },
         );
       } finally {
@@ -226,13 +318,14 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
       if (!dlRes.ok) {
         const body = await dlRes.json().catch(() => ({ error: 'Download failed' }));
-        setDownloadError(body.error || `Download failed (${dlRes.status})`);
+        setDownloadError(extractApiError(body) || `Download failed (${dlRes.status})`);
         return;
       }
 
       const blob = await dlRes.blob();
       const filename =
-        selectedPlatform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+        filenameFromContentDisposition(dlRes.headers.get('Content-Disposition'))
+        ?? fallbackInstallerFilename(selectedPlatform);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -276,7 +369,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
 
       if (!keyRes.ok) {
         const body = await keyRes.json().catch(() => ({ error: 'Failed to create enrollment key' }));
-        const rawMessage = body.message || body.error || '';
+        const rawMessage = extractApiError(body);
         if (keyRes.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
           setLinkError('MFA_REQUIRED');
         } else {
@@ -291,12 +384,12 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
       const linkRes = await fetchWithAuth(`/enrollment-keys/${keyData.id}/installer-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform: selectedPlatform, count: deviceCount }),
+        body: JSON.stringify({ platform: selectedPlatform, count: deviceCount, ttlMinutes }),
       });
 
       if (!linkRes.ok) {
         const body = await linkRes.json().catch(() => ({ error: 'Failed to generate link' }));
-        setLinkError(body.error || `Failed to generate link (${linkRes.status})`);
+        setLinkError(extractApiError(body) || `Failed to generate link (${linkRes.status})`);
         return;
       }
 
@@ -438,6 +531,33 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
                     How many devices will use this installer.
+                  </p>
+                </div>
+
+                {/* Link expiry */}
+                <div>
+                  <label htmlFor="link-ttl" className="block text-sm font-medium mb-1.5">
+                    Link expires in
+                  </label>
+                  <select
+                    id="link-ttl"
+                    value={ttlMinutes}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      if (Number.isFinite(n)) setTtlMinutes(n);
+                    }}
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    data-testid="link-ttl"
+                  >
+                    <option value={60}>1 hour</option>
+                    <option value={1440}>24 hours</option>
+                    <option value={10080}>7 days</option>
+                    <option value={43200}>30 days</option>
+                    <option value={129600}>90 days</option>
+                    <option value={525600}>1 year</option>
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    After this window, the downloaded installer and shared link stop accepting new enrollments. Devices already enrolled stay connected.
                   </p>
                 </div>
 
@@ -633,10 +753,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     {tokenError}
                     <button
                       type="button"
-                      onClick={() => {
-                        setCliInitialized(false);
-                        void initializeCli();
-                      }}
+                      onClick={() => { void initializeCli(cliDeviceCount); }}
                       className="ml-2 underline hover:no-underline"
                     >
                       Retry
@@ -646,6 +763,48 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                   <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
                     {onboardingToken || 'No token available'}
                   </code>
+                )}
+
+                {/* #1108: a single CLI command is single-use by default — make
+                    multi-machine installs explicit and let the operator re-mint. */}
+                {!tokenLoading && !tokenError && (
+                  <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t pt-3">
+                    <div className="flex items-end gap-2">
+                      <div>
+                        <label
+                          htmlFor="cli-device-count"
+                          className="block text-xs font-medium text-muted-foreground mb-1"
+                        >
+                          Number of devices
+                        </label>
+                        <input
+                          id="cli-device-count"
+                          type="number"
+                          min={1}
+                          max={1000}
+                          value={cliDeviceCount}
+                          onChange={(e) =>
+                            setCliDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))
+                          }
+                          className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => regenerateCliToken(cliDeviceCount)}
+                        className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                      >
+                        Generate new token
+                      </button>
+                    </div>
+                    {onboardingToken && (
+                      <p className="text-xs text-muted-foreground">
+                        {tokenMaxUsage === 1
+                          ? 'Single-use — valid for one device. Generate a new token for each additional machine.'
+                          : `Valid for ${tokenMaxUsage ?? cliDeviceCount} device enrollments.`}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -719,8 +878,10 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
               </p>
               <div className="rounded-md border border-blue-500/40 bg-blue-500/10 p-4 text-sm">
                 <p className="text-blue-600 text-xs">
-                  The installation token expires in 24 hours. Your device will appear in the list
-                  once the agent connects.
+                  {tokenExpiresAt
+                    ? `The installation token expires ${formatTokenExpiry(tokenExpiresAt)}.`
+                    : 'The installation token expires after a short period.'}{' '}
+                  Your device will appear in the list once the agent connects.
                 </p>
               </div>
             </div>
@@ -759,7 +920,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
               <p className="mt-1 font-mono text-[10px] leading-tight">
                 Linux SHA256: {sha256s['uninstall-linux.sh']}
                 <br />
-                Verify: <code>shasum -a 256 uninstall-linux.sh</code>
+                Verify: <code>sha256sum uninstall-linux.sh</code>
               </p>
             )}
           </div>

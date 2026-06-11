@@ -28,9 +28,10 @@ All configuration is done through environment variables, defined in your `.env.p
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `REDIS_URL` | `redis://localhost:6379` | | Redis connection URL. Include the password when `REDIS_PASSWORD` is set (e.g., `redis://:password@localhost:6379`) |
+| `REDIS_URL` | `redis://localhost:6379` | Yes (prod) | Redis connection URL. **Must carry a password in production** (e.g., `redis://:password@localhost:6379`) — the API refuses to boot if it doesn't. |
 | `REDIS_PORT` | `6379` | | Redis port |
-| `REDIS_PASSWORD` | — | Yes (prod) | Password for Redis authentication. Set in docker-compose and include in `REDIS_URL` |
+| `REDIS_PASSWORD` | — | Yes (prod) | Password for Redis authentication. Set in docker-compose and include in `REDIS_URL`. |
+| `REDIS_PASSWORD_FILE` | — | | Path to a file containing the Redis password (Docker secret style). Used in place of `REDIS_PASSWORD` when secrets are mounted as files. |
 
 ## Authentication & Security
 
@@ -55,11 +56,15 @@ All configuration is done through environment variables, defined in your `.env.p
 | `NODE_ENV` | `production` | | Environment mode |
 | `API_PORT` | `3001` | | API server port |
 | `WEB_PORT` | `4321` | | Web dashboard port |
-| `PUBLIC_API_URL` | — | | Full public API URL. Leave empty for Docker deployments — the web app uses relative URLs through Caddy. |
+| `PUBLIC_API_URL` | `https://${BREEZE_DOMAIN}` (bundled compose only) | | Public API URL used for generated agent installers and shareable links. The bundled `docker-compose.yml` derives this from `BREEZE_DOMAIN`. If you use a custom compose file, you must set `PUBLIC_API_URL` in `.env` **and** map it into the `api` service `environment:` block, or **Generate Link** / **Download Installer** will fail with `Server URL not configured`. |
+| `API_URL` | — | | Legacy fallback for `PUBLIC_API_URL`, honored only by enrollment, installer, and MCP-invite code paths. Auto-update, dev-push, and a few other routes read `PUBLIC_API_URL` only — prefer setting `PUBLIC_API_URL`. |
 | `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning |
 | `ACME_EMAIL` | — | Yes (prod) | Email for Let's Encrypt certificate notifications |
 | `CORS_ALLOWED_ORIGINS` | — | | Comma-separated allowed CORS origins |
-| `TRUST_PROXY_HEADERS` | `false` | | Set `true` when behind a reverse proxy |
+| `IS_HOSTED` | — | Yes (prod) | `true` for hosted SaaS edition, `false` for self-hosted. Must be set explicitly — the API refuses to boot otherwise. Controls signup gating, billing, and email-verification policy. |
+| `TRUST_PROXY_HEADERS` | — | Yes (prod) | `true` when behind a reverse proxy (Caddy, Cloudflare). Must be set explicitly in production. |
+| `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`). Required when proxy headers are trusted. |
+| `IP_ALLOWLIST_ENFORCEMENT_MODE` | `enforce` | | Partner dashboard IP allowlist mode. Use `off` only as a break-glass switch if an allowlist locks everyone out. The allowlist only enforces when a partner has entries configured and proxy trust is working through `TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`. |
 | `DASHBOARD_URL` | — | | URL for links in emails |
 | `PUBLIC_APP_URL` | — | | Public-facing app URL |
 
@@ -93,14 +98,15 @@ All configuration is done through environment variables, defined in your `.env.p
 
 ## Binary Distribution
 
-| Variable | Default | Description |
-|---|---|---|
-| `BINARY_SOURCE` | `local` | Download source: `local` (serve from disk, optional S3) or `github` (redirect to GitHub Releases) |
-| `AGENT_BINARY_DIR` | `./agent/bin` | Local directory containing agent binaries |
-| `VIEWER_BINARY_DIR` | `./viewer/bin` | Local directory containing viewer installers |
-| `HELPER_BINARY_DIR` | `/data/binaries/helper` | Local directory containing helper binaries |
-| `BINARY_VERSION_FILE` | — | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
-| `BINARY_VERSION` | — | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `BINARY_SOURCE` | `local` | | Download source: `local` (serve from disk, optional S3) or `github` (redirect to GitHub Releases) |
+| `AGENT_BINARY_DIR` | `./agent/bin` | | Local directory containing agent binaries |
+| `VIEWER_BINARY_DIR` | `./viewer/bin` | | Local directory containing viewer installers |
+| `HELPER_BINARY_DIR` | `/data/binaries/helper` | | Local directory containing helper binaries |
+| `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
+| `BINARY_VERSION` | — | | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
+| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
 
 See [Binary Distribution](/deploy/binaries/) for details on local vs GitHub mode and S3 offloading.
 
@@ -155,19 +161,32 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 
 ## Sentry
 
+Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.
+
 | Variable | Default | Description |
 |---|---|---|
-| `SENTRY_DSN` | — | Sentry DSN for error tracking |
+| `SENTRY_DSN` | — | API Sentry DSN. Leave blank to disable server-side error tracking. |
 | `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag |
 | `SENTRY_RELEASE` | — | Sentry release tag (e.g. git SHA) |
 | `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Sentry performance trace sample rate (0.0-1.0) |
+| `PUBLIC_SENTRY_DSN_WEB` | — | Web Sentry DSN. Leave blank to disable browser error tracking and on-error session replay. Inlined into the web bundle at build time. |
+| `SENTRY_AUTH_TOKEN` | — | Sentry auth token used during the web build to upload source maps. If unset, source map upload is skipped and the build still succeeds. |
 
 ## Rate Limiting
+
+Two rate-limit tiers protect the API. The generic per-user limit covers logged-in dashboard usage; the per-org agent limit caps how much traffic a single tenant's fleet can generate, even with thousands of agents.
 
 | Variable | Default | Description |
 |---|---|---|
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Sliding window duration (ms) |
 | `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window |
+| `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | Per-organization sliding-window rate limit on agent-authenticated endpoints. Returns `429` with `Retry-After: 60` when exceeded. Sized for ~5 active agents per org; raise for MSPs with very large fleets. |
+
+## Database
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_POOL_MAX` | `30` | Maximum postgres-js connection pool size. Tune up if you see cascading 504s during heartbeat storms; confirm Postgres `max_connections` has headroom (default 100 is fine for a single API replica). |
 
 ## File Transfer & Remote Sessions
 
@@ -212,6 +231,15 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 <Aside>
   mTLS is fully optional. When these variables are unset, Breeze operates normally without mutual TLS.
 </Aside>
+
+## Cloudflare Access JWT trust
+
+| Variable | Default | Description |
+|---|---|---|
+| `CF_ACCESS_TRUST_ENABLED` | `false` | Set `true` to short-circuit `POST /auth/login` when a valid `Cf-Access-Jwt-Assertion` header is present. Off by default. See [Cloudflare Access trust](/deploy/cloudflare-access-trust/). |
+| `CF_ACCESS_TEAM_DOMAIN` | — | Required when trust is enabled. Bare hostname of your Cloudflare team domain, e.g. `example.cloudflareaccess.com`. No scheme. |
+| `CF_ACCESS_AUD` | — | Required when trust is enabled. AUD tag for the Cloudflare Access application protecting Breeze. |
+| `CF_ACCESS_TRUSTS_MFA` | `false` | Treat a valid CF Access JWT as MFA-satisfied for the minted Breeze session. Only enable if your CF Access policy actually requires step-up MFA. |
 
 ## Cloud-to-Cloud Backup (M365)
 

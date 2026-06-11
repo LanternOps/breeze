@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
@@ -28,6 +30,8 @@ const (
 	backoffFactor  = 2.0
 	jitterFactor   = 0.3
 )
+
+const capabilityTerminalOutputBase64 = "terminal_output_base64"
 
 var terminalOutputEnqueueTimeout = 5 * time.Second
 
@@ -64,6 +68,8 @@ type Client struct {
 	tlsConfigMu     sync.RWMutex
 	conn            *websocket.Conn
 	connMu          sync.RWMutex
+	capabilitiesMu  sync.RWMutex
+	terminalOutputBase64 bool
 	cmdHandler      CommandHandler
 	done            chan struct{}
 	sendChan        chan []byte
@@ -128,6 +134,7 @@ func (c *Client) closeCurrentConn(sendClose bool) {
 	}
 	_ = c.conn.Close()
 	c.conn = nil
+	c.resetConnectionCapabilities()
 }
 
 func (c *Client) currentTLSConfig() *tls.Config {
@@ -149,6 +156,8 @@ func (c *Client) ForceReconnect() {
 }
 
 func (c *Client) connect() error {
+	c.resetConnectionCapabilities()
+
 	wsURL, err := c.buildWSURL()
 	if err != nil {
 		return fmt.Errorf("failed to build WebSocket URL: %w", err)
@@ -258,6 +267,7 @@ func (c *Client) reconnectLoop() {
 }
 
 func (c *Client) readPump() {
+	defer observability.Recoverer("websocket.readPump")
 	c.connMu.RLock()
 	conn := c.conn
 	c.connMu.RUnlock()
@@ -303,7 +313,12 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		// Skip non-command messages (connected, ack, heartbeat_ack, error, etc.)
+		if msg.Type == "connected" {
+			c.handleConnectedMessage(message)
+			continue
+		}
+
+		// Skip non-command messages (ack, heartbeat_ack, error, etc.)
 		// Commands have both an ID and a type like "run_script", "list_processes", etc.
 		if msg.ID == "" {
 			// Server acknowledgments, errors, etc. - not commands
@@ -320,7 +335,44 @@ func (c *Client) readPump() {
 	}
 }
 
+func (c *Client) handleConnectedMessage(raw []byte) {
+	var msg struct {
+		Type         string   `json:"type"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.Warn("failed to parse connected message", "error", err.Error())
+		return
+	}
+
+	enabled := false
+	for _, capability := range msg.Capabilities {
+		if capability == capabilityTerminalOutputBase64 {
+			enabled = true
+			break
+		}
+	}
+	c.setTerminalOutputBase64(enabled)
+}
+
+func (c *Client) resetConnectionCapabilities() {
+	c.setTerminalOutputBase64(false)
+}
+
+func (c *Client) setTerminalOutputBase64(enabled bool) {
+	c.capabilitiesMu.Lock()
+	c.terminalOutputBase64 = enabled
+	c.capabilitiesMu.Unlock()
+}
+
+func (c *Client) terminalOutputBase64Enabled() bool {
+	c.capabilitiesMu.RLock()
+	defer c.capabilitiesMu.RUnlock()
+	return c.terminalOutputBase64
+}
+
 func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
+	defer observability.Recoverer("websocket.writePump")
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 	defer close(exited)
@@ -380,6 +432,7 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 }
 
 func (c *Client) processCommand(cmd Command) {
+	defer observability.Recoverer("websocket.processCommand")
 	log.Info("processing command", "commandId", cmd.ID, "commandType", cmd.Type)
 
 	result := c.cmdHandler(cmd)
@@ -548,12 +601,19 @@ func (c *Client) SendBackupProgress(commandID string, event any) error {
 	}
 }
 
-// SendTerminalOutput sends terminal output data to the server
+// SendTerminalOutput sends terminal output data to the server.
+// When the server advertises terminal_output_base64 in its connected handshake,
+// output is base64-encoded so non-UTF-8 console bytes are not corrupted by JSON.
 func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 	msg := map[string]any{
 		"type":      "terminal_output",
 		"sessionId": sessionId,
-		"data":      string(data),
+	}
+	if c.terminalOutputBase64Enabled() {
+		msg["data"] = base64.StdEncoding.EncodeToString(data)
+		msg["encoding"] = "base64"
+	} else {
+		msg["data"] = string(data)
 	}
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {

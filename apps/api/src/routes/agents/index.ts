@@ -18,26 +18,28 @@ import { reliabilityRoutes } from './reliability';
 import { changesRoutes } from './changes';
 import { peripheralRoutes } from './peripherals';
 import { tokenRoutes } from './token';
+import { elevationRequestsRoutes } from './elevationRequests';
 
 export const agentRoutes = new Hono();
 
-// Apply agent auth to all parameterized routes.
-// Skip for endpoints that handle their own authentication:
-// - /enroll, /renew-cert, /quarantined (special endpoints matched as /:id)
-// - /org/* (org settings, uses user JWT auth)
-// - /:id/approve, /:id/deny (admin endpoints, use user JWT auth)
+// Sub-paths under /:id/* that handle their own (user-JWT) auth and skip agent-token auth.
+export const AGENT_AUTH_SKIP_ID_SEGMENTS = new Set([
+  'enroll', 'renew-cert', 'quarantined', 'org', 'download',
+]);
+// Routes of the exact shape /:id/<action> that use user JWT auth.
+export const AGENT_AUTH_SKIP_ACTIONS = new Set(['approve', 'deny']);
+
+export function shouldSkipAgentAuth(path: string, id: string): boolean {
+  if (AGENT_AUTH_SKIP_ID_SEGMENTS.has(id)) return true;
+  const segments = path.split('/').filter(Boolean);
+  const last = segments[segments.length - 1] ?? '';
+  const secondLast = segments[segments.length - 2] ?? '';
+  // Only the EXACT shape .../<id>/<action> skips — never a deeper nested path.
+  return secondLast === id && AGENT_AUTH_SKIP_ACTIONS.has(last);
+}
+
 agentRoutes.use('/:id/*', async (c, next) => {
-  const id = c.req.param('id');
-  if (id === 'enroll' || id === 'renew-cert' || id === 'quarantined' || id === 'org' || id === 'download') {
-    return next();
-  }
-  // Check if the sub-path is an admin endpoint that uses user JWT auth.
-  // Use a precise regex to only match /:id/approve or /:id/deny at the end
-  // of the path, avoiding false positives from substrings.
-  const path = c.req.path;
-  if (/\/[^/]+\/(approve|deny)$/.test(path)) {
-    return next();
-  }
+  if (shouldSkipAgentAuth(c.req.path, c.req.param('id') ?? '')) return next();
   return agentAuthMiddleware(c, next);
 });
 
@@ -66,3 +68,4 @@ agentRoutes.route('/', bootPerformanceRoutes);
 agentRoutes.route('/', reliabilityRoutes);
 agentRoutes.route('/', changesRoutes);
 agentRoutes.route('/', peripheralRoutes);
+agentRoutes.route('/', elevationRequestsRoutes);

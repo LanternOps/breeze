@@ -13,12 +13,12 @@ import (
 )
 
 type wscProductRaw struct {
-	DisplayName             string `json:"displayName"`
-	ProductState            any    `json:"productState"`
-	PathToSignedProductExe  string `json:"pathToSignedProductExe"`
+	DisplayName              string `json:"displayName"`
+	ProductState             any    `json:"productState"`
+	PathToSignedProductExe   string `json:"pathToSignedProductExe"`
 	PathToSignedReportingExe string `json:"pathToSignedReportingExe"`
-	Timestamp               string `json:"timestamp"`
-	InstanceGUID            string `json:"instanceGuid"`
+	Timestamp                string `json:"timestamp"`
+	InstanceGUID             string `json:"instanceGuid"`
 }
 
 // GetWindowsSecurityCenterProducts returns AV providers from root/SecurityCenter2.

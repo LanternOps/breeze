@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"golang.org/x/sys/unix"
 )
 
 // isWindowsService reports whether the process is running as a system service.
@@ -82,7 +83,7 @@ func linuxHasGraphicalSession() bool {
 // redirectStderr points fd 2 at the given file so that Go runtime panics
 // are captured in the log file.
 func redirectStderr(f *os.File) {
-	syscall.Dup2(int(f.Fd()), 2)
+	unix.Dup2(int(f.Fd()), 2)
 }
 
 // runAsService runs the agent as a system daemon on Unix (launchd / systemd).

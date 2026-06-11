@@ -29,7 +29,7 @@ type HelperAvailableFunc func() bool
 
 // WingetProvider integrates with Windows Package Manager (winget) via user-context IPC.
 type WingetProvider struct {
-	exec           UserExecFunc
+	exec            UserExecFunc
 	helperAvailable HelperAvailableFunc
 }
 

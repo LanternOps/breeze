@@ -55,6 +55,12 @@ import { registerDocsTools } from './aiToolsDocs';
 import { registerRemoteTools } from './aiToolsRemote';
 import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 import { registerUITools } from './aiToolsUI';
+import { registerTicketingTools } from './aiToolsTicketing';
+// M365 helpdesk tools are session-aware (handler signature includes a sessionId)
+// so they are NOT registered in the `aiTools` execution registry — they run via
+// makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
+// getToolTier so checkGuardrails can gate them; import the tier table for fallback.
+import { m365ToolTiers } from './aiToolsM365';
 
 // ============================================
 // Shared Types
@@ -66,6 +72,16 @@ export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
   handler: (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+  /**
+   * Names of the tool's input properties that carry a device id (each a string
+   * or string[]). When set, the central dispatch gates every supplied id
+   * through the org+site `verifyDeviceAccess` BEFORE the handler runs — so a
+   * tool author can no longer forget the per-device tenant check (the root
+   * cause of the cross-org incident-tool bug). Tools that resolve the device
+   * indirectly (via a VM/snapshot/alert record) or return a device LIST are
+   * NOT covered by this and must still narrow results themselves.
+   */
+  deviceArgs?: readonly string[];
 }
 
 // ============================================
@@ -77,13 +93,63 @@ export async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  // Helper device lock (finding A, defense-in-depth): a Helper context may only
+  // ever resolve its own device. Return before any DB access.
+  if (auth.helperDeviceId && deviceId !== auth.helperDeviceId) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+  // Site axis: deny devices outside the caller's site allowlist (no-op when unrestricted).
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { error: 'Device not found or access denied' };
+  }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
+}
+
+/** Decision returned by {@link enforceDeviceArgs}: allow, or deny with a reason.
+ *  The caller (`executeTool`) owns serialization to the wire format. */
+export type DeviceGateResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Central declarative device-access gate. For each input property a tool names
+ * in `deviceArgs`, runs the org+site `verifyDeviceAccess` check on every id it
+ * carries (string or string[]). Returns `{ ok: false }` on the first denial,
+ * else `{ ok: true }`.
+ *
+ * Fail-closed: a tool with no `deviceArgs`, or an optional arg the caller did
+ * not supply, is allowed (nothing to gate); but a declared arg that IS present
+ * must be a non-empty string id (or array of them) — anything else is DENIED
+ * rather than skipped, so the gate does not depend on an upstream validator it
+ * cannot see. For a truly unrestricted caller `verifyDeviceAccess` returns the
+ * row, so the gate degrades to a plain existence check. This is the structural
+ * backstop that makes the per-handler check impossible to forget — see
+ * `executeTool`.
+ */
+export async function enforceDeviceArgs(
+  tool: Pick<AiTool, 'deviceArgs'>,
+  input: Record<string, unknown>,
+  auth: AuthContext
+): Promise<DeviceGateResult> {
+  if (!tool.deviceArgs || tool.deviceArgs.length === 0) return { ok: true };
+  const denied: DeviceGateResult = { ok: false, error: 'Device not found or access denied' };
+  for (const argName of tool.deviceArgs) {
+    const raw = input[argName];
+    if (raw == null) continue; // optional arg not supplied — nothing to gate
+    const ids = Array.isArray(raw) ? raw : [raw];
+    for (const id of ids) {
+      // A declared device arg that is present must be a non-empty string.
+      // Fail closed on anything else instead of trusting upstream validation.
+      if (typeof id !== 'string' || id.length === 0) return denied;
+      const access = await verifyDeviceAccess(id, auth);
+      if ('error' in access) return { ok: false, error: access.error };
+    }
+  }
+  return { ok: true };
 }
 
 export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
@@ -160,6 +226,7 @@ registerCisBenchmarkTools(aiTools);
 registerComplianceTools(aiTools);
 registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
+registerTicketingTools(aiTools);
 registerIncidentTools(aiTools);
 registerPerformanceTools(aiTools);
 registerUserRiskTools(aiTools);
@@ -181,7 +248,58 @@ export function getToolDefinitions(): Anthropic.Tool[] {
 }
 
 export function getToolTier(toolName: string): AiToolTier | undefined {
-  return aiTools.get(toolName)?.tier;
+  return aiTools.get(toolName)?.tier ?? m365ToolTiers[toolName];
+}
+
+/**
+ * Helper device-scoping (security finding A, Phase 0).
+ * Maps each tool the Breeze Helper may run to the input field naming its
+ * target device. A tool absent from this map is org-wide and is DENIED under
+ * a Helper context. Every tool in helperToolFilter's whitelists must have an
+ * entry here (pinned by helperToolFilter.test.ts); mutating tools (tier>=2)
+ * are additionally PAM-governed at the preToolUse gate (Phase 1).
+ */
+export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
+  // Read-only (Phase 0 `basic` set).
+  get_device_details: 'deviceId',
+  analyze_metrics: 'deviceId',
+  analyze_disk_usage: 'deviceId',
+  get_cis_device_report: 'deviceId',
+  get_security_posture: 'deviceId',
+  take_screenshot: 'deviceId',
+  analyze_screen: 'deviceId',
+  search_logs: 'deviceIds',
+  // Device-pinned safe actions (`standard`, Phase 1 governed).
+  get_active_users: 'deviceId',
+  get_user_experience_metrics: 'deviceId',
+  manage_alerts: 'deviceId',
+  manage_services: 'deviceId',
+  disk_cleanup: 'deviceId',
+  file_operations: 'deviceId',
+  // Device-pinned destructive tools (`extended`, Phase 1 governed).
+  computer_control: 'deviceId',
+  execute_command: 'deviceId',
+  security_scan: 'deviceId',
+  s1_isolate_device: 'deviceId',
+  network_discovery: 'deviceId',
+  apply_cis_remediation: 'deviceId',
+};
+
+/**
+ * Force a Helper tool call onto the Helper's own device, or deny it.
+ * Pure — the caller (executeTool) applies the result.
+ */
+export function applyHelperDeviceScope(
+  toolName: string,
+  input: Record<string, unknown>,
+  helperDeviceId: string
+): { input: Record<string, unknown> } | { error: string } {
+  const field = HELPER_TOOL_SCOPING[toolName];
+  if (!field) {
+    return { error: `Tool '${toolName}' is not available in the Helper context` };
+  }
+  const value = field === 'deviceIds' ? [helperDeviceId] : helperDeviceId;
+  return { input: { ...input, [field]: value } };
 }
 
 export async function executeTool(
@@ -192,11 +310,26 @@ export async function executeTool(
   const tool = aiTools.get(toolName);
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
 
+  // Helper device-scope gate (finding A): force the tool onto the Helper's own
+  // device, or deny org-wide tools, before anything else runs.
+  let effectiveInput = input;
+  if (auth.helperDeviceId) {
+    const scoped = applyHelperDeviceScope(toolName, input, auth.helperDeviceId);
+    if ('error' in scoped) return JSON.stringify({ error: scoped.error });
+    effectiveInput = scoped.input;
+  }
+
   // Validate input against Zod schema before execution
-  const validation = validateToolInput(toolName, input);
+  const validation = validateToolInput(toolName, effectiveInput);
   if (!validation.success) {
     return JSON.stringify({ error: validation.error });
   }
 
-  return tool.handler(input, auth);
+  // Structural device-tenant gate: any id named in `tool.deviceArgs` is
+  // org+site-checked before the handler runs, so a tool can't reach a device
+  // outside the caller's scope even if its handler forgets to check.
+  const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
+  if (!gate.ok) return JSON.stringify({ error: gate.error });
+
+  return tool.handler(effectiveInput, auth);
 }

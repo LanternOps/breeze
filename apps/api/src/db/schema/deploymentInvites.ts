@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp } from 'drizzle-orm/pg-core';
+import { foreignKey, pgTable, uuid, text, timestamp } from 'drizzle-orm/pg-core';
 import { partners, organizations, enrollmentKeys } from './orgs';
 import { apiKeys } from './apiKeys';
 import { devices } from './devices';
@@ -16,7 +16,13 @@ export const deploymentInvites = pgTable('deployment_invites', {
   enrolledAt: timestamp('enrolled_at', { withTimezone: true }),
   deviceId: uuid('device_id').references(() => devices.id),
   status: text('status').notNull().default('sent'),
-});
+}, (table) => ({
+  deploymentInvitesOrgPartnerFk: foreignKey({
+    columns: [table.orgId, table.partnerId],
+    foreignColumns: [organizations.id, organizations.partnerId],
+    name: 'deployment_invites_org_partner_fk',
+  }),
+}));
 
 export type DeploymentInvite = typeof deploymentInvites.$inferSelect;
 export type NewDeploymentInvite = typeof deploymentInvites.$inferInsert;

@@ -16,11 +16,12 @@ import {
   s1Threats,
   s1Actions,
 } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess, resolveWritableToolOrgId } from './aiTools';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
@@ -144,6 +145,7 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_s1_threats',
       description: 'Query SentinelOne threats with filters for severity, status, device, and free-text search.',
@@ -203,6 +205,24 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         );
       }
 
+      // Site axis (app-layer only; RLS does NOT enforce it). s1Threats has no
+      // per-row site_id (it left-joins devices), so narrow by the in-scope
+      // device-id set. A restricted caller with zero in-scope devices gets empty
+      // results. Intersects with the optional deviceId filter above.
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({
+            configured: true,
+            integrationId: integration.id,
+            total: 0,
+            threats: [],
+            scopeNote: SITE_SCOPE_EMPTY_NOTE
+          });
+        }
+        conditions.push(inArray(s1Threats.deviceId, allowed));
+      }
+
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
       const where = and(...conditions);
 
@@ -249,6 +269,7 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId', 'deviceIds'],
     definition: {
       name: 's1_isolate_device',
       description: 'Isolate or unisolate one or more devices via SentinelOne. This is a high-risk containment action.',

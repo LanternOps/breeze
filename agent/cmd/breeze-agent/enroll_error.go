@@ -35,9 +35,9 @@ func (c enrollErrCategory) exitCode() int { return int(c) + 10 }
 // implementations in init(); tests override with t.Cleanup-guarded
 // stubs in enroll_error_test.go.
 var (
-	osExit             = os.Exit
-	writeLastErrorFile = defaultWriteLastErrorFile
-	eventLogError      = eventlog.Error
+	osExit              = os.Exit
+	writeLastErrorFile  = defaultWriteLastErrorFile
+	eventLogError       = eventlog.Error
 	enrollLastErrorPath = defaultEnrollLastErrorPath
 )
 

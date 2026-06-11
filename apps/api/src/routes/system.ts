@@ -5,6 +5,9 @@ import { users } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { API_VERSION } from '../version';
 import { PERMISSIONS } from '../services/permissions';
+import { envFlag } from '../utils/envFlag';
+import { semverCompare } from '@breeze/shared';
+import { getLatestVersion } from '../services/latestVersion';
 
 export const systemRoutes = new Hono();
 const requireSystemConfigRead = requirePermission(
@@ -14,9 +17,17 @@ const requireSystemConfigRead = requirePermission(
 
 systemRoutes.use('*', authMiddleware);
 
-// GET /system/version — returns the current API version
 systemRoutes.get('/version', async (c) => {
-  return c.json({ version: API_VERSION });
+  const { latest, fetchedAt, source } = await getLatestVersion();
+  const cmp = latest ? semverCompare(API_VERSION, latest) : null;
+  const isStale = cmp !== null && cmp < 0;
+  return c.json({
+    version: API_VERSION,
+    latest,
+    isStale,
+    latestFetchedAt: fetchedAt.toISOString(),
+    latestSource: source,
+  });
 });
 
 // GET /system/config-status — read-only view of env-driven feature status (no secrets)
@@ -55,7 +66,7 @@ systemRoutes.get('/config-status', requireSystemConfigRead, async (c) => {
     security: {
       httpsForced: env.FORCE_HTTPS === 'true' || env.NODE_ENV === 'production',
       mfaEnabled: env.ENABLE_2FA !== 'false',
-      registrationEnabled: env.ENABLE_REGISTRATION !== 'false'
+      registrationEnabled: envFlag('ENABLE_REGISTRATION', false)
     },
     integrations: {
       sms: !!env.TWILIO_ACCOUNT_SID,

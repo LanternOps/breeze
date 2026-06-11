@@ -5,6 +5,7 @@ import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './Webh
 import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryHistory';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { extractApiError } from '@/lib/apiError';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -252,7 +253,7 @@ export default function WebhooksPage() {
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || 'Failed to save webhook');
+        throw new Error(extractApiError(data, 'Failed to save webhook'));
       }
 
       await fetchWebhooks();

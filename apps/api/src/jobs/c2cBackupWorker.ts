@@ -9,8 +9,13 @@
 
 import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { c2cBackupConfigs, c2cBackupJobs } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import {
+  c2cBackupConfigs,
+  c2cBackupItems,
+  c2cBackupJobs,
+  c2cConnections,
+} from '../db/schema';
+import { and, eq, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import {
   closeC2cQueue,
@@ -39,7 +44,7 @@ type C2cJobData = CheckSchedulesData | RunSyncData | ProcessRestoreData;
 
 // ── Worker ───────────────────────────────────────────────────────────────────
 
-function createC2cWorker(): Worker<C2cJobData> {
+export function createC2cWorker(): Worker<C2cJobData> {
   return new Worker<C2cJobData>(
     C2C_QUEUE,
     async (job: Job<C2cJobData>) => {
@@ -141,12 +146,29 @@ function isScheduleDue(schedule: C2cSchedule, now: Date): boolean {
 
 // ── run-sync ─────────────────────────────────────────────────────────────────
 
-async function processRunSync(data: RunSyncData): Promise<{ synced: boolean }> {
-  // Mark job as running
-  await db
+async function processRunSync(
+  data: RunSyncData
+): Promise<{ synced: boolean; skipped?: boolean; reason?: string }> {
+  const claimed = await db
     .update(c2cBackupJobs)
     .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-    .where(eq(c2cBackupJobs.id, data.jobId));
+    .where(
+      and(
+        eq(c2cBackupJobs.id, data.jobId),
+        eq(c2cBackupJobs.orgId, data.orgId),
+        eq(c2cBackupJobs.configId, data.configId),
+        eq(c2cBackupJobs.status, 'pending')
+      )
+    )
+    .returning({ id: c2cBackupJobs.id });
+
+  if (claimed.length === 0) {
+    return {
+      synced: false,
+      skipped: true,
+      reason: 'Job not pending for queued org/config',
+    };
+  }
 
   // TODO: In production, this would:
   // 1. Load the connection credentials from c2c_connections
@@ -165,7 +187,14 @@ async function processRunSync(data: RunSyncData): Promise<{ synced: boolean }> {
       errorLog,
       updatedAt: new Date(),
     })
-    .where(eq(c2cBackupJobs.id, data.jobId));
+    .where(
+      and(
+        eq(c2cBackupJobs.id, data.jobId),
+        eq(c2cBackupJobs.orgId, data.orgId),
+        eq(c2cBackupJobs.configId, data.configId),
+        eq(c2cBackupJobs.status, 'running')
+      )
+    );
 
   console.log(
     `[C2CBackupWorker] Sync job ${data.jobId} failed: ${errorLog}`
@@ -177,12 +206,92 @@ async function processRunSync(data: RunSyncData): Promise<{ synced: boolean }> {
 
 async function processRestore(
   data: ProcessRestoreData
-): Promise<{ restored: boolean }> {
-  // Mark job as running
-  await db
+): Promise<{ restored: boolean; skipped?: boolean; reason?: string }> {
+  const [pendingJob] = await db
+    .select({ id: c2cBackupJobs.id, configId: c2cBackupJobs.configId })
+    .from(c2cBackupJobs)
+    .where(
+      and(
+        eq(c2cBackupJobs.id, data.restoreJobId),
+        eq(c2cBackupJobs.orgId, data.orgId),
+        eq(c2cBackupJobs.status, 'pending')
+      )
+    )
+    .limit(1);
+
+  if (!pendingJob) {
+    return {
+      restored: false,
+      skipped: true,
+      reason: 'Restore job not pending for queued org',
+    };
+  }
+
+  if (data.targetConnectionId) {
+    const [targetConnection] = await db
+      .select({ id: c2cConnections.id })
+      .from(c2cConnections)
+      .where(
+        and(
+          eq(c2cConnections.id, data.targetConnectionId),
+          eq(c2cConnections.orgId, data.orgId)
+        )
+      )
+      .limit(1);
+
+    if (!targetConnection) {
+      return {
+        restored: false,
+        skipped: true,
+        reason: 'Target connection is not in queued org',
+      };
+    }
+  }
+
+  const requestedItemIds = [...new Set(data.itemIds)];
+  if (requestedItemIds.length === 0) {
+    return { restored: false, skipped: true, reason: 'No restore items queued' };
+  }
+
+  const [itemMatch] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(c2cBackupItems)
+    .where(
+      and(
+        eq(c2cBackupItems.orgId, data.orgId),
+        eq(c2cBackupItems.configId, pendingJob.configId),
+        sql`${c2cBackupItems.id} = ANY(${requestedItemIds}::uuid[])`
+      )
+    );
+
+  if ((itemMatch?.count ?? 0) !== requestedItemIds.length) {
+    return {
+      restored: false,
+      skipped: true,
+      reason: 'Queued restore items do not match restore job org/config',
+    };
+  }
+
+  const claimed = await db
     .update(c2cBackupJobs)
     .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-    .where(eq(c2cBackupJobs.id, data.restoreJobId));
+    .where(
+      and(
+        eq(c2cBackupJobs.id, data.restoreJobId),
+        eq(c2cBackupJobs.orgId, data.orgId),
+        eq(c2cBackupJobs.configId, pendingJob.configId),
+        eq(c2cBackupJobs.status, 'pending')
+      )
+    )
+    .returning({ id: c2cBackupJobs.id });
+
+  if (claimed.length === 0) {
+    return {
+      restored: false,
+      skipped: true,
+      reason: 'Restore job was already claimed',
+    };
+  }
 
   // TODO: In production, this would:
   // 1. Load items from c2c_backup_items by itemIds
@@ -196,11 +305,18 @@ async function processRestore(
     .set({
       status: 'failed',
       completedAt: new Date(),
-      itemsProcessed: data.itemIds.length,
+      itemsProcessed: requestedItemIds.length,
       errorLog,
       updatedAt: new Date(),
     })
-    .where(eq(c2cBackupJobs.id, data.restoreJobId));
+    .where(
+      and(
+        eq(c2cBackupJobs.id, data.restoreJobId),
+        eq(c2cBackupJobs.orgId, data.orgId),
+        eq(c2cBackupJobs.configId, pendingJob.configId),
+        eq(c2cBackupJobs.status, 'running')
+      )
+    );
 
   console.log(
     `[C2CBackupWorker] Restore job ${data.restoreJobId} failed: ${errorLog}`

@@ -8,6 +8,12 @@ export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'eleva
 export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']);
 export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy']);
 
+// Feature #3: severity-by-exit-code mapping. Keys are non-negative integer
+// strings (e.g. "0", "1"), values are AlertSeverity literals or null.
+// A null value for a given exit code means "no alert"; otherwise the listed
+// severity is used when a script execution finishes with that exit code.
+export type ScriptExitCodeSeverityMapping = Record<string, 'critical' | 'high' | 'medium' | 'low' | 'info' | null>;
+
 export const scripts = pgTable('scripts', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
@@ -22,9 +28,18 @@ export const scripts = pgTable('scripts', {
   runAs: scriptRunAsEnum('run_as').notNull().default('system'),
   isSystem: boolean('is_system').notNull().default(false),
   version: integer('version').notNull().default(1),
+  // NULL = legacy behavior (non-zero exit = error). When set, see
+  // ScriptExitCodeSeverityMapping above and deriveSeverityFromScript().
+  exitCodeSeverityMapping: jsonb('exit_code_severity_mapping').$type<ScriptExitCodeSeverityMapping>(),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  // Soft delete. Hard deletes fail with FK violations once a script has any
+  // execution history (script_executions / batches reference it), so deleting
+  // a script marks it here instead. Listing/lookup read paths filter
+  // `deletedAt IS NULL`; execution-history joins intentionally keep it so past
+  // runs still show the script name.
+  deletedAt: timestamp('deleted_at')
 });
 
 export const scriptCategories = pgTable('script_categories', {
@@ -112,6 +127,12 @@ export const scriptExecutions = pgTable('script_executions', {
 export const scriptExecutionBatches = pgTable('script_execution_batches', {
   id: uuid('id').primaryKey().defaultRandom(),
   scriptId: uuid('script_id').notNull().references(() => scripts.id),
+  // Denormalized tenant axis (set to the executing org at insert). Nullable
+  // only to allow backfill of legacy rows whose system-script parent has no
+  // org_id; new rows always carry it. Enables a direct org RLS policy instead
+  // of a nested-RLS join through `scripts` (which the system-script `is_system`
+  // carve-out could not satisfy under bound-parameter INSERTs).
+  orgId: uuid('org_id').references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
   parameters: jsonb('parameters'),
@@ -121,4 +142,6 @@ export const scriptExecutionBatches = pgTable('script_execution_batches', {
   status: executionStatusEnum('status').notNull().default('pending'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at')
-});
+}, (table) => ({
+  orgIdIdx: index('script_execution_batches_org_id_idx').on(table.orgId)
+}));

@@ -1,0 +1,80 @@
+---
+title: Error Tracking & Privacy
+description: Optional Sentry integration for the API and web app, what's collected, and how to disable.
+sidebar:
+  order: 6
+  label: Error Tracking
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Breeze RMM ships with **optional** Sentry integration on the API and web app. Both are off by default — leave the DSN env vars blank and nothing is collected, sent, or initialized.
+
+<Aside type="caution" title="Self-hosters">
+  No telemetry leaves your deployment unless you provide your own Sentry DSN. Breeze does not embed any default DSN.
+</Aside>
+
+## What gets sent
+
+### API (`SENTRY_DSN`)
+
+- Unhandled exceptions in Hono route handlers and OAuth flows
+- Tagged with HTTP method and path; user-agent header
+- No request bodies, query strings, cookies, or auth headers
+- See `apps/api/src/services/sentry.ts`
+
+### Web (`PUBLIC_SENTRY_DSN_WEB`)
+
+- Unhandled exceptions in React islands and SSR
+- **Session replays only on error** — `replaysOnErrorSampleRate: 1.0`, `replaysSessionSampleRate: 0`. The SDK buffers ~60s of activity in the browser and only uploads it when an error fires.
+- Replay defaults: `maskAllText: true`, `maskAllInputs: true`, `blockAllMedia: true`. Tenant data (hostnames, IPs, usernames, customer org names) rendered as text or in inputs is masked in the recording.
+- URLs are reduced to path-only (origin dropped to avoid leaking tenant subdomains) and have UUIDs and long hex IDs replaced with `:id` / `:hash` before send.
+- Cookies, request headers, query strings, request bodies, user emails/usernames/IPs are stripped in `beforeSend`. The scrub functions are wrapped in `try/catch` so a future shape change can't silently drop every event.
+
+<Aside type="note" title="Replay residual exposure">
+  Sentry Replay records the DOM. Text and inputs are masked, but DOM **attributes** (`data-*`, `aria-label`, `title`, `alt`) and CSS class/id selectors are not. If you encode tenant identifiers there, treat the replay store as sensitive even with masking.
+</Aside>
+- See `apps/web/sentry.client.config.ts` and `apps/web/sentry.server.config.ts`
+
+## Enabling
+
+Set in `.env`:
+
+```bash
+# API
+SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>
+SENTRY_ENVIRONMENT=production
+SENTRY_RELEASE=0.62.23
+SENTRY_TRACES_SAMPLE_RATE=0.1
+
+# Web (separate Sentry project recommended)
+PUBLIC_SENTRY_DSN_WEB=https://<key>@<org>.ingest.sentry.io/<project>
+```
+
+Restart the affected service. The DSN is read at process start (API) and at build time (web — `PUBLIC_*` vars are inlined into the bundle).
+
+### Optional: source maps upload
+
+For readable stack traces in the Sentry UI, upload source maps at web build time:
+
+```bash
+SENTRY_ORG=your-org
+SENTRY_PROJECT=breeze-web
+SENTRY_AUTH_TOKEN=sntrys_...
+```
+
+Without `SENTRY_AUTH_TOKEN`, source map upload is skipped and the build still succeeds.
+
+## Disabling
+
+Leave `SENTRY_DSN` and `PUBLIC_SENTRY_DSN_WEB` blank (or unset). The SDKs short-circuit at init and no events, replays, or breadcrumbs are sent.
+
+## Customizing scrubbing
+
+If you need stricter scrubbing — for example to drop additional URL paths or event types — extend the `beforeSend` hooks in:
+
+- `apps/api/src/services/sentry.ts` (server-side)
+- `apps/web/sentry.client.config.ts` (browser, includes Replay)
+- `apps/web/sentry.server.config.ts` (Astro SSR)
+
+These run on every event before it leaves the process.

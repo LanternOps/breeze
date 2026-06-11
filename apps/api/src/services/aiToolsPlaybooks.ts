@@ -30,6 +30,10 @@ async function verifyDeviceAccess(
   if (orgCond) conditions.push(orgCond);
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+  // Site axis: deny devices outside the caller's site allowlist (no-op when unrestricted).
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { error: 'Device not found or access denied' };
+  }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
 }
@@ -101,6 +105,7 @@ registerTool({
 
 registerTool({
   tier: 3,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'execute_playbook',
     description: 'Create a self-healing playbook execution record for a device. This creates the audit trail; execute steps manually and update status as you progress.',
@@ -242,6 +247,7 @@ registerTool({
 
 registerTool({
   tier: 1,
+  deviceArgs: ['deviceId'],
   definition: {
     name: 'get_playbook_history',
     description: 'View past playbook executions for auditing and trend analysis.',

@@ -2,6 +2,8 @@ import { createHmac, randomUUID } from 'crypto';
 import { getRedisConnection } from '../services/redis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
 import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
+import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
+import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
 import * as dbModule from '../db';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -103,13 +105,13 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
   // Prepare headers
   const headers: Record<string, string> = {
+    ...sanitizeOutboundHeaders(webhook.headers),
     'Content-Type': 'application/json',
     'User-Agent': 'Breeze-Webhooks/1.0',
     'X-Breeze-Delivery-Id': deliveryId,
     'X-Breeze-Event-Id': event.id,
     'X-Breeze-Event-Type': event.type,
-    'X-Breeze-Timestamp': timestamp.toString(),
-    ...webhook.headers
+    'X-Breeze-Timestamp': timestamp.toString()
   };
 
   // Add HMAC signature if secret is configured
@@ -129,7 +131,7 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
 
-    const response = await fetch(webhook.url, {
+    const response = await safeFetch(webhook.url, {
       method: 'POST',
       headers,
       body: payload,
@@ -160,7 +162,9 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
     errorMessage = `HTTP ${responseStatus}: ${responseBody?.slice(0, 500)}`;
   } catch (err) {
-    if (err instanceof Error) {
+    if (err instanceof SsrfBlockedError) {
+      errorMessage = `Unsafe webhook URL: ${err.message}`;
+    } else if (err instanceof Error) {
       if (err.name === 'AbortError') {
         errorMessage = `Timeout after ${WEBHOOK_TIMEOUT_MS}ms`;
       } else {
@@ -430,4 +434,4 @@ export async function initializeWebhookDelivery(
 }
 
 // Export signature generation for webhook verification endpoint
-export { generateSignature };
+export { deliverWebhook, generateSignature };

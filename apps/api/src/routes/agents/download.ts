@@ -72,11 +72,11 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       console.error(`[agent-download] Failed to read binary ${filename}:`, err);
       return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
     }
+    console.warn('[agent-download] Local binary missing', { filename });
     return c.json(
       {
         error: 'Binary not found',
-        message: `Agent binary "${filename}" is not available. Ensure the binary has been built and placed in the configured AGENT_BINARY_DIR (${binaryDir}).`,
-        hint: `Run "cd agent && GOOS=${os} GOARCH=${arch} make build" to build the binary.`,
+        message: `Agent binary "${filename}" is not available.`,
       },
       404
     );
@@ -128,7 +128,75 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
     return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
   }
 
-  return c.redirect(getGithubAgentPkgUrl(os, arch), 302);
+  const filename = `breeze-agent-darwin-${arch}.pkg`;
+
+  // GitHub redirect mode — no local packages needed
+  if (getBinarySource() === 'github') {
+    return c.redirect(getGithubAgentPkgUrl(os, arch), 302);
+  }
+
+  // Local mode: try S3 presigned redirect first (bandwidth offload)
+  if (isS3Configured()) {
+    try {
+      const url = await getPresignedUrl(`agent/${filename}`);
+      return c.redirect(url, 302);
+    } catch (err) {
+      const errName = (err as { name?: string }).name;
+      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
+      const level = isNotFound ? 'warn' : 'error';
+      console[level](`[pkg-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+    }
+  }
+
+  // Local mode: serve from disk
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const filePath = join(binaryDir, filename);
+
+  let fileStat: ReturnType<typeof statSync>;
+  let stream: ReturnType<typeof createReadStream>;
+  try {
+    fileStat = statSync(filePath);
+    stream = createReadStream(filePath);
+  } catch (err) {
+    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound) {
+      console.error(`[pkg-download] Failed to read package ${filename}:`, err);
+      return c.json({ error: 'Internal server error', message: 'Failed to read installer package' }, 500);
+    }
+    console.warn('[pkg-download] Local package missing', { filename });
+    return c.json(
+      {
+        error: 'Package not found',
+        message: `Installer package "${filename}" is not available.`,
+      },
+      404
+    );
+  }
+
+  const webStream = new ReadableStream({
+    start(controller) {
+      stream.on('data', (chunk: string | Buffer) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        controller.enqueue(new Uint8Array(bytes));
+      });
+      stream.on('end', () => { controller.close(); });
+      stream.on('error', (err) => {
+        console.error(`[pkg-download] Stream error while serving ${filename}:`, err);
+        controller.error(err);
+      });
+    },
+    cancel() { stream.destroy(); },
+  });
+
+  return new Response(webStream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': String(fileStat.size),
+      'Cache-Control': 'no-cache',
+    },
+  });
 });
 
 // ============================================
@@ -183,6 +251,7 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
       console.error(`[helper-download] Failed to read binary ${filename}:`, err);
       return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
     }
+    console.warn('[helper-download] Local binary missing', { filename });
     return c.json({
       error: 'Binary not found',
       message: `Helper binary "${filename}" is not available.`,
@@ -333,6 +402,7 @@ fi
 BINARY_NAME="breeze-agent"
 DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}"
 PKG_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}/pkg"
+VERSION_METADATA_URL="\${BREEZE_SERVER}/api/v1/agent-versions/latest?platform=\${OS}&arch=\${ARCH}&component=agent"
 
 info "Breeze RMM Agent Installer"
 info "  Server:       \$BREEZE_SERVER"
@@ -351,6 +421,38 @@ if ! command -v curl &>/dev/null; then
   fatal "curl is required but not installed. Install it and try again."
 fi
 
+sha256_file() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+    return
+  fi
+  if command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+    return
+  fi
+  fatal "sha256sum or shasum is required but not installed. Install one and try again."
+}
+
+extract_checksum() {
+  grep -oE '"checksum"[[:space:]]*:[[:space:]]*"[a-fA-F0-9]{64}"' "$1" | head -1 | sed -E 's/.*"([a-fA-F0-9]{64})".*/\\1/' | tr 'A-F' 'a-f'
+}
+
+verify_sha256() {
+  local file="$1"
+  local expected="$2"
+  local actual
+
+  if [[ ! "$expected" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    fatal "Release metadata did not include a valid SHA-256 checksum for \$OS/\$ARCH."
+  fi
+
+  actual="$(sha256_file "$file" | tr 'A-F' 'a-f')"
+  if [[ "$actual" != "\${expected,,}" ]]; then
+    rm -f "$file"
+    fatal "Checksum verification failed for downloaded agent binary. Expected \$expected, got \$actual."
+  fi
+}
+
 # ----- macOS: use .pkg installer -----
 if [[ "\$OS" == "darwin" ]]; then
   info "Downloading macOS installer package..."
@@ -368,6 +470,15 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
 
   success "Downloaded installer package ($(wc -c < "\$TMPPKG" | tr -d ' ') bytes)"
+
+  # Verify Apple notarization/signature before installing as root — the installer
+  # CLI does not enforce Gatekeeper on its own, so a tampered/MITM'd download
+  # would otherwise be installed with full privileges.
+  info "Verifying installer package signature..."
+  if ! spctl --assess --type install "\$TMPPKG" >/dev/null 2>&1; then
+    fatal "Installer package failed Gatekeeper notarization assessment. Refusing to install."
+  fi
+  success "Verified installer package notarization"
 
   info "Installing Breeze Agent..."
   installer -pkg "\$TMPPKG" -target /
@@ -395,8 +506,12 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
   success "Agent enrolled successfully"
 
-  # Restart the service so it picks up the new enrollment config
-  launchctl kickstart -k system/com.breeze.agent 2>/dev/null || true
+  # Restart the service so it picks up the new enrollment config. Surface a
+  # failure instead of swallowing it — otherwise an enrolled device that never
+  # starts looks like a success to the operator.
+  if ! launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+    warn "Could not restart the agent service automatically; it will start on next login or reboot."
+  fi
 
   echo ""
   success "Breeze agent installation complete!"
@@ -407,9 +522,24 @@ if [[ "\$OS" == "darwin" ]]; then
 fi
 
 # ----- Linux: download binary directly -----
+info "Fetching release integrity metadata..."
+METADATA_FILE="$(mktemp)"
+trap 'rm -f "\$METADATA_FILE"' EXIT
+
+METADATA_HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$METADATA_FILE" "\$VERSION_METADATA_URL" 2>/dev/null)" || true
+if [[ "\$METADATA_HTTP_CODE" != "200" ]]; then
+  fatal "Failed to fetch release integrity metadata (HTTP \$METADATA_HTTP_CODE). Refusing to install without a trusted checksum."
+fi
+
+EXPECTED_SHA256="$(extract_checksum "\$METADATA_FILE")"
+if [[ -z "\$EXPECTED_SHA256" ]]; then
+  fatal "Release integrity metadata did not include a valid checksum. Refusing to install."
+fi
+success "Release checksum metadata fetched"
+
 info "Downloading agent binary..."
 TMPFILE="$(mktemp)"
-trap 'rm -f "\$TMPFILE"' EXIT
+trap 'rm -f "\$TMPFILE" "\$METADATA_FILE"' EXIT
 
 HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$TMPFILE" "\$DOWNLOAD_URL" 2>/dev/null)" || true
 
@@ -422,6 +552,10 @@ if [[ ! -s "\$TMPFILE" ]]; then
 fi
 
 success "Downloaded agent binary ($(wc -c < "\$TMPFILE" | tr -d ' ') bytes)"
+
+info "Verifying agent binary checksum..."
+verify_sha256 "\$TMPFILE" "\$EXPECTED_SHA256"
+success "Verified agent binary checksum"
 
 # ----- Stop existing service before replacing binary (safe for upgrades) -----
 if command -v systemctl &>/dev/null && systemctl is-active --quiet breeze-agent 2>/dev/null; then

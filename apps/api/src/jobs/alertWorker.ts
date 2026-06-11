@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, deviceMetrics, organizations, alerts } from '../db/schema';
-import { eq, and, gte, desc, inArray, isNotNull } from 'drizzle-orm';
+import { eq, and, gte, gt, desc, asc, inArray, isNotNull } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import {
   evaluateDeviceAlerts,
@@ -110,13 +110,17 @@ export function createAlertWorker(): Worker<AlertJobData> {
  * Process evaluate-all job
  * Fetches devices with recent metrics and queues individual device evaluations
  */
-async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
+export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   queued: number;
   skipped: number;
   durationMs: number;
 }> {
   const startTime = Date.now();
-  const batchSize = data.batchSize || 100;
+
+  // Caller-supplied batchSize takes precedence (back-compat). Otherwise read the
+  // env override; default 5000. Setting the env to 0 means "unlimited per run".
+  const cap = data.batchSize ?? Number(process.env.ALERT_WORKER_MAX_DEVICES_PER_RUN ?? '5000');
+  const chunkSize = Math.max(1, Number(process.env.ALERT_WORKER_CHUNK_SIZE ?? '500'));
 
   // Get all active organizations
   const orgs = await db
@@ -130,47 +134,65 @@ async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
 
   const orgIds = orgs.map(o => o.id);
 
-  // Get devices with recent metrics (within last 5 minutes)
+  // Devices considered "active" for evaluation: online + reported metrics in the last 5 min
   const recentThreshold = new Date(Date.now() - 5 * 60 * 1000);
 
-  // Get devices that are online and have recent activity
-  const activeDevices = await db
-    .select({
-      id: devices.id,
-      orgId: devices.orgId
-    })
-    .from(devices)
-    .where(
-      and(
-        inArray(devices.orgId, orgIds),
-        eq(devices.status, 'online'),
-        gte(devices.lastSeenAt, recentThreshold)
-      )
-    )
-    .limit(batchSize);
+  // Paginate through eligible devices using id as a stable cursor. This avoids the
+  // silent 100-device truncation that was the prior shape and lets the worker
+  // cover the whole fleet on each run when env caps allow.
+  const queue = getAlertQueue();
+  let totalQueued = 0;
+  let cursor: string | null = null;
 
-  if (activeDevices.length === 0) {
-    console.log('[AlertWorker] No active devices with recent metrics');
-    return { queued: 0, skipped: 0, durationMs: Date.now() - startTime };
+  while (true) {
+    const remaining = cap > 0 ? Math.max(0, cap - totalQueued) : chunkSize;
+    if (cap > 0 && remaining === 0) {
+      console.warn(`[AlertWorker] Hit ALERT_WORKER_MAX_DEVICES_PER_RUN=${cap}; remainder will be picked up next run`);
+      break;
+    }
+
+    const limit = Math.min(chunkSize, remaining || chunkSize);
+
+    const conditions = [
+      inArray(devices.orgId, orgIds),
+      eq(devices.status, 'online'),
+      gte(devices.lastSeenAt, recentThreshold)
+    ];
+    if (cursor) conditions.push(gt(devices.id, cursor));
+
+    const chunk = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(and(...conditions))
+      .orderBy(asc(devices.id))
+      .limit(limit);
+
+    if (chunk.length === 0) break;
+
+    const jobs = chunk.map(device => ({
+      name: 'evaluate-device',
+      data: {
+        type: 'evaluate-device' as const,
+        deviceId: device.id,
+        orgId: device.orgId
+      }
+    }));
+
+    await queue.addBulk(jobs);
+    totalQueued += jobs.length;
+    cursor = chunk[chunk.length - 1]!.id;
+
+    if (chunk.length < limit) break; // last partial chunk
   }
 
-  // Queue individual device evaluation jobs
-  const queue = getAlertQueue();
-  const jobs = activeDevices.map(device => ({
-    name: 'evaluate-device',
-    data: {
-      type: 'evaluate-device' as const,
-      deviceId: device.id,
-      orgId: device.orgId
-    }
-  }));
-
-  await queue.addBulk(jobs);
-
-  console.log(`[AlertWorker] Queued ${jobs.length} device evaluations`);
+  if (totalQueued === 0) {
+    console.log('[AlertWorker] No active devices with recent metrics');
+  } else {
+    console.log(`[AlertWorker] Queued ${totalQueued} device evaluations`);
+  }
 
   return {
-    queued: jobs.length,
+    queued: totalQueued,
     skipped: 0,
     durationMs: Date.now() - startTime
   };
@@ -364,7 +386,7 @@ export async function triggerDeviceEvaluation(deviceId: string, orgId: string): 
 export async function triggerFullEvaluation(): Promise<string> {
   const queue = getAlertQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_ALERT_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `alert-evaluate-all:${slot}`;
+  const jobId = `alert-evaluate-all-${slot}`;
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

@@ -16,8 +16,9 @@ import {
   organizations
 } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
+import { revokeAllUserTokens } from '../services/tokenRevocation';
 
 export const accessReviewRoutes = new Hono();
 
@@ -452,11 +453,11 @@ accessReviewRoutes.post(
         )
       );
 
+    const revokedUserIds = revokedItems.map((item) => item.userId);
+
     const result = await db.transaction(async (tx) => {
       // Apply revocations - remove users from the scope
-      if (revokedItems.length > 0) {
-        const revokedUserIds = revokedItems.map((item) => item.userId);
-
+      if (revokedUserIds.length > 0) {
         if (scopeContext.scope === 'partner') {
           await tx
             .delete(partnerUsers)
@@ -503,12 +504,28 @@ accessReviewRoutes.post(
       };
     });
 
+    const uniqueRevokedUserIds = [...new Set(revokedUserIds)];
+    await Promise.all(uniqueRevokedUserIds.map((userId) => clearPermissionCache(userId)));
+
+    // Task 14: revoke each removed user's JWTs in Redis so their existing
+    // access token (≤15min TTL) stops granting tenant-scoped access on the
+    // next request. Best-effort per user: a Redis failure leaves the
+    // tenant-link deleted and the JWT will expire naturally; we log and
+    // continue so the review still completes successfully.
+    await Promise.all(
+      uniqueRevokedUserIds.map((userId) =>
+        revokeAllUserTokens(userId).catch((err) => {
+          console.error('[access-review] token revoke failed for user', userId, err);
+        }),
+      ),
+    );
+
     writeRouteAudit(c, {
       orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,
       action: 'access_review.complete',
       resourceType: 'access_review',
       resourceId: result.review.id,
-      details: { revokedCount: result.revokedCount }
+      details: { revokedCount: result.revokedCount, revokedUserIds: uniqueRevokedUserIds }
     });
 
     return c.json({

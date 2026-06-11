@@ -15,11 +15,16 @@ import {
   devices,
   sqlInstances,
 } from '../db/schema';
-import { eq, and, desc, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+
+function getOrgId(auth: AuthContext): string | null {
+  return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
 
 type MssqlHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -69,6 +74,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'query_mssql_instances',
       description: 'List discovered SQL Server instances and their databases for the accessible organization scope.',
@@ -88,6 +94,15 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
       if (oc) conditions.push(oc);
       if (typeof input.deviceId === 'string') conditions.push(eq(sqlInstances.deviceId, input.deviceId));
       if (typeof input.status === 'string') conditions.push(eq(sqlInstances.status, input.status));
+
+      // Site axis: narrow to devices in the caller's allowed sites.
+      const instOrgId = getOrgId(auth);
+      if (auth.allowedSiteIds && instOrgId) {
+        const allowed = await resolveSiteAllowedDeviceIds(instOrgId, auth);
+        if (!allowed || allowed.length === 0) return JSON.stringify({ instances: [], showing: 0 });
+        if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ instances: [], showing: 0 });
+        conditions.push(inArray(sqlInstances.deviceId, allowed));
+      }
 
       const limit = clampLimit(input.limit);
       const rows = await db
@@ -128,6 +143,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_mssql_backup_status',
       description: 'Get MSSQL backup chain status by database, including active chain metadata and latest full snapshot context.',
@@ -147,6 +163,15 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
       if (oc) conditions.push(oc);
       if (typeof input.deviceId === 'string') conditions.push(eq(backupChains.deviceId, input.deviceId));
       if (typeof input.database === 'string') conditions.push(eq(backupChains.targetName, input.database));
+
+      // Site axis: narrow to devices in the caller's allowed sites.
+      const chainOrgId = getOrgId(auth);
+      if (auth.allowedSiteIds && chainOrgId) {
+        const allowed = await resolveSiteAllowedDeviceIds(chainOrgId, auth);
+        if (!allowed || allowed.length === 0) return JSON.stringify({ chains: [], showing: 0 });
+        if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ chains: [], showing: 0 });
+        conditions.push(inArray(backupChains.deviceId, allowed));
+      }
 
       const limit = clampLimit(input.limit);
       const rows = await db
@@ -217,6 +242,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'trigger_mssql_backup',
       description: 'Dispatch an MSSQL backup command to a device for a specific instance and database.',
@@ -252,11 +278,13 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db
-        .select({ id: devices.id, orgId: devices.orgId })
+        .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+      // Site axis (app-layer only; RLS does NOT enforce it).
+      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const resolvedConfig = await resolveBackupConfigForDevice(deviceId);
       if (!resolvedConfig?.configId) {
@@ -324,6 +352,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'restore_mssql_database',
       description: 'Dispatch an MSSQL restore command to a device.',
@@ -360,11 +389,12 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
       const dc = orgWhere(auth, devices.orgId);
       if (dc) deviceConditions.push(dc);
       const [device] = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
       const sc = orgWhere(auth, backupSnapshots.orgId);
@@ -473,6 +503,11 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .where(and(...snapshotConditions))
         .limit(1);
       if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      // Site axis: the snapshot resolves to a device; deny if it's in a site
+      // outside a restricted caller's allowlist (RLS does NOT enforce site).
+      if (await deviceIdSiteDenied(auth, snapshot.deviceId)) {
+        return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      }
 
       const metadata =
         snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)

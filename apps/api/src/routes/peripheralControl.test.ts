@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { permissionGate, mfaGate } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
-  mfaGate: { deny: false }
+  mfaGate: { deny: false },
+  permsState: { perms: undefined as { allowedSiteIds?: string[] } | undefined }
 }));
 
 vi.mock('../db', () => ({
@@ -45,6 +46,11 @@ vi.mock('../db/schema', () => ({
     targetType: 'targetType',
     isActive: 'isActive',
     updatedAt: 'updatedAt'
+  },
+  devices: {
+    id: 'id',
+    orgId: 'orgId',
+    siteId: 'siteId'
   }
 }));
 
@@ -58,11 +64,16 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       user: { id: 'user-123', email: 'test@example.com' }
     });
+    // NOTE: authMiddleware does NOT populate `permissions` in production — only
+    // requirePermission does. Keeping this faithful to prod ensures a route that
+    // relies on `permissions` for site-scoping but lacks a permission gate fails.
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     if (permissionGate.deny) return c.json({ error: 'Forbidden' }, 403);
+    // Mirror prod: requirePermission is the gate that populates `permissions`.
+    c.set('permissions', permsState.perms);
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -85,8 +96,11 @@ vi.mock('../services/eventBus', () => ({
 
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
-    ORGS_WRITE: { resource: 'organizations', action: 'write' }
-  }
+    ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    DEVICES_READ: { resource: 'devices', action: 'read' }
+  },
+  canAccessSite: (perms: { allowedSiteIds?: string[] } | undefined, siteId: string) =>
+    !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
 import { db } from '../db';
@@ -119,6 +133,7 @@ describe('peripheralControl routes', () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
     mfaGate.deny = false;
+    permsState.perms = undefined;
     app = new Hono();
     app.route('/peripherals', peripheralControlRoutes);
   });
@@ -508,5 +523,167 @@ describe('peripheralControl routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('start must be before or equal to end');
+  });
+
+  describe('GET /activity site-scope narrowing', () => {
+    const inScopeSite = 'site-aaaa';
+    const outOfScopeSite = 'site-bbbb';
+    const inScopeDevice = '44444444-4444-4444-4444-444444444444';
+    const outOfScopeDevice = '55555555-5555-5555-5555-555555555555';
+
+    const activityRow = (deviceId: string) => ({
+      id: '33333333-3333-3333-3333-333333333333',
+      orgId,
+      deviceId,
+      policyId,
+      eventType: 'blocked',
+      peripheralType: 'storage',
+      vendor: 'SanDisk',
+      product: 'Ultra USB',
+      serialNumber: 'SN-12345',
+      occurredAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    });
+
+    // db.select() call order when site-restricted:
+    //   1. device-resolution select: .from().where() -> org devices
+    //   2. count select: .from().where()
+    //   3. rows select: .from().where().orderBy().limit().offset()
+    function mockRestrictedSelects(orgDevices: Array<{ id: string; siteId: string }>, rows: unknown[]) {
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(orgDevices)
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: rows.length }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue(rows)
+                })
+              })
+            })
+          })
+        } as any);
+    }
+
+    it('returns 403 when a site-restricted caller requests an out-of-scope deviceId', async () => {
+      permsState.perms = { allowedSiteIds: [inScopeSite] };
+      mockRestrictedSelects(
+        [
+          { id: inScopeDevice, siteId: inScopeSite },
+          { id: outOfScopeDevice, siteId: outOfScopeSite }
+        ],
+        []
+      );
+
+      const res = await app.request(
+        `/peripherals/activity?deviceId=${outOfScopeDevice}`,
+        { method: 'GET' }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Device not found or access denied');
+    });
+
+    it('allows a site-restricted caller to read an in-scope deviceId', async () => {
+      permsState.perms = { allowedSiteIds: [inScopeSite] };
+      mockRestrictedSelects(
+        [
+          { id: inScopeDevice, siteId: inScopeSite },
+          { id: outOfScopeDevice, siteId: outOfScopeSite }
+        ],
+        [activityRow(inScopeDevice)]
+      );
+
+      const res = await app.request(
+        `/peripherals/activity?deviceId=${inScopeDevice}`,
+        { method: 'GET' }
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceId).toBe(inScopeDevice);
+    });
+
+    it('narrows results to in-scope devices for a site-restricted caller (no explicit deviceId)', async () => {
+      permsState.perms = { allowedSiteIds: [inScopeSite] };
+      mockRestrictedSelects(
+        [
+          { id: inScopeDevice, siteId: inScopeSite },
+          { id: outOfScopeDevice, siteId: outOfScopeSite }
+        ],
+        [activityRow(inScopeDevice)]
+      );
+
+      const res = await app.request('/peripherals/activity', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceId).toBe(inScopeDevice);
+    });
+
+    it('short-circuits to an empty result when the caller has no in-scope devices', async () => {
+      permsState.perms = { allowedSiteIds: ['site-with-no-devices'] };
+      // Only the device-resolution select runs; no count/rows query.
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: outOfScopeDevice, siteId: outOfScopeSite }
+          ])
+        })
+      } as any);
+
+      const res = await app.request('/peripherals/activity', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(body.pagination.total).toBe(0);
+      // No count/rows queries should have been issued beyond device resolution.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not narrow for an unrestricted caller (no allowedSiteIds)', async () => {
+      // No perms set -> unrestricted. Only count + rows selects run (no device resolution).
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([activityRow(outOfScopeDevice)])
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/peripherals/activity', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      // Unrestricted: exactly 2 selects (count + rows), no device-resolution query.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
   });
 });

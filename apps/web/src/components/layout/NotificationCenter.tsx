@@ -22,6 +22,10 @@ type NotificationItem = {
   createdAt: string;
   read: boolean;
   href?: string;
+  // True when the payload carried no usable timestamp and createdAt fell back to
+  // the SSR reference date — so the UI can avoid rendering a misleading
+  // "2 years ago" relative time.
+  timeUnknown?: boolean;
 };
 
 type RawNotification = Record<string, unknown>;
@@ -109,11 +113,12 @@ const REFERENCE_DATE_ISO = '2024-01-15T12:00:00.000Z';
 
 const normalizeNotification = (raw: RawNotification, index: number): NotificationItem => {
   const type = getNotificationType(raw.type);
-  const createdAt =
+  const rawCreatedAt =
     getString(raw.createdAt) ||
     getString(raw.created_at) ||
-    getString(raw.timestamp) ||
-    REFERENCE_DATE_ISO;
+    getString(raw.timestamp);
+  const createdAt = rawCreatedAt || REFERENCE_DATE_ISO;
+  const timeUnknown = !rawCreatedAt;
   const id = getString(raw.id) || `${type}-${createdAt}-${index}`;
   const title =
     getString(raw.title) ||
@@ -140,7 +145,8 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
     message,
     createdAt,
     read,
-    href
+    href,
+    timeUnknown
   };
 };
 
@@ -149,7 +155,11 @@ export default function NotificationCenter() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  // Two-step guard on the destructive Clear all: first click arms, second
+  // confirms. Reset whenever the panel closes.
+  const [confirmClear, setConfirmClear] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const notificationsRef = useRef<NotificationItem[]>([]);
 
   const fetchNotifications = useCallback(async () => {
@@ -201,6 +211,25 @@ export default function NotificationCenter() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Reset the Clear-all arm state whenever the panel closes.
+  useEffect(() => {
+    if (!isOpen) setConfirmClear(false);
+  }, [isOpen]);
+
+  // Escape closes the panel and returns focus to the bell.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen]);
 
   useEffect(() => {
     notificationsRef.current = notifications;
@@ -306,9 +335,12 @@ export default function NotificationCenter() {
     <div className="relative" ref={dropdownRef}>
       <button
         type="button"
+        ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
         className="relative rounded-md p-2 hover:bg-muted"
-        aria-label="Notifications"
+        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
       >
         <Bell className="h-5 w-5" />
         {unreadCount > 0 && (
@@ -319,7 +351,7 @@ export default function NotificationCenter() {
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[380px] rounded-md border bg-popover shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-2 w-[380px] max-w-[calc(100vw-1.5rem)] rounded-md border bg-popover shadow-lg">
           <div className="flex items-start justify-between gap-4 border-b px-4 py-3">
             <div>
               <p className="text-sm font-semibold text-foreground">Notifications</p>
@@ -356,19 +388,39 @@ export default function NotificationCenter() {
               >
                 Mark all unread
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void clearAll();
-                }}
-                disabled={notifications.length === 0}
-                className={cn(
-                  'rounded-md border border-destructive/30 px-2 py-1 text-destructive transition hover:bg-destructive/10',
-                  notifications.length === 0 && 'cursor-not-allowed opacity-50'
-                )}
-              >
-                Clear all
-              </button>
+              {confirmClear ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmClear(false);
+                      void clearAll();
+                    }}
+                    className="rounded-md border border-destructive bg-destructive/10 px-2 py-1 font-medium text-destructive transition hover:bg-destructive/20"
+                  >
+                    Confirm clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClear(false)}
+                    className="rounded-md border px-2 py-1 transition hover:bg-muted"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmClear(true)}
+                  disabled={notifications.length === 0}
+                  className={cn(
+                    'rounded-md border border-destructive/30 px-2 py-1 text-destructive transition hover:bg-destructive/10',
+                    notifications.length === 0 && 'cursor-not-allowed opacity-50'
+                  )}
+                >
+                  Clear all
+                </button>
+              )}
             </div>
           </div>
 
@@ -389,66 +441,65 @@ export default function NotificationCenter() {
               notifications.map((notification) => {
                 const config = typeConfig[notification.type];
                 const Icon = config.icon;
-                const timeLabel = formatRelativeTime(new Date(notification.createdAt));
+                const timeLabel = notification.timeUnknown
+                  ? 'Recently'
+                  : formatRelativeTime(new Date(notification.createdAt));
 
                 return (
+                  // Plain row container: the navigation control and the
+                  // mark-read control are siblings, never nested, so neither is
+                  // an interactive element inside another (valid ARIA).
                   <div
                     key={notification.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      void handleNavigate(notification);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        void handleNavigate(notification);
-                      }
-                    }}
                     className={cn(
-                      'flex cursor-pointer items-start gap-3 border-b px-4 py-3 text-left transition hover:bg-muted/60',
+                      'flex items-start gap-3 border-b px-4 py-3 transition hover:bg-muted/60',
                       !notification.read && 'bg-muted/40'
                     )}
                   >
-                    <div
-                      className={cn(
-                        'mt-0.5 flex h-8 w-8 items-center justify-center rounded-full',
-                        config.className
-                      )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleNavigate(notification);
+                      }}
+                      className="flex min-w-0 flex-1 items-start gap-3 text-left"
                     >
-                      <Icon className="h-4 w-4" />
-                    </div>
-                    <div className="flex-1 space-y-1">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-medium text-foreground">
-                          {notification.title}
-                        </p>
-                        {!notification.read && (
-                          <span className="h-2 w-2 rounded-full bg-primary" />
+                      <div
+                        className={cn(
+                          'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+                          config.className
                         )}
+                      >
+                        <Icon className="h-4 w-4" />
                       </div>
-                      {notification.message && (
-                        <p className="text-xs text-muted-foreground">
-                          {notification.message}
-                        </p>
-                      )}
-                      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                        <span>{timeLabel}</span>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void markNotificationRead(
-                              notification.id,
-                              !notification.read
-                            );
-                          }}
-                          className="rounded-md border px-2 py-1 text-xs transition hover:bg-muted"
-                        >
-                          {notification.read ? 'Mark unread' : 'Mark read'}
-                        </button>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="truncate text-sm font-medium text-foreground">
+                            {notification.title}
+                          </p>
+                          {!notification.read && (
+                            <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
+                          )}
+                        </div>
+                        {notification.message && (
+                          <p className="text-xs text-muted-foreground">
+                            {notification.message}
+                          </p>
+                        )}
+                        <span className="block text-xs text-muted-foreground">{timeLabel}</span>
                       </div>
-                    </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void markNotificationRead(
+                          notification.id,
+                          !notification.read
+                        );
+                      }}
+                      className="mt-0.5 shrink-0 rounded-md border px-2 py-1 text-xs transition hover:bg-muted"
+                    >
+                      {notification.read ? 'Mark unread' : 'Mark read'}
+                    </button>
                   </div>
                 );
               })

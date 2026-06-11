@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiPageContext, AiStreamEvent, AiApprovalMode } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { extractApiError } from '@/lib/apiError';
 import {
   processStreamEvent,
   mapMessagesFromApi,
@@ -178,8 +179,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 body: JSON.stringify({ pageContext: tab.pageContext ?? undefined }),
               });
               if (!res.ok) {
-                const data = await res.json();
-                throw new Error(data.error || 'Failed to create session');
+                const data = await res.json().catch(() => null);
+                throw new Error(extractApiError(data, 'Failed to create session'));
               }
               const data = await res.json();
               sessionId = data.id;
@@ -218,18 +219,18 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             });
 
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Failed to send message' }));
+              const data = await res.json().catch(() => null);
               if (res.status === 409) {
                 set((s) => ({
                   tabs: s.tabs.map((t) =>
                     t.id === tabId
-                      ? { ...t, messages: t.messages.filter((m) => m.id !== userMsgId), error: data.error || 'Another response is still in progress.' }
+                      ? { ...t, messages: t.messages.filter((m) => m.id !== userMsgId), error: extractApiError(data, 'Another response is still in progress.') }
                       : t
                   ),
                 }));
                 return;
               }
-              throw new Error(data.error || 'Failed to send message');
+              throw new Error(extractApiError(data, 'Failed to send message'));
             }
 
             const reader = res.body?.getReader();
@@ -339,8 +340,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               body: JSON.stringify({ approved }),
             });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-              updateTab(tabId, { error: data.error || 'Failed to process approval. It may have timed out.' });
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, { error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
               return;
             }
             updateTab(tabId, { pendingApproval: null, hasApprovalPending: false });
@@ -360,8 +361,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               body: JSON.stringify({ approved }),
             });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-              updateTab(tabId, { error: data.error || 'Failed to process plan approval' });
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, { error: extractApiError(data, 'Failed to process plan approval') });
               return;
             }
             if (approved && tab.pendingPlan) {
@@ -393,8 +394,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               method: 'POST',
             });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-              updateTab(tabId, { error: data.error || 'Failed to abort plan' });
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, { error: extractApiError(data, 'Failed to abort plan') });
               return;
             }
             updateTab(tabId, { activePlan: null });
@@ -414,8 +415,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               body: JSON.stringify({ paused }),
             });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-              updateTab(tabId, { error: data.error || 'Failed to pause AI' });
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, { error: extractApiError(data, 'Failed to pause AI') });
               return;
             }
             updateTab(tabId, { isPaused: paused });
@@ -454,8 +455,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               body: JSON.stringify({ reason }),
             });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Failed to flag session' }));
-              updateTab(tabId, { error: data.error || 'Failed to flag session' });
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, { error: extractApiError(data, 'Failed to flag session') });
               return;
             }
             updateTab(tabId, { isFlagged: true });
@@ -472,8 +473,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           try {
             const res = await fetchWithAuth(`/ai/sessions/${tab.sessionId}/flag`, { method: 'DELETE' });
             if (!res.ok) {
-              const data = await res.json().catch(() => ({ error: 'Failed to unflag session' }));
-              updateTab(tabId, { error: data.error || 'Failed to unflag session' });
+              const data = await res.json().catch(() => null);
+              updateTab(tabId, { error: extractApiError(data, 'Failed to unflag session') });
               return;
             }
             updateTab(tabId, { isFlagged: false });

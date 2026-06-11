@@ -12,6 +12,8 @@ import { and, eq, gte, lte, ilike, inArray, desc } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { redactAgentLogRow } from './logRedaction';
+import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -30,6 +32,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    deviceArgs: ['deviceIds'],
     definition: {
       name: 'search_agent_logs',
       description:
@@ -83,6 +86,17 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         if (input.deviceIds && Array.isArray(input.deviceIds) && input.deviceIds.length > 0) {
           filters.push(inArray(agentLogs.deviceId, input.deviceIds as string[]));
         }
+
+        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+        // caller may only read logs for devices in their allowed sites. Narrow to
+        // that device set; short-circuit to empty when there are none in scope.
+        if (auth.allowedSiteIds) {
+          const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({ logs: [], count: 0 });
+          }
+          filters.push(inArray(agentLogs.deviceId, allowed));
+        }
         if (input.level && typeof input.level === 'string') {
           filters.push(eq(agentLogs.level, input.level as any));
         }
@@ -109,16 +123,19 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           .limit(maxLimit);
 
         return JSON.stringify({
-          logs: results.map((r) => ({
-            id: r.id,
-            deviceId: r.deviceId,
-            timestamp: r.timestamp.toISOString(),
-            level: r.level,
-            component: r.component,
-            message: r.message,
-            fields: r.fields,
-            agentVersion: r.agentVersion,
-          })),
+          logs: results.map((r) => {
+            const redacted = redactAgentLogRow(r);
+            return {
+              id: r.id,
+              deviceId: r.deviceId,
+              timestamp: r.timestamp.toISOString(),
+              level: r.level,
+              component: r.component,
+              message: redacted.message,
+              fields: redacted.fields,
+              agentVersion: r.agentVersion,
+            };
+          }),
           count: results.length,
         });
       } catch (err) {
@@ -135,6 +152,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'set_agent_log_level',
       description:
@@ -176,12 +194,16 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
         // Verify device belongs to the caller's organization
         const [device] = await db
-          .select({ id: devices.id })
+          .select({ id: devices.id, siteId: devices.siteId })
           .from(devices)
           .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
           .limit(1);
 
         if (!device) {
+          return JSON.stringify({ error: 'Device not found or access denied' });
+        }
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, device.siteId)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 

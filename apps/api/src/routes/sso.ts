@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, gt } from 'drizzle-orm';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import {
@@ -23,18 +24,98 @@ import {
   getUserInfo,
   decodeIdToken,
   verifyIdTokenClaims,
+  verifyIdTokenSignature,
+  assertEmailVerified,
   mapUserAttributes,
   discoverOIDCConfig,
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
-import { decryptSecret, encryptSecret } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
+import { envFlag } from '../utils/envFlag';
+import { setRefreshTokenCookie, getCookieValue } from './auth/helpers';
 
 export const ssoRoutes = new Hono();
+
+// ============================================
+// SSO login-CSRF browser-binding cookie
+// ============================================
+//
+// The first-party SSO login flow had no browser-binding between
+// /sso/login/:orgId (initiation) and /sso/callback (completion): the callback
+// looked the session up purely by the URL `state`, so an attacker could feed a
+// victim a /callback?code=...&state=... URL captured against the attacker's own
+// IdP account and silently log the victim in AS THE ATTACKER (login-CSRF /
+// forced-login). We now bind the flow to the initiating browser with a signed,
+// HttpOnly, SameSite=Lax cookie scoped to the callback path — mirroring the
+// proven M365 admin-consent flow (`routes/c2c/m365Auth.ts`). SameSite=Lax means
+// the cookie is NOT attached on a cross-site top-level GET navigation to
+// /callback, so the forged-login delivery fails the cookie/state match.
+
+const SSO_STATE_COOKIE_NAME = 'breeze_sso_state';
+const SSO_STATE_COOKIE_PATH = '/api/v1/sso/callback';
+const SSO_STATE_COOKIE_MAX_AGE_SECONDS = 10 * 60;
+
+function isSecureCookieEnvironment(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+function buildSsoCookieSecuritySuffix(): string {
+  return `; SameSite=Lax${isSecureCookieEnvironment() ? '; Secure' : ''}`;
+}
+
+/**
+ * Derive the HMAC value that binds the browser to a given `state`. Uses only
+ * secrets intended for server-side cryptographic operations; JWT_SECRET and
+ * AGENT_ENROLLMENT_SECRET are intentionally excluded to maintain key
+ * separation (same rationale as the M365 consent cookie). The label prefix
+ * `sso-login-state:` further separates this key usage from any other HMAC.
+ */
+function buildSsoStateCookieValue(state: string): string | null {
+  const secret =
+    process.env.APP_ENCRYPTION_KEY?.trim()
+    || process.env.SECRET_ENCRYPTION_KEY?.trim();
+
+  if (!secret) {
+    return null;
+  }
+
+  return createHmac('sha256', secret).update(`sso-login-state:${state}`).digest('hex');
+}
+
+function buildSsoStateCookie(state: string): string | null {
+  const value = buildSsoStateCookieValue(state);
+  if (!value) return null;
+  return `${SSO_STATE_COOKIE_NAME}=${encodeURIComponent(value)}; Path=${SSO_STATE_COOKIE_PATH}; HttpOnly${buildSsoCookieSecuritySuffix()}; Max-Age=${SSO_STATE_COOKIE_MAX_AGE_SECONDS}`;
+}
+
+function buildClearSsoStateCookie(): string {
+  return `${SSO_STATE_COOKIE_NAME}=; Path=${SSO_STATE_COOKIE_PATH}; HttpOnly${buildSsoCookieSecuritySuffix()}; Max-Age=0`;
+}
+
+/**
+ * Constant-time check that the request carries the signed binding cookie for
+ * this exact `state`. Returns false when the cookie secret is unconfigured so
+ * the callback fails closed rather than silently dropping the protection.
+ */
+function isValidSsoStateCookie(state: string, cookieHeader: string | undefined): boolean {
+  const cookieValue = getCookieValue(cookieHeader, SSO_STATE_COOKIE_NAME);
+  const expected = buildSsoStateCookieValue(state);
+  if (!cookieValue || !expected) {
+    return false;
+  }
+
+  const left = Buffer.from(cookieValue, 'utf8');
+  const right = Buffer.from(expected, 'utf8');
+  if (left.length !== right.length) {
+    return false;
+  }
+  return timingSafeEqual(left, right);
+}
 
 // ============================================
 // Schemas
@@ -200,7 +281,7 @@ function buildSsoCallbackUri(): string {
 }
 
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
-  const decryptedClientSecret = decryptSecret(provider.clientSecret);
+  const decryptedClientSecret = decryptForColumn('sso_providers', 'client_secret', provider.clientSecret);
 
   if (!provider.clientId || !decryptedClientSecret || !provider.issuer) {
     throw new Error('Provider is not fully configured');
@@ -713,6 +794,18 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
     pkce
   });
 
+  // Bind the flow to this browser: set a signed, HttpOnly, SameSite=Lax cookie
+  // carrying the HMAC of `state`, scoped to the callback path. The callback
+  // requires this cookie to match the URL `state` before consuming the session,
+  // which blocks login-CSRF / forced-login.
+  const stateCookie = buildSsoStateCookie(state);
+  if (!stateCookie) {
+    // Fail closed: without the signing secret we cannot bind the browser, so we
+    // must not start a flow that the callback would be unable to validate.
+    return c.json({ error: 'SSO login binding secret is not configured on this instance' }, 500);
+  }
+  c.header('Set-Cookie', stateCookie, { append: true });
+
   return c.redirect(authUrl);
 });
 
@@ -723,25 +816,48 @@ ssoRoutes.get('/callback', async (c) => {
   const error = c.req.query('error');
   const errorDescription = c.req.query('error_description');
 
+  // Always clear the binding cookie on the way out, regardless of outcome.
+  const clearStateCookie = () => {
+    c.header('Set-Cookie', buildClearSsoStateCookie(), { append: true });
+  };
+
   if (error) {
+    clearStateCookie();
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(errorDescription || error)}`);
   }
 
   if (!code || !state) {
+    clearStateCookie();
     return c.redirect('/login?error=invalid_callback');
   }
 
-  // Find and validate session
-  const [session] = await db
-    .select()
-    .from(ssoSessions)
-    .where(and(
-      eq(ssoSessions.state, state),
-      gt(ssoSessions.expiresAt, new Date())
-    ))
-    .limit(1);
+  // Browser-binding check: require the signed cookie set at /login to be present
+  // and match the URL `state` (constant-time) BEFORE we consume the session.
+  // A cross-site forced-login navigation won't carry this SameSite=Lax cookie,
+  // and a forged/attacker-issued state won't match the victim's cookie.
+  if (!isValidSsoStateCookie(state, c.req.header('cookie'))) {
+    console.warn('[sso/callback] Missing or invalid login-binding cookie');
+    clearStateCookie();
+    return c.redirect('/login?error=invalid_callback');
+  }
+
+  // Find, validate, and CLAIM the session atomically. Deleting with RETURNING in
+  // a single statement makes the state single-use: a captured state cannot be
+  // replayed within its TTL, and a concurrent replay loses the race (only one
+  // delete returns the row). RLS: the public callback runs without a request
+  // scope, so wrap the claim in system scope like the rest of this handler.
+  const [session] = await withSystemDbAccessContext(async () =>
+    db
+      .delete(ssoSessions)
+      .where(and(
+        eq(ssoSessions.state, state),
+        gt(ssoSessions.expiresAt, new Date())
+      ))
+      .returning()
+  );
 
   if (!session) {
+    clearStateCookie();
     return c.redirect('/login?error=session_expired');
   }
 
@@ -753,6 +869,7 @@ ssoRoutes.get('/callback', async (c) => {
     .limit(1);
 
   if (!provider) {
+    clearStateCookie();
     return c.redirect('/login?error=provider_not_found');
   }
 
@@ -771,6 +888,7 @@ ssoRoutes.get('/callback', async (c) => {
       .limit(1);
 
     if (!defaultRole) {
+      clearStateCookie();
       return c.redirect('/login?error=invalid_provider_configuration');
     }
 
@@ -789,10 +907,22 @@ ssoRoutes.get('/callback', async (c) => {
       codeVerifier: session.codeVerifier || undefined
     });
 
-    // Verify ID token if present
+    // Verify ID token if present. When the provider has a JWKS URL (populated
+    // from OIDC discovery), cryptographically verify the id_token signature
+    // against the IdP's JWKS — a forged/tampered token is rejected — and
+    // enforce email_verified before trusting any id_token email. Without a
+    // JWKS URL we fall back to the legacy claim-only checks; identity still
+    // flows from the server-to-server userinfo call, so this remains hardening.
     if (tokens.id_token) {
-      const claims = decodeIdToken(tokens.id_token);
-      verifyIdTokenClaims(claims, config, session.nonce);
+      if (config.jwksUrl) {
+        const claims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
+        if (claims.email) {
+          assertEmailVerified(claims);
+        }
+      } else {
+        const claims = decodeIdToken(tokens.id_token);
+        verifyIdTokenClaims(claims, config, session.nonce);
+      }
     }
 
     // Get user info
@@ -807,6 +937,7 @@ ssoRoutes.get('/callback', async (c) => {
       const domains = provider.allowedDomains.split(',').map(d => d.trim().toLowerCase());
       const emailDomain = attrs.email.split('@')[1]?.toLowerCase();
       if (emailDomain && !domains.includes(emailDomain)) {
+        clearStateCookie();
         return c.redirect('/login?error=domain_not_allowed');
       }
     }
@@ -824,10 +955,12 @@ ssoRoutes.get('/callback', async (c) => {
 
     if (!user) {
       if (!provider.autoProvision) {
+        clearStateCookie();
         return c.redirect('/login?error=user_not_found');
       }
 
       if (!validatedDefaultRoleId) {
+        clearStateCookie();
         return c.redirect('/login?error=default_role_required');
       }
 
@@ -872,6 +1005,7 @@ ssoRoutes.get('/callback', async (c) => {
       });
 
       if (!newUser) {
+        clearStateCookie();
         return c.redirect('/login?error=user_creation_failed');
       }
 
@@ -896,10 +1030,12 @@ ssoRoutes.get('/callback', async (c) => {
       .limit(1);
 
     if (!orgUser) {
+      clearStateCookie();
       return c.redirect('/login?error=no_org_access');
     }
 
     if (orgUser.roleScope !== 'organization') {
+      clearStateCookie();
       return c.redirect('/login?error=invalid_role_scope');
     }
 
@@ -950,8 +1086,8 @@ ssoRoutes.get('/callback', async (c) => {
       .set({ lastLoginAt: new Date() })
       .where(eq(users.id, user.id));
 
-    // Clean up SSO session
-    await db.delete(ssoSessions).where(eq(ssoSessions.id, session.id));
+    // The SSO session row was already consumed atomically up-front
+    // (delete().returning()), so there is nothing left to clean up here.
 
     // Create session and tokens
     const ip = getClientIP(c);
@@ -969,7 +1105,16 @@ ssoRoutes.get('/callback', async (c) => {
       mfa: false
     };
 
-    const { accessToken, refreshToken, expiresInSeconds } = await createTokenPair(tokenPayload);
+    // Mint a fresh refresh-token family for the SSO-completed session so
+    // SSO logins get the same reuse-detection coverage as password/MFA
+    // logins. Without this, SSO-issued tokens would silently bypass RFC
+    // 9700 §4.13.2 protection.
+    const ssoFamilyId = await mintRefreshTokenFamily(user.id);
+    const { accessToken, refreshToken, refreshJti, expiresInSeconds } = await createTokenPair(
+      tokenPayload,
+      { refreshFam: ssoFamilyId }
+    );
+    await bindRefreshJtiToFamily(refreshJti, ssoFamilyId);
 
     await createSession({
       userId: user.id,
@@ -979,10 +1124,15 @@ ssoRoutes.get('/callback', async (c) => {
 
     const tokenExchangeCode = createSsoTokenExchangeGrant(accessToken, refreshToken, expiresInSeconds);
     const redirectPath = normalizeRedirectPath(session.redirectUrl ?? '/');
+    clearStateCookie();
     return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(tokenExchangeCode)}`);
 
   } catch (error: any) {
+    // The session was already consumed atomically, so even on a failed IdP
+    // token exchange the captured state cannot be replayed. Surface the error
+    // to the login page exactly as before; the user simply re-initiates.
     console.error('SSO callback error:', error);
+    clearStateCookie();
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(error.message || 'Authentication failed')}`);
   }
 });
@@ -994,10 +1144,26 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
     return c.json({ error: 'Invalid or expired token exchange code' }, 400);
   }
 
+  setRefreshTokenCookie(c, grant.refreshToken);
+
+  // The refresh token is delivered via the HttpOnly `breeze_refresh_token` cookie set
+  // above. Returning it in the JSON body is now opt-in only for any operator who still
+  // has an external SSO client that reads `response.refreshToken` — set
+  // SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true to restore the legacy behavior. The flag
+  // (and the JSON refreshToken field) will be removed entirely after the Sunset date.
+  const returnRefreshToken = envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', false);
+  if (returnRefreshToken) {
+    c.header('Deprecation', 'true');
+    c.header('Sunset', 'Fri, 01 Aug 2026 00:00:00 GMT');
+    c.header(
+      'Link',
+      '<https://breezermm.com/docs/api-changes/sso-refresh-cookie>; rel="deprecation"',
+    );
+  }
   return c.json({
     accessToken: grant.accessToken,
-    refreshToken: grant.refreshToken,
-    expiresInSeconds: grant.expiresInSeconds
+    expiresInSeconds: grant.expiresInSeconds,
+    ...(returnRefreshToken ? { refreshToken: grant.refreshToken } : {}),
   });
 });
 

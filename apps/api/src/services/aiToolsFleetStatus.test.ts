@@ -64,6 +64,7 @@ describe('computeInviteFunnel', () => {
       invites_clicked: 0,
       devices_enrolled: 0,
       devices_online: 0,
+      devices_pending: 0,
       recent_enrollments: [],
     });
   });

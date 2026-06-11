@@ -213,7 +213,14 @@ func TestRunCleansUpTempFile(t *testing.T) {
 		t.Skip("skipping bash test on Windows")
 	}
 
-	r := NewRunner()
+	// Isolate workDir to a per-test temp dir. NewRunner() uses a shared
+	// `os.TempDir()/breeze-scripts` path which any sibling test/process can
+	// write to. With the shared path the file-count assertion below
+	// occasionally trips with `before=0, after=1 files` on CI even though
+	// `defer os.Remove(scriptFile)` in Run() is fine — the "after" file came
+	// from a sibling, not from r.Run. Per-test t.TempDir makes the check
+	// observe only this test's effect.
+	r := &ScriptRunner{workDir: t.TempDir()}
 
 	// List files before
 	beforeFiles, _ := os.ReadDir(r.workDir)
@@ -377,5 +384,20 @@ func TestRunScriptWithSpecialCharacters(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("exitCode = %d, want 0", result.ExitCode)
+	}
+}
+
+func TestRunCapturesAccentedUTF8Output(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping bash accent test on Windows")
+	}
+
+	r := NewRunner()
+	result := r.Run("bash", "printf 'résumé\\n'", 10*time.Second)
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed (error: %s)", result.Status, result.ErrorMsg)
+	}
+	if result.Stdout != "résumé\n" {
+		t.Fatalf("stdout = %q, want %q", result.Stdout, "résumé\n")
 	}
 }

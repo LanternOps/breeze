@@ -6,7 +6,8 @@
  */
 
 import { isIP } from 'net';
-import { lookup } from 'dns/promises';
+import { safeFetch, SsrfBlockedError } from '../urlSafety';
+import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
 
 export function redactUrlForLogs(rawUrl: string): string {
   try {
@@ -166,6 +167,10 @@ export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<s
     return errors;
   }
 
+  // Delegate to the shared resolver so both this config-time validator and
+  // the runtime `safeFetch` apply identical rules. Using `dns/promises` via
+  // `safeFetch`'s module-level hook keeps one code path for both checks.
+  const { lookup } = await import('dns/promises');
   try {
     const resolved = await lookup(hostname, { all: true, verbatim: true });
     if (resolved.length === 0) {
@@ -193,11 +198,15 @@ export async function sendWebhookNotification(
   config: WebhookConfig,
   payload: WebhookNotificationPayload
 ): Promise<SendResult> {
-  const safetyErrors = await validateWebhookUrlSafetyWithDns(config.url);
-  if (safetyErrors.length > 0) {
+  // Fast-fail on obviously-bad URLs so we get a crisp error message before
+  // involving the network stack. `safeFetch` below re-validates DNS-resolved
+  // addresses at connection time, closing the TOCTOU window that a
+  // separate `check-then-fetch` pattern would leave open.
+  const staticErrors = validateWebhookUrlSafety(config.url);
+  if (staticErrors.length > 0) {
     return {
       success: false,
-      error: `Unsafe webhook URL: ${safetyErrors.join('; ')}`
+      error: `Unsafe webhook URL: ${staticErrors.join('; ')}`
     };
   }
 
@@ -207,9 +216,9 @@ export async function sendWebhookNotification(
 
   // Build headers
   const headers: Record<string, string> = {
+    ...sanitizeOutboundHeaders(config.headers),
     'Content-Type': 'application/json',
-    'User-Agent': 'Breeze-RMM/1.0',
-    ...(config.headers || {})
+    'User-Agent': 'Breeze-RMM/1.0'
   };
 
   // Add authentication
@@ -219,7 +228,13 @@ export async function sendWebhookNotification(
     const credentials = Buffer.from(`${config.authUsername}:${config.authPassword}`).toString('base64');
     headers['Authorization'] = `Basic ${credentials}`;
   } else if (config.authType === 'api_key' && config.apiKeyHeader && config.apiKeyValue) {
-    headers[config.apiKeyHeader] = config.apiKeyValue;
+    if (validateOutboundHeader(config.apiKeyHeader, config.apiKeyValue)) {
+      return {
+        success: false,
+        error: 'Invalid API key header'
+      };
+    }
+    headers[config.apiKeyHeader.trim()] = config.apiKeyValue;
   }
 
   // Build request body
@@ -260,7 +275,7 @@ export async function sendWebhookNotification(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const response = await fetch(config.url, {
+      const response = await safeFetch(config.url, {
         method,
         headers,
         body,
@@ -288,6 +303,14 @@ export async function sendWebhookNotification(
         break;
       }
     } catch (error) {
+      if (error instanceof SsrfBlockedError) {
+        // DNS resolved to a private IP — do not retry, the answer won't change
+        // on this timescale and we don't want to spam DNS either.
+        return {
+          success: false,
+          error: `Unsafe webhook URL: ${error.message}`
+        };
+      }
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           lastError = 'Request timed out';
@@ -407,6 +430,18 @@ export function validateWebhookConfig(config: unknown): { valid: boolean; errors
   }
   if (c.authType === 'api_key' && (!c.apiKeyHeader || !c.apiKeyValue)) {
     errors.push('API key auth requires apiKeyHeader and apiKeyValue');
+  }
+  if (c.authType === 'api_key' && typeof c.apiKeyHeader === 'string' && typeof c.apiKeyValue === 'string') {
+    const apiKeyHeaderError = validateOutboundHeader(c.apiKeyHeader, c.apiKeyValue);
+    if (apiKeyHeaderError) errors.push(apiKeyHeaderError);
+  }
+
+  if (c.headers !== undefined) {
+    if (!c.headers || typeof c.headers !== 'object' || Array.isArray(c.headers)) {
+      errors.push('Headers must be an object');
+    } else {
+      errors.push(...getOutboundHeaderValidationErrors(c.headers as Record<string, string>));
+    }
   }
 
   // Validate timeout if provided

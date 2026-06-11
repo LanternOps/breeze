@@ -1,18 +1,41 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations } from '../db/schema';
-import { authMiddleware, requirePermission } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { users, partnerUsers, organizationUsers, roles, organizations, permissions, rolePermissions } from '../db/schema';
+import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
+import {
+  MAX_AVATAR_SIZE_BYTES,
+  deleteAvatar,
+  readAvatarBuffer,
+  sniffImageMime,
+  statAvatar,
+  weakEtagFor,
+  writeAvatar,
+} from '../services/avatarStorage';
+import {
+  clearPermissionCache,
+  getUserPermissions,
+  hasPermission,
+  isAssignablePermission,
+  PERMISSIONS,
+  type UserPermissions
+} from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
+import { captureException } from '../services/sentry';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, userRequiresSetup } from './auth/helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
+import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
+import { revokeUserAccess } from '../services/userSuspension';
+import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
+import { revokeAllUserTokens } from '../services/tokenRevocation';
 
 export const userRoutes = new Hono();
 
@@ -61,10 +84,12 @@ const resendInviteSchema = z.object({
   userId: z.string().uuid()
 });
 
+// .strict() so unknown keys surface as 400, not silently dropped. Role is not
+// updatable via this endpoint — POST /users/:id/role writes the join-table row.
 const updateUserSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   status: z.enum(['active', 'invited', 'disabled']).optional()
-});
+}).strict();
 
 const assignRoleSchema = z.object({
   roleId: z.string().uuid()
@@ -94,6 +119,7 @@ async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
       name: roles.name,
       description: roles.description,
       isSystem: roles.isSystem,
+      parentRoleId: roles.parentRoleId,
       partnerId: roles.partnerId,
       orgId: roles.orgId
     })
@@ -115,6 +141,91 @@ async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
 
   if (scopeContext.scope === 'organization' && role.orgId === scopeContext.orgId) {
     return role;
+  }
+
+  return null;
+}
+
+async function getEffectiveRolePermissions(
+  roleId: string,
+  visited: Set<string> = new Set()
+): Promise<Array<{ resource: string; action: string }>> {
+  if (visited.has(roleId)) return [];
+  visited.add(roleId);
+
+  const [role] = await db
+    .select({ parentRoleId: roles.parentRoleId })
+    .from(roles)
+    .where(eq(roles.id, roleId))
+    .limit(1);
+
+  const directPermissions = await db
+    .select({
+      resource: permissions.resource,
+      action: permissions.action
+    })
+    .from(rolePermissions)
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(eq(rolePermissions.roleId, roleId));
+
+  if (!role?.parentRoleId) {
+    return directPermissions;
+  }
+
+  const inheritedPermissions = await getEffectiveRolePermissions(role.parentRoleId, visited);
+  const result = new Map<string, { resource: string; action: string }>();
+  for (const permission of [...directPermissions, ...inheritedPermissions]) {
+    result.set(`${permission.resource}:${permission.action}`, permission);
+  }
+  return [...result.values()];
+}
+
+async function getCallerPermissions(
+  c: any,
+  auth: { user: { id: string }; partnerId: string | null; orgId: string | null }
+): Promise<UserPermissions | null> {
+  const existing = c.get('permissions') as UserPermissions | undefined;
+  if (existing) return existing;
+
+  return getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined
+  });
+}
+
+async function validateAssignableRole(
+  c: any,
+  auth: { user: { id: string }; partnerId: string | null; orgId: string | null },
+  role: { id: string; isSystem: boolean }
+): Promise<string | null> {
+  const rolePermissionsForAssignment = await getEffectiveRolePermissions(role.id);
+  if (rolePermissionsForAssignment.length === 0) {
+    return null;
+  }
+
+  const callerPermissions = await getCallerPermissions(c, auth);
+  if (!callerPermissions) {
+    return 'No permissions found';
+  }
+
+  for (const permission of rolePermissionsForAssignment) {
+    if (permission.resource === '*' || permission.action === '*') {
+      if (!role.isSystem) {
+        return 'Custom roles with wildcard permissions cannot be assigned';
+      }
+      if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
+        return 'Cannot assign a role broader than caller permissions';
+      }
+      continue;
+    }
+
+    if (!isAssignablePermission(permission)) {
+      return `Role contains unknown permission: ${permission.resource}:${permission.action}`;
+    }
+
+    if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
+      return `Cannot assign a role with permission not held by caller: ${permission.resource}:${permission.action}`;
+    }
   }
 
   return null;
@@ -289,7 +400,7 @@ function writeUserAudit(
     resourceId: event.resourceId,
     resourceName: event.resourceName,
     details: event.details,
-    ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+    ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
@@ -334,50 +445,126 @@ userRoutes.get('/me', async (c) => {
   });
 });
 
-// Update current user's profile
-userRoutes.patch('/me', async (c) => {
-  const auth = c.get('auth');
-  const body = await c.req.json();
+// Update current user's profile.
+// NOTE: `avatarUrl` is intentionally NOT part of this schema. Avatars are
+// managed exclusively through POST/DELETE /users/me/avatar (file upload). The
+// strict() refinement causes any client still sending avatarUrl to get a 400,
+// which is what we want — silent drop would mask client bugs.
+const updateMeSchema = z
+  .object({
+    name: z.string().min(1).max(255).optional(),
+    email: z.string().email().max(255).optional(),
+    preferences: z
+      .union([
+        z.record(z.string().max(64), z.unknown()),
+        z.null(),
+      ])
+      .optional(),
+    // Account-takeover step-up for the email-change path. NEVER persisted and
+    // excluded from the audit changedFields — it is verified, then dropped.
+    currentPassword: z.string().optional(),
+  })
+  .strict();
 
-  const updates: { name?: string; email?: string; avatarUrl?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
+userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
+  const auth = c.get('auth');
+  const body = c.req.valid('json');
+
+  // Load the caller's own row once: needed to detect a real email change and to
+  // choose the right step-up factor (local password vs MFA).
+  const [self] = await db
+    .select({ email: users.email, passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  if (!self) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  const updates: { name?: string; email?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
     updatedAt: new Date()
   };
 
-  if (body.name && typeof body.name === 'string') {
-    updates.name = body.name.slice(0, 255);
-  }
+  // Tracks how identity was re-proven for the email change so the dedicated
+  // audit can record it. Stays undefined for non-email changes.
+  let stepUpMethod: 'password' | 'mfa' | undefined;
+  // The address that owned the account before the change — used for the audit
+  // detail and the security notification to the OLD address.
+  let previousEmail: string | undefined;
 
-  if (body.avatarUrl !== undefined) {
-    updates.avatarUrl = body.avatarUrl;
+  if (body.name) {
+    updates.name = body.name.slice(0, 255);
   }
 
   if (body.preferences !== undefined) {
     if (body.preferences !== null && typeof body.preferences === 'object') {
+      // Cap serialized size to defend against arbitrarily-large free-form blobs.
+      const serialized = JSON.stringify(body.preferences);
+      if (serialized.length > 64 * 1024) {
+        return c.json({ error: 'preferences payload too large (64KB max)' }, 400);
+      }
+      const prefs = body.preferences as Record<string, unknown>;
       const validThemes = ['light', 'dark', 'system'];
-      if (body.preferences.theme && !validThemes.includes(body.preferences.theme)) {
+      if (
+        typeof prefs.theme === 'string'
+        && !validThemes.includes(prefs.theme)
+      ) {
         return c.json({ error: 'Invalid theme value. Must be light, dark, or system.' }, 400);
       }
-      updates.preferences = body.preferences;
+      updates.preferences = prefs;
     } else if (body.preferences === null) {
       updates.preferences = undefined;
     }
   }
 
-  if (body.email && typeof body.email === 'string') {
+  if (body.email) {
     const normalizedEmail = body.email.toLowerCase().trim().slice(0, 255);
-    // Basic email format validation
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return c.json({ error: 'Invalid email format' }, 400);
+    // self.email is already normalized in the DB; only step-up + notify when the
+    // email is genuinely changing. A same-email "change" is a no-op here.
+    const emailChanging = normalizedEmail !== self.email;
+
+    if (emailChanging) {
+      // Account-takeover step-up — mirror change-password's SSO→password
+      // ordering; additionally allow MFA step-up for passwordless users
+      // (change-password rejects them with 400), BEFORE any write.
+      // (a) SSO-enforced org: email is managed at the IdP.
+      if (await isPasswordAuthDisabledBySso({ scope: auth.scope, orgId: auth.orgId })) {
+        return c.json({ error: 'Email changes for this organization are managed through your SSO provider.' }, 403);
+      }
+
+      if (self.passwordHash) {
+        // (b) Local-password user: require + verify the current password.
+        if (!body.currentPassword) {
+          return c.json({ error: 'Current password is required to change your email address.' }, 400);
+        }
+        const stepUp = await requireCurrentPasswordStepUp(c, auth.user.id, body.currentPassword, 'email-change:pwd');
+        if (stepUp) return stepUp; // 401 / 429 / 503 Response, or null on success
+        stepUpMethod = 'password';
+      } else {
+        // (c) Passwordless, non-SSO-enforced user: require satisfied MFA.
+        if (!hasSatisfiedMfa(auth)) {
+          return c.json({ error: 'MFA verification is required to change your email address.' }, 403);
+        }
+        stepUpMethod = 'mfa';
+      }
+
+      previousEmail = self.email;
+
+      // Uniqueness check (only matters when the email is actually changing).
+      const [existing] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, normalizedEmail))
+        .limit(1);
+      if (existing && existing.id !== auth.user.id) {
+        return c.json({ error: 'Email already in use' }, 409);
+      }
     }
-    // Check uniqueness
-    const [existing] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1);
-    if (existing && existing.id !== auth.user.id) {
-      return c.json({ error: 'Email already in use' }, 409);
-    }
+
+    // Always include the (normalized) email in the write. When it's unchanged
+    // this is a harmless no-op that keeps a same-email PATCH a valid 200 rather
+    // than a "No valid updates provided" 400, and it requires no step-up.
     updates.email = normalizedEmail;
   }
 
@@ -403,25 +590,281 @@ userRoutes.patch('/me', async (c) => {
     return c.json({ error: 'Failed to update profile' }, 500);
   }
 
-  if (auth.orgId) {
+  // Every successful self-profile change MUST be audited regardless of caller
+  // scope (SOC2 coverage). Partner-scope callers have auth.orgId === null, so
+  // resolve an attribution org from the user's membership — mirrors the
+  // POST /auth/change-password handler. createAuditLogAsync + persistAuditLog
+  // accept a null orgId, so a null resolution still produces an audit row.
+  const auditOrgId = auth.orgId ?? await resolveUserAuditOrgId(auth.user.id);
+  createAuditLogAsync({
+    orgId: auditOrgId,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'user.profile.update',
+    resourceType: 'user',
+    resourceId: updated.id,
+    resourceName: updated.name,
+    details: {
+      changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
+    },
+    ipAddress: getTrustedClientIpOrUndefined(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
+
+  // Dedicated email-change audit + security notification to the OLD address.
+  // Only fires on a genuine, step-up-cleared email change (previousEmail set).
+  if (previousEmail !== undefined) {
     createAuditLogAsync({
-      orgId: auth.orgId,
+      orgId: auditOrgId,
       actorId: auth.user.id,
       actorEmail: auth.user.email,
-      action: 'user.profile.update',
+      action: 'user.email.change',
       resourceType: 'user',
       resourceId: updated.id,
       resourceName: updated.name,
       details: {
-        changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
+        previousEmail,
+        newEmail: updated.email,
+        stepUp: stepUpMethod
       },
-      ipAddress: c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'),
+      ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
       result: 'success'
     });
+
+    // Notify the OLD address (best-effort: never FAILs the request (errors are
+    // swallowed). It is awaited, so it adds the send latency to this (rare)
+    // email-change response).
+    const emailService = getEmailService();
+    if (emailService) {
+      try {
+        await emailService.sendEmailChanged({ to: previousEmail, name: updated.name, newEmail: updated.email });
+      } catch (err) {
+        console.error('[users] Failed to send email-change security notice', err);
+        captureException(err);
+      }
+    } else {
+      console.warn('[users] Email service not configured; email-change security notice was not sent');
+    }
   }
 
   return c.json(updated);
+});
+
+// --- Avatars ---
+//
+// POST /users/me/avatar     multipart upload of png/jpeg/webp, 5 MB max
+// GET  /users/:id/avatar    stream the bytes (auth required)
+// DELETE /users/me/avatar   unlink + clear users.avatar_url
+//
+// Storage: filesystem, /data/avatars/<userId>.<ext> on the api_data volume.
+// Magic-byte verification is required because we don't trust the
+// browser-supplied Content-Type. Filenames are derived from the auth'd user
+// id, so path traversal is impossible.
+
+const ALLOWED_AVATAR_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+userRoutes.post(
+  '/me/avatar',
+  bodyLimit({
+    maxSize: MAX_AVATAR_SIZE_BYTES + 64 * 1024, // small slack for multipart overhead
+    onError: (c) => c.json({ error: 'Avatar file too large (max 5 MB)' }, 413),
+  }),
+  async (c) => {
+    const auth = c.get('auth');
+    const userId = auth.user.id;
+
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.parseBody({ all: true });
+    } catch {
+      return c.json({ error: 'Invalid multipart body' }, 400);
+    }
+
+    const file = body.file;
+    if (!(file instanceof File)) {
+      return c.json({ error: 'file field is required' }, 400);
+    }
+
+    if (file.size === 0) {
+      return c.json({ error: 'file is empty' }, 400);
+    }
+
+    if (file.size > MAX_AVATAR_SIZE_BYTES) {
+      return c.json({ error: 'Avatar file too large (max 5 MB)' }, 413);
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    const sniffedMime = sniffImageMime(buffer);
+    if (!sniffedMime) {
+      return c.json(
+        { error: 'Unsupported image format. Allowed: PNG, JPEG, WebP.' },
+        415
+      );
+    }
+
+    // Defense in depth: if a Content-Type was supplied, it must agree with the
+    // sniffed mime. (Clients are allowed to omit it.)
+    const claimedMime = (file.type || '').toLowerCase();
+    if (claimedMime && claimedMime !== sniffedMime && ALLOWED_AVATAR_MIMES.has(claimedMime)) {
+      return c.json(
+        { error: 'Content-Type does not match file contents' },
+        400
+      );
+    }
+
+    let written;
+    try {
+      written = await writeAvatar(userId, sniffedMime, buffer);
+    } catch (err) {
+      console.error('[users/avatar] failed to write avatar:', err);
+      return c.json({ error: 'Failed to store avatar' }, 500);
+    }
+
+    const avatarUrl = `/api/v1/users/${userId}/avatar`;
+    const [updated] = await db
+      .update(users)
+      .set({ avatarUrl, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning({
+        id: users.id,
+        avatarUrl: users.avatarUrl,
+        updatedAt: users.updatedAt,
+      });
+
+    if (!updated) {
+      return c.json({ error: 'Failed to update profile' }, 500);
+    }
+
+    createAuditLogAsync({
+      orgId: auth.orgId || undefined,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.avatar.upload',
+      resourceType: 'user',
+      resourceId: userId,
+      resourceName: auth.user.name,
+      details: {
+        mime: sniffedMime,
+        size: written.size,
+        ext: written.ext,
+      },
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'success'
+    });
+
+    return c.json({
+      avatarUrl: updated.avatarUrl,
+      size: written.size,
+      mime: sniffedMime,
+      updatedAt: updated.updatedAt
+    });
+  }
+);
+
+userRoutes.delete('/me/avatar', async (c) => {
+  const auth = c.get('auth');
+  const userId = auth.user.id;
+
+  deleteAvatar(userId);
+
+  const [updated] = await db
+    .update(users)
+    .set({ avatarUrl: null, updatedAt: new Date() })
+    .where(eq(users.id, userId))
+    .returning({
+      id: users.id,
+      avatarUrl: users.avatarUrl,
+    });
+
+  if (!updated) {
+    return c.json({ error: 'Failed to clear avatar' }, 500);
+  }
+
+  createAuditLogAsync({
+    orgId: auth.orgId || undefined,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'user.avatar.delete',
+    resourceType: 'user',
+    resourceId: userId,
+    resourceName: auth.user.name,
+    details: {},
+    ipAddress: getTrustedClientIpOrUndefined(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success'
+  });
+
+  return c.json({ avatarUrl: null });
+});
+
+// Serve a user's avatar. Authorization mirrors GET /:id: a caller may always
+// read their OWN avatar (the top bar shows it without USERS_READ), but reading
+// another user's avatar requires that user to be resolvable within the caller's
+// tenant scope. Without this, any authenticated user could fetch any other
+// user's avatar across partners/orgs — the `*` partner-scope middleware only
+// gates full-org partner reads, not per-id reads (Todd's #1059 review).
+userRoutes.get('/:id/avatar', async (c) => {
+  const auth = c.get('auth');
+  const userId = c.req.param('id')!;
+
+  // Basic shape check — userId comes from the URL and is fed straight to the
+  // filesystem (after concatenation with the extension). The filesystem layer
+  // joins it via path.join, so traversal isn't possible, but rejecting obviously
+  // bogus values up-front avoids confusing errors and keeps the on-disk listing
+  // tidy.
+  if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
+    return c.json({ error: 'Invalid user id' }, 400);
+  }
+
+  // Cross-tenant guard. Own avatar is always allowed; any other id must resolve
+  // within the caller's tenant scope (same resolution path as GET /:id). The
+  // failure returns the same 404 as a missing avatar so the route never reveals
+  // which user ids exist in other tenants.
+  if (userId !== auth.user.id) {
+    const record = await getScopedUser(userId, getScopeContext(auth));
+    if (!record) {
+      return c.json({ error: 'No avatar' }, 404);
+    }
+  }
+
+  const stat = statAvatar(userId);
+  if (!stat) {
+    return c.json({ error: 'No avatar' }, 404);
+  }
+
+  const etag = weakEtagFor(stat.size, stat.mtimeMs);
+  const ifNoneMatch = c.req.header('if-none-match');
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'private, max-age=300');
+    return c.body(null, 304);
+  }
+
+  // Read the whole file (avatars are capped at MAX_AVATAR_SIZE_BYTES) before
+  // sending any headers, so an I/O error is a clean 500 rather than a 200 with
+  // a truncated body under a full Content-Length (Todd's #1059 review).
+  const opened = readAvatarBuffer(userId);
+  if (!opened) {
+    // statAvatar passed just above, so a null here is a real read failure (or a
+    // delete race), not a "no avatar" — surface it as a 500 rather than a 404.
+    return c.json({ error: 'Failed to read avatar' }, 500);
+  }
+
+  // Copy into a plain Uint8Array — Node's Buffer generic isn't accepted as a
+  // BodyInit by the DOM lib types; the copy is bounded by the 5 MB cap.
+  return new Response(new Uint8Array(opened.buffer), {
+    status: 200,
+    headers: {
+      'Content-Type': opened.mime,
+      'Content-Length': String(opened.size),
+      'Cache-Control': 'private, max-age=300',
+      ETag: etag,
+    },
+  });
 });
 
 userRoutes.get(
@@ -543,6 +986,7 @@ userRoutes.get(
 userRoutes.post(
   '/invite',
   requirePermission(PERMISSIONS.USERS_INVITE.resource, PERMISSIONS.USERS_INVITE.action),
+  requireMfa(),
   zValidator('json', inviteUserSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -569,6 +1013,10 @@ userRoutes.post(
     const role = await getScopedRole(data.roleId, scopeContext);
     if (!role) {
       return c.json({ error: 'Invalid role for this scope' }, 400);
+    }
+    const rolePermissionError = await validateAssignableRole(c, auth, role);
+    if (rolePermissionError) {
+      return c.json({ error: rolePermissionError }, 403);
     }
 
     const normalizedEmail = data.email.toLowerCase();
@@ -679,6 +1127,7 @@ userRoutes.post(
     if (!result.linkCreated) {
       return c.json({ error: 'User already exists in this scope' }, 409);
     }
+    await clearPermissionCache(result.user.id);
 
     const invite = await generateAndDeliverInvite(
       result.user.id,
@@ -722,6 +1171,7 @@ userRoutes.post(
 userRoutes.post(
   '/resend-invite',
   requirePermission(PERMISSIONS.USERS_INVITE.resource, PERMISSIONS.USERS_INVITE.action),
+  requireMfa(),
   zValidator('json', resendInviteSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -768,6 +1218,7 @@ userRoutes.post(
 userRoutes.patch(
   '/:id',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', updateUserSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -785,7 +1236,12 @@ userRoutes.patch(
       return c.json({ error: 'User not found' }, 404);
     }
 
-    const updates: { name?: string; status?: 'active' | 'invited' | 'disabled'; updatedAt: Date } = {
+    const updates: {
+      name?: string;
+      status?: 'active' | 'invited' | 'disabled';
+      disabledReason?: string | null;
+      updatedAt: Date;
+    } = {
       updatedAt: new Date()
     };
 
@@ -795,6 +1251,11 @@ userRoutes.patch(
 
     if (data.status) {
       updates.status = data.status;
+      // Any status change made here is a manual admin action, not a partner
+      // suspension. Clear the suspension marker so a manual disable reads as
+      // "disabled for another reason" (partner unsuspend must not re-enable it)
+      // and so reactivation never leaves a stale marker behind. See #917 L-5.
+      updates.disabledReason = null;
     }
 
     const [updated] = await db
@@ -812,15 +1273,64 @@ userRoutes.patch(
       return c.json({ error: 'Failed to update user' }, 500);
     }
 
+    // Suspension hook: when status transitions from active → disabled we must
+    // revoke every outstanding OAuth artifact (refresh tokens, grant cache
+    // markers, jti cache markers) so existing bearer tokens stop working
+    // immediately. Reactivation (→ active) must NOT trigger this branch.
+    // Any transition out of 'active' to a non-active value also qualifies.
+    const becameInactive =
+      data.status !== undefined &&
+      data.status !== 'active' &&
+      record.status === 'active' &&
+      updated.status !== 'active';
+
+    let oauthRevocation: Awaited<ReturnType<typeof revokeUserAccess>> | undefined;
+    if (becameInactive) {
+      // Kill any live remote-desktop sessions immediately so a suspended /
+      // deactivated operator loses screen, input and clipboard control right
+      // away — revoking JWT/OAuth alone does not touch viewer tokens or the
+      // peer-to-peer WebRTC stream. Finding #3. The teardown is best-effort
+      // per session, but a hard enumeration/disconnect failure returns the
+      // TEARDOWN_FAILED sentinel (already reported to Sentry inside the
+      // service). Surface it the same way as the partial-revocation path
+      // below — the operator MUST know control may still be live.
+      const teardownResult = await terminateUserRemoteSessions(updated.id);
+      if (teardownResult === TEARDOWN_FAILED) {
+        return c.json(
+          { error: 'Failed to terminate active remote sessions; suspension is partial. Retry.' },
+          503
+        );
+      }
+      try {
+        oauthRevocation = await revokeUserAccess(updated.id);
+      } catch (err) {
+        // Revocation cache failure → the DB rows are still marked revoked
+        // but access JWTs would survive until natural expiry. Treat this as
+        // a hard failure so the operator knows suspension is partial.
+        return c.json(
+          { error: 'Failed to revoke active sessions; suspension is partial. Retry.' },
+          503
+        );
+      }
+    }
+    await clearPermissionCache(updated.id);
+
     writeUserAudit(c, auth, scopeContext, {
-      action: 'user.update',
+      action: becameInactive ? 'user.suspended' : 'user.update',
       resourceId: updated.id,
       resourceName: updated.name,
       details: {
         changedFields: Object.keys(data),
         previousStatus: record.status,
         newStatus: updated.status,
-        scope: scopeContext.scope
+        scope: scopeContext.scope,
+        ...(oauthRevocation
+          ? {
+              grantsRevoked: oauthRevocation.grantsRevoked,
+              refreshTokensRevoked: oauthRevocation.refreshTokensRevoked,
+              jtisRevoked: oauthRevocation.jtisRevoked
+            }
+          : {})
       }
     });
 
@@ -831,6 +1341,7 @@ userRoutes.patch(
 userRoutes.delete(
   '/:id',
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
@@ -851,6 +1362,15 @@ userRoutes.delete(
         resourceId: userId,
         details: { scope: 'partner' }
       });
+      await clearPermissionCache(userId);
+      // Task 14: revoke the removed user's JWTs so the existing access
+      // token can't keep granting partner-scoped reads/writes for up to 15
+      // minutes (access-TTL). Best-effort: a Redis failure here leaves the
+      // DB row deleted and the JWT will expire on its own — we log and
+      // continue so the remove still succeeds.
+      await revokeAllUserTokens(userId).catch((err) => {
+        console.error('[users] token revoke failed after partner-user removal:', err);
+      });
 
       return c.json({ success: true });
     }
@@ -869,6 +1389,11 @@ userRoutes.delete(
       resourceId: userId,
       details: { scope: 'organization' }
     });
+    await clearPermissionCache(userId);
+    // Task 14: see comment above — same rationale for org-scope users.
+    await revokeAllUserTokens(userId).catch((err) => {
+      console.error('[users] token revoke failed after org-user removal:', err);
+    });
 
     return c.json({ success: true });
   }
@@ -877,6 +1402,7 @@ userRoutes.delete(
 userRoutes.post(
   '/:id/role',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
   zValidator('json', assignRoleSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -884,9 +1410,17 @@ userRoutes.post(
     const userId = c.req.param('id')!;
     const { roleId } = c.req.valid('json');
 
+    if (userId === auth.user.id) {
+      return c.json({ error: 'Self role assignment is not allowed' }, 403);
+    }
+
     const role = await getScopedRole(roleId, scopeContext);
     if (!role) {
       return c.json({ error: 'Invalid role for this scope' }, 400);
+    }
+    const rolePermissionError = await validateAssignableRole(c, auth, role);
+    if (rolePermissionError) {
+      return c.json({ error: rolePermissionError }, 403);
     }
 
     if (scopeContext.scope === 'partner') {
@@ -909,6 +1443,7 @@ userRoutes.post(
           scope: 'partner'
         }
       });
+      await clearPermissionCache(userId);
 
       return c.json({ success: true });
     }
@@ -932,6 +1467,7 @@ userRoutes.post(
         scope: 'organization'
       }
     });
+    await clearPermissionCache(userId);
 
     return c.json({ success: true });
   }

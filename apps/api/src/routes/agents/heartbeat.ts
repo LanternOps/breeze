@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import {
   devices,
   deviceMetrics,
   agentVersions,
+  agentLogs,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
@@ -24,40 +25,201 @@ import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
+import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
+
+/**
+ * #1121 — pure collapse detector for the watchdogState tolerance gap.
+ * Returns the structured-warn payload when the RAW heartbeat body carried a
+ * `watchdogState` key but schema validation collapsed it to undefined (the
+ * `.catch(undefined)` firing on a corrupted value), else null. Exported for
+ * unit tests; the route handler owns the actual console.warn.
+ */
+export function detectWatchdogStateCollapse(
+  rawBody: unknown,
+  validatedWatchdogState: string | undefined,
+): { field: 'watchdogState'; rawValue: string | undefined } | null {
+  if (validatedWatchdogState !== undefined) return null;
+  if (!rawBody || typeof rawBody !== 'object') return null;
+  const rawState = (rawBody as Record<string, unknown>).watchdogState;
+  if (rawState === undefined) return null;
+  const rawValue =
+    typeof rawState === 'string'
+      ? rawState.slice(0, 100)
+      : JSON.stringify(rawState)?.slice(0, 100);
+  return { field: 'watchdogState', rawValue };
+}
 
 export const heartbeatRoutes = new Hono();
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  const agent = c.get('agent') as AgentAuthContext | undefined;
+
+  if (!agent?.deviceId) {
+    return c.json({ error: 'Agent context not found' }, 401);
+  }
+
+  // #1121 — observability for the #1065 tolerance trade-off. watchdogState is
+  // an optional informational field guarded by .catch(undefined) in
+  // heartbeatSchema; if a corrupted value collapses to undefined, the
+  // `data.watchdogState === 'FAILOVER'` mapping below silently records
+  // watchdogStatus='connected', masking a genuine failover as healthy
+  // (pre-#1065 the same corruption produced a loud 400). Detect the collapse
+  // — raw body carried the key but the validated payload lost it — and emit
+  // a structured warn so it lands in logs/Sentry breadcrumbs instead of
+  // being indistinguishable from a healthy heartbeat. Hono caches the parsed
+  // JSON body (zValidator already consumed it), so the re-read is free; the
+  // check is gated to watchdog-role heartbeats, the only senders of the field.
+  if (agent.role === 'watchdog' && data.watchdogState === undefined) {
+    try {
+      const raw: unknown = await c.req.json();
+      const collapse = detectWatchdogStateCollapse(raw, data.watchdogState);
+      if (collapse) {
+        console.warn(
+          '[heartbeat] watchdogState collapsed by schema .catch — possible masked failover (#1121)',
+          { deviceId: agent.deviceId, agentId, ...collapse },
+        );
+      }
+    } catch {
+      // Raw body unavailable — nothing to report.
+    }
+  }
+
+  // #1105 — run the RLS-scoped DB work in a SHORT-LIVED context that is
+  // released before the manifest-trust-keyset fetch at the end. The heartbeat
+  // opts out of agentAuthMiddleware's request-long withDbAccessContext wrap
+  // (see agentAuth.ts) and self-manages here, so the org transaction is held
+  // only across this block — not across getActiveTrustKeyset(), which acquires
+  // its OWN (second) pooled connection. Holding both at once self-deadlocks the
+  // pool under a mass agent reconnect (idle-in-transaction → killed → outage).
+  const dbContext = {
+    scope: 'organization' as const,
+    orgId: agent.orgId,
+    accessibleOrgIds: [agent.orgId],
+    accessiblePartnerIds: [],
+  };
+
+  const scoped = await withDbAccessContext(
+    dbContext,
+    async (): Promise<Response | { mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
     .from(devices)
-    .where(eq(devices.agentId, agentId))
+    .where(eq(devices.id, agent.deviceId))
     .limit(1);
 
   if (!device) {
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  const isWatchdog = data.role === 'watchdog';
+  if (data.role && data.role !== agent.role) {
+    // Return 401 with re_enrollment_required so the watchdog/agent can drop its
+    // stale token and re-provision via IPC or /rotate-token. A 403 here causes
+    // a stale pre-#568 watchdog binary (using the main agent token but declaring
+    // role=watchdog) to retry forever; the agent's authstate.Monitor only backs
+    // off on 401, so this is what breaks the loop.
+    console.warn('[heartbeat] Agent credential role mismatch', {
+      deviceId: agent.deviceId,
+      expected: agent.role,
+      declared: data.role,
+    });
+    return c.json({
+      error: 'Agent credential role mismatch',
+      code: 're_enrollment_required',
+      expected: agent.role,
+      declared: data.role,
+    }, 401);
+  }
+
+  const isWatchdog = agent.role === 'watchdog';
 
   if (isWatchdog) {
-    // Update watchdog-specific columns only — don't touch agent metrics
+    // #800 Layer C — asymmetry detector. When this watchdog heartbeat
+    // arrives, check whether the MAIN agent's lastSeenAt is past the
+    // silence threshold. If so, mark the device as
+    // `mainAgentSilentSince=NOW()` (idempotent across subsequent
+    // watchdog ticks) and emit `device.main_agent_silent` on the first
+    // transition. The flag is cleared by the main-agent branch below
+    // when the agent recovers.
+    //
+    // Threshold: 15 minutes = 3x the default 5-min offline-detector
+    // window per the issue's "3 * heartbeat_interval" guidance. Stays
+    // comfortably above transient network blips while remaining well
+    // inside the typical "operator notices something is off" window.
+    const MAIN_AGENT_SILENT_THRESHOLD_MS = 15 * 60 * 1000;
+    const now = new Date();
+    const mainAgentSilent = device.lastSeenAt
+      ? now.getTime() - device.lastSeenAt.getTime() > MAIN_AGENT_SILENT_THRESHOLD_MS
+      : false;
+    const transitioningIntoSilent = mainAgentSilent && !device.mainAgentSilentSince;
+
+    const watchdogUpdates: Record<string, unknown> = {
+      watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
+      watchdogLastSeen: now,
+      watchdogVersion: data.agentVersion,
+      updatedAt: now,
+    };
+    if (transitioningIntoSilent) {
+      watchdogUpdates.mainAgentSilentSince = now;
+    }
+
     try {
       await db.update(devices)
-        .set({
-          watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
-          watchdogLastSeen: new Date(),
-          watchdogVersion: data.agentVersion,
-          updatedAt: new Date(),
-        })
+        .set(watchdogUpdates)
         .where(eq(devices.id, device.id));
     } catch (err) {
       console.error('Failed to update watchdog status:', err);
+    }
+
+    // Emit only on the silence→silent transition so subscribers (alerts,
+    // webhooks) don't fire once per watchdog tick during the outage.
+    // The clear-side event fires from the main-agent branch on recovery.
+    // (#800 Layer C)
+    if (transitioningIntoSilent) {
+      publishEvent('device.main_agent_silent', device.orgId, {
+        deviceId: device.id,
+        hostname: device.hostname,
+        mainAgentLastSeenAt: device.lastSeenAt?.toISOString() ?? null,
+        watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
+        silenceDurationSeconds: device.lastSeenAt
+          ? Math.round((now.getTime() - device.lastSeenAt.getTime()) / 1000)
+          : null,
+      }, 'heartbeat-watchdog-branch', { priority: 'high' }).catch((err) => {
+        console.error('[heartbeat] device.main_agent_silent publish failed:', err);
+      });
+    }
+
+    // #799 Layer B — record any non-zero main-agent restart activity into
+    // agent_logs so on-call has a queryable trail of flap-loop scenarios.
+    // Do not block the heartbeat path on logging failure.
+    const restartCount = data.mainAgentRestartCount24h ?? 0;
+    if (restartCount > 0 || data.flapDetected === true) {
+      try {
+        await db.insert(agentLogs).values({
+          deviceId: device.id,
+          orgId: device.orgId,
+          timestamp: new Date(),
+          level: data.flapDetected ? 'error' : 'warn',
+          component: 'watchdog',
+          message: data.flapDetected
+            ? `Main agent restart flap detected (${restartCount} restarts in 24h)`
+            : `Main agent restart activity: ${restartCount} in 24h`,
+          fields: {
+            count24h: restartCount,
+            lastRestartAt: data.mainAgentLastRestartAt ?? null,
+            flapDetected: data.flapDetected === true,
+            watchdogState: data.watchdogState ?? null,
+          },
+          agentVersion: data.agentVersion,
+        });
+      } catch (err) {
+        console.error('Failed to write watchdog restart-activity log:', err);
+      }
     }
 
     // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)
@@ -95,6 +257,45 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
+    // #1104 — agent recovery via the watchdog. A live watchdog whose main
+    // agent is wedged (silent past the #800 threshold) and behind the latest
+    // release has no other recovery path: the watchdog's failover loop routes
+    // an agent `upgradeTo` into doUpdateAgent(), which replaces the wedged
+    // binary. Compute it off the device's RECORDED main-agent version
+    // (`device.agentVersion`) — `data.agentVersion` in this branch is the
+    // WATCHDOG's own version. Gated on `mainAgentSilent` so a healthy main
+    // agent (which self-updates from its own heartbeat) and the watchdog never
+    // both write the same binary.
+    let agentUpgradeTo: string | undefined;
+    if (
+      mainAgentSilent &&
+      normalizedArch &&
+      device.agentVersion &&
+      !device.agentVersion.startsWith('dev-')
+    ) {
+      try {
+        const [latestAgent] = await db
+          .select({ version: agentVersions.version })
+          .from(agentVersions)
+          .where(
+            and(
+              eq(agentVersions.platform, device.osType),
+              eq(agentVersions.architecture, normalizedArch),
+              eq(agentVersions.component, 'agent'),
+              eq(agentVersions.isLatest, true)
+            )
+          )
+          .orderBy(desc(agentVersions.createdAt))
+          .limit(1);
+
+        if (latestAgent && compareAgentVersions(latestAgent.version, device.agentVersion) > 0) {
+          agentUpgradeTo = latestAgent.version;
+        }
+      } catch (err) {
+        console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
+      }
+    }
+
     return c.json({
       commands: watchdogCommands.map(cmd => ({
         id: cmd.id,
@@ -102,6 +303,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         payload: cmd.payload,
       })),
       watchdogUpgradeTo,
+      upgradeTo: agentUpgradeTo,
     });
   }
 
@@ -113,6 +315,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     uptimeSeconds: data.uptime ?? null,
     updatedAt: new Date()
   };
+
+  // #800 Layer C — recovery side. If the asymmetry detector previously
+  // set mainAgentSilentSince (watchdog kept reporting while we went
+  // dark), clear it now that the main agent is heartbeating again. No
+  // event emitted on the clear path — the natural `device.online`/
+  // status flip already conveys the recovery to subscribers.
+  if (device.mainAgentSilentSince) {
+    deviceUpdates.mainAgentSilentSince = null;
+  }
 
   // Only update deviceRole if agent provides one and current source is 'auto'
   if (data.deviceRole && device.deviceRoleSource === 'auto') {
@@ -390,7 +601,9 @@ if (latestHelper) {
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
-  const rotateToken = !authenticatedWithPreviousToken && isAgentTokenRotationDue(device.tokenIssuedAt);
+  const rotateToken =
+    !authenticatedWithPreviousToken &&
+    (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
 
   let manageRemoteManagement = false;
   try {
@@ -400,22 +613,48 @@ if (latestHelper) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
   }
 
-  return c.json({
-    commands: commands.map(cmd => ({
-      id: cmd.id,
-      type: cmd.type,
-      payload: cmd.payload
-    })),
-    configUpdate: mergedConfigUpdate,
-    upgradeTo,
-    helperUpgradeTo: helperUpgradeTo ?? undefined,
-    watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
-    renewCert: renewCert || undefined,
-    rotateToken: rotateToken || undefined,
-    helperEnabled: helperSettings?.enabled ?? false,
-    helperSettings: helperSettings ?? undefined,
-    manageRemoteManagement: manageRemoteManagement || undefined,
-  });
+  // Main-branch response payload — built inside the org context, but the
+  // manifest-trust-keyset is fetched AFTER this context closes (see below).
+  return {
+    mainResponse: {
+      commands: commands.map(cmd => ({
+        id: cmd.id,
+        type: cmd.type,
+        payload: cmd.payload
+      })),
+      configUpdate: mergedConfigUpdate,
+      upgradeTo,
+      helperUpgradeTo: helperUpgradeTo ?? undefined,
+      watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
+      renewCert: renewCert || undefined,
+      rotateToken: rotateToken || undefined,
+      helperEnabled: helperSettings?.enabled ?? false,
+      helperSettings: helperSettings ?? undefined,
+      manageRemoteManagement: manageRemoteManagement || undefined,
+    },
+  };
+    },
+  );
+
+  // 404 / 401 / watchdog branches returned a Response directly from the scoped
+  // block — pass it through.
+  if (scoped instanceof Response) return scoped;
+
+  // #1105 — the org transaction is now released. Fetch the manifest trust
+  // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped
+  // context/connection, so no withDbAccessContext(org) is held while it
+  // acquires a second connection. (Returns the active signing keyset from
+  // manifest_signing_keys; empty on hosted SaaS — see
+  // docs/deploy/agent-update-trust-bootstrap.md, #625.)
+  let manifestTrustKeys: ManifestTrustKey[] = [];
+  try {
+    manifestTrustKeys = await getActiveTrustKeyset();
+  } catch (err) {
+    console.error(`[heartbeat] Failed to load manifest trust keyset for agentId=${agentId}:`, err);
+    captureException(err);
+  }
+
+  return c.json({ ...scoped.mainResponse, manifestTrustKeys });
 });
 
 // Receive service/process monitoring check results from agent

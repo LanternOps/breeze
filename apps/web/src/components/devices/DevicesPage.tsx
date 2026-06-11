@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useEventStream } from '../../hooks/useEventStream';
+import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -11,8 +12,12 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
+import { FilterChipBar } from './FilterChipBar';
+import { QuickAddChips } from './QuickAddChips';
+import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
 import { fetchWithAuth } from '../../stores/auth';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
+import { fetchAllDevices } from '../../lib/devicesFetch';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
@@ -56,9 +61,34 @@ export default function DevicesPage() {
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
-  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(null);
+  // v2 chip bar seeds its filter from the URL hash so a filtered view is
+  // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
+  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return decodeFilterFromHash(window.location.hash);
+  });
+  const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
+  // Resolve the advanced filter to the complete (uncapped) matching id set
+  // once, here, so the list AND grid views render the same filtered fleet.
+  // The grid previously mapped the raw devices array and ignored the filter.
+  const { ids: advancedFilterIds, loading: advancedFilterLoading } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
+
+  // Track every in-flight wake watcher so navigating away aborts the
+  // long-running poll loop. Without this, each wake fired on this page
+  // keeps polling /devices/:id for up to 4 minutes after unmount and
+  // attempts setState (via showToast + fetchDevices) on a dead component.
+  // (Todd's #789 review.) A user can wake several rows in quick
+  // succession, hence a Set rather than a single controller.
+  const wakeWatchersRef = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const watchers = wakeWatchersRef.current;
+    return () => {
+      for (const ctrl of watchers) ctrl.abort();
+      watchers.clear();
+    };
+  }, []);
 
   const scriptTargetLabel =
     scriptTargetDevices.length === 1
@@ -72,28 +102,59 @@ export default function DevicesPage() {
     return unique.length > 0 ? unique : undefined;
   }, [scriptTargetDevices]);
 
-  const fetchDevices = useCallback(async () => {
+  // Grid view applies the advanced filter here; the list view passes the id
+  // set into DeviceList, which combines it with its local quick-filters
+  // (search/status/os/etc. stay list-only).
+  const gridDevices = useMemo(
+    () => (advancedFilterIds === null ? devices : devices.filter(d => advancedFilterIds.has(d.id))),
+    [devices, advancedFilterIds]
+  );
+
+  const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true);
       setError(null);
 
-      // Fetch devices, orgs, sites, and groups in parallel
-      const [devicesResponse, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
-        fetchWithAuth('/devices?includeDecommissioned=true'),
-        fetchWithAuth('/orgs'),
-        fetchWithAuth('/orgs/sites'),
-        fetchWithAuth('/device-groups?includeMemberships=true').catch((err) => {
+      // Devices walk the cursor (Discussion #742 PR 3); orgs/sites/groups
+      // are bounded one-shot fetches. Run all four in parallel so the
+      // first paint isn't gated on the slowest one. fetchAllDevices is
+      // forward+backward compatible: against the cursor API it walks
+      // pages, against the legacy offset API it returns the first
+      // capped page and stops — same UX as before, no user-visible cap
+      // once the server-side cursor migration lands.
+      //
+      // `signal` is wired by the mount useEffect's AbortController so a
+      // navigate-away mid-walk stops the next page request and prevents
+      // setState on an unmounted component (#778 review).
+      const [devicesResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+        fetchAllDevices({
+          includeDecommissioned: true,
+          signal,
+          // Surface the silent-cap case (#778 review). Without this, hitting
+          // the safety ceiling would render an incomplete device list and
+          // get reported later as "devices are missing."
+          onTruncated: ({ actualCount }) => {
+            showToast({
+              type: 'error',
+              message:
+                `Devices list truncated at ${actualCount} rows ` +
+                `(safety cap hit). Some devices may not be shown — refresh or contact support.`,
+              duration: 8000
+            });
+          }
+        }),
+        fetchWithAuth('/orgs', { signal }),
+        fetchWithAuth('/orgs/sites', { signal }),
+        fetchWithAuth('/device-groups?includeMemberships=true', { signal }).catch((err) => {
+          // AbortError on unmount is expected — bubble it up so the outer
+          // catch can short-circuit cleanly; don't log it as a real failure.
+          if (err instanceof Error && err.name === 'AbortError') throw err;
           console.warn('Failed to fetch device groups:', err);
           return null;
         })
       ]);
 
-      if (!devicesResponse.ok) {
-        throw devicesResponse;
-      }
-
-      const devicesData = await devicesResponse.json();
-      const deviceList = devicesData.data ?? devicesData.devices ?? devicesData ?? [];
+      const deviceList = devicesResult.data;
 
       // Transform API response to match Device type
       const transformedDevices: Device[] = deviceList.map((d: Record<string, unknown>) => {
@@ -116,7 +177,22 @@ export default function DevicesPage() {
           agentVersion: (d.agentVersion ?? '') as string,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
-          deviceRoleSource: d.deviceRoleSource as string | undefined
+          deviceRoleSource: d.deviceRoleSource as string | undefined,
+          mainAgentSilentSince: (d.mainAgentSilentSince ?? null) as string | null,
+          watchdogStatus: (d.watchdogStatus ?? null) as Device['watchdogStatus'],
+          lastUser: d.lastUser as string | undefined,
+          uptimeSeconds: typeof d.uptimeSeconds === 'number' ? d.uptimeSeconds : undefined,
+          osBuild: d.osBuild as string | undefined,
+          architecture: d.architecture as string | undefined,
+          isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
+          enrolledAt: d.enrolledAt as string | undefined,
+          desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
+          hardware: hardware ? {
+            cpuModel: hardware.cpuModel as string | undefined,
+            cpuCores: typeof hardware.cpuCores === 'number' ? hardware.cpuCores : undefined,
+            ramTotalMb: typeof hardware.ramTotalMb === 'number' ? hardware.ramTotalMb : undefined,
+            diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
+          } : undefined,
         };
       });
 
@@ -172,14 +248,23 @@ export default function DevicesPage() {
       setOrgs(orgsList);
       setSites(sitesList);
     } catch (err) {
+      // Aborts are expected when the component unmounts mid-walk — drop
+      // them silently rather than rendering a misleading error banner.
+      if (err instanceof Error && err.name === 'AbortError') return;
       setError(err);
     } finally {
-      setLoading(false);
+      // setLoading(false) is harmless after unmount (React 18 ignores
+      // setState on unmounted components for hook-based components) but
+      // we still skip it when we know the call aborted, to avoid a
+      // brief flicker if the component remounts on the same key.
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchDevices();
+    const controller = new AbortController();
+    fetchDevices(controller.signal);
+    return () => controller.abort();
   }, [fetchDevices]);
 
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
@@ -223,6 +308,13 @@ export default function DevicesPage() {
   useEffect(() => {
     subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
   }, [subscribe]);
+
+  // Mirror the chip-bar filter into the URL hash so the view is shareable.
+  // Only active under v2; the legacy bar doesn't expect hash interop.
+  useEffect(() => {
+    if (!filtersV2) return;
+    writeFilterToHash(advancedFilter);
+  }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
     void navigateTo(`/devices/${device.id}`);
@@ -278,6 +370,52 @@ export default function DevicesPage() {
           await sendDeviceCommand(device.id, action);
           const label = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
           showToast({ type: 'success', message: `${label} command sent to ${device.hostname}` });
+          break;
+        }
+
+        case 'wake': {
+          try {
+            const wake = await sendWakeCommand(device.id);
+            const hostname = device.hostname;
+            showToast({
+              type: 'success',
+              message: `Wake packet sent to ${hostname} via ${wake.relay.hostname} (${wake.broadcast}). Watching for it to come online…`,
+            });
+            const wakeController = new AbortController();
+            wakeWatchersRef.current.add(wakeController);
+            void watchWakeOutcome(device.id, { signal: wakeController.signal })
+              .then(async (outcome) => {
+                if (outcome === 'online') {
+                  showToast({ type: 'success', message: `${hostname} is now online.` });
+                  await fetchDevices();
+                } else if (outcome === 'timeout') {
+                  showToast({
+                    type: 'error',
+                    message: `${hostname} did not come online within 4 minutes. Check ethernet + BIOS WoL.`,
+                  });
+                }
+                // 'aborted' is silent — user navigated away or page reloaded.
+              })
+              .finally(() => {
+                wakeWatchersRef.current.delete(wakeController);
+              });
+          } catch (err) {
+            if (err instanceof WakeCommandError) {
+              const friendly = wakeFriendlyErrorMessage(err.code) ?? err.message;
+              showToast({ type: 'error', message: `${device.hostname}: ${friendly}` });
+            } else {
+              throw err;
+            }
+          }
+          break;
+        }
+
+        case 'refresh': {
+          await sendDeviceCommand(device.id, 'refresh_inventory');
+          showToast({
+            type: 'success',
+            message: `Inventory refresh requested for ${device.hostname}. Fresh data in 1–2 minutes.`,
+          });
           break;
         }
 
@@ -401,12 +539,21 @@ export default function DevicesPage() {
           const result = await sendBulkCommand(deviceIds, action);
           const successCount = result.commands?.length ?? 0;
           const failedCount = result.failed?.length ?? 0;
+          const skippedCount = result.skipped?.length ?? 0;
           const bulkLabel = action === 'reboot_safe_mode' ? 'Reboot to Safe Mode' : action.charAt(0).toUpperCase() + action.slice(1);
+          const skippedTail = skippedCount > 0 ? `, ${skippedCount} already pending` : '';
 
           if (failedCount === 0) {
-            showToast({ type: 'success', message: `${bulkLabel} command sent to ${successCount} devices` });
+            showToast({
+              type: 'success',
+              message: `${bulkLabel} command sent to ${successCount} device${successCount === 1 ? '' : 's'}${skippedTail}`,
+            });
           } else {
-            showToast({ type: 'error', message: `${bulkLabel} sent to ${successCount} devices, ${failedCount} failed` });
+            const failureSummary = summarizeBulkCommandFailures(result.failed ?? []);
+            showToast({
+              type: 'error',
+              message: `${bulkLabel} sent to ${successCount} device${successCount === 1 ? '' : 's'}${skippedTail}; ${failedCount} failed: ${failureSummary}.`,
+            });
           }
           break;
         }
@@ -449,6 +596,32 @@ export default function DevicesPage() {
             showToast({ type: 'error', message: `${result.succeeded} decommissioned, ${result.failed} failed` });
           }
           await fetchDevices();
+          break;
+        }
+
+        case 'wake': {
+          // One round-trip; server iterates per-device with relay-pick per LAN
+          // and returns per-device outcome. We render one summary toast
+          // grouped by failure code so a 50-device bulk doesn't spam 50
+          // toasts.
+          const summary = await sendBulkWakeCommand(deviceIds);
+          const failureSummary = summarizeBulkWakeFailures(summary.failed);
+          if (summary.failed.length === 0) {
+            showToast({
+              type: 'success',
+              message: `Wake packets sent to ${summary.succeeded.length} device${summary.succeeded.length === 1 ? '' : 's'}. Allow up to 5 minutes to come online.`,
+            });
+          } else if (summary.succeeded.length === 0) {
+            showToast({
+              type: 'error',
+              message: `Could not wake any of ${summary.failed.length} device${summary.failed.length === 1 ? '' : 's'}: ${failureSummary}.`,
+            });
+          } else {
+            showToast({
+              type: 'error',
+              message: `Wake sent to ${summary.succeeded.length} of ${summary.succeeded.length + summary.failed.length} devices. ${summary.failed.length} could not be woken: ${failureSummary}.`,
+            });
+          }
           break;
         }
 
@@ -509,7 +682,7 @@ export default function DevicesPage() {
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button
             type="button"
-            onClick={fetchDevices}
+            onClick={() => void fetchDevices()}
             className="text-xs font-medium text-primary hover:underline"
           >
             Try again
@@ -564,12 +737,24 @@ export default function DevicesPage() {
         </div>
       </div>
 
-      <DeviceFilterBar
-        value={advancedFilter}
-        onChange={setAdvancedFilter}
-        showSavedFilters={true}
-        collapsible={true}
-      />
+      {filtersV2 ? (
+        <div className="flex flex-col gap-2">
+          <FilterChipBar
+            value={advancedFilter}
+            onChange={setAdvancedFilter}
+            orgs={orgs}
+            sites={sites}
+          />
+          <QuickAddChips value={advancedFilter} onChange={setAdvancedFilter} />
+        </div>
+      ) : (
+        <DeviceFilterBar
+          value={advancedFilter}
+          onChange={setAdvancedFilter}
+          showSavedFilters={true}
+          collapsible={true}
+        />
+      )}
 
       {bulkProgress && (
         <div className="rounded-md border bg-muted/20 px-4 py-3">
@@ -613,14 +798,15 @@ export default function DevicesPage() {
           onSelect={handleSelectDevice}
           onAction={handleDeviceAction}
           onBulkAction={handleBulkAction}
-          serverFilter={advancedFilter}
+          serverFilterIds={advancedFilterIds}
+          serverFilterLoading={advancedFilterLoading}
           onCreateGroup={() => setShowCreateGroup(true)}
           autoSelectGroupId={autoSelectGroupId}
           onAutoSelectConsumed={handleAutoSelectConsumed}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {devices.map(device => (
+          {gridDevices.map(device => (
             <DeviceCard
               key={device.id}
               device={device}

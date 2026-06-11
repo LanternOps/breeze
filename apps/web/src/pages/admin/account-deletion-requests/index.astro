@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import AccountDeletionRequestsList from '../../../components/admin/AccountDeletionRequestsList';
+---
+
+<DashboardLayout title="Account deletion requests">
+  <AccountDeletionRequestsList client:load />
+</DashboardLayout>

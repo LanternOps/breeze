@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,19 @@ func WithSessionEnumerator(e SessionEnumerator) Option {
 	return func(m *Manager) { m.sessionEnumerator = e }
 }
 
+// WithAgentVersion sets the currently-running agent version, forwarded to the
+// verified helper downloader as CurrentVersion.
+func WithAgentVersion(v string) Option {
+	return func(m *Manager) { m.agentVersion = v }
+}
+
+// WithManifestKeys sets deployment-pinned Ed25519 release-manifest public keys
+// (merged with the embedded trust root in the updater) so self-host
+// deployments can verify locally-signed helper manifests.
+func WithManifestKeys(keys []string) Option {
+	return func(m *Manager) { m.manifestKeys = keys }
+}
+
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
 type Manager struct {
 	mu                sync.Mutex
@@ -76,9 +90,18 @@ type Manager struct {
 	isOurProcessFunc  func(pid int, binaryPath string) bool
 	stopByPIDFunc     func(pid int) error
 
-	pendingHelperVersion  string
-	updateFailures        int
-	abandonedVersion      string // version we gave up updating to
+	// downloadFunc fetches and INTEGRITY-VERIFIES the helper package for the
+	// given version, returning the path to a verified temp file. In production
+	// this is the updater-backed verified downloader (defaultHelperDownloader)
+	// that enforces signed-manifest + SHA-256 verification and control-plane
+	// origin. Tests inject a stub. It is NEVER the old unverified fetch.
+	downloadFunc func(version string) (string, error)
+	agentVersion string
+	manifestKeys []string
+
+	pendingHelperVersion string
+	updateFailures       int
+	abandonedVersion     string // version we gave up updating to
 }
 
 // New creates a new helper Manager.
@@ -100,6 +123,9 @@ func New(ctx context.Context, serverURL string, authToken *secmem.SecureString, 
 	}
 	if m.spawnFunc == nil {
 		m.spawnFunc = defaultSpawnFunc
+	}
+	if m.downloadFunc == nil {
+		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.authToken, m.agentVersion, m.manifestKeys)
 	}
 	return m
 }
@@ -174,7 +200,14 @@ func (m *Manager) Apply(settings *Settings) {
 	}
 
 	if settings.Enabled && !m.isInstalled() {
-		if err := m.downloadAndInstall(); err != nil {
+		// Install only when the server has pinned a concrete (signed) helper
+		// version via HelperUpgradeTo -> CheckUpdate. The heartbeat always
+		// supplies one when bootstrapping a first install, and it is processed
+		// before this Apply call within the same heartbeat. Without it we fail
+		// closed rather than fetch unverified bytes.
+		if m.pendingHelperVersion == "" {
+			log.Debug("breeze assist enabled but no signed target version yet; deferring install")
+		} else if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 			log.Error("failed to install breeze assist", "error", err.Error())
 			return
 		}
@@ -326,7 +359,7 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
-	if runtime.GOOS != "windows" && si.UID > 0 {
+	if runtime.GOOS != "windows" && si.UID > 0 && si.UID <= math.MaxInt32 {
 		_ = os.Chown(dir, int(si.UID), -1)
 	}
 
@@ -457,31 +490,51 @@ func (m *Manager) isInstalled() bool {
 	return err == nil
 }
 
-// downloadAndInstall downloads the platform-appropriate helper package.
-func (m *Manager) downloadAndInstall() error {
+// IsInstalled reports whether the helper binary is present on disk. Exported
+// so the heartbeat downgrade guard can distinguish "not installed" from
+// "installed but version unreadable" (the latter must fail closed).
+func (m *Manager) IsInstalled() bool {
+	return m.isInstalled()
+}
+
+// downloadAndInstall downloads, INTEGRITY-VERIFIES, and installs the
+// platform-appropriate helper package for the given target version.
+//
+// The download goes through m.downloadFunc (the verified, updater-backed
+// downloader) which enforces: Ed25519 signed-release-manifest verification, a
+// SHA-256 checksum match over the downloaded bytes, download host == configured
+// control-plane ServerURL, and refusal to follow off-origin redirects. Only
+// AFTER those checks pass is the privileged installer (installPackageFunc:
+// msiexec /i as SYSTEM, hdiutil + cp -R as root) invoked. This closes the
+// HIGH-severity RCE where unsigned bytes from a GitHub-CDN redirect were
+// executed with full privileges.
+//
+// Fails closed: with no signed target version there is no manifest entry to
+// verify against, so we refuse rather than fetch unversioned/unverified bytes.
+func (m *Manager) downloadAndInstall(version string) error {
 	if m.authToken == nil {
 		return fmt.Errorf("cannot download helper: auth token not available")
 	}
-	url := fmt.Sprintf("%s/api/v1/agents/download/helper/%s/%s", m.serverURL, runtime.GOOS, runtime.GOARCH)
-	log.Info("downloading helper package", "url", url)
-
-	tmpFile, err := os.CreateTemp("", "breeze-helper-install-*"+packageExtension())
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+	if version == "" {
+		return fmt.Errorf("cannot install helper: no signed target version available (refusing to fetch unverified bytes)")
 	}
-	tmpPath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer os.Remove(tmpPath)
+	if m.downloadFunc == nil {
+		return fmt.Errorf("cannot download helper: verified downloader not configured")
+	}
 
-	if err := downloadFile(url, tmpPath, m.authToken.Reveal()); err != nil {
+	log.Info("downloading helper package (verified)", "version", version, "server", m.serverURL)
+
+	verifiedPath, err := m.downloadFunc(version)
+	if err != nil {
 		return fmt.Errorf("download helper: %w", err)
 	}
+	defer os.Remove(verifiedPath)
 
-	if err := installPackage(tmpPath, m.binaryPath); err != nil {
+	if err := installPackageFunc(verifiedPath, m.binaryPath); err != nil {
 		return fmt.Errorf("install helper package: %w", err)
 	}
 
-	log.Info("helper installed", "path", m.binaryPath)
+	log.Info("helper installed", "path", m.binaryPath, "version", version)
 	return nil
 }
 
@@ -573,7 +626,7 @@ func (m *Manager) applyPendingUpdate() {
 		log.Warn("failed to backup helper binary", "error", err.Error())
 	}
 
-	if err := m.downloadAndInstall(); err != nil {
+	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 		m.updateFailures++
 		log.Error("failed to install helper update", "error", err.Error(), "failures", m.updateFailures)
 		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
@@ -670,7 +723,6 @@ func (m *Manager) stopSessionWatcherBounded(state *sessionState, d time.Duration
 	}
 	m.mu.Lock()
 }
-
 
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)

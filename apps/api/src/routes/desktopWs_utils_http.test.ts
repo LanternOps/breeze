@@ -42,9 +42,27 @@ vi.mock('../services/jwt', () => ({
   verifyViewerAccessToken: vi.fn()
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
+}));
+
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
 }));
 
 // -------------------------------------------------------------------
@@ -52,7 +70,8 @@ vi.mock('./agentWs', () => ({
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
-import { createViewerAccessToken } from '../services/jwt';
+import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleDesktopFrame,
@@ -67,7 +86,7 @@ import {
 // Helpers
 // -------------------------------------------------------------------
 
-const SESSION_ID = 'session-desktop-001';
+const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = 'device-xyz';
 const AGENT_ID = 'agent-xyz';
 
@@ -124,7 +143,8 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
-      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined))
+      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined)
     }
   };
 
@@ -139,6 +159,7 @@ function setupSuccessfulValidation() {
   const userId = nextUserId();
 
   const ticketRecord = {
+    ok: true as const,
     sessionId: SESSION_ID,
     sessionType: 'desktop' as const,
     userId,
@@ -384,9 +405,13 @@ describe('desktopWs', () => {
       expect(body.expiresInSeconds).toBe(900);
     });
 
-    it('returns cached result for duplicate exchange within TTL', async () => {
-      const userId = 'user-cache';
-      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+    it('rejects a re-exchange of a consumed connect code (no re-exchange cache)', async () => {
+      // Security: the connect code is strictly single-use. There is no
+      // server-side cache that would let a second call within a TTL window
+      // return the same token. Clients must guard against React strict-mode
+      // double-fire on their own side (see DesktopViewer.tsx exchangeFiredRef).
+      const userId = 'user-no-cache';
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValueOnce({
         sessionId: SESSION_ID,
         userId,
         email: 'test@example.com',
@@ -406,7 +431,7 @@ describe('desktopWs', () => {
       const app = buildApp();
       const body = { sessionId: SESSION_ID, code: 'dup-code' };
 
-      // First call
+      // First call — consumes the code, issues a token.
       const res1 = await app.request('/connect/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -416,17 +441,19 @@ describe('desktopWs', () => {
       const json1 = await res1.json();
       expect(json1.accessToken).toBe('first-token');
 
-      // Second call — code already consumed, but cache should return same token
-      vi.mocked(consumeDesktopConnectCode).mockResolvedValue(null);
+      // Second call — `consumeDesktopConnectCode` is atomic, so a replay
+      // gets back `null` and the endpoint must return 401. No cache means
+      // a stolen one-time code is useless once the legit client used it.
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValueOnce(null);
 
       const res2 = await app.request('/connect/exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      expect(res2.status).toBe(200);
+      expect(res2.status).toBe(401);
       const json2 = await res2.json();
-      expect(json2.accessToken).toBe('first-token');
+      expect(json2.error).toContain('Invalid or expired');
     });
 
     it('validates required fields via Zod', async () => {
@@ -470,6 +497,50 @@ describe('desktopWs', () => {
       const body = await res.json();
       expect(body.ok).toBe(true);
       expect(body.route).toBe('desktop-ws');
+    });
+  });
+
+  describe('viewer token lifecycle', () => {
+    it('revokes desktop viewer tokens when the desktop WebSocket disconnects', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({} as any, ws as any);
+      await handlers.onClose({} as any, ws as any);
+
+      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+    });
+
+    it('revokes desktop viewer tokens when the desktop WebSocket errors', async () => {
+      setupSuccessfulValidation();
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({} as any, ws as any);
+      await handlers.onError(new Error('socket failed'), ws as any);
+
+      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+    });
+
+    it('rejects desktop viewer tokens after the bound session is revoked', async () => {
+      vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+        sub: 'user-revoked',
+        email: 'revoked@example.com',
+        sessionId: SESSION_ID,
+        purpose: 'viewer',
+        jti: 'viewer-jti-revoked',
+      });
+      vi.mocked(isViewerSessionRevoked).mockResolvedValueOnce(true);
+
+      const app = buildApp();
+      const res = await app.request(`/${SESSION_ID}/viewer/session`, {
+        headers: { Authorization: 'Bearer viewer-token' },
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Session closed' });
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

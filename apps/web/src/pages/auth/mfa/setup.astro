@@ -1,0 +1,8 @@
+---
+import AuthLayout from '../../../layouts/AuthLayout.astro';
+import ForcedMfaSetupPage from '../../../components/auth/ForcedMfaSetupPage';
+---
+
+<AuthLayout title="Set up MFA">
+  <ForcedMfaSetupPage client:load />
+</AuthLayout>

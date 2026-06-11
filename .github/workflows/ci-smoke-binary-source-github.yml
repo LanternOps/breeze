@@ -1,0 +1,210 @@
+name: smoke-binary-source-github
+
+# Verifies that the BINARY_SOURCE=github auto-update path stays end-to-end
+# functional. #646 (v0.65.9 → v0.65.10) shipped without this CI smoke job in
+# place and the hosted-SaaS deploy of v0.65.9 surfaced an agent-rejected
+# download URL only after the prod rollout. This job exercises the same
+# path on every PR that touches the relevant code so the regression class
+# fails CI instead of the fleet.
+#
+# What it asserts:
+#   - API boots cleanly in BINARY_SOURCE=github mode with a published
+#     release tag.
+#   - GET /agent-versions/<version>/download returns 200 with a
+#     SERVER-RELATIVE url (matching PUBLIC_API_URL host), NOT the
+#     canonical github.com URL. That's the #646 fix and the regression
+#     would re-introduce auto-update breakage on hosted SaaS.
+
+on:
+  pull_request:
+    paths:
+      - "apps/api/src/services/binarySync.ts"
+      - "apps/api/src/services/releaseArtifactManifest.ts"
+      - "apps/api/src/routes/agentVersions.ts"
+      - "apps/api/src/routes/agents/download.ts"
+      - "apps/api/src/services/binarySource.ts"
+      - "apps/api/migrations/**"
+      - ".github/workflows/ci-smoke-binary-source-github.yml"
+  push:
+    branches: [main]
+
+env:
+  PNPM_VERSION: '10.33.4'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: BINARY_SOURCE=github download path
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze
+          POSTGRES_DB: breeze
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build API
+        run: pnpm --filter=@breeze/api build
+
+      - name: Boot API in BINARY_SOURCE=github mode
+        env:
+          # Authenticate binarySync's github API call so we don't hit the
+          # 60/hour unauthenticated rate limit on the shared CI runner IP.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BINARY_SOURCE: github
+          # Use the most recent published release whose manifest format is
+          # known to be compatible with the current API code. Bump this when
+          # cutting a new release if the manifest schema changes.
+          BREEZE_VERSION: "0.65.8"
+          DATABASE_URL: postgres://breeze:breeze@localhost:5432/breeze
+          DATABASE_URL_APP: postgres://breeze_app:breeze@localhost:5432/breeze
+          BREEZE_APP_DB_PASSWORD: breeze
+          POSTGRES_PASSWORD: breeze
+          REDIS_URL: redis://localhost:6379
+          # The CI Redis service has no password; #909 made unauthenticated
+          # Redis fail-closed in self-hosted production (IS_HOSTED=false
+          # below). This override acknowledges the CI-only sandbox posture
+          # so resolveRedisUrl() warns instead of throwing. Without it the
+          # smoke step exits 1 at boot before the binary-download path is
+          # ever exercised. See #969.
+          BREEZE_ALLOW_UNAUTH_REDIS: "true"
+          NODE_ENV: production
+          PUBLIC_APP_URL: http://localhost:3001
+          # PUBLIC_API_URL drives the server-relative URL rewrite in
+          # getServerOriginForDownloadResponse — the actual thing #646 fixes.
+          PUBLIC_API_URL: http://localhost:3001
+          # Production-strict env that the API requires at boot post-#568.
+          JWT_SECRET: ci-smoke-bsg-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: e9367714341ea19491ff7cd095d1a97e15ae3f7962416723ecfb29a89ed71eb9
+          MFA_ENCRYPTION_KEY: e86f8b88f2c058d428de55c4abec1b50a3cd960a7205dffdb65be8130abbb777
+          ENROLLMENT_KEY_PEPPER: ci-smoke-bsg-enrollment-pepper-Hy4Bz9Mp2Wq6Tv0Lk3
+          MFA_RECOVERY_CODE_PEPPER: ci-smoke-bsg-mfa-recovery-pepper-Nq8Zx2Vm5Tr9Lp1
+          AGENT_ENROLLMENT_SECRET: ci-smoke-bsg-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
+          ENROLLMENT_SECRET_ENFORCEMENT_MODE: warn
+          IS_HOSTED: "false"
+          TRUSTED_PROXY_CIDRS: 127.0.0.1/32
+          CORS_ALLOWED_ORIGINS: http://localhost:3001
+          TRUST_PROXY_HEADERS: "false"
+          BREEZE_BOOTSTRAP_ADMIN_EMAIL: smoke-admin@example.test
+          BREEZE_BOOTSTRAP_ADMIN_PASSWORD: ci-smoke-bsg-bootstrap-admin-Hy4Bz9Mp2Wq6Tv0Lk3
+          # Production LanternOps trust root for release manifest signatures.
+          # This is the public half of the keypair the release workflow signs
+          # with; it's safe to commit (public keys are not secret).
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: "yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso="
+        run: |
+          pnpm --filter=@breeze/api start &
+          API_PID=$!
+          echo "Waiting for /health/ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3001/health/ready >/dev/null 2>&1; then
+              echo "API healthy after ${i} polls."
+              break
+            fi
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+              echo "API process exited before becoming healthy."
+              exit 1
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:3001/health/ready || { echo "API never became healthy"; kill "$API_PID" 2>/dev/null; exit 1; }
+          echo "API_PID=$API_PID" >> "$GITHUB_ENV"
+
+      - name: Verify download endpoint returns 200 with server-relative URL (#646 regression check)
+        run: |
+          STATUS=$(curl -s -o /tmp/dl.json -w '%{http_code}' \
+            'http://localhost:3001/api/v1/agent-versions/0.65.8/download?platform=linux&arch=amd64&component=agent')
+          echo "Download endpoint returned: ${STATUS}"
+          cat /tmp/dl.json | jq . || cat /tmp/dl.json
+          if [ "$STATUS" != "200" ]; then
+            echo "Expected 200 — github-mode download endpoint should serve published manifests."
+            exit 1
+          fi
+
+          # The whole point of #646: the URL handed to the agent must be on
+          # our own origin, NOT github.com. Without this, the agent's
+          # downloadFromURL host check rejects with "download URL host
+          # \"github.com\" does not match server".
+          url=$(jq -er '.url' /tmp/dl.json)
+          echo "downloadUrl returned: ${url}"
+          case "$url" in
+            http://localhost:3001/api/v1/agents/download/*)
+              echo "OK — server-relative download URL"
+              ;;
+            *)
+              echo "REGRESSION (#646): expected a server-relative URL under http://localhost:3001/api/v1/agents/download/, got: ${url}"
+              exit 1
+              ;;
+          esac
+
+          # Manifest + signature should still be present (signed by the
+          # LanternOps trust root via GitHub release artifacts).
+          jq -e '.manifest != null and (.manifest | length) > 0' /tmp/dl.json
+          jq -e '.manifestSignature != null and (.manifestSignature | length) > 0' /tmp/dl.json
+
+      - name: Verify /agents/download proxy route 302s to github
+        run: |
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64')
+          if [ "$STATUS" != "302" ]; then
+            echo "Expected 302 redirect from /agents/download/:os/:arch in github mode; got ${STATUS}"
+            exit 1
+          fi
+          LOCATION=$(curl -s -o /dev/null -w '%{redirect_url}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64')
+          echo "Redirect target: ${LOCATION}"
+          # GitHub returns the org slug lowercased in 302 Location headers
+          # even though the canonical case is "LanternOps". Compare case-
+          # insensitively to be robust against either form.
+          shopt -s nocasematch
+          case "$LOCATION" in
+            https://github.com/lanternops/breeze/releases/download/*)
+              echo "OK — redirect points at github releases"
+              ;;
+            *)
+              echo "Expected redirect to github.com/LanternOps/breeze/releases/...; got ${LOCATION}"
+              exit 1
+              ;;
+          esac
+          shopt -u nocasematch
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -n "${API_PID:-}" ]; then
+            kill "$API_PID" 2>/dev/null || true
+          fi

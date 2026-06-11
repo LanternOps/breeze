@@ -146,6 +146,34 @@ Navigate to **Scripts** and click a script name to open the editor, then click *
 | `alert` | An alert-triggered automation runs the script as a remediation action |
 | `policy` | A configuration policy triggers the script as part of enforcement |
 
+### Severity by Exit Code
+
+When a script finishes, Breeze decides whether to raise an alert and at what severity based on the exit code. The mapping is configurable per script.
+
+The defaults are conservative: exit code `0` raises no alert at all, and any non-zero exit raises a `medium`-severity alert unless you override it. To customize, set the `exitCodeSeverityMapping` field on the script — a JSON object mapping exit-code strings to severity levels.
+
+| Exit code | Default behavior | Override via `exitCodeSeverityMapping` |
+|---|---|---|
+| `0` | No alert. | Always no alert (cannot be overridden). |
+| `1`, `2`, `3`, … | Single `medium`-severity alert. | Map any specific code to `low`, `medium`, `high`, or `critical`. |
+| Negative values | `critical` (abnormal termination, e.g., killed by signal). | Always `critical` (cannot be overridden). |
+| Unmapped non-zero | Falls back to the next-lower defined entry, else `medium`. | — |
+
+Example mapping:
+
+```json
+{
+  "exitCodeSeverityMapping": {
+    "1": "low",
+    "2": "medium",
+    "3": "high",
+    "4": "critical"
+  }
+}
+```
+
+An empty mapping `{}` is treated the same as omitting the field (default behavior). Pass the field on both POST `/scripts` and PUT `/scripts/:id`.
+
 ---
 
 ## Creating Scripts via API
@@ -173,11 +201,12 @@ Authorization: Bearer <token>
     }
   },
   "timeoutSeconds": 120,
-  "runAs": "system"
+  "runAs": "system",
+  "exitCodeSeverityMapping": { "1": "low", "2": "medium", "3": "high" }
 }
 ```
 
-The response includes the full script object with an auto-generated `id` and `version: 1`.
+The response includes the full script object with an auto-generated `id` and `version: 1`. The `exitCodeSeverityMapping` field is optional — see [Severity by Exit Code](#severity-by-exit-code) above.
 
 ---
 

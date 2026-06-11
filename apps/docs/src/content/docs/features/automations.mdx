@@ -396,16 +396,28 @@ POST /automations/webhooks/:automationId
 
 **Request body:** Any valid JSON. The body is passed to the automation as event context.
 
-If the automation has a secret configured, pass it as the `x-automation-secret` header (also accepted: `x-webhook-secret` header, or `?secret=` query parameter):
+**Authentication is HMAC-only by default.** Compute an HMAC-SHA256 over `<timestamp>.<raw-body>` using the automation's secret and send it as `x-breeze-signature: sha256=<hex>` alongside `x-breeze-timestamp: <unix-seconds>`. Optionally include `x-breeze-event-id` (or `x-breeze-nonce`) as an idempotency token to dedupe replays:
 
 ```bash
+TS=$(date +%s)
+BODY='{"any":"payload"}'
+SIG="sha256=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "your-secret-here" -binary | xxd -p -c 256)"
+
 curl -X POST https://your-breeze-host/automations/webhooks/:id \
   -H "Content-Type: application/json" \
-  -H "x-automation-secret: your-secret-here" \
-  -d '{"any":"payload"}'
+  -H "x-breeze-timestamp: $TS" \
+  -H "x-breeze-signature: $SIG" \
+  -H "x-breeze-event-id: $(uuidgen)" \
+  -d "$BODY"
 ```
 
-The secret is compared directly — there is no HMAC computation required. If the secret is missing or does not match, the request is rejected with `401 Unauthorized` and no run is created.
+The signature is verified within a 5-minute window and protected against replay by the event-id nonce. If the signature is missing, malformed, stale, or replayed, the request is rejected with `401 Unauthorized` and no run is created.
+
+#### Legacy shared-secret header (deprecated)
+
+The `x-automation-secret` / `x-webhook-secret` plain-string header path is deprecated and **disabled by default**. To re-enable temporarily during migration, set `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET=true` on the API. This flag will be removed in a future release — migrate senders to HMAC before then. The plain header value is replayable indefinitely by anyone who captures it in an HTTPS access log or pcap, which is why HMAC is now the default.
+
+The `?secret=` query-string parameter has been **removed entirely** — there is no flag to re-enable it. Query strings end up in every proxy, load-balancer, and CDN access log on the request path.
 
 ---
 

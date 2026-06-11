@@ -1,0 +1,3 @@
+# Override the root *.png ignore so app icons + splash images ship.
+# These files are required at build time and must be in the repo.
+!*.png

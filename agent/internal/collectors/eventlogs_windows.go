@@ -190,7 +190,7 @@ func (c *EventLogCollector) collectPowerEvents(since time.Time) ([]EventLogEntry
 		sinceStr,
 	)
 
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(psCmd))
 	if err != nil {
 		// No events found is not an error
 		return nil, nil
@@ -247,7 +247,7 @@ func (c *EventLogCollector) queryWinEvents(logName string, maxLevel int, since t
 		logName, levelFilter, sinceStr,
 	)
 
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
+	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(psCmd))
 	if err != nil {
 		// No events found is not an error
 		return nil, nil

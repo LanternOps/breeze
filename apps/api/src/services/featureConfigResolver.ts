@@ -59,6 +59,7 @@ export function createSystemAuthContext(): AuthContext {
       id: '00000000-0000-0000-0000-000000000000',
       email: 'system@breeze.internal',
       name: 'System',
+      isPlatformAdmin: false,
     },
     token,
     partnerId: null,
@@ -227,7 +228,8 @@ export async function resolveAlertRulesForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -287,7 +289,8 @@ export async function resolveAutomationsForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -389,7 +392,8 @@ export async function resolvePatchConfigDetailsForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -463,7 +467,8 @@ export async function resolveBackupConfigForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -523,7 +528,8 @@ export async function resolveMaintenanceConfigForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -576,7 +582,8 @@ export async function resolveComplianceRulesForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -634,7 +641,8 @@ export async function resolveSoftwarePolicyForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(
@@ -1090,7 +1098,8 @@ export async function resolveBackupProtectionForDevice(
       configurationPolicies,
       and(
         eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active')
+        eq(configurationPolicies.status, 'active'),
+        eq(configurationPolicies.orgId, hierarchy.orgId)
       )
     )
     .innerJoin(

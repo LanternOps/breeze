@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -27,11 +28,19 @@ type dcSender interface {
 	SendText(s string) error
 }
 
+// Policy gates clipboard sync per direction. Enforced agent-side because the
+// viewer is untrusted. Finding #7.
+type Policy struct {
+	HostToViewer bool // stream the host's clipboard to the viewer
+	ViewerToHost bool // accept viewer clipboard writes onto the host
+}
+
 type ClipboardSync struct {
 	sender       dcSender
 	provider     Provider
 	pollInterval time.Duration
 	stop         chan struct{}
+	policy       Policy
 
 	mu           sync.Mutex
 	lastSentHash [32]byte
@@ -45,12 +54,13 @@ type clipboardPayload struct {
 	ImageFormat string      `json:"image_format,omitempty"`
 }
 
-func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync {
+func NewClipboardSync(dc *webrtc.DataChannel, provider Provider, policy Policy) *ClipboardSync {
 	syncer := &ClipboardSync{
 		sender:       dc,
 		provider:     provider,
 		pollInterval: defaultPollInterval,
 		stop:         make(chan struct{}),
+		policy:       policy,
 	}
 	if dc != nil {
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -63,17 +73,26 @@ func NewClipboardSync(dc *webrtc.DataChannel, provider Provider) *ClipboardSync 
 }
 
 // newClipboardSyncWithSender is used by tests to inject a mock sender.
-func newClipboardSyncWithSender(sender dcSender, provider Provider) *ClipboardSync {
+func newClipboardSyncWithSender(sender dcSender, provider Provider, policy Policy) *ClipboardSync {
 	return &ClipboardSync{
 		sender:       sender,
 		provider:     provider,
 		pollInterval: defaultPollInterval,
 		stop:         make(chan struct{}),
+		policy:       policy,
 	}
 }
 
 func (c *ClipboardSync) Watch() {
 	if c.provider == nil {
+		return
+	}
+
+	// Host→viewer streaming disabled by policy: never poll or forward the host
+	// clipboard. This is the silent-exfiltration guard — without it, whatever
+	// the end user copies (passwords, MFA codes, secrets) streams to the
+	// operator within one defaultPollInterval. Finding #7.
+	if !c.policy.HostToViewer {
 		return
 	}
 
@@ -150,6 +169,16 @@ func (c *ClipboardSync) Send(content Content) error {
 		return err
 	}
 
+	// Audit the egress transfer (finding #8). Host→viewer is the silent
+	// exfiltration direction, so make each transfer forensically visible
+	// (type + size). NOTE: this lands in the agent diagnostic log stream
+	// (slog → agent_logs), not yet the tamper-evident central audit_logs table.
+	// TODO(#1012): route clipboard/filedrop transfers to central audit_logs.
+	slog.Info("clipboard transfer",
+		"direction", "host_to_viewer",
+		"type", string(content.Type),
+		"bytes", len(content.Text)+len(content.RTF)+len(content.Image))
+
 	c.mu.Lock()
 	c.lastSentHash = fingerprint(content)
 	c.mu.Unlock()
@@ -160,6 +189,18 @@ func (c *ClipboardSync) Send(content Content) error {
 func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	if c.provider == nil {
 		return errClipboardSyncUnconfigured
+	}
+	// Viewer→host writes disabled by policy: drop inbound clipboard rather than
+	// overwriting the host clipboard. Finding #7. A denied paste is a
+	// security-relevant event, so audit it instead of dropping silently. Bytes
+	// is the raw inbound message size (payload not decoded on the blocked path).
+	// NOTE: diagnostic-log, not central audit_logs (see Send).
+	// TODO(#1012): route clipboard/filedrop transfers to central audit_logs.
+	if !c.policy.ViewerToHost {
+		slog.Info("clipboard transfer blocked by policy",
+			"direction", "viewer_to_host",
+			"bytes", len(msg.Data))
+		return nil
 	}
 	if len(msg.Data) > maxClipboardMessageBytes {
 		return fmt.Errorf("clipboard payload exceeds maximum %d bytes", maxClipboardMessageBytes)
@@ -195,6 +236,14 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	if err := c.provider.SetContent(content); err != nil {
 		return err
 	}
+
+	// Audit the ingress transfer (finding #8): the viewer writing the host
+	// clipboard. Same diagnostic-log caveat as the egress path above.
+	// TODO(#1012): route clipboard/filedrop transfers to central audit_logs.
+	slog.Info("clipboard transfer",
+		"direction", "viewer_to_host",
+		"type", string(content.Type),
+		"bytes", len(content.Text)+len(content.RTF)+len(content.Image))
 
 	fp := fingerprint(content)
 	c.mu.Lock()

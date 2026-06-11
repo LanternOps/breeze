@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Pencil, Play, Plus } from 'lucide-react';
 import { cn, friendlyFetchError } from '@/lib/utils';
+import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '@/stores/auth';
 import CisBaselineForm from './CisBaselineForm';
 import type { Baseline } from './types';
@@ -62,7 +63,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `${res.status} ${res.statusText}`);
+        throw new Error(extractApiError(data, `${res.status} ${res.statusText}`));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger scan');

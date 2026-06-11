@@ -9,8 +9,12 @@ import {
 } from '../../db/schema';
 import { updateRegistryStateSchema, updateConfigStateSchema } from './schemas';
 import { normalizeStateValue, parseDate } from './helpers';
+import { sanitizePolicyConfigStateEntries } from './policyProbeSafety';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const stateRoutes = new Hono();
+// Registry/config state ingest is the main agent's job; reject watchdog tokens.
+stateRoutes.use('*', requireAgentRole);
 
 stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSchema), async (c) => {
   const agentId = c.req.param('id');
@@ -73,6 +77,7 @@ stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSch
 stateRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  const sanitizedEntries = sanitizePolicyConfigStateEntries(data.entries);
 
   const [device] = await db
     .select()
@@ -91,7 +96,7 @@ stateRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema)
         .where(eq(deviceConfigState.deviceId, device.id));
     }
 
-    if (data.entries.length === 0) {
+    if (sanitizedEntries.length === 0) {
       return;
     }
 
@@ -99,7 +104,7 @@ stateRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema)
     await tx
       .insert(deviceConfigState)
       .values(
-        data.entries.map((entry) => ({
+        sanitizedEntries.map((entry) => ({
           deviceId: device.id,
           orgId: device.orgId,
           filePath: entry.filePath,
@@ -123,5 +128,5 @@ stateRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema)
       });
   });
 
-  return c.json({ success: true, count: data.entries.length });
+  return c.json({ success: true, count: sanitizedEntries.length });
 });

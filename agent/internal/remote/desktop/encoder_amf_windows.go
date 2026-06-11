@@ -60,8 +60,8 @@ func newAMFEncoder(cfg EncoderConfig) (encoderBackend, error) {
 
 // Stall detection thresholds
 const (
-	amfStallThreshold     = 8 // consecutive nil outputs before flush attempt
-	amfMaxFlushRecoveries = 3 // flush+reinit cycles before permanent stall
+	amfStallThreshold     = 8               // consecutive nil outputs before flush attempt
+	amfMaxFlushRecoveries = 3               // flush+reinit cycles before permanent stall
 	amfMinFlushInterval   = 1 * time.Second // must be < 3s startup stall guard
 )
 

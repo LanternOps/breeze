@@ -3,10 +3,33 @@ import { Hono } from 'hono';
 import { roleRoutes } from './roles';
 
 vi.mock('../services/permissions', () => ({
+  clearPermissionCache: vi.fn(),
+  getUserPermissions: vi.fn().mockResolvedValue({
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: 'partner-123',
+    orgId: null,
+    roleId: 'role-admin',
+    scope: 'partner'
+  }),
+  hasPermission: vi.fn((userPerms: any, resource: string, action: string) =>
+    userPerms.permissions.some((p: any) =>
+      (p.resource === resource || p.resource === '*') &&
+      (p.action === action || p.action === '*')
+    )
+  ),
+  isAssignablePermission: vi.fn((permission: any) =>
+    permission.resource !== '*' &&
+    permission.action !== '*' &&
+    ['users:read', 'users:write', 'users:delete', 'devices:read', 'devices:write']
+      .includes(`${permission.resource}:${permission.action}`)
+  ),
   PERMISSIONS: {
     USERS_READ: { resource: 'users', action: 'read' },
     USERS_WRITE: { resource: 'users', action: 'write' },
-    USERS_DELETE: { resource: 'users', action: 'delete' }
+    USERS_DELETE: { resource: 'users', action: 'delete' },
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    DEVICES_WRITE: { resource: 'devices', action: 'write' },
+    ADMIN_ALL: { resource: '*', action: '*' }
   }
 }));
 
@@ -60,11 +83,20 @@ vi.mock('../middleware/auth', () => ({
     });
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => next())
+  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (c: any, next: any) => next())
 }));
 
 import { db } from '../db';
+import { clearPermissionCache, getUserPermissions, isAssignablePermission } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
+// Pull the REAL assignable-permissions list from the un-mocked services module so
+// the regression-guard loop can iterate the actual canonical set. The rest of
+// this file relies on the mocked services module above; we use
+// vi.importActual here to bypass the mock for just this constant.
+const { ASSIGNABLE_PERMISSIONS: REAL_ASSIGNABLE_PERMISSIONS } = await vi.importActual<
+  typeof import('../services/permissions')
+>('../services/permissions');
 
 describe('role routes', () => {
   let app: Hono;
@@ -199,7 +231,7 @@ describe('role routes', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: 'Operator',
-          permissions: [{ resource: 'devices', action: 'view' }]
+          permissions: [{ resource: 'devices', action: 'read' }]
         })
       });
 
@@ -207,6 +239,58 @@ describe('role routes', () => {
       expect(rolePermissionsValues).toHaveBeenCalledWith([
         { roleId: 'role-3', permissionId: 'perm-1' }
       ]);
+    });
+
+    it('rejects inheriting wildcard permissions from a parent role', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-4111-8111-111111111111',
+                  scope: 'partner',
+                  isSystem: true,
+                  partnerId: null,
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-4111-8111-111111111111',
+                  name: 'Admin',
+                  parentRoleId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: '*', action: '*' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Inherited Admin',
+          parentRoleId: '11111111-1111-4111-8111-111111111111',
+          permissions: []
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
   });
 
@@ -260,7 +344,7 @@ describe('role routes', () => {
 
   describe('PATCH /roles/:id', () => {
     it('should update a role and its permissions', async () => {
-      const rolePerms = [{ resource: 'devices', action: 'update' }];
+      const rolePerms = [{ resource: 'devices', action: 'write' }];
 
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -276,6 +360,16 @@ describe('role routes', () => {
                 }
               ])
             })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ userId: 'affected-user-1' }])
           })
         } as any)
         .mockReturnValueOnce({
@@ -332,7 +426,7 @@ describe('role routes', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: 'Operator',
-          permissions: [{ resource: 'devices', action: 'update' }]
+          permissions: [{ resource: 'devices', action: 'write' }]
         })
       });
 
@@ -341,6 +435,41 @@ describe('role routes', () => {
       expect(body.permissions).toEqual(rolePerms);
       expect(txDelete).toHaveBeenCalled();
       expect(txInsert).toHaveBeenCalled();
+      expect(clearPermissionCache).toHaveBeenCalledWith('affected-user-1');
+    });
+
+    it('rejects wildcard permissions in custom role updates', async () => {
+      const res = await app.request('/roles/role-2', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          permissions: [{ resource: '*', action: '*' }]
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('rejects permissions the caller does not hold', async () => {
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'write' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-user-manager',
+        scope: 'partner'
+      } as any);
+
+      const res = await app.request('/roles/role-2', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          permissions: [{ resource: 'devices', action: 'write' }]
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
   });
 
@@ -389,5 +518,82 @@ describe('role routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
     });
+  });
+
+  // Regression guard for issue #801: every entry in ASSIGNABLE_PERMISSIONS must
+  // be accepted by POST /roles. If a future change to the registry breaks this
+  // contract (or the UI rebuilds itself off a stale list), this test catches it
+  // before it ships.
+  describe('POST /roles — ASSIGNABLE_PERMISSIONS coverage (regression for #801)', () => {
+    it.each(REAL_ASSIGNABLE_PERMISSIONS.map((p) => [p.resource, p.action]))(
+      'accepts %s:%s',
+      async (resource, action) => {
+        // Use the real allowlist gate for this loop.
+        vi.mocked(isAssignablePermission).mockImplementation((permission: any) =>
+          REAL_ASSIGNABLE_PERMISSIONS.some(
+            (p) => p.resource === permission.resource && p.action === permission.action
+          )
+        );
+
+        const roleInsertValues = vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            {
+              id: `role-${resource}-${action}`,
+              name: `T-${resource}-${action}`,
+              description: null,
+              scope: 'partner',
+              isSystem: false,
+              parentRoleId: null,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            }
+          ])
+        });
+        const rolePermissionsValues = vi.fn().mockResolvedValue(undefined);
+        const txInsert = vi
+          .fn()
+          .mockReturnValueOnce({ values: roleInsertValues })
+          .mockReturnValueOnce({ values: rolePermissionsValues });
+
+        vi.mocked(db.transaction).mockImplementation(async (fn) => {
+          return fn({ insert: txInsert } as any);
+        });
+
+        // For getOrCreatePermission: first SELECT returns empty, then INSERT returns id.
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: `perm-${resource}-${action}` }])
+          })
+        } as any);
+
+        // Caller has wildcard, so hasPermission allows everything. No need to
+        // remock that.
+        vi.mocked(getUserPermissions).mockResolvedValue({
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: 'partner-123',
+          orgId: null,
+          roleId: 'role-admin',
+          scope: 'partner'
+        } as any);
+
+        const res = await app.request('/roles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: `T-${resource}-${action}`,
+            permissions: [{ resource, action }]
+          })
+        });
+
+        expect(res.status, `expected 201 for ${resource}:${action}`).toBe(201);
+      }
+    );
   });
 });

@@ -12,6 +12,7 @@ import {
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   networkEventTypes,
   optionalQueryBooleanSchema,
@@ -70,9 +71,13 @@ networkChangeRoutes.use('*', authMiddleware);
 networkChangeRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listNetworkChangesSchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgResult = resolveOrgId(auth, query.orgId);
@@ -108,7 +113,22 @@ networkChangeRoutes.get(
           return c.json({ error: 'Site not found for this organization' }, 404);
         }
       }
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
       conditions.push(eq(networkChangeEvents.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: {
+            limit: query.limit ?? 100,
+            offset: query.offset ?? 0,
+            total: 0
+          }
+        });
+      }
+      conditions.push(inArray(networkChangeEvents.siteId, perms.allowedSiteIds));
     }
 
     if (query.baselineId) {
@@ -175,6 +195,8 @@ networkChangeRoutes.get(
 networkChangeRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the allowedSiteIds site narrowing below runs (dead under requireScope alone — #1051 detector).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const eventId = c.req.param('id')!;

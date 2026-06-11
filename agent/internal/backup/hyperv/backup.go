@@ -72,7 +72,7 @@ func ExportVM(vmName, exportPath, consistencyType string) (*BackupResult, error)
 		startCmd := fmt.Sprintf(`Start-VM -Name '%s'`, vmNameEsc)
 		if _, err := runPS(startCmd); err != nil {
 			warnMsg := fmt.Sprintf("failed to restart VM %q after export: %s", vmName, err.Error())
-			slog.Warn("hyperv: "+warnMsg)
+			slog.Warn("hyperv: " + warnMsg)
 			warnings = append(warnings, warnMsg)
 		}
 	}

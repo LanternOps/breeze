@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
@@ -139,7 +141,7 @@ export default function EnrollmentKeyManager() {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to create enrollment key');
+        throw new Error(extractApiError(data, 'Failed to create enrollment key'));
       }
 
       const created = await response.json().catch(() => ({} as Record<string, unknown>));
@@ -196,7 +198,7 @@ export default function EnrollmentKeyManager() {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to rotate enrollment key');
+        throw new Error(extractApiError(data, 'Failed to rotate enrollment key'));
       }
 
       const rotated = await response.json().catch(() => ({} as Record<string, unknown>));
@@ -224,7 +226,9 @@ export default function EnrollmentKeyManager() {
       }
 
       const blob = await response.blob();
-      const filename = platform === 'windows' ? 'breeze-agent.msi' : 'breeze-agent-macos.zip';
+      const filename =
+        filenameFromContentDisposition(response.headers.get('Content-Disposition'))
+        ?? fallbackInstallerFilename(platform);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

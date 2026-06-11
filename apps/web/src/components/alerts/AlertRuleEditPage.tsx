@@ -5,6 +5,7 @@ import type { NotificationChannel } from './NotificationChannelList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import { extractApiError } from '@/lib/apiError';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -38,7 +39,8 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch alert rule');
+        const errData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errData, 'Failed to fetch alert rule'));
       }
       const data = await response.json();
       const rule = data.rule ?? data.data ?? data;
@@ -159,8 +161,8 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
           void navigateTo('/login', { replace: true });
           return;
         }
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save alert rule');
+        const data = await response.json().catch(() => null);
+        throw new Error(extractApiError(data, 'Failed to save alert rule'));
       }
 
       void navigateTo('/alerts/rules');

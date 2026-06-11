@@ -11,58 +11,13 @@ import type {
 import { ConditionRow } from './ConditionRow';
 import { ConditionGroup } from './ConditionGroup';
 import { FilterPreview } from './FilterPreview';
+import { FILTER_FIELDS } from './filterFields';
 import { fetchWithAuth } from '../../stores/auth';
 
-// Default filter fields - these will be fetched from the API in production
-const DEFAULT_FILTER_FIELDS: FilterFieldDefinition[] = [
-  // Core device fields
-  { key: 'hostname', label: 'Hostname', category: 'core', type: 'string', operators: ['equals', 'notEquals', 'contains', 'notContains', 'startsWith', 'endsWith', 'matches'] },
-  { key: 'displayName', label: 'Display Name', category: 'core', type: 'string', operators: ['equals', 'notEquals', 'contains', 'notContains', 'startsWith', 'endsWith', 'isNull', 'isNotNull'] },
-  { key: 'status', label: 'Status', category: 'core', type: 'enum', operators: ['equals', 'notEquals', 'in', 'notIn'], enumValues: ['online', 'offline', 'maintenance', 'decommissioned'] },
-  { key: 'agentVersion', label: 'Agent Version', category: 'core', type: 'string', operators: ['equals', 'notEquals', 'contains', 'startsWith', 'greaterThan', 'lessThan'] },
-  { key: 'enrolledAt', label: 'Enrolled Date', category: 'core', type: 'datetime', operators: ['before', 'after', 'between', 'withinLast', 'notWithinLast'] },
-  { key: 'lastSeenAt', label: 'Last Seen', category: 'core', type: 'datetime', operators: ['before', 'after', 'between', 'withinLast', 'notWithinLast', 'isNull', 'isNotNull'] },
-  { key: 'tags', label: 'Tags', category: 'core', type: 'array', operators: ['hasAny', 'hasAll', 'isEmpty', 'isNotEmpty'] },
-
-  // OS fields
-  { key: 'osType', label: 'OS Type', category: 'os', type: 'enum', operators: ['equals', 'notEquals', 'in', 'notIn'], enumValues: ['windows', 'macos', 'linux'] },
-  { key: 'osVersion', label: 'OS Version', category: 'os', type: 'string', operators: ['equals', 'notEquals', 'contains', 'startsWith', 'greaterThan', 'lessThan'] },
-  { key: 'osBuild', label: 'OS Build', category: 'os', type: 'string', operators: ['equals', 'notEquals', 'contains', 'isNull', 'isNotNull'] },
-  { key: 'architecture', label: 'Architecture', category: 'os', type: 'enum', operators: ['equals', 'notEquals'], enumValues: ['x64', 'x86', 'arm64', 'arm'] },
-
-  // Hardware fields
-  { key: 'hardware.manufacturer', label: 'Manufacturer', category: 'hardware', type: 'string', operators: ['equals', 'notEquals', 'contains', 'startsWith'] },
-  { key: 'hardware.model', label: 'Model', category: 'hardware', type: 'string', operators: ['equals', 'notEquals', 'contains', 'startsWith'] },
-  { key: 'hardware.serialNumber', label: 'Serial Number', category: 'hardware', type: 'string', operators: ['equals', 'notEquals', 'contains', 'isNull', 'isNotNull'] },
-  { key: 'hardware.cpuModel', label: 'CPU Model', category: 'hardware', type: 'string', operators: ['equals', 'notEquals', 'contains'] },
-  { key: 'hardware.cpuCores', label: 'CPU Cores', category: 'hardware', type: 'number', operators: ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'] },
-  { key: 'hardware.ramTotalMb', label: 'RAM (MB)', category: 'hardware', type: 'number', operators: ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'] },
-  { key: 'hardware.diskTotalGb', label: 'Disk (GB)', category: 'hardware', type: 'number', operators: ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'] },
-  { key: 'hardware.gpuModel', label: 'GPU Model', category: 'hardware', type: 'string', operators: ['equals', 'notEquals', 'contains', 'isNull', 'isNotNull'] },
-
-  // Network fields
-  { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: ['equals', 'notEquals', 'contains', 'startsWith'] },
-  { key: 'network.publicIp', label: 'Public IP', category: 'network', type: 'string', operators: ['equals', 'notEquals', 'contains', 'startsWith', 'isNull', 'isNotNull'] },
-  { key: 'network.macAddress', label: 'MAC Address', category: 'network', type: 'string', operators: ['equals', 'notEquals', 'contains'] },
-
-  // Metrics fields
-  { key: 'metrics.cpuPercent', label: 'CPU Usage (%)', category: 'metrics', type: 'number', operators: ['greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'] },
-  { key: 'metrics.ramPercent', label: 'RAM Usage (%)', category: 'metrics', type: 'number', operators: ['greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'] },
-  { key: 'metrics.diskPercent', label: 'Disk Usage (%)', category: 'metrics', type: 'number', operators: ['greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'] },
-
-  // Software fields
-  { key: 'software.installed', label: 'Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains'], description: 'Check if specific software is installed' },
-  { key: 'software.notInstalled', label: 'Software Not Installed', category: 'software', type: 'string', operators: ['contains'], description: 'Check if specific software is not installed' },
-
-  // Hierarchy fields
-  { key: 'org.id', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'notEquals', 'in', 'notIn'] },
-  { key: 'site.id', label: 'Site', category: 'hierarchy', type: 'string', operators: ['equals', 'notEquals', 'in', 'notIn'] },
-  { key: 'group.id', label: 'Device Group', category: 'hierarchy', type: 'string', operators: ['equals', 'notEquals', 'in', 'notIn'] },
-
-  // Computed fields
-  { key: 'daysSinceLastSeen', label: 'Days Since Last Seen', category: 'computed', type: 'number', operators: ['greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'], computed: true },
-  { key: 'patchCompliance', label: 'Patch Compliance (%)', category: 'computed', type: 'number', operators: ['greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'], computed: true }
-];
+// The canonical device filter catalog (mirrors the backend filterEngine —
+// see ./filterFields). Re-exported as DEFAULT_FILTER_FIELDS for the components
+// that import it from here, instead of hand-maintaining a second copy.
+const DEFAULT_FILTER_FIELDS: FilterFieldDefinition[] = FILTER_FIELDS;
 
 interface FilterBuilderProps {
   value: FilterConditionGroup;

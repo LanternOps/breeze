@@ -9,6 +9,7 @@
  */
 
 import { resolveEffectiveConfig } from './configurationPolicy';
+import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,16 @@ export interface RemoteAccessSettings {
   webrtcDesktop: boolean;
   vncRelay: boolean;
   remoteTools: boolean;
+  // Clipboard sync over the WebRTC desktop channel, gated per direction and
+  // enforced agent-side (the viewer is untrusted, so the agent must not open
+  // the channel / run the watcher when disabled). Finding #7.
+  //   clipboardHostToViewer = remote machine's clipboard streamed to the
+  //     operator's viewer — the silent-exfiltration vector (passwords / MFA
+  //     codes / secrets the end user copies leak within ~500ms).
+  //   clipboardViewerToHost = operator pasting into the remote machine
+  //     (operator-initiated, lower risk).
+  clipboardHostToViewer: boolean;
+  clipboardViewerToHost: boolean;
   enableProxy: boolean;
   defaultAllowedPorts: number[];
   autoEnableProxy: boolean;
@@ -36,10 +47,22 @@ export interface PolicyCheckResult {
 
 export type RemoteCapability = 'webrtcDesktop' | 'vncRelay' | 'remoteTools' | 'proxy';
 
+// Hosted multi-tenant SaaS defaults the silent-exfil direction (remote host
+// clipboard → operator viewer) OFF, so an MSP operator can't passively harvest
+// whatever a customer copies during a session. Operator→host paste stays on for
+// usability. Self-hosted (single-tenant, IS_HOSTED!='true') preserves the
+// historical bidirectional default so an upgrade doesn't silently change
+// behavior for an admin running their own instance. There's no dedicated
+// clipboard-direction UI yet (one is being added separately), but both
+// defaults are overridable via an explicit `remote_access` policy. Finding #7.
+const isHosted = process.env.IS_HOSTED === 'true';
+
 const DEFAULTS: RemoteAccessSettings = {
   webrtcDesktop: true,
   vncRelay: true,
   remoteTools: true,
+  clipboardHostToViewer: !isHosted,
+  clipboardViewerToHost: true,
   enableProxy: true,
   defaultAllowedPorts: [],
   autoEnableProxy: false,
@@ -54,6 +77,23 @@ const CAPABILITY_LABELS: Record<RemoteCapability, string> = {
   remoteTools: 'Remote tools',
   proxy: 'Network proxy',
 };
+
+// Defensive clamps for the agent-enforced session-lifetime fields. Even after
+// Zod validation these are clamped again here so a future schema relaxation (or
+// a DEFAULTS edit) can never push the agent into never-idle-out / never-expire
+// territory. 0 is a legitimate "disabled" sentinel for both.
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(Math.trunc(value), min), max);
+}
+
+function clampSettings(settings: RemoteAccessSettings): RemoteAccessSettings {
+  return {
+    ...settings,
+    idleTimeoutMinutes: clamp(settings.idleTimeoutMinutes, 0, 1440),
+    maxSessionDurationHours: clamp(settings.maxSessionDurationHours, 0, 168),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Cache — simple in-memory TTL (30 s)
@@ -90,7 +130,7 @@ export function invalidateRemoteAccessCache(deviceId?: string): void {
 // ---------------------------------------------------------------------------
 
 const systemAuth: AuthContext = {
-  user: { id: 'system', email: 'system', name: 'System' },
+  user: { id: 'system', email: 'system', name: 'System', isPlatformAdmin: false },
   token: {} as any,
   partnerId: null,
   orgId: null,
@@ -127,8 +167,21 @@ export async function resolveRemoteAccessForDevice(deviceId: string): Promise<Re
 
   if (effective?.features?.remote_access) {
     const feature = effective.features.remote_access;
-    const inline = (feature.inlineSettings ?? {}) as Partial<RemoteAccessSettings>;
-    settings = { ...DEFAULTS, ...inline };
+    // The inlineSettings blob is untyped JSONB — validate it through Zod before
+    // it can flow to the agent. A bad value (non-boolean clipboard flag, a
+    // zero/negative/huge maxSessionDurationHours) would otherwise be trusted
+    // verbatim. On parse failure fall back to DEFAULTS rather than shipping
+    // garbage. Numeric lifetime fields are additionally clamped below.
+    const parsed = remoteAccessInlineSettingsSchema.safeParse(feature.inlineSettings ?? {});
+    if (parsed.success) {
+      settings = clampSettings({ ...DEFAULTS, ...parsed.data });
+    } else {
+      console.warn(
+        `[RemoteAccessPolicy] Invalid remote_access inlineSettings for device ${deviceId}; falling back to defaults:`,
+        parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
+      );
+      settings = { ...DEFAULTS };
+    }
     policyName = feature.sourcePolicyName ?? null;
     policyId = feature.sourcePolicyId ?? null;
   }
@@ -184,5 +237,58 @@ export async function checkRemoteAccess(
     reason: `${label} is disabled${policyRef}`,
     policyName: policyName ?? undefined,
     policyId: policyId ?? undefined,
+  };
+}
+
+/**
+ * Resolve the agent-enforced desktop session policy fields that ride along in
+ * the `start_desktop` payload. Centralizes the mapping so both offer handlers
+ * (JWT path in remote/sessions.ts and viewer-token path in desktopWs.ts) push
+ * the agent the same clipboard + session-lifetime policy. The agent enforces
+ * these because the viewer is untrusted. Findings #2 and #7.
+ */
+export interface DesktopSessionPolicy {
+  clipboard: { hostToViewer: boolean; viewerToHost: boolean };
+  idleTimeoutMinutes: number;
+  maxSessionDurationHours: number;
+}
+
+// Safe-but-restrictive policy shipped to the agent when policy resolution
+// fails. Clipboard is OFF in both directions (no silent exfil, no paste) and
+// the session gets a short idle timeout + the default max duration so a
+// resolution outage can't leave a long-lived, fully-permissive session. The
+// capability gate itself is already enforced fail-closed by `checkRemoteAccess`
+// (which the offer handlers call first), so this only governs the in-session
+// clipboard/lifetime knobs.
+const FAILSAFE_DESKTOP_POLICY: DesktopSessionPolicy = {
+  clipboard: { hostToViewer: false, viewerToHost: false },
+  idleTimeoutMinutes: 5,
+  maxSessionDurationHours: 8,
+};
+
+export async function resolveDesktopSessionPolicy(deviceId: string): Promise<DesktopSessionPolicy> {
+  // Fail-closed: `resolveRemoteAccessForDevice` can throw (e.g. config-engine
+  // DB error). The offer handlers `await` this without their own guard, so an
+  // unhandled throw here would 500 the request. Degrade to a restrictive policy
+  // instead and let the request proceed (the capability check already gated it).
+  let settings: RemoteAccessSettings;
+  try {
+    ({ settings } = await resolveRemoteAccessForDevice(deviceId));
+  } catch (err) {
+    console.error(
+      `[RemoteAccessPolicy] Failed to resolve desktop session policy for device ${deviceId}; using failsafe restrictive policy:`,
+      err instanceof Error ? err.message : err
+    );
+    return FAILSAFE_DESKTOP_POLICY;
+  }
+
+  const clamped = clampSettings(settings);
+  return {
+    clipboard: {
+      hostToViewer: clamped.clipboardHostToViewer,
+      viewerToHost: clamped.clipboardViewerToHost,
+    },
+    idleTimeoutMinutes: clamped.idleTimeoutMinutes,
+    maxSessionDurationHours: clamped.maxSessionDurationHours,
   };
 }

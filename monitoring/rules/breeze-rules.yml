@@ -169,6 +169,47 @@ groups:
           summary: "Scheduled backup verification runs are being skipped"
           description: "{{ $value }} scheduled verification skip(s) occurred in the last hour"
 
+  # Anomaly-detection alerts (launch-readiness CRITICAL #5). Thresholds are
+  # deliberately coarse starting points — tune after observing real baselines
+  # in production. The `tenant` label is redacted unless METRICS_INCLUDE_ORG_ID
+  # is enabled, so the `by (tenant)` breakdown collapses to a single series in
+  # the default (redacted) configuration and these still fire on aggregate.
+  - name: breeze-anomaly-alerts
+    interval: 1m
+    rules:
+      - alert: FailedLoginSpike
+        expr: |
+          sum(increase(breeze_failed_logins_total{job="breeze-api"}[5m])) by (tenant) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated failed-login rate (possible credential stuffing)"
+          description: "{{ $value }} failed logins in 5m for tenant {{ $labels.tenant }} — investigate for credential stuffing / brute force"
+          runbook_url: "https://docs.breeze.local/runbooks/failed-login-spike"
+
+      - alert: EnrollmentSpike
+        expr: |
+          sum(increase(breeze_agent_enrollments_total{job="breeze-api"}[10m])) by (tenant) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual agent-enrollment rate"
+          description: "{{ $value }} enrollment attempts in 10m for tenant {{ $labels.tenant }} — verify this matches an expected rollout, not a leaked enrollment key"
+          runbook_url: "https://docs.breeze.local/runbooks/enrollment-spike"
+
+      - alert: CommandDispatchSpike
+        expr: |
+          sum(increase(breeze_commands_dispatched_total{job="breeze-api"}[5m])) by (tenant) > 200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual command-dispatch rate"
+          description: "{{ $value }} commands dispatched in 5m for tenant {{ $labels.tenant }} — possible compromised account fanning out commands"
+          runbook_url: "https://docs.breeze.local/runbooks/command-dispatch-spike"
+
   - name: breeze-recording-rules
     interval: 30s
     rules:
@@ -222,3 +263,12 @@ groups:
           rate(pg_stat_statements_seconds_total[5m])
           /
           rate(pg_stat_statements_calls_total[5m])
+
+      - record: breeze:failed_logins:increase5m
+        expr: sum(increase(breeze_failed_logins_total{job="breeze-api"}[5m])) by (reason, tenant)
+
+      - record: breeze:agent_enrollments:increase10m
+        expr: sum(increase(breeze_agent_enrollments_total{job="breeze-api"}[10m])) by (result, tenant)
+
+      - record: breeze:commands_dispatched:increase5m
+        expr: sum(increase(breeze_commands_dispatched_total{job="breeze-api"}[5m])) by (type, actor, tenant)

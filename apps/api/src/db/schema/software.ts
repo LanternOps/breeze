@@ -48,7 +48,7 @@ export const softwareVersions = pgTable('software_versions', {
   fileType: varchar('file_type', { length: 20 }),
   originalFileName: varchar('original_file_name', { length: 500 }),
   checksum: varchar('checksum', { length: 128 }),
-  fileSize: bigint('file_size', { mode: 'bigint' }),
+  fileSize: bigint('file_size', { mode: 'number' }),
   supportedOs: jsonb('supported_os'),
   architecture: varchar('architecture', { length: 20 }),
   silentInstallArgs: text('silent_install_args'),

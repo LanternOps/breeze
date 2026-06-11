@@ -6,6 +6,7 @@ import {
   softwareInventory,
   softwarePolicies,
   softwarePolicyAudit,
+  type SoftwarePolicyExecutableRule,
   type SoftwarePolicyRuleDefinition,
   type SoftwarePolicyRulesDefinition,
   type SoftwarePolicyViolation,
@@ -176,10 +177,38 @@ export function normalizeSoftwarePolicyRules(rules: unknown): SoftwarePolicyRule
     })
     .filter((entry): entry is SoftwarePolicyRuleDefinition => entry !== null);
 
-  return {
+  const rawExecutable = Array.isArray(raw.executable) ? raw.executable : [];
+  const executable = rawExecutable
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => {
+      const name = readOptionalString(entry.name);
+      if (!name) {
+        return null;
+      }
+
+      const rule: SoftwarePolicyExecutableRule = { name };
+      const sha256 = readOptionalString(entry.sha256);
+      const signer = readOptionalString(entry.signer);
+      const publisher = readOptionalString(entry.publisher);
+      const pathGlob = readOptionalString(entry.pathGlob);
+
+      if (sha256) rule.sha256 = sha256;
+      if (signer) rule.signer = signer;
+      if (publisher) rule.publisher = publisher;
+      if (pathGlob) rule.pathGlob = pathGlob;
+
+      return rule;
+    })
+    .filter((entry): entry is SoftwarePolicyExecutableRule => entry !== null);
+
+  const result: SoftwarePolicyRulesDefinition = {
     software,
     allowUnknown: raw.allowUnknown === true,
   };
+  if (executable.length > 0) {
+    result.executable = executable;
+  }
+  return result;
 }
 
 export function matchesSoftwareRule(

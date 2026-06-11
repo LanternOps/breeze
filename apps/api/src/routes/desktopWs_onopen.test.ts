@@ -40,6 +40,12 @@ vi.mock('../services/jwt', () => ({
   createAccessToken: vi.fn(async () => 'mock-access-token-xyz')
 }));
 
+vi.mock('../services/viewerTokenRevocation', () => ({
+  isViewerJtiRevoked: vi.fn(async () => false),
+  isViewerSessionRevoked: vi.fn(async () => false),
+  revokeViewerSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
@@ -54,12 +60,35 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   }),
 }));
 
+// E1: WS connection rate limiter now goes through Redis/rate-limit.
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
+vi.mock('./remote/helpers', () => ({
+  logSessionAudit: vi.fn(async () => undefined),
+  getIceServers: vi.fn(() => []),
+}));
+
+vi.mock('../services/clientIp', () => ({
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createAccessToken } from '../services/jwt';
+import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleDesktopFrame,
@@ -131,7 +160,8 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
-      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined))
+      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined)
     }
   };
 
@@ -146,6 +176,7 @@ function setupSuccessfulValidation() {
   const userId = nextUserId();
 
   const ticketRecord = {
+    ok: true as const,
     sessionId: SESSION_ID,
     sessionType: 'desktop' as const,
     userId,
@@ -167,7 +198,8 @@ function setupSuccessfulValidation() {
     agentId: AGENT_ID,
     hostname: 'test-host',
     osType: 'windows',
-    status: 'online'
+    status: 'online',
+    orgId: 'org-test-1'
   };
 
   vi.mocked(db.select)
@@ -227,7 +259,7 @@ describe('desktopWs', () => {
     });
 
     it('rejects connection when ticket is invalid', async () => {
-      vi.mocked(consumeWsTicket).mockResolvedValue(null);
+      vi.mocked(consumeWsTicket).mockResolvedValue({ ok: false, reason: 'not_found' });
 
       const handlers = captureWsHandlers(SESSION_ID, 'bad-ticket');
       const ws = wsMock();
@@ -242,6 +274,7 @@ describe('desktopWs', () => {
 
     it('rejects connection when ticket session type is not desktop', async () => {
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'terminal', // wrong type
         userId: 'user-mismatch',
@@ -262,6 +295,7 @@ describe('desktopWs', () => {
     it('rejects connection when user is not active', async () => {
       const userId = 'user-suspended';
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'desktop',
         userId,
@@ -286,6 +320,7 @@ describe('desktopWs', () => {
     it('rejects connection when user is not found', async () => {
       const userId = 'user-not-found';
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'desktop',
         userId,
@@ -308,6 +343,7 @@ describe('desktopWs', () => {
     it('rejects connection when session has wrong type', async () => {
       const userId = 'user-wrong-sess-type';
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'desktop',
         userId,
@@ -344,6 +380,7 @@ describe('desktopWs', () => {
     it('rejects connection when session is disconnected', async () => {
       const userId = 'user-disconnected-sess';
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'desktop',
         userId,
@@ -380,6 +417,7 @@ describe('desktopWs', () => {
     it('rejects connection when device is offline', async () => {
       const userId = 'user-offline-device';
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'desktop',
         userId,
@@ -416,6 +454,7 @@ describe('desktopWs', () => {
     it('rejects connection when agent is not connected via WebSocket', async () => {
       const userId = 'user-agent-off';
       vi.mocked(consumeWsTicket).mockResolvedValue({
+        ok: true,
         sessionId: SESSION_ID,
         sessionType: 'desktop',
         userId,
@@ -508,6 +547,9 @@ describe('desktopWs', () => {
         (s: any) => typeof s === 'string' && s.includes('"AGENT_SEND_FAILED"')
       );
       expect(errorMsg).toBeDefined();
+      expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(false);
+      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Agent send failed');
     });
   });
 

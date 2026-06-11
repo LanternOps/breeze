@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHmac } from 'crypto';
 import { Hono } from 'hono';
 import { ssoRoutes } from './sso';
+
+// Mirrors the route's signed binding-cookie derivation
+// (HMAC-SHA256 of `sso-login-state:<state>` keyed by the cookie secret).
+const SSO_STATE_COOKIE_SECRET = 'test-sso-cookie-secret';
+function ssoStateCookieHeader(state: string): string {
+  const value = createHmac('sha256', SSO_STATE_COOKIE_SECRET)
+    .update(`sso-login-state:${state}`)
+    .digest('hex');
+  return `breeze_sso_state=${encodeURIComponent(value)}`;
+}
 
 const { permissionGate, mfaGate } = vi.hoisted(() => ({
   permissionGate: { deny: false },
@@ -20,6 +31,8 @@ vi.mock('../services/sso', () => ({
   getUserInfo: vi.fn(),
   decodeIdToken: vi.fn(),
   verifyIdTokenClaims: vi.fn(),
+  verifyIdTokenSignature: vi.fn(),
+  assertEmailVerified: vi.fn(),
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
   PROVIDER_PRESETS: {
@@ -34,9 +47,14 @@ vi.mock('../services', () => ({
   createTokenPair: vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
+    refreshJti: 'sso-jti-mock',
     expiresInSeconds: 900
   }),
-  createSession: vi.fn()
+  createSession: vi.fn(),
+  // Task 7 follow-up: SSO callback now mints a refresh-token family for
+  // every completed sign-in so reuse-detection covers SSO sessions.
+  mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
+  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('../db', () => ({
@@ -143,7 +161,13 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { discoverOIDCConfig } from '../services/sso';
+import {
+  discoverOIDCConfig,
+  exchangeCodeForTokens,
+  getUserInfo,
+  mapUserAttributes,
+  verifyIdTokenSignature,
+} from '../services/sso';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -176,6 +200,24 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears call history but NOT the mockReturnValueOnce queue.
+    // Reset the db mocks to their default chain so a prior test's unconsumed
+    // `*Once` entries can't bleed into the next test (e.g. a leftover
+    // delete().returning() that would mask an atomic-consume assertion).
+    vi.mocked(db.delete).mockReset().mockReturnValue({
+      where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+    } as any);
+    vi.mocked(db.select).mockReset().mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) }))
+    } as any);
+    vi.mocked(db.insert).mockReset().mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+    } as any);
+    vi.mocked(db.update).mockReset().mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
+    } as any);
+    delete process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN;
+    process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
     permissionGate.deny = false;
     mfaGate.deny = false;
     setAuthContext();
@@ -501,5 +543,420 @@ describe('sso routes', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  it('exchanges SSO callback code for access token and HttpOnly refresh cookie only once', async () => {
+    vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+      access_token: 'idp-access-token',
+      refresh_token: 'idp-refresh-token',
+      expires_in: 3600
+    } as any);
+    vi.mocked(getUserInfo).mockResolvedValue({
+      sub: 'external-user-1',
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+    vi.mocked(mapUserAttributes).mockReturnValue({
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+
+    // Session is now claimed atomically via delete().returning().
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'sso-session-1',
+          providerId: PROVIDER_UUID,
+          state: 'state',
+          nonce: 'nonce',
+          codeVerifier: 'verifier',
+          redirectUrl: '/dashboard'
+        }])
+      })
+    } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: ORG_UUID,
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              authorizationUrl: 'https://issuer.example.com/auth',
+              tokenUrl: 'https://issuer.example.com/token',
+              userInfoUrl: 'https://issuer.example.com/userinfo',
+              jwksUrl: 'https://issuer.example.com/jwks',
+              clientId: 'client-id',
+              clientSecret: 'client-secret',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: false,
+              allowedDomains: null,
+              defaultRoleId: null
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: USER_UUID,
+              email: 'test@example.com',
+              name: 'Test User'
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                orgId: ORG_UUID,
+                roleId: 'role-1',
+                roleName: 'Member',
+                roleScope: 'organization'
+              }])
+            })
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'identity-1' }])
+          })
+        })
+      } as any);
+
+    const callbackRes = await app.request('/sso/callback?code=oidc-code&state=state', {
+      method: 'GET',
+      headers: { 'user-agent': 'vitest', cookie: ssoStateCookieHeader('state') }
+    });
+
+    expect(callbackRes.status).toBe(302);
+    const redirectLocation = callbackRes.headers.get('location') ?? '';
+    const exchangeCode = redirectLocation.match(/ssoCode=([^&]+)/)?.[1];
+    expect(exchangeCode).toBeTruthy();
+
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: decodeURIComponent(exchangeCode!) })
+    });
+
+    expect(exchangeRes.status).toBe(200);
+    const body = await exchangeRes.json();
+    // SSO_EXCHANGE_RETURN_REFRESH_TOKEN defaults to false: the refresh token
+    // is delivered only via the HttpOnly `breeze_refresh_token` cookie, never
+    // in the JSON response. The Deprecation header is only emitted when the
+    // legacy JSON behavior is explicitly re-enabled via the env flag.
+    expect(body).toEqual({
+      accessToken: 'access-token',
+      expiresInSeconds: 900
+    });
+    expect(body.refreshToken).toBeUndefined();
+    expect(exchangeRes.headers.get('deprecation')).toBeNull();
+    const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('breeze_refresh_token=');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('breeze_csrf_token=');
+
+    const replayRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: decodeURIComponent(exchangeCode!) })
+    });
+
+    expect(replayRes.status).toBe(400);
+  });
+
+  it('returns SSO refresh token in JSON only behind explicit compatibility flag', async () => {
+    process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN = 'true';
+    vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+      access_token: 'idp-access-token',
+      refresh_token: 'idp-refresh-token',
+      expires_in: 3600
+    } as any);
+    vi.mocked(getUserInfo).mockResolvedValue({
+      sub: 'external-user-1',
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+    vi.mocked(mapUserAttributes).mockReturnValue({
+      email: 'test@example.com',
+      name: 'Test User'
+    } as any);
+
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'sso-session-2',
+          providerId: PROVIDER_UUID,
+          state: 'state',
+          nonce: 'nonce',
+          codeVerifier: 'verifier',
+          redirectUrl: '/'
+        }])
+      })
+    } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: ORG_UUID,
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              authorizationUrl: 'https://issuer.example.com/auth',
+              tokenUrl: 'https://issuer.example.com/token',
+              userInfoUrl: 'https://issuer.example.com/userinfo',
+              clientId: 'client-id',
+              clientSecret: 'client-secret',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: false,
+              defaultRoleId: null
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: USER_UUID, email: 'test@example.com', name: 'Test User' }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ orgId: ORG_UUID, roleId: 'role-1', roleScope: 'organization' }])
+            })
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'identity-2' }])
+          })
+        })
+      } as any);
+
+    const callbackRes = await app.request('/sso/callback?code=oidc-code&state=state', {
+      headers: { cookie: ssoStateCookieHeader('state') }
+    });
+    const exchangeCode = (callbackRes.headers.get('location') ?? '').match(/ssoCode=([^&]+)/)?.[1];
+    expect(exchangeCode).toBeTruthy();
+
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: decodeURIComponent(exchangeCode!) })
+    });
+
+    expect(exchangeRes.status).toBe(200);
+    const body = await exchangeRes.json();
+    expect(body.refreshToken).toBe('refresh-token');
+    // HttpOnly cookie is set in both modes — flag only controls JSON body.
+    const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('breeze_refresh_token=');
+    expect(setCookie).toContain('HttpOnly');
+    // Deprecation headers are emitted when the legacy JSON behavior is opted into.
+    expect(exchangeRes.headers.get('deprecation')).toBe('true');
+    expect(exchangeRes.headers.get('sunset')).toBeTruthy();
+  });
+
+  describe('SSO login-CSRF browser binding (forced-login defense)', () => {
+    // Wire the db mocks for a fully successful callback so the only variable
+    // under test is the binding-cookie / state interaction. The session is
+    // claimed via delete().returning(); a falsy `deleteReturns` simulates a
+    // state that's already been consumed (atomic single-use).
+    const wireHappyPathDb = (opts: { deleteReturns?: boolean } = {}) => {
+      const { deleteReturns = true } = opts;
+
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+        access_token: 'idp-access-token',
+        refresh_token: 'idp-refresh-token',
+        expires_in: 3600
+      } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({
+        sub: 'external-user-1',
+        email: 'test@example.com',
+        name: 'Test User'
+      } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({
+        email: 'test@example.com',
+        name: 'Test User'
+      } as any);
+
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue(deleteReturns
+            ? [{
+                id: 'sso-session-x',
+                providerId: PROVIDER_UUID,
+                state: 'state',
+                nonce: 'nonce',
+                codeVerifier: 'verifier',
+                redirectUrl: '/dashboard'
+              }]
+            : [])
+        })
+      } as any);
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: PROVIDER_UUID,
+                orgId: ORG_UUID,
+                type: 'oidc',
+                issuer: 'https://issuer.example.com',
+                authorizationUrl: 'https://issuer.example.com/auth',
+                tokenUrl: 'https://issuer.example.com/token',
+                userInfoUrl: 'https://issuer.example.com/userinfo',
+                jwksUrl: 'https://issuer.example.com/jwks',
+                clientId: 'client-id',
+                clientSecret: 'client-secret',
+                scopes: 'openid profile email',
+                attributeMapping: { email: 'email', name: 'name' },
+                autoProvision: false,
+                allowedDomains: null,
+                defaultRoleId: null
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: USER_UUID,
+                email: 'test@example.com',
+                name: 'Test User'
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  orgId: ORG_UUID,
+                  roleId: 'role-1',
+                  roleName: 'Member',
+                  roleScope: 'organization'
+                }])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'identity-x' }])
+            })
+          })
+        } as any);
+    };
+
+    it('rejects a callback with NO binding cookie (forced-login blocked)', async () => {
+      wireHappyPathDb();
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET'
+        // no cookie header — simulates the cross-site top-level navigation a
+        // SameSite=Lax cookie would not be attached to.
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_callback');
+      // The session must NOT have been consumed when binding fails.
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects a callback whose cookie value does not match the URL state', async () => {
+      wireHappyPathDb();
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        // Cookie was minted for a DIFFERENT state (the attacker's), so the
+        // constant-time HMAC compare against the URL `state` fails.
+        headers: { cookie: ssoStateCookieHeader('attacker-state') }
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=invalid_callback');
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the binding cookie matches the URL state', async () => {
+      wireHappyPathDb();
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') }
+      });
+
+      expect(res.status).toBe(302);
+      const location = res.headers.get('location') ?? '';
+      expect(location).toMatch(/ssoCode=/);
+      // Session was claimed atomically.
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      // Binding cookie is cleared after a successful flow.
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_sso_state=;');
+    });
+
+    it('rejects replay of an already-consumed state (atomic single-use)', async () => {
+      // The delete().returning() returns no row — the state was already
+      // claimed by a prior callback — so the second attempt is rejected.
+      wireHappyPathDb({ deleteReturns: false });
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') }
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=session_expired');
+      // The atomic claim was attempted (and lost the race).
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      // No tokens were minted for the replay.
+      expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+    });
+
+    it('rejects an id_token whose signature fails verification', async () => {
+      wireHappyPathDb();
+      // Provider has jwksUrl, so the callback verifies the id_token signature.
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({
+        access_token: 'idp-access-token',
+        refresh_token: 'idp-refresh-token',
+        expires_in: 3600,
+        id_token: 'header.payload.badsig'
+      } as any);
+      vi.mocked(verifyIdTokenSignature).mockRejectedValue(
+        new Error('ID token signature verification failed: signature verification failed')
+      );
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') }
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('/login?error=sso_error');
+      expect(verifyIdTokenSignature).toHaveBeenCalled();
+    });
   });
 });

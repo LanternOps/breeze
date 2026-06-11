@@ -63,16 +63,21 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
-vi.mock('./helpers', () => ({
-  getDeviceWithOrgCheck: vi.fn()
-}));
+vi.mock('./helpers', async () => {
+  const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
+  return {
+    ...actual,
+    getDeviceWithOrgCheck: vi.fn(),
+    getDeviceWithOrgAndSiteCheck: vi.fn(),
+  };
+});
 
 vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn()
 }));
 
 import { db } from '../../db';
-import { getDeviceWithOrgCheck } from './helpers';
+import { getDeviceWithOrgCheck, getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 
 function selectWhereResult(rows: unknown[]) {
@@ -115,7 +120,7 @@ describe('device patch routes', () => {
   });
 
   it('separates actionable pending patches from missing records', async () => {
-    vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select).mockReturnValueOnce(selectPatchStatusResult([
       {
         id: 'dp-1',

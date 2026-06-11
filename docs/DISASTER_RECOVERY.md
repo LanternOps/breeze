@@ -131,6 +131,58 @@ Test your backups at least monthly:
 3. Decrypt and inspect your configuration backup.
 4. Confirm object storage sync by comparing file counts and checksums.
 
+### Off-Region Backup + Automated Restore Test (DigitalOcean)
+
+The local `pg_dump` written by `scripts/backup.sh` lives on the droplet and does
+**not** survive a region/droplet loss. Two ops scripts close that gap:
+
+- `scripts/ops/offsite-backup.sh` — runs `backup.sh --db`, then uploads the dump
+  to an **off-region** S3-compatible bucket. On DO, create a **Spaces bucket in a
+  different region than the droplet** (e.g. a droplet in region A → a Spaces
+  bucket in region B). Enable
+  **bucket versioning** + a lifecycle rule to expire noncurrent versions, so a
+  corrupt or attacker-encrypted dump can't overwrite good history. It also writes
+  a stable `db/latest.dump` pointer.
+- `scripts/ops/restore-test.sh` — pulls `db/latest.dump` from that off-region
+  bucket, restores it into a throwaway dockerized Postgres via `restore.sh`,
+  asserts a sane `devices` row count, then tears the scratch DB down. POSTs to
+  `RESTORE_TEST_ALERT_URL` (Slack/Alertmanager) on failure. This is the *proof*
+  that the backup is restorable — run it on a schedule, not by hand.
+
+**One-time Spaces setup** (off-region bucket, e.g. via `s3cmd`/`aws` against the
+Spaces endpoint or the DO control panel): create the bucket in a foreign region,
+enable versioning, add a Spaces access key. Put the credentials in the droplet's
+backup environment:
+
+# Point each droplet at a Spaces bucket in a DIFFERENT region than that droplet.
+# Use a separate, scoped Spaces key per bucket.
+```bash
+OFFSITE_S3_ENDPOINT=https://<region>.digitaloceanspaces.com   # off-region endpoint (required)
+OFFSITE_S3_BUCKET=<your-offsite-backup-bucket>                # off-region bucket (required)
+OFFSITE_S3_ACCESS_KEY=...                                     # scoped Spaces key for this bucket
+OFFSITE_S3_SECRET_KEY=...
+OFFSITE_BACKUP_GPG_PASSPHRASE=...   # gpg AES256 for the dump; store offline too
+RESTORE_TEST_ALERT_URL=https://hooks.slack.com/services/...   # optional
+```
+
+> The dumps are gpg-encrypted before they leave the droplet (the dump contains all
+> tenant data in the clear; app-layer field encryption only covers secret columns).
+> `restore-test.sh` decrypts with the same passphrase. Losing the passphrase makes
+> the off-region copies unrecoverable — keep it in an offline vault as well.
+
+**Cron (on the droplet):**
+
+```cron
+# Daily off-region DB backup at 02:15
+15 2 * * *  cd /opt/breeze && /opt/breeze/scripts/ops/offsite-backup.sh >> /var/log/breeze-offsite.log 2>&1
+# Weekly restore verification, Sundays 03:30 — pages on failure
+30 3 * * 0  cd /opt/breeze && /opt/breeze/scripts/ops/restore-test.sh >> /var/log/breeze-restore-test.log 2>&1
+```
+
+The restore test needs `docker`, `aws`, `pg_restore`, and `psql` on the droplet.
+A green weekly run is the artifact underwriters and the launch-readiness checklist
+ask for ("backup tested ≤ 90 days").
+
 ---
 
 ## 4. Scenario 1: Single Service Crash
@@ -450,7 +502,9 @@ Covers: corrupt database records, application bugs that wrote bad data, ransomwa
    ```sql
    -- Example: find records with corrupted encrypted values
    SELECT id, created_at FROM sso_providers
-   WHERE client_secret NOT LIKE 'enc:v1:%' AND client_secret IS NOT NULL;
+   WHERE client_secret NOT LIKE 'enc:v1:%'
+     AND client_secret NOT LIKE 'enc:v2:%'
+     AND client_secret IS NOT NULL;
 
    -- Example: find devices with invalid status
    SELECT id, status, updated_at FROM devices

@@ -18,6 +18,7 @@ export const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),
   enabled: z.boolean().optional(),
+  encryption: z.boolean().optional(),
   details: z.record(z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
@@ -27,6 +28,7 @@ export const configSchema = z.object({
 export const configUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
+  encryption: z.boolean().optional(),
   details: z.record(z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
@@ -154,12 +156,14 @@ export const createEncryptionKeySchema = z.object({
   name: z.string().min(1).max(200),
   keyType: z.enum(['aes_256', 'rsa_2048']).default('aes_256'),
   publicKeyPem: z.string().optional(),
+  encryptedPrivateKey: z.string().trim().min(16).max(65536),
   keyHash: z.string().min(16).max(128),
 });
 
 export const rotateEncryptionKeySchema = z.object({
   newKeyHash: z.string().min(16).max(128),
   newPublicKeyPem: z.string().optional(),
+  newEncryptedPrivateKey: z.string().trim().min(16).max(65536),
 });
 
 // ── Extended policy schemas (GFS, legal hold, bandwidth) ─────────────────────

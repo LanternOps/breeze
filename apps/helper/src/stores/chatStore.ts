@@ -8,7 +8,7 @@ declare global {
 
 interface AgentConfig {
   api_url: string;
-  token: string;
+  token?: string;
   agent_id: string;
   has_mtls?: boolean;
   os_username?: string;
@@ -38,7 +38,12 @@ export interface SessionSummary {
   updatedAt: string;
 }
 
-type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'waiting-for-token'
+  | 'connected'
+  | 'error';
 
 export interface DeviceContext {
   hostname: string;
@@ -155,6 +160,13 @@ interface StreamChunkEvent {
   error: string | null;
 }
 
+function requireDevBearerToken(config: AgentConfig): string {
+  if (!config.token) {
+    throw new Error('Browser dev mode requires VITE_AGENT_TOKEN');
+  }
+  return config.token;
+}
+
 // ---------------------------------------------------------------------------
 // Unified HTTP helpers that use helper_fetch in Tauri, plain fetch otherwise
 // ---------------------------------------------------------------------------
@@ -192,7 +204,7 @@ async function helperRequest(
   const res = await fetch(url, {
     method: options.method ?? 'GET',
     headers: {
-      Authorization: `Bearer ${config.token}`,
+      Authorization: `Bearer ${requireDevBearerToken(config)}`,
       ...(options.headers ?? {}),
     },
     body: options.body,
@@ -290,7 +302,7 @@ async function helperStreamRequest(
   const res = await fetch(url, {
     method: options.method ?? 'GET',
     headers: {
-      Authorization: `Bearer ${config.token}`,
+      Authorization: `Bearer ${requireDevBearerToken(config)}`,
       ...(options.headers ?? {}),
     },
     body: options.body,
@@ -491,6 +503,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isFlagged: false,
 
   initialize: async () => {
+    // Avoid stacking concurrent inits (e.g. Retry pressed while a token poll is still running).
+    const cs = get().connectionState;
+    if (cs === 'connecting' || cs === 'waiting-for-token') return;
+
     set({ connectionState: 'connecting', connectionError: null });
 
     try {
@@ -515,6 +531,52 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Restore username from localStorage, fall back to OS username
       const stored = localStorage.getItem(USERNAME_KEY);
       const username = stored || config.os_username || null;
+
+      // In Tauri, the helper auth token is delivered over IPC by the agent and
+      // may not be present at the instant the window opens. Show a transient
+      // "connecting to agent" state while we wait for it. In Phase 1 the file
+      // token is still a fallback, so we proceed after a bounded number of
+      // attempts even if the IPC token hasn't landed; in Phase 2 (no file
+      // fallback) this gate prevents requests that would 401.
+      if (invoke) {
+        const TOKEN_POLL_INTERVAL_MS = 500;
+        const TOKEN_POLL_MAX_ATTEMPTS = 20; // ~10s
+        let ready = false;
+        for (let attempt = 0; attempt < TOKEN_POLL_MAX_ATTEMPTS; attempt++) {
+          try {
+            ready = (await invoke('helper_token_ready')) as boolean;
+          } catch (err) {
+            ready = false;
+            // Log on the last attempt so a broken IPC bridge (command throwing
+            // every iteration) is visible without spamming on every poll tick.
+            if (attempt === TOKEN_POLL_MAX_ATTEMPTS - 1) {
+              console.warn(
+                '[helper] helper_token_ready threw on final attempt — IPC bridge may be broken:',
+                err,
+              );
+            } else {
+              console.debug('[helper] helper_token_ready threw (attempt', attempt, '):', err);
+            }
+          }
+          if (ready) break;
+          // Surface the waiting state on the first miss so the UI updates.
+          if (attempt === 0) {
+            set({ agentConfig: config, connectionState: 'waiting-for-token', username });
+          }
+          await new Promise((resolve) => setTimeout(resolve, TOKEN_POLL_INTERVAL_MS));
+        }
+
+        if (!ready) {
+          // Phase 1: file-token fallback is still valid, so we continue to
+          // 'connected'. Requests may still succeed via the on-disk token.
+          // Phase 2 (no file fallback): replace this branch with a transition
+          // to an 'agent-unreachable' / 'error' state instead of 'connected'.
+          console.warn(
+            '[helper] IPC token not received before timeout; proceeding with file-fallback token (Phase 1).' +
+              ' If requests fail, ensure the Breeze agent is running.',
+          );
+        }
+      }
 
       set({ agentConfig: config, connectionState: 'connected', username });
     } catch (err) {

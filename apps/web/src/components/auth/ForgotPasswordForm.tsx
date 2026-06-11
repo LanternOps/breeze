@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -34,6 +34,8 @@ export default function ForgotPasswordForm({
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const emailErrId = useId();
+  const formErrId = useId();
 
   return (
     <form
@@ -41,6 +43,7 @@ export default function ForgotPasswordForm({
         await onSubmit?.(values);
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      aria-describedby={errorMessage ? formErrId : undefined}
     >
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">Reset your password</h2>
@@ -57,17 +60,24 @@ export default function ForgotPasswordForm({
           id="email"
           type="email"
           autoComplete="email"
+          autoFocus
           placeholder="you@company.com"
+          aria-invalid={errors.email ? true : undefined}
+          aria-describedby={errors.email ? emailErrId : undefined}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
         {errors.email && (
-          <p className="text-sm text-destructive">{errors.email.message}</p>
+          <p id={emailErrId} className="text-sm text-destructive">{errors.email.message}</p>
         )}
       </div>
 
       {errorMessage && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div
+          id={formErrId}
+          role="alert"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           {errorMessage}
         </div>
       )}
@@ -75,9 +85,10 @@ export default function ForgotPasswordForm({
       <button
         type="submit"
         disabled={isLoading}
+        aria-busy={isLoading || undefined}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Sending link...' : submitLabel}
+        {isLoading ? 'Sending link…' : submitLabel}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">

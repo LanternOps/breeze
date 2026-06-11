@@ -12,15 +12,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procoutput"
 )
 
 type ScriptResult struct {
-	Status      string `json:"status"`
-	ExitCode    int    `json:"exitCode"`
-	Stdout      string `json:"stdout"`
-	Stderr      string `json:"stderr"`
-	DurationMs  int64  `json:"durationMs"`
-	ErrorMsg    string `json:"errorMessage,omitempty"`
+	Status     string `json:"status"`
+	ExitCode   int    `json:"exitCode"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	DurationMs int64  `json:"durationMs"`
+	ErrorMsg   string `json:"errorMessage,omitempty"`
 }
 
 type ScriptRunner struct {
@@ -56,6 +58,7 @@ func (r *ScriptRunner) Run(language, content string, timeout time.Duration) *Scr
 	defer cancel()
 
 	cmd := r.buildCommandContext(ctx, language, scriptFile)
+	cmd.Env = procoutput.ApplyEnv(os.Environ())
 
 	// Set up output capture
 	var stdout, stderr bytes.Buffer
@@ -82,8 +85,8 @@ func (r *ScriptRunner) Run(language, content string, timeout time.Duration) *Scr
 		result.ExitCode = 0
 	}
 
-	result.Stdout = stdout.String()
-	result.Stderr = stderr.String()
+	result.Stdout = procoutput.BytesToUTF8(stdout.Bytes())
+	result.Stderr = procoutput.BytesToUTF8(stderr.Bytes())
 	result.DurationMs = time.Since(start).Milliseconds()
 
 	return result
@@ -115,7 +118,8 @@ func (r *ScriptRunner) buildCommandContext(ctx context.Context, language, script
 	switch language {
 	case "powershell":
 		if runtime.GOOS == "windows" {
-			return exec.CommandContext(ctx, "powershell", "-ExecutionPolicy", "Bypass", "-File", scriptFile)
+			shellCmd, args := procoutput.WindowsScriptCommand("powershell", []string{"-ExecutionPolicy", "Bypass", "-File"}, scriptFile)
+			return exec.CommandContext(ctx, shellCmd, args...)
 		}
 		return exec.CommandContext(ctx, "pwsh", "-File", scriptFile)
 	case "bash":
@@ -123,6 +127,10 @@ func (r *ScriptRunner) buildCommandContext(ctx context.Context, language, script
 	case "python":
 		return exec.CommandContext(ctx, "python3", scriptFile)
 	case "cmd":
+		if runtime.GOOS == "windows" {
+			shellCmd, args := procoutput.WindowsScriptCommand("cmd", []string{"/c"}, scriptFile)
+			return exec.CommandContext(ctx, shellCmd, args...)
+		}
 		return exec.CommandContext(ctx, "cmd", "/c", scriptFile)
 	default:
 		return exec.CommandContext(ctx, "sh", scriptFile)

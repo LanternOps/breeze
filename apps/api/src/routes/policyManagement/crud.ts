@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { automationPolicies, automationPolicyCompliance, scripts } from '../../db/schema';
 import { requireScope } from '../../middleware/auth';
@@ -121,7 +121,7 @@ crudRoutes.get(
       const [script] = await db
         .select({ id: scripts.id, name: scripts.name })
         .from(scripts)
-        .where(eq(scripts.id, policy.remediationScriptId))
+        .where(and(eq(scripts.id, policy.remediationScriptId), isNull(scripts.deletedAt)))
         .limit(1);
 
       remediationScript = script ?? null;

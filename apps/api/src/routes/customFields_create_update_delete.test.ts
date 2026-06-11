@@ -132,6 +132,34 @@ describe('customFields routes', () => {
       expect(body.data.name).toBe('Serial Number');
     });
 
+    it('should accept explicit null for options and deviceTypes (#724 regression guard)', async () => {
+      // The web Custom Fields form serializes unused fields as JSON null
+      // rather than omitting them. createCustomFieldSchema must accept
+      // null for options + deviceTypes so non-Dropdown creates (Text,
+      // Number, Boolean, Date) succeed instead of 400'ing with an opaque
+      // Zod error. Regression test for issue #724.
+      const created = makeField();
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([created])
+        })
+      } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Department',
+          fieldKey: 'department',
+          type: 'text',
+          options: null,
+          deviceTypes: null
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
     it('should reject when both orgId and partnerId provided', async () => {
       const res = await app.request('/custom-fields', {
         method: 'POST',

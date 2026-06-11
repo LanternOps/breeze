@@ -274,6 +274,8 @@ Every user-to-scope association includes a `roleId`. The role determines what th
 
 Roles can be **system** (built-in, immutable) or **custom** (created by administrators).
 
+Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enroll a TOTP authenticator. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
+
 ### Permission Model
 
 Permissions are stored as `resource:action` pairs in the `permissions` table. Roles are linked to permissions through the `role_permissions` join table.
@@ -287,11 +289,15 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `alerts` | Alert rules and acknowledgement |
 | `automations` | Automation workflows |
 | `reports` | Reporting and analytics |
+| `backup` | Backup jobs, vaults, and restore operations |
+| `billing` | Subscriptions, invoicing, and payment methods |
 | `users` | User and role management |
 | `settings` | Organisation and system settings |
 | `organizations` | Organisation CRUD |
 | `sites` | Site management |
 | `remote` | Remote access sessions |
+
+The authoritative list of assignable permissions is also available at runtime via `GET /permissions/catalog`. The dashboard's role builder consumes this endpoint so the matrix of resources and actions stays in sync with the server whenever new permissions are added.
 
 **Available actions:**
 

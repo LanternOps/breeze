@@ -7,7 +7,7 @@ import { backupJobs, backupSnapshots, devices, hypervVms } from '../../db/schema
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -35,17 +35,23 @@ export const hypervRoutes = new Hono();
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-async function verifyDevice(deviceId: string, orgId: string) {
+async function verifyDevice(c: any, deviceId: string, orgId: string) {
   const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
 
   if (!device || device.orgId !== orgId) {
-    return null;
+    return { error: 'Device not found' as const, status: 404 as const };
   }
-  return device;
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return { error: 'Access to this site denied' as const, status: 403 as const };
+  }
+
+  return { device };
 }
 
 // ── GET /hyperv/vms — List all Hyper-V VMs (org-wide) ──────────────
@@ -93,9 +99,9 @@ hypervRoutes.get(
 
     const { deviceId } = c.req.valid('param');
 
-    const device = await verifyDevice(deviceId, orgId);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDevice(c, deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const vms = await db
@@ -177,9 +183,9 @@ hypervRoutes.post(
 
     const { deviceId } = c.req.valid('param');
 
-    const device = await verifyDevice(deviceId, orgId);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDevice(c, deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const result = await executeCommand(
@@ -277,9 +283,9 @@ hypervRoutes.post(
 
     const payload = c.req.valid('json');
 
-    const device = await verifyDevice(payload.deviceId, orgId);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDevice(c, payload.deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const resolvedConfig = await resolveBackupConfigForDevice(payload.deviceId);
@@ -384,6 +390,7 @@ hypervRoutes.post(
 hypervRoutes.post(
   '/restore',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', hypervRestoreSchema),
@@ -396,9 +403,9 @@ hypervRoutes.post(
 
     const payload = c.req.valid('json');
 
-    const device = await verifyDevice(payload.deviceId, orgId);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDevice(c, payload.deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     const [snapshot] = await db
@@ -485,9 +492,9 @@ hypervRoutes.post(
     const { deviceId, vmId } = c.req.valid('param');
     const payload = c.req.valid('json');
 
-    const device = await verifyDevice(deviceId, orgId);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDevice(c, deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     // Look up the VM name from our records.
@@ -566,9 +573,9 @@ hypervRoutes.post(
     const { deviceId, vmId } = c.req.valid('param');
     const payload = c.req.valid('json');
 
-    const device = await verifyDevice(deviceId, orgId);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
+    const access = await verifyDevice(c, deviceId, orgId);
+    if ('error' in access) {
+      return c.json({ error: access.error }, access.status);
     }
 
     // Look up the VM name.

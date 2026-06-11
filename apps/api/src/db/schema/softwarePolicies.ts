@@ -30,9 +30,18 @@ export type SoftwarePolicyRuleDefinition = {
   reason?: string;
 };
 
+export type SoftwarePolicyExecutableRule = {
+  name: string;
+  sha256?: string;
+  signer?: string;
+  publisher?: string;
+  pathGlob?: string;
+};
+
 export type SoftwarePolicyRulesDefinition = {
   software: SoftwarePolicyRuleDefinition[];
   allowUnknown?: boolean;
+  executable?: SoftwarePolicyExecutableRule[];
 };
 
 export type SoftwarePolicyViolation = {

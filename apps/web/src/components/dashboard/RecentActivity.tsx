@@ -3,6 +3,7 @@ import { FileCode, User, Settings, Monitor, AlertCircle, Activity } from 'lucide
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTimeAgo } from '@/lib/formatTime';
+import { formatAuditAction, DEFAULT_DASHBOARD_EXCLUDE_ACTIONS } from '@/lib/auditFormat';
 
 interface AuditLogEntry {
   id: string;
@@ -14,11 +15,18 @@ interface AuditLogEntry {
     email: string;
   };
   action: string;
+  // Legacy flat fields (kept for back-compat with flattenEntry shape)
   resourceType?: string;
   targetType?: string;
   resourceId?: string;
   target?: string;
   targetName?: string;
+  // Current toFullEntry shape from /audit-logs/logs
+  resource?: {
+    type?: string;
+    id?: string;
+    name?: string;
+  };
   timestamp: string;
   createdAt?: string;
   details?: Record<string, unknown>;
@@ -47,7 +55,10 @@ export default function RecentActivity() {
         setIsLoading(true);
         setError(null);
 
-        const response = await fetchWithAuth('/audit-logs/logs?limit=5');
+        const excludeParam = encodeURIComponent(DEFAULT_DASHBOARD_EXCLUDE_ACTIONS.join(','));
+        const response = await fetchWithAuth(
+          `/audit-logs/logs?limit=5&skipCount=true&excludeActions=${excludeParam}`
+        );
 
         if (!response.ok) {
           throw response;
@@ -81,7 +92,7 @@ export default function RecentActivity() {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Activity</h3>
+          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
           <a href="/audit" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View audit log
           </a>
@@ -104,7 +115,7 @@ export default function RecentActivity() {
     return (
       <div className="border-t pt-6 mt-2">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Recent Activity</h3>
+          <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
           <a href="/audit" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
             View audit log
           </a>
@@ -126,7 +137,7 @@ export default function RecentActivity() {
   return (
     <div className="border-t pt-6 mt-2">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Recent Activity</h3>
+        <h3 data-testid="dashboard-recent-activity-heading" className="text-sm font-semibold">Recent Activity</h3>
         <a href="/audit" className="text-sm text-primary hover:underline">
           View audit log
         </a>
@@ -152,17 +163,21 @@ export default function RecentActivity() {
             </thead>
             <tbody>
               {activities.map((activity) => {
-                const targetType = (activity.resourceType || activity.targetType || 'default').toLowerCase();
+                const resourceType = activity.resource?.type || activity.resourceType || activity.targetType;
+                const targetType = (resourceType || 'default').toLowerCase();
                 const Icon = typeIcons[targetType] || typeIcons.default;
                 const userName = activity.user?.name || activity.userName || 'System';
-                const target = activity.target || activity.targetName || activity.resourceId || '-';
+                const targetName = activity.resource?.name || activity.target || activity.targetName;
+                const target = targetName && targetName.trim()
+                  ? targetName
+                  : (resourceType ?? '-');
                 const timestamp = activity.timestamp || activity.createdAt || '';
 
                 return (
                   <tr key={activity.id} className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors">
                     <td className="py-3 text-sm">{userName}</td>
                     <td className="py-3 text-sm text-muted-foreground">
-                      {activity.action}
+                      {formatAuditAction(activity.action)}
                     </td>
                     <td className="py-3">
                       <div className="flex items-center gap-2 text-sm">

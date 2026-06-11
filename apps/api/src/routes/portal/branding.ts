@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
 import { brandingParamSchema } from './schemas';
 import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
@@ -14,30 +14,35 @@ async function resolveBrandingByDomain(domain: string) {
     return null;
   }
 
-  const [branding] = await db
-    .select({
-      id: portalBranding.id,
-      orgId: portalBranding.orgId,
-      logoUrl: portalBranding.logoUrl,
-      faviconUrl: portalBranding.faviconUrl,
-      primaryColor: portalBranding.primaryColor,
-      secondaryColor: portalBranding.secondaryColor,
-      accentColor: portalBranding.accentColor,
-      customDomain: portalBranding.customDomain,
-      domainVerified: portalBranding.domainVerified,
-      welcomeMessage: portalBranding.welcomeMessage,
-      supportEmail: portalBranding.supportEmail,
-      supportPhone: portalBranding.supportPhone,
-      footerText: portalBranding.footerText,
-      customCss: portalBranding.customCss,
-      enableTickets: portalBranding.enableTickets,
-      enableAssetCheckout: portalBranding.enableAssetCheckout,
-      enableSelfService: portalBranding.enableSelfService,
-      enablePasswordReset: portalBranding.enablePasswordReset
-    })
-    .from(portalBranding)
-    .where(eq(portalBranding.customDomain, normalizedDomain))
-    .limit(1);
+  // Public, pre-auth lookup by custom domain — no tenant context exists yet,
+  // so run under system scope or portal_branding's org-forced RLS hides every
+  // row under the unprivileged breeze_app pool.
+  const [branding] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: portalBranding.id,
+        orgId: portalBranding.orgId,
+        logoUrl: portalBranding.logoUrl,
+        faviconUrl: portalBranding.faviconUrl,
+        primaryColor: portalBranding.primaryColor,
+        secondaryColor: portalBranding.secondaryColor,
+        accentColor: portalBranding.accentColor,
+        customDomain: portalBranding.customDomain,
+        domainVerified: portalBranding.domainVerified,
+        welcomeMessage: portalBranding.welcomeMessage,
+        supportEmail: portalBranding.supportEmail,
+        supportPhone: portalBranding.supportPhone,
+        footerText: portalBranding.footerText,
+        customCss: portalBranding.customCss,
+        enableTickets: portalBranding.enableTickets,
+        enableAssetCheckout: portalBranding.enableAssetCheckout,
+        enableSelfService: portalBranding.enableSelfService,
+        enablePasswordReset: portalBranding.enablePasswordReset
+      })
+      .from(portalBranding)
+      .where(eq(portalBranding.customDomain, normalizedDomain))
+      .limit(1)
+  );
 
   if (!branding || !branding.domainVerified) {
     return null;

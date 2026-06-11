@@ -7,17 +7,22 @@ import {
   c2cBackupJobs,
   c2cConnections,
 } from '../../db/schema';
+import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueueC2cRestore } from '../../jobs/c2cEnqueue';
 import { c2cItemSearchSchema, c2cRestoreSchema, idParamSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const c2cItemsRoutes = new Hono();
+const requireC2cRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+const requireC2cWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 // ── Search / browse items ───────────────────────────────────────────────────
 
 c2cItemsRoutes.get(
   '/items',
+  requireC2cRead,
   zValidator('query', c2cItemSearchSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -63,6 +68,8 @@ c2cItemsRoutes.get(
 
 c2cItemsRoutes.post(
   '/restore',
+  requireC2cWrite,
+  requireMfa(),
   zValidator('json', c2cRestoreSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -157,6 +164,7 @@ c2cItemsRoutes.post(
 
 c2cItemsRoutes.get(
   '/restore/:id',
+  requireC2cRead,
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -186,7 +194,7 @@ c2cItemsRoutes.get(
 
 // ── Dashboard stats ─────────────────────────────────────────────────────────
 
-c2cItemsRoutes.get('/dashboard', async (c) => {
+c2cItemsRoutes.get('/dashboard', requireC2cRead, async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);

@@ -8,6 +8,8 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+import { commandAuditDetails } from './commandAudit';
+import { recordCommandDispatch } from './anomalyMetrics';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -83,6 +85,7 @@ export const CommandTypes = {
 
   // Software management
   SOFTWARE_UNINSTALL: 'software_uninstall',
+  SOFTWARE_UPDATE: 'software_update',
   CIS_BENCHMARK: 'cis_benchmark',
   APPLY_CIS_REMEDIATION: 'apply_cis_remediation',
 
@@ -125,6 +128,12 @@ export const CommandTypes = {
 
   // Safe mode reboot (Windows only)
   REBOOT_SAFE_MODE: 'reboot_safe_mode',
+  // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
+  WAKE_ON_LAN: 'wake_on_lan',
+  // On-demand inventory refresh — agent re-runs every send*Inventory collector,
+  // so the API sees fresh hardware/software/network/etc. without waiting for
+  // the next periodic cycle.
+  REFRESH_INVENTORY: 'refresh_inventory',
   // Self-uninstall (remote wipe)
   SELF_UNINSTALL: 'self_uninstall',
   // Backup
@@ -239,6 +248,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
   CommandTypes.SOFTWARE_UNINSTALL,
+  CommandTypes.SOFTWARE_UPDATE,
   CommandTypes.CIS_BENCHMARK,
   CommandTypes.APPLY_CIS_REMEDIATION,
   CommandTypes.SECURITY_SCAN,
@@ -257,6 +267,10 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.PERIPHERAL_POLICY_SYNC,
   // Safe mode reboot
   CommandTypes.REBOOT_SAFE_MODE,
+  // (Wake-on-LAN audit is written by the wakeOnLan service against the target device,
+  // not by the auto-audit path. The deviceCommands row is addressed to the relay agent
+  // so the result handler in agentWs matches, but the user-visible action belongs to
+  // the target. See apps/api/src/services/wakeOnLan.ts.)
   // Self-uninstall (remote wipe)
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.BACKUP_RUN,
@@ -340,6 +354,16 @@ export async function queueCommand(
   // by RLS and the audit block would silently no-op before ever reaching
   // the insert. `runOutsideDbContext` escapes any caller tx so a failed
   // audit can't poison the caller's transaction.
+  // Anomaly signal (launch-readiness #5): count every dispatch so a command
+  // flood is visible regardless of command type. Tenant attribution happens
+  // in the audited block below (where the device's org is already loaded) to
+  // avoid adding a devices lookup to the dispatch hot path. Non-audited
+  // dispatches are still counted, just with an unattributed tenant label.
+  const dispatchActor: 'user' | 'system' = userId ? 'user' : 'system';
+  if (!AUDITED_COMMANDS.has(type)) {
+    recordCommandDispatch(type, dispatchActor);
+  }
+
   if (command && AUDITED_COMMANDS.has(type)) {
     const commandId = command.id;
     runOutsideDbContext(() =>
@@ -351,8 +375,11 @@ export async function queueCommand(
           .limit(1);
 
         if (!device) {
+          recordCommandDispatch(type, dispatchActor);
           return;
         }
+
+        recordCommandDispatch(type, dispatchActor, device.orgId);
 
         await db.insert(auditLogs).values({
           orgId: device.orgId,
@@ -362,7 +389,7 @@ export async function queueCommand(
           resourceType: 'device',
           resourceId: deviceId,
           resourceName: device.hostname,
-          details: { commandId, type, payload },
+          details: commandAuditDetails(commandId, type, payload),
           result: 'success',
         });
       })
@@ -686,7 +713,7 @@ export async function executeCommand(
               resourceType: 'device',
               resourceId: deviceId,
               resourceName: device.hostname,
-              details: { commandId: command.id, type, payload },
+              details: commandAuditDetails(command.id, type, payload),
               result: 'success',
             })
             .execute()

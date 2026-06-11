@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deployments, deploymentDevices, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -14,7 +14,7 @@ import {
   incrementRetryCount
 } from '../services/deploymentEngine';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
 export const deploymentRoutes = new Hono();
 const requireDeploymentRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -747,21 +747,34 @@ deploymentRoutes.get(
       return c.json({ error: 'Deployment not found' }, 404);
     }
 
-    const conditions = [eq(deploymentDevices.deploymentId, id)] as ReturnType<typeof eq>[];
+    const conditions: SQL[] = [eq(deploymentDevices.deploymentId, id)];
     if (query.status) {
       conditions.push(eq(deploymentDevices.status, query.status));
     }
     if (query.batchNumber) {
       conditions.push(eq(deploymentDevices.batchNumber, query.batchNumber));
     }
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds) {
+      if (userPerms.allowedSiteIds.length === 0) {
+        return c.json({ data: [], total: 0, limit: query.limit, offset: query.offset });
+      }
+      conditions.push(inArray(devices.siteId, userPerms.allowedSiteIds));
+    }
 
     const whereCondition = and(...conditions);
 
     // Get total count
-    const [countResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(deploymentDevices)
-      .where(whereCondition);
+    const [countResult] = userPerms?.allowedSiteIds
+      ? await db
+        .select({ count: sql<number>`count(*)` })
+        .from(deploymentDevices)
+        .innerJoin(devices, eq(deploymentDevices.deviceId, devices.id))
+        .where(whereCondition)
+      : await db
+        .select({ count: sql<number>`count(*)` })
+        .from(deploymentDevices)
+        .where(whereCondition);
 
     const total = Number(countResult?.count ?? 0);
 
@@ -837,6 +850,23 @@ deploymentRoutes.post(
 
     if (!deploymentDevice) {
       return c.json({ error: 'Device not found in this deployment' }, 404);
+    }
+
+    // Site-scope gate: `requireDeploymentExecute` populated permissions in
+    // context; enforce `allowedSiteIds` so a partner-scope user restricted to
+    // a subset of sites cannot retry deployments against devices in other
+    // sites within the same org. RLS does not defend the site axis. Mirrors
+    // PR #864/#868 (SP2 launch-readiness sweep).
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds) {
+      const [device] = await db
+        .select({ siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (!device || typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
     }
 
     if (deploymentDevice.status !== 'failed') {

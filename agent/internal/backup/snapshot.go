@@ -145,8 +145,7 @@ func uploadSnapshotFile(ctx context.Context, provider providers.BackupProvider, 
 }
 
 func cleanupSnapshotPrefix(provider providers.BackupProvider, snapshotID string) {
-	prefix := path.Join(snapshotRootDir, snapshotID)
-	items, err := provider.List(prefix)
+	items, err := listSnapshotPrefixItems(provider, snapshotID)
 	if err != nil {
 		slog.Error("failed to list aborted snapshot for cleanup", "snapshotId", snapshotID, "error", err.Error())
 		return
@@ -263,8 +262,7 @@ func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvide
 		if err := ctx.Err(); err != nil {
 			return errBackupStopped
 		}
-		prefix := path.Join(snapshotRootDir, snapshot.ID)
-		items, listErr := provider.List(prefix)
+		items, listErr := listSnapshotPrefixItems(provider, snapshot.ID)
 		if listErr != nil {
 			listErr = fmt.Errorf("failed to list snapshot %s: %w", snapshot.ID, listErr)
 			errs = append(errs, listErr)
@@ -285,6 +283,23 @@ func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvide
 	}
 
 	return errors.Join(err, errors.Join(errs...))
+}
+
+func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID string) ([]string, error) {
+	prefix := path.Join(snapshotRootDir, snapshotID)
+	items, err := provider.List(prefix + "/")
+	if err != nil {
+		return nil, err
+	}
+
+	scoped := make([]string, 0, len(items))
+	for _, item := range items {
+		cleaned := path.Clean(item)
+		if cleaned == prefix || strings.HasPrefix(cleaned, prefix+"/") {
+			scoped = append(scoped, item)
+		}
+	}
+	return scoped, nil
 }
 
 func ensureGzipExtension(p string) string {

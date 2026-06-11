@@ -128,7 +128,7 @@ export interface OrganizationUser {
 // ============================================
 
 export type OSType = 'windows' | 'macos' | 'linux';
-export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
+export type DeviceStatus = 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
 export type DeviceGroupType = 'static' | 'dynamic';
 export type GroupMembershipSource = 'manual' | 'dynamic_rule' | 'policy';
 
@@ -257,6 +257,13 @@ export interface RemoteAccessPolicy {
   webrtcDesktop: boolean;
   vncRelay: boolean;
   remoteTools: boolean;
+  // Clipboard sync over the WebRTC desktop channel, gated per direction.
+  // `clipboardHostToViewer` (remote machine → operator's viewer) is the
+  // data-egress direction and defaults off on hosted SaaS; `clipboardViewerToHost`
+  // (operator paste → remote machine) is operator-initiated and defaults on.
+  // Enforced agent-side. Mirrors the API's RemoteAccessSettings.
+  clipboardHostToViewer: boolean;
+  clipboardViewerToHost: boolean;
   enableProxy: boolean;
   policyName: string | null;
   policyId: string | null;
@@ -371,9 +378,11 @@ export interface Policy {
 // Alert Types
 // ============================================
 
+import { NOTIFICATION_CHANNEL_TYPES } from '../constants';
+
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
-export type NotificationChannelType = 'email' | 'slack' | 'teams' | 'webhook' | 'pagerduty' | 'sms';
+export type NotificationChannelType = (typeof NOTIFICATION_CHANNEL_TYPES)[number];
 
 export interface AlertRule {
   id: string;
@@ -486,6 +495,24 @@ export interface InheritableSecuritySettings {
   ipAllowlist?: string[];
 }
 
+/**
+ * Server-derived status of the partner IP allowlist, returned by
+ * `GET /partners/me/ip-allowlist/status`. All booleans are computed by the API
+ * (the authority on proxy trust); the client never recomputes them:
+ *   proxyTrustOk === (currentIp !== null)
+ *   active === (enforced && proxyTrustOk)
+ */
+export interface IpAllowlistStatus {
+  /** The caller's detected trusted client IP, or null if not trustable. */
+  currentIp: string | null;
+  /** Whether the API can see a real client IP (proxy trust configured). */
+  proxyTrustOk: boolean;
+  /** Allowlist is non-empty and enforcement mode is 'enforce'. */
+  enforced: boolean;
+  /** Enforcement is both configured and currently effective. */
+  active: boolean;
+}
+
 export interface InheritableNotificationSettings {
   fromAddress?: string;
   replyTo?: string;
@@ -498,6 +525,10 @@ export interface InheritableNotificationSettings {
   slackChannel?: string;
   webhooks?: string[];
   preferences?: Record<string, Record<string, boolean>>;
+  pushoverAppToken?: string;
+  pushoverDefaultUser?: string;
+  pushoverDefaultSound?: string;
+  pushoverDefaultPriority?: -2 | -1 | 0 | 1 | 2;
 }
 
 export interface InheritableEventLogSettings {
@@ -540,6 +571,36 @@ export interface InheritableAiBudgetSettings {
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
 }
 
+// A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).
+// The Connect Desktop button on the device detail page consults the partner's
+// configured providers and, when a default is set, builds a launch URL by
+// substituting `{id}` (device.custom_fields[customFieldKey]) and `{password}`
+// placeholders into urlTemplate. URL building happens server-side so the
+// password never ships to the browser unless the user is launching a session.
+//
+// Examples of urlTemplate:
+//   'rustdesk://{id}?password={password}'
+//     — custom protocol handler hand-off (RustDesk, TeamViewer desktop, AnyDesk)
+//   'https://acme.screenconnect.com/Host#Access///{id}/Join'
+//     — HTTPS launcher; the button opens it in a new browser tab
+//
+// The browser button auto-detects the launch mode by URL prefix: anything
+// starting with http(s):// opens in a new tab; anything else is handed to the
+// OS as a custom-scheme deep link.
+export interface RemoteAccessProvider {
+  id: string;
+  name: string;
+  urlTemplate: string;
+  customFieldKey: string;
+  password?: string;
+  enabled: boolean;
+}
+
+export interface InheritableRemoteAccessSettings {
+  providers?: RemoteAccessProvider[];
+  defaultProviderId?: string;
+}
+
 export interface EffectiveOrgSettings {
   security?: InheritableSecuritySettings;
   notifications?: InheritableNotificationSettings;
@@ -580,6 +641,11 @@ export interface PartnerSettings {
   defaults?: InheritableDefaultSettings;
   branding?: InheritableBrandingSettings;
   aiBudgets?: InheritableAiBudgetSettings;
+  // Partner-level preferred order of organization IDs. The org list endpoint
+  // returns matching orgs in this order; orgs not present in the array
+  // (newly created or stale entries) are appended in createdAt order.
+  organizationOrder?: string[];
+  remoteAccessProviders?: InheritableRemoteAccessSettings;
 }
 
 // ============================================

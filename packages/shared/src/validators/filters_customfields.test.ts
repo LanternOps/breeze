@@ -129,6 +129,21 @@ describe('createCustomFieldSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('should accept null options and null deviceTypes (web form sends explicit nulls for non-Dropdown types)', () => {
+    // Regression guard for #724: the web Custom Fields form serializes
+    // unused fields as JSON null rather than omitting them. The schema
+    // must accept null + undefined + omission for both options and
+    // deviceTypes; .nullable().optional() satisfies all three.
+    const result = createCustomFieldSchema.safeParse({
+      name: 'Department',
+      fieldKey: 'department',
+      type: 'text',
+      options: null,
+      deviceTypes: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('should reject empty name', () => {
     const result = createCustomFieldSchema.safeParse({
       name: '',

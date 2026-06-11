@@ -1,4 +1,6 @@
 import { randomBytes, createHash } from 'crypto';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { safeFetch, SsrfBlockedError } from './urlSafety';
 
 // ============================================
 // Types
@@ -126,7 +128,7 @@ export async function exchangeCodeForTokens(params: TokenExchangeParams): Promis
     body.set('code_verifier', codeVerifier);
   }
 
-  const response = await fetch(config.tokenUrl, {
+  const response = await safeFetch(config.tokenUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -148,7 +150,7 @@ export async function exchangeCodeForTokens(params: TokenExchangeParams): Promis
 // ============================================
 
 export async function getUserInfo(config: OIDCConfig, accessToken: string): Promise<OIDCUserInfo> {
-  const response = await fetch(config.userInfoUrl, {
+  const response = await safeFetch(config.userInfoUrl, {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${accessToken}`,
@@ -175,7 +177,7 @@ export async function refreshAccessToken(config: OIDCConfig, refreshToken: strin
   body.set('client_secret', config.clientSecret);
   body.set('refresh_token', refreshToken);
 
-  const response = await fetch(config.tokenUrl, {
+  const response = await safeFetch(config.tokenUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -204,6 +206,7 @@ export interface IDTokenClaims {
   iat: number;
   nonce?: string;
   email?: string;
+  email_verified?: boolean | string;
   name?: string;
   [key: string]: unknown;
 }
@@ -239,6 +242,92 @@ export function verifyIdTokenClaims(claims: IDTokenClaims, config: OIDCConfig, n
   // Verify nonce
   if (claims.nonce !== nonce) {
     throw new Error('Invalid nonce');
+  }
+}
+
+// ============================================
+// ID Token Signature Verification (JWKS)
+// ============================================
+
+// Cache one remote JWKS set per jwks_uri. jose refreshes on `kid` miss and
+// caches keys internally, so this avoids re-fetching the JWKS on every login.
+const idTokenJwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+function getIdTokenJwks(jwksUri: string): ReturnType<typeof createRemoteJWKSet> {
+  let jwks = idTokenJwksCache.get(jwksUri);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(jwksUri), {
+      cacheMaxAge: 10 * 60 * 1000, // 10 minutes
+      cooldownDuration: 30 * 1000,
+    });
+    idTokenJwksCache.set(jwksUri, jwks);
+  }
+  return jwks;
+}
+
+/** Test-only: clear the JWKS cache so a subsequent call rebuilds it. */
+export function _resetIdTokenJwksCacheForTests(): void {
+  idTokenJwksCache.clear();
+}
+
+/**
+ * Cryptographically verify an OIDC id_token: signature against the provider's
+ * JWKS plus issuer/audience/expiry/nonce. This is the hardened path — the IdP's
+ * signature is checked, so a forged or tampered id_token is rejected. Requires
+ * the provider's `jwksUrl` to be configured (populated from OIDC discovery).
+ *
+ * Identity for provisioning/linking still primarily flows from the
+ * server-to-server userinfo call; verifying the id_token signature closes the
+ * gap where `decodeIdToken` previously trusted an unverified token.
+ */
+export async function verifyIdTokenSignature(
+  idToken: string,
+  config: OIDCConfig,
+  nonce: string
+): Promise<IDTokenClaims> {
+  if (!config.jwksUrl) {
+    throw new Error('Cannot verify ID token signature: provider has no JWKS URL configured');
+  }
+
+  const jwks = getIdTokenJwks(config.jwksUrl);
+
+  let payload: IDTokenClaims;
+  try {
+    const result = await jwtVerify(idToken, jwks, {
+      issuer: config.issuer,
+      audience: config.clientId,
+      // Restrict to asymmetric algorithms; never accept `none` or HMAC, which
+      // would let a token forged with a known/empty key pass verification.
+      algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'PS256'],
+    });
+    payload = result.payload as unknown as IDTokenClaims;
+  } catch (err) {
+    throw new Error(`ID token signature verification failed: ${(err as Error).message}`);
+  }
+
+  // jose already enforced iss/aud/exp; nonce is OIDC-specific and checked here.
+  if (payload.nonce !== nonce) {
+    throw new Error('Invalid nonce');
+  }
+
+  return payload;
+}
+
+/**
+ * Reject an id_token whose email is EXPLICITLY marked unverified before it is
+ * trusted for user provisioning or account linking. `email_verified` may arrive
+ * as a boolean or string.
+ *
+ * Only an explicit false/"false" blocks: many IdPs (notably Azure AD / Entra)
+ * omit `email_verified` entirely even for verified mailboxes, so treating an
+ * ABSENT claim as unverified would lock those tenants out. Identity ultimately
+ * flows from the server-to-server userinfo call, not the id_token email, so an
+ * absent claim is acceptable here.
+ */
+export function assertEmailVerified(claims: Pick<IDTokenClaims, 'email_verified'>): void {
+  const ev = (claims as { email_verified?: unknown }).email_verified;
+  if (ev === false || ev === 'false') {
+    throw new Error('ID token email is explicitly not verified (email_verified === false)');
   }
 }
 
@@ -310,15 +399,26 @@ function isInternalUrl(urlStr: string): boolean {
 export async function discoverOIDCConfig(issuer: string): Promise<OIDCDiscoveryDocument> {
   const wellKnownUrl = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
 
-  // SSRF protection: reject internal/private network URLs
+  // String-level SSRF pre-check: reject obvious private hostnames and
+  // non-HTTPS schemes before we do any network work. `safeFetch` enforces the
+  // same at a deeper layer (DNS resolution + connection pinning), but this
+  // keeps the error message specific and avoids hitting DNS for garbage.
   if (isInternalUrl(wellKnownUrl)) {
     throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
   }
 
-  const response = await fetch(wellKnownUrl, {
-    method: 'GET',
-    headers: { 'Accept': 'application/json' }
-  });
+  let response: Response;
+  try {
+    response = await safeFetch(wellKnownUrl, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+  } catch (err) {
+    if (err instanceof SsrfBlockedError) {
+      throw new Error('OIDC discovery URL must use HTTPS and must not point to internal network addresses');
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     throw new Error(`OIDC discovery failed: ${response.status}`);

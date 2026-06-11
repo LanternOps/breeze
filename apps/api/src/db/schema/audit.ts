@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, bigserial } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 
 export const actorTypeEnum = pgEnum('actor_type', ['user', 'api_key', 'agent', 'system']);
@@ -22,7 +22,23 @@ export const auditLogs = pgTable('audit_logs', {
   result: auditResultEnum('result').notNull(),
   errorMessage: text('error_message'),
   checksum: varchar('checksum', { length: 128 }),
+  prevChecksum: varchar('prev_checksum', { length: 128 }),
   initiatedBy: initiatedByEnum('initiated_by'),
+});
+
+// Side table for the tamper-evidence chain (issue #1002). Written ONLY by the
+// deferred commit-time seal trigger (see migration 2026-06-11-h, issue #1002) — application
+// code never inserts here directly. chain_seq is the chain order; the legacy
+// checksum/prev_checksum columns on audit_logs are vestigial (content-only /
+// NULL for new rows).
+export const auditLogChain = pgTable('audit_log_chain', {
+  chainSeq: bigserial('chain_seq', { mode: 'number' }).primaryKey(),
+  auditId: uuid('audit_id').notNull().references(() => auditLogs.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
+  contentChecksum: varchar('content_checksum', { length: 128 }).notNull(),
+  prevChainChecksum: varchar('prev_chain_checksum', { length: 128 }),
+  chainChecksum: varchar('chain_checksum', { length: 128 }).notNull(),
+  sealedAt: timestamp('sealed_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const auditRetentionPolicies = pgTable('audit_retention_policies', {

@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
+import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 
 vi.mock('../services', () => ({}));
 
@@ -66,6 +68,10 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
+    })),
+    transaction: vi.fn(async (fn: any) => fn({
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
     }))
   },
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
@@ -109,6 +115,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -116,6 +123,14 @@ vi.mock('../middleware/auth', () => ({
       partnerId: null,
       canAccessOrg: (orgId: string) => orgId === '00000000-0000-0000-0000-000000000000'
     });
+    c.set('permissions', restrict ? {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: '00000000-0000-0000-0000-000000000000',
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+    } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -143,6 +158,26 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.nodes).toEqual([]);
       expect(body.edges).toEqual([]);
+    });
+  });
+
+  describe('GET /discovery/assets site-scope', () => {
+    it('returns 403 when a site-restricted caller filters to an out-of-scope site', async () => {
+      const res = await app.request('/discovery/assets?siteId=00000000-0000-0000-0000-000000000099', {
+        headers: { 'x-restrict-site': '00000000-0000-0000-0000-000000000001' },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns an empty asset list when the site allowlist is empty', async () => {
+      const res = await app.request('/discovery/assets', {
+        headers: { 'x-restrict-site': '__empty__' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
     });
   });
 
@@ -283,6 +318,51 @@ describe('discovery routes', () => {
       expect(body.schedule.intervalMinutes).toBe(30);
     });
 
+    it('encrypts and masks SNMP profile secrets', async () => {
+      const insertValues = vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: 'profile-001',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          name: 'SNMP Scan',
+          subnets: ['10.0.2.0/24'],
+          methods: ['snmp'],
+          snmpCommunities: ['enc:v1:mock'],
+          snmpCredentials: { authPassphrase: 'enc:v1:mock-auth' },
+          schedule: { type: 'interval', intervalMinutes: 30 },
+          createdAt: new Date('2026-05-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+        }]))
+      }));
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: insertValues,
+      } as any);
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'SNMP Scan',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          subnets: ['10.0.2.0/24'],
+          methods: ['snmp'],
+          snmpCommunities: ['private'],
+          snmpCredentials: { version: 'v3', username: 'poller', authPassphrase: 'auth-secret' },
+          schedule: { type: 'interval', intervalMinutes: 30 }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const saved = (insertValues.mock.calls as any)[0]?.[0];
+      expect(saved).toBeDefined();
+      expect(isEncryptedSecret(saved.snmpCommunities[0])).toBe(true);
+      expect(decryptSecret(saved.snmpCommunities[0])).toBe('private');
+      expect(decryptSecret(saved.snmpCredentials.authPassphrase)).toBe('auth-secret');
+      const body = await res.json();
+      expect(body.snmpCommunities).toEqual(['********']);
+      expect(body.snmpCredentials.authPassphrase).toBe('********');
+    });
+
     it('should validate schedule details', async () => {
       const res = await app.request('/discovery/profiles', {
         method: 'POST',
@@ -295,6 +375,377 @@ describe('discovery routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /discovery/jobs/:id/cancel — multi-org partner', () => {
+    const ORG_A = '11111111-1111-1111-1111-111111111111';
+    const ORG_B = '22222222-2222-2222-2222-222222222222';
+    const JOB_ID = '33333333-3333-3333-3333-333333333333';
+    const accessibleOrgIds = [ORG_A, ORG_B];
+
+    const usePartnerAuth = () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds,
+          canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId)
+        });
+        return next();
+      });
+    };
+
+    it('cancels a scheduled job when the selected orgId is supplied as a query param', async () => {
+      usePartnerAuth();
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: JOB_ID, orgId: ORG_A, status: 'scheduled' }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: JOB_ID,
+              orgId: ORG_A,
+              status: 'cancelled',
+              createdAt: new Date('2026-05-18T00:00:00.000Z'),
+              scheduledAt: null,
+              startedAt: null,
+              completedAt: new Date('2026-05-18T00:01:00.000Z')
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/jobs/${JOB_ID}/cancel?orgId=${ORG_A}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await res.json();
+      expect(body.error).not.toBe('orgId is required when partner has multiple organizations');
+      expect(res.status).toBe(200);
+      expect(body.status).toBe('cancelled');
+    });
+
+    it('denies cancelling against an org the partner cannot access', async () => {
+      usePartnerAuth();
+
+      const res = await app.request(
+        `/discovery/jobs/${JOB_ID}/cancel?orgId=99999999-9999-9999-9999-999999999999`,
+        { method: 'POST', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('denied');
+    });
+  });
+
+  describe('POST /discovery/assets/bulk-approve — multi-org partner', () => {
+    const ORG_A = '11111111-1111-1111-1111-111111111111';
+    const ORG_B = '22222222-2222-2222-2222-222222222222';
+    const ASSET_ID = '44444444-4444-4444-4444-444444444444';
+    const accessibleOrgIds = [ORG_A, ORG_B];
+
+    const usePartnerAuth = () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds,
+          canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId)
+        });
+        return next();
+      });
+    };
+
+    it('scopes the bulk approve to the supplied orgId for a multi-org partner', async () => {
+      usePartnerAuth();
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: ASSET_ID }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/assets/bulk-approve?orgId=${ORG_A}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetIds: [ASSET_ID] })
+      });
+
+      const body = await res.json();
+      expect(body.error).not.toBe('orgId is required when partner has multiple organizations');
+      expect(res.status).toBe(200);
+      expect(body.approvedCount).toBe(1);
+    });
+
+    it('denies bulk approve against an org the partner cannot access', async () => {
+      usePartnerAuth();
+
+      const res = await app.request(
+        '/discovery/assets/bulk-approve?orgId=99999999-9999-9999-9999-999999999999',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ assetIds: [ASSET_ID] })
+        }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('denied');
+    });
+  });
+
+  describe('POST /discovery/jobs/:id/cancel — org-scoped user (no regression)', () => {
+    // The default mocked auth is scope:'organization', orgId 00000000-...-000000000000.
+    const OWN_ORG = '00000000-0000-0000-0000-000000000000';
+    const JOB_ID = '55555555-5555-5555-5555-555555555555';
+
+    it('still cancels the org user’s own job when no orgId query param is sent', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: JOB_ID, orgId: OWN_ORG, status: 'scheduled' }])
+          })
+        })
+      } as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: JOB_ID,
+              orgId: OWN_ORG,
+              status: 'cancelled',
+              createdAt: new Date('2026-05-19T00:00:00.000Z'),
+              scheduledAt: null,
+              startedAt: null,
+              completedAt: new Date('2026-05-19T00:01:00.000Z')
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/jobs/${JOB_ID}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('cancelled');
+    });
+
+    it('rejects an org user that forwards a mismatched orgId query param', async () => {
+      const res = await app.request(
+        `/discovery/jobs/${JOB_ID}/cancel?orgId=11111111-1111-1111-1111-111111111111`,
+        { method: 'POST', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toContain('denied');
+    });
+  });
+
+  describe('site-scope authz (app-layer, RLS does not defend)', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const ASSET_IN = '00000000-0000-0000-0000-0000000000a0';
+    const SITE_IN = '00000000-0000-0000-0000-0000000000s1';
+    const SITE_OUT = '00000000-0000-0000-0000-0000000000s9';
+    const DEVICE_ID = '00000000-0000-0000-0000-0000000000d1';
+
+    function setSiteRestrictedAuth(allowedSiteIds: string[] | undefined) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG,
+          partnerId: null,
+          canAccessOrg: (orgId: string) => orgId === ORG,
+          accessibleOrgIds: null
+        });
+        c.set('permissions', allowedSiteIds ? { allowedSiteIds } : {});
+        return next();
+      });
+    }
+
+    function mockAssetThenDevice(asset: any, device: any) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([asset]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([device]),
+            }),
+          }),
+        } as any);
+    }
+
+    describe('POST /assets/:id/link', () => {
+      it('rejects when the asset is in a site outside the caller allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_OUT },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_OUT }
+        );
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('blocks linking when the target device site is outside the caller allowlist', async () => {
+        // Asset and device share an out-of-scope site (the same-site invariant
+        // holds), so the link must still be refused for a site-restricted caller.
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_OUT },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_OUT }
+        );
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+      });
+
+      it('allows linking when both asset and device sites are in the allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+        );
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: DEVICE_ID }])
+            })
+          })
+        } as any);
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('does not gate when the caller is unrestricted (no allowedSiteIds)', async () => {
+        setSiteRestrictedAuth(undefined);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_OUT },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_OUT }
+        );
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, linkedDeviceId: DEVICE_ID }])
+            })
+          })
+        } as any);
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(200);
+      });
+    });
+
+    describe('DELETE /assets/:id', () => {
+      function mockAssetOnly(asset: any) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([asset]),
+            }),
+          }),
+        } as any);
+      }
+
+      it('rejects deleting an asset in a site outside the caller allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_OUT });
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+      });
+
+      it('allows deleting an asset whose site is in the allowlist', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_IN });
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }),
+          delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+        }));
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('does not gate deletion when the caller is unrestricted', async () => {
+        setSiteRestrictedAuth(undefined);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_OUT });
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }),
+          delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+        }));
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+      });
     });
   });
 });

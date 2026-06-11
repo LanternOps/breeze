@@ -86,9 +86,9 @@ ensure_default_plists() {
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-user.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>
@@ -120,9 +120,9 @@ PLIST
     <key>LimitLoadToSessionType</key>
     <string>LoginWindow</string>
     <key>StandardOutPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/breeze-desktop-helper-loginwindow.log</string>
+    <string>/dev/null</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>ProcessType</key>
@@ -215,6 +215,6 @@ Suggested checks now:
 
 For the real login-window test, log out or reboot this Mac and then inspect:
   - /Library/Logs/Breeze/desktop-helper.log
-  - /tmp/breeze-desktop-helper-loginwindow.log
+  - desktop-helper.log under /Library/Logs/Breeze when writable
   - Breeze device desktopAccess state
 EOF

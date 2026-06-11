@@ -117,6 +117,9 @@ vi.mock('../services/permissions', () => ({
     scope: 'organization',
   })),
   hasPermission: vi.fn(() => true),
+  canAccessSite: vi.fn((permissions: { allowedSiteIds?: string[] }, siteId: string) =>
+    permissions.allowedSiteIds?.includes(siteId) ?? true
+  ),
   PERMISSIONS: {
     DEVICES_READ: { resource: 'devices', action: 'read' },
     DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
@@ -125,11 +128,12 @@ vi.mock('../services/permissions', () => ({
 
 import { db } from '../db';
 import { createAuditLog } from '../services/auditService';
+import { getUserPermissions } from '../services/permissions';
 
 describe('system tools routes', () => {
   let app: Hono;
   const deviceId = '11111111-1111-1111-1111-111111111111';
-  const deviceRecord = { id: deviceId, orgId: 'org-123', hostname: 'device-1' };
+  const deviceRecord = { id: deviceId, orgId: 'org-123', siteId: 'site-allowed', hostname: 'device-1' };
 
   const mockDeviceSelect = (device = deviceRecord) => {
     vi.mocked(db.select).mockReturnValue({
@@ -169,6 +173,53 @@ describe('system tools routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.meta.total).toBe(1);
+  });
+
+  it('denies system tool commands when site scope excludes the device', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValueOnce({
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-123',
+      scope: 'organization',
+      allowedSiteIds: ['site-allowed']
+    } as never);
+    mockDeviceSelect({ ...deviceRecord, siteId: 'site-denied' });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/processes`);
+
+    expect(res.status).toBe(403);
+    expect(mockExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  // Site-scope coverage across every systemTools sub-cluster. The contract
+  // test (`site-scope-coverage.integration.test.ts`) statically checks each
+  // handler references a gate; these tests verify the gate actually rejects
+  // cross-site requests at runtime. Mirrors Task 35 sweep.
+  it.each([
+    ['fileBrowser:list', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/files?path=%2Ftmp`],
+    ['fileBrowser:drives', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/files/drives`],
+    ['fileBrowser:trash', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/files/trash`],
+    ['services:list', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/services`],
+    ['registry:keys', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/registry/keys?keyPath=HKLM%5CSoftware`],
+    ['scheduledTasks:list', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/tasks`],
+    ['eventLogs:list', `/system-tools/devices/${'11111111-1111-1111-1111-111111111111'}/eventlogs`],
+  ])('site-scope denies %s when caller is restricted to a different site', async (_label, path) => {
+    vi.mocked(getUserPermissions).mockResolvedValueOnce({
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: 'org-123',
+      roleId: 'role-123',
+      scope: 'organization',
+      allowedSiteIds: ['site-allowed'],
+    } as never);
+    // The chokepoint middleware in systemTools/index.ts is the first gate to
+    // reject; mock the device row once for that lookup.
+    mockDeviceSelect({ ...deviceRecord, siteId: 'site-denied' });
+
+    const res = await app.request(path);
+    expect(res.status).toBe(403);
+    expect(mockExecuteCommand).not.toHaveBeenCalled();
   });
 
   it('returns 502 on invalid process payload from agent', async () => {

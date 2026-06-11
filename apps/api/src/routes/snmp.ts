@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, like, desc, sql, gte, lte, or } from 'drizzle-orm';
+import { and, eq, inArray, like, desc, sql, gte, lte, or } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds } from '../db/schema';
+import { discoveredAssets, snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { buildTopInterfaces } from '../services/snmpDashboardTopInterfaces';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 // --- Helpers ---
 
@@ -52,6 +53,7 @@ function resolveOrgId(
 // --- Zod Schemas ---
 
 const listTemplatesSchema = z.object({
+  orgId: z.string().uuid().optional(),
   source: z.enum(['builtin', 'custom']).optional(),
   search: z.string().optional()
 });
@@ -70,6 +72,7 @@ const oidSchema = z.object({
 });
 
 const createTemplateSchema = z.object({
+  orgId: z.string().uuid().optional(),
   name: z.string().min(1),
   description: z.string().optional(),
   vendor: z.string().optional(),
@@ -162,6 +165,47 @@ function isNumericOid(value: string): boolean {
   return /^\d+(?:\.\d+)+$/.test(value);
 }
 
+function templateVisibilityCondition(
+  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
+  requestedOrgId?: string
+): { condition?: SQL; error?: string; status?: 400 | 403 } {
+  if (auth.scope === 'system' && !requestedOrgId) {
+    return {};
+  }
+
+  if (requestedOrgId) {
+    const orgResult = resolveOrgId(auth, requestedOrgId);
+    if ('error' in orgResult) return { error: orgResult.error, status: orgResult.status };
+    return {
+      condition: or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, orgResult.orgId!))!,
+    };
+  }
+
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return { error: 'Organization context required', status: 403 };
+    return {
+      condition: or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, auth.orgId))!,
+    };
+  }
+
+  const orgIds = auth.accessibleOrgIds ?? [];
+  if (orgIds.length === 0) {
+    return { condition: eq(snmpTemplates.isBuiltIn, true) };
+  }
+  return {
+    condition: or(eq(snmpTemplates.isBuiltIn, true), inArray(snmpTemplates.orgId, orgIds))!,
+  };
+}
+
+function canMutateTemplate(
+  auth: { scope: string; canAccessOrg: (orgId: string) => boolean },
+  template: Pick<typeof snmpTemplates.$inferSelect, 'isBuiltIn' | 'orgId'>
+): boolean {
+  if (template.isBuiltIn) return false;
+  if (template.orgId) return auth.canAccessOrg(template.orgId);
+  return auth.scope === 'system';
+}
+
 // --- Router ---
 
 const snmpRoutes = new Hono();
@@ -192,8 +236,13 @@ snmpRoutes.get(
   requireSnmpRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
+    const auth = c.get('auth');
     const query = c.req.valid('query');
-    const conditions: ReturnType<typeof eq>[] = [];
+    const visibility = templateVisibilityCondition(auth, query.orgId);
+    if (visibility.error) return c.json({ error: visibility.error }, visibility.status ?? 403);
+    const conditions: SQL[] = [];
+
+    if (visibility.condition) conditions.push(visibility.condition);
 
     if (query.source === 'builtin') conditions.push(eq(snmpTemplates.isBuiltIn, true));
     else if (query.source === 'custom') conditions.push(eq(snmpTemplates.isBuiltIn, false));
@@ -215,6 +264,7 @@ snmpRoutes.get(
     return c.json({
       data: results.map((t) => ({
         id: t.id,
+        orgId: t.orgId,
         name: t.name,
         description: t.description,
         source: t.isBuiltIn ? 'builtin' : 'custom',
@@ -235,9 +285,13 @@ snmpRoutes.post(
   requireMfa(),
   zValidator('json', createTemplateSchema),
   async (c) => {
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
+    const orgResult = resolveOrgId(auth, payload.orgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const [template] = await db.insert(snmpTemplates).values({
+      orgId: orgResult.orgId!,
       name: payload.name,
       description: payload.description ?? null,
       vendor: payload.vendor ?? null,
@@ -250,7 +304,7 @@ snmpRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: c.get('auth').orgId,
+      orgId: template.orgId,
       action: 'snmp.template.create',
       resourceType: 'snmp_template',
       resourceId: template.id,
@@ -263,6 +317,7 @@ snmpRoutes.post(
     return c.json({
       data: {
         id: template.id,
+        orgId: template.orgId,
         name: template.name,
         description: template.description,
         source: 'custom',
@@ -280,14 +335,21 @@ snmpRoutes.get(
   requireScope('organization', 'partner', 'system'),
   requireSnmpRead,
   async (c) => {
+    const auth = c.get('auth');
     const templateId = c.req.param('id')!;
+    const visibility = templateVisibilityCondition(auth);
+    if (visibility.error) return c.json({ error: visibility.error }, visibility.status ?? 403);
+    const conditions: SQL[] = [eq(snmpTemplates.id, templateId)];
+    if (visibility.condition) conditions.push(visibility.condition);
+
     const [template] = await db.select().from(snmpTemplates)
-      .where(eq(snmpTemplates.id, templateId)).limit(1);
+      .where(and(...conditions)).limit(1);
     if (!template) return c.json({ error: 'Template not found.' }, 404);
 
     return c.json({
       data: {
         id: template.id,
+        orgId: template.orgId,
         name: template.name,
         description: template.description,
         source: template.isBuiltIn ? 'builtin' : 'custom',
@@ -307,6 +369,7 @@ snmpRoutes.patch(
   requireMfa(),
   zValidator('json', updateTemplateSchema),
   async (c) => {
+    const auth = c.get('auth');
     const templateId = c.req.param('id')!;
     const payload = c.req.valid('json');
 
@@ -314,6 +377,7 @@ snmpRoutes.patch(
       .where(eq(snmpTemplates.id, templateId)).limit(1);
     if (!template) return c.json({ error: 'Template not found.' }, 404);
     if (template.isBuiltIn) return c.json({ error: 'Built-in templates cannot be modified.' }, 400);
+    if (!canMutateTemplate(auth, template)) return c.json({ error: 'Access denied' }, 403);
 
     const updates: Record<string, unknown> = {};
     if (payload.name !== undefined) updates.name = payload.name;
@@ -331,7 +395,7 @@ snmpRoutes.patch(
     }
 
     writeRouteAudit(c, {
-      orgId: c.get('auth').orgId,
+      orgId: updated.orgId ?? c.get('auth').orgId,
       action: 'snmp.template.update',
       resourceType: 'snmp_template',
       resourceId: updated.id,
@@ -344,6 +408,7 @@ snmpRoutes.patch(
     return c.json({
       data: {
         id: updated.id,
+        orgId: updated.orgId,
         name: updated.name,
         description: updated.description,
         source: 'custom',
@@ -362,12 +427,14 @@ snmpRoutes.delete(
   requireSnmpWrite,
   requireMfa(),
   async (c) => {
+    const auth = c.get('auth');
     const templateId = c.req.param('id')!;
 
     const [template] = await db.select().from(snmpTemplates)
       .where(eq(snmpTemplates.id, templateId)).limit(1);
     if (!template) return c.json({ error: 'Template not found.' }, 404);
     if (template.isBuiltIn) return c.json({ error: 'Built-in templates cannot be deleted.' }, 400);
+    if (!canMutateTemplate(auth, template)) return c.json({ error: 'Access denied' }, 403);
 
     const [removed] = await db.delete(snmpTemplates)
       .where(eq(snmpTemplates.id, templateId)).returning();
@@ -376,7 +443,7 @@ snmpRoutes.delete(
     }
 
     writeRouteAudit(c, {
-      orgId: c.get('auth').orgId,
+      orgId: removed.orgId ?? c.get('auth').orgId,
       action: 'snmp.template.delete',
       resourceType: 'snmp_template',
       resourceId: removed.id,
@@ -393,7 +460,10 @@ snmpRoutes.get(
   requireSnmpRead,
   zValidator('query', browseOidsSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { query = '', limit = 25 } = c.req.valid('query');
+    const visibility = templateVisibilityCondition(auth);
+    if (visibility.error) return c.json({ error: visibility.error }, visibility.status ?? 403);
     const normalizedQuery = query.trim().toLowerCase();
     const candidates = new Map<string, {
       oid: string;
@@ -416,7 +486,7 @@ snmpRoutes.get(
     const templates = await db.select({
       name: snmpTemplates.name,
       oids: snmpTemplates.oids
-    }).from(snmpTemplates);
+    }).from(snmpTemplates).where(visibility.condition);
 
     for (const template of templates) {
       if (!Array.isArray(template.oids)) continue;
@@ -461,11 +531,14 @@ snmpRoutes.post(
   requireSnmpRead,
   zValidator('json', validateOidsSchema),
   async (c) => {
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
+    const visibility = templateVisibilityCondition(auth);
+    if (visibility.error) return c.json({ error: visibility.error }, visibility.status ?? 403);
     const knownOids = new Set(oidCatalog.map((entry) => normalizeOidString(entry.oid)));
     const templates = await db.select({
       oids: snmpTemplates.oids
-    }).from(snmpTemplates);
+    }).from(snmpTemplates).where(visibility.condition);
 
     for (const template of templates) {
       if (!Array.isArray(template.oids)) continue;
@@ -546,41 +619,58 @@ snmpRoutes.get(
   zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const templateVisibility = templateVisibilityCondition(auth, orgResult.orgId ?? undefined);
+    if (templateVisibility.error) return c.json({ error: templateVisibility.error }, templateVisibility.status ?? 403);
 
     const orgFilter = orgResult.orgId ? eq(snmpDevices.orgId, orgResult.orgId) : undefined;
+    const siteFilter = perms?.allowedSiteIds ? inArray(discoveredAssets.siteId, perms.allowedSiteIds) : undefined;
+    const snmpDeviceConditions = [orgFilter, siteFilter].filter((condition): condition is SQL => Boolean(condition));
+    const snmpDeviceFilter = snmpDeviceConditions.length > 0 ? and(...snmpDeviceConditions) : undefined;
 
     // Device count
-    const [deviceCount] = await db
+    const deviceCountQuery = db
       .select({ count: sql<number>`count(*)` })
-      .from(snmpDevices)
-      .where(orgFilter);
+      .from(snmpDevices);
+    const [deviceCount] = await (siteFilter
+      ? deviceCountQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
+      : deviceCountQuery.where(orgFilter));
 
     // Template count
     const [templateCount] = await db
       .select({ count: sql<number>`count(*)` })
-      .from(snmpTemplates);
+      .from(snmpTemplates)
+      .where(templateVisibility.condition);
 
     // Threshold count
-    const thresholdCountQuery = orgFilter
-      ? db
-          .select({ count: sql<number>`count(*)` })
-          .from(snmpAlertThresholds)
+    const thresholdCountBase = db
+      .select({ count: sql<number>`count(*)` })
+      .from(snmpAlertThresholds);
+    const thresholdCountQuery = siteFilter
+      ? thresholdCountBase
           .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
-          .where(orgFilter)
-      : db.select({ count: sql<number>`count(*)` }).from(snmpAlertThresholds);
+          .innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id))
+          .where(snmpDeviceFilter)
+      : orgFilter
+        ? thresholdCountBase
+            .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
+            .where(orgFilter)
+        : thresholdCountBase;
     const [thresholdCount] = await thresholdCountQuery;
 
     // Status counts
-    const statusCounts = await db
+    const statusCountsQuery = db
       .select({
         status: snmpDevices.lastStatus,
         count: sql<number>`count(*)`
       })
-      .from(snmpDevices)
-      .where(orgFilter)
+      .from(snmpDevices);
+    const statusCounts = await (siteFilter
+      ? statusCountsQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
+      : statusCountsQuery.where(orgFilter))
       .groupBy(snmpDevices.lastStatus);
 
     const status: Record<string, number> = {};
@@ -589,27 +679,31 @@ snmpRoutes.get(
     }
 
     // Template usage
-    const templateUsage = await db
+    const templateUsageQuery = db
       .select({
         templateId: snmpDevices.templateId,
         name: snmpTemplates.name,
         deviceCount: sql<number>`count(*)`
       })
       .from(snmpDevices)
-      .leftJoin(snmpTemplates, eq(snmpDevices.templateId, snmpTemplates.id))
-      .where(orgFilter)
+      .leftJoin(snmpTemplates, eq(snmpDevices.templateId, snmpTemplates.id));
+    const templateUsage = await (siteFilter
+      ? templateUsageQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
+      : templateUsageQuery.where(orgFilter))
       .groupBy(snmpDevices.templateId, snmpTemplates.name);
 
     // Recent polls
-    const recentPolls = await db
+    const recentPollsQuery = db
       .select({
         deviceId: snmpDevices.id,
         name: snmpDevices.name,
         lastPolledAt: snmpDevices.lastPolled,
         status: snmpDevices.lastStatus
       })
-      .from(snmpDevices)
-      .where(orgFilter)
+      .from(snmpDevices);
+    const recentPolls = await (siteFilter
+      ? recentPollsQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
+      : recentPollsQuery.where(orgFilter))
       .orderBy(desc(snmpDevices.lastPolled))
       .limit(5);
 
@@ -620,18 +714,16 @@ snmpRoutes.get(
       like(snmpMetrics.name, '%ifInOctets%'),
       like(snmpMetrics.name, '%ifOutOctets%')
     )!;
-    const interfaceMetricFilter = orgFilter
-      ? and(
-          orgFilter,
-          gte(snmpMetrics.timestamp, interfaceWindowStart),
-          interfaceOidFilter
-        )
-      : and(
-          gte(snmpMetrics.timestamp, interfaceWindowStart),
-          interfaceOidFilter
-        );
+    const interfaceMetricFilter = and(
+      ...[
+        orgFilter,
+        siteFilter,
+        gte(snmpMetrics.timestamp, interfaceWindowStart),
+        interfaceOidFilter
+      ].filter((condition): condition is SQL => Boolean(condition))
+    );
 
-    const recentInterfaceMetrics = await db
+    const recentInterfaceMetricsQuery = db
       .select({
         deviceId: snmpMetrics.deviceId,
         deviceName: snmpDevices.name,
@@ -641,8 +733,10 @@ snmpRoutes.get(
         timestamp: snmpMetrics.timestamp
       })
       .from(snmpMetrics)
-      .innerJoin(snmpDevices, eq(snmpMetrics.deviceId, snmpDevices.id))
-      .where(interfaceMetricFilter)
+      .innerJoin(snmpDevices, eq(snmpMetrics.deviceId, snmpDevices.id));
+    const recentInterfaceMetrics = await (siteFilter
+      ? recentInterfaceMetricsQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(interfaceMetricFilter)
+      : recentInterfaceMetricsQuery.where(interfaceMetricFilter))
       .orderBy(desc(snmpMetrics.timestamp))
       .limit(3000);
 

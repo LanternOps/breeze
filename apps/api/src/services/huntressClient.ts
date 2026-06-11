@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { safeFetch } from './urlSafety';
 
 const DEFAULT_HUNTRESS_BASE_URL = 'https://api.huntress.io/v1';
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -39,6 +40,10 @@ function firstString(record: JsonRecord, keys: string[]): string | null {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
+    // Huntress returns identifiers (id, account_id, agent_id) as numbers, not
+    // strings. Coerce finite numbers so id-based fields don't resolve to null
+    // (which would drop the whole record during normalization).
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
   return null;
 }
@@ -239,11 +244,11 @@ function normalizeIncident(input: unknown): HuntressIncidentRecord | null {
     huntressIncidentId,
     severity: normalizeSeverity(firstString(row, ['severity', 'priority', 'level'])),
     category: firstString(row, ['category', 'type', 'threatType', 'incidentType']),
-    title: firstString(row, ['title', 'name', 'summary']) ?? fallbackTitle,
-    description: firstString(row, ['description', 'details', 'message', 'summary']),
+    title: firstString(row, ['subject', 'title', 'name', 'summary']) ?? fallbackTitle,
+    description: firstString(row, ['body', 'description', 'details', 'message', 'summary']),
     recommendation: firstString(row, ['recommendation', 'recommendedAction', 'remediation', 'nextSteps']),
     status: normalizeStatus(firstString(row, ['status', 'state', 'resolutionStatus', 'incidentStatus'])),
-    reportedAt: firstDate(row, ['reportedAt', 'reported_at', 'createdAt', 'created_at', 'detectedAt', 'timestamp']),
+    reportedAt: firstDate(row, ['sent_at', 'reportedAt', 'reported_at', 'createdAt', 'created_at', 'detectedAt', 'timestamp']),
     resolvedAt: firstDate(row, ['resolvedAt', 'resolved_at', 'closedAt', 'closed_at']),
     huntressAgentId: firstString(row, ['agentId', 'agent_id', 'hostAgentId', 'host_agent_id']),
     hostname: firstString(row, ['hostname', 'hostName', 'computerName', 'host']),
@@ -292,16 +297,36 @@ function normalizeWebhookPayload(payload: unknown): {
 
 const MAX_RETRIES = 3;
 
+// Recognize the timeout/abort rejections produced by either the legacy fetch
+// path (DOMException 'AbortError') or safeFetch (plain Error whose message is
+// 'request timed out after Nms' or 'aborted'). safeFetch routes through
+// http(s).request, which never throws a DOMException, so we must match on the
+// message too.
+function isTimeoutError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  if (err instanceof Error) {
+    return /request timed out after \d+ms/.test(err.message) || err.message === 'aborted';
+  }
+  return false;
+}
+
 async function fetchJson(
   url: URL,
   init: RequestInit,
   timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<unknown> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
+      // Route through safeFetch (SSRF-safe): it pins DNS to a validated public
+      // IP, never follows redirects (a 3xx is returned raw, so the non-2xx
+      // branch below rejects it instead of chasing a Location into internal
+      // address space), and enforces the timeout itself via `timeoutMs`.
+      const response = await safeFetch(url.toString(), {
+        method: init.method,
+        headers: init.headers,
+        body: init.body as BodyInit | undefined,
+        timeoutMs,
+      });
       const text = await response.text();
 
       // Retry on transient errors (429, 5xx)
@@ -317,6 +342,8 @@ async function fetchJson(
         }
       }
 
+      // Any non-2xx (including a raw 3xx from safeFetch, which never follows
+      // redirects) is an error — we never parse it as JSON or chase Location.
       if (!response.ok) {
         const preview = text.trim().slice(0, 400);
         throw new Error(`Huntress API request failed (${response.status} ${response.statusText}): ${preview || '<empty>'}`);
@@ -331,21 +358,18 @@ async function fetchJson(
         );
       }
     } catch (err) {
-      clearTimeout(timer);
       // Retry on timeouts
-      if (err instanceof DOMException && err.name === 'AbortError' && attempt < MAX_RETRIES) {
+      if (isTimeoutError(err) && attempt < MAX_RETRIES) {
         console.warn(
           `[HuntressClient] Request to ${url.pathname} timed out after ${timeoutMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
         );
         continue;
       }
-      // Wrap raw AbortError with context
-      if (err instanceof DOMException && err.name === 'AbortError') {
+      // Wrap raw timeout/abort with context
+      if (isTimeoutError(err)) {
         throw new Error(`Huntress API request to ${url.pathname} timed out after ${timeoutMs}ms`);
       }
       throw err;
-    } finally {
-      clearTimeout(timer);
     }
   }
   // Should not be reached, but satisfies TypeScript
@@ -375,11 +399,19 @@ export class HuntressClient {
     for (const [key, value] of Object.entries(query ?? {})) {
       url.searchParams.set(key, value);
     }
-    // Send both Bearer token and X-API-Key header for compatibility with different Huntress API auth modes
+    // Re-assert the host on the FINAL per-request URL (defense against off-host
+    // drift: a path/query that somehow resolved to a different origin). The
+    // constructor validates the base URL, but this guards every outbound call.
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.huntress.io')) {
+      throw new Error(`Refusing to call non-Huntress host: ${url.origin}. Must be HTTPS *.huntress.io`);
+    }
+    // Huntress API only accepts HTTP Basic auth (verified live 2026-05-29: Bearer and
+    // X-API-Key both return 401 "Missing or incorrect authorization scheme"). The
+    // integration's apiKey field stores the literal "<key>:<secret>" pair from the
+    // Huntress portal; base64-encode it for the Basic auth header.
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
-      'X-API-Key': this.apiKey,
+      Authorization: `Basic ${Buffer.from(this.apiKey).toString('base64')}`,
     };
     if (this.accountId) {
       headers['X-Account-Id'] = this.accountId;
@@ -449,7 +481,7 @@ export class HuntressClient {
   }
 
   async listIncidents(since?: Date): Promise<HuntressIncidentRecord[]> {
-    const rows = await this.requestPaginated('/incidents', since, ['incidents', 'alerts', 'findings', 'data', 'items', 'results']);
+    const rows = await this.requestPaginated('/incident_reports', since, ['incident_reports', 'incidents', 'alerts', 'findings', 'data', 'items', 'results']);
     const incidents = rows
       .map((row) => normalizeIncident(row))
       .filter((row): row is HuntressIncidentRecord => row !== null);

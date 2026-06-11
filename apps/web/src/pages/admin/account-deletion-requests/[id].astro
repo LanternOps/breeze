@@ -1,0 +1,12 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import AccountDeletionRequestDetail from '../../../components/admin/AccountDeletionRequestDetail';
+
+export const prerender = false;
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout title="Account deletion request">
+  <AccountDeletionRequestDetail requestId={id ?? ''} client:load />
+</DashboardLayout>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import type { Baseline } from './types';
 import HelpTooltip from '../shared/HelpTooltip';
 
@@ -57,7 +58,7 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `${res.status} ${res.statusText}`);
+        throw new Error(extractApiError(data, `${res.status} ${res.statusText}`));
       }
 
       onSaved();

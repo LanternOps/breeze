@@ -1,5 +1,12 @@
 version: 2
 
+# Ecosystems are deliberately staggered across weekdays (npm Monday, Go
+# Tuesday, Actions Wednesday, Cargo Thursday) so the weekly batch doesn't
+# land as one Monday merge storm — on 2026-06-09 the storm churned the
+# lockfile 2,400+ lines mid-day, cancelled most main CI runs, and caused
+# PR-vs-main merge skew. Spreading the load keeps each day's batch small
+# enough to review and merge calmly.
+
 updates:
   # Node.js / pnpm dependencies for the root and all workspaces
   - package-ecosystem: "npm"
@@ -11,6 +18,30 @@ updates:
       timezone: "America/New_York"
     open-pull-requests-limit: 10
     groups:
+      # Expo SDK packages must move together: a solo expo major bump
+      # (55→56 on 2026-06-09) left expo-* native modules behind on SDK 55.
+      expo-sdk:
+        patterns:
+          - "expo"
+          - "expo-*"
+          - "@expo/*"
+      # Reanimated and Worklets have tight peer/ABI coupling; bump them together.
+      react-native-animation:
+        patterns:
+          - "react-native-reanimated"
+          - "react-native-worklets"
+      # The rest of the mobile toolchain still moves together so related
+      # native/runtime dependency churn lands in one reviewable PR.
+      mobile:
+        patterns:
+          - "react-native"
+          - "react-native-*"
+          - "@react-native*"
+          - "metro"
+          - "metro-*"
+        exclude-patterns:
+          - "react-native-reanimated"
+          - "react-native-worklets"
       # Group minor and patch updates together
       typescript-tooling:
         patterns:
@@ -89,16 +120,43 @@ updates:
     reviewers:
       - "toddhebebrand"
 
-  # Go dependencies for the agent
-  - package-ecosystem: "gomod"
-    directory: "/agent"
+  # E2E test harness has its own package.json (Playwright + tsx + dotenv).
+  # Without explicit coverage these never get bumped and land in CI runner
+  # context where a vulnerable transitive could exfiltrate runner secrets.
+  - package-ecosystem: "npm"
+    directory: "/e2e-tests"
     schedule:
       interval: "weekly"
       day: "monday"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+      - "e2e-tests"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Go dependencies for the agent
+  - package-ecosystem: "gomod"
+    directory: "/agent"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
     groups:
+      # The AWS SDK ships several modules per release that must move
+      # together (credentials, s3/manager, etc. all landed as separate
+      # PRs on 2026-06-09).
+      aws-sdk:
+        patterns:
+          - "github.com/aws/aws-sdk-go-v2*"
+          - "github.com/aws/smithy-go"
       # Group related Go dependencies
       cobra-viper:
         patterns:
@@ -132,7 +190,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "wednesday"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
@@ -151,27 +209,110 @@ updates:
     reviewers:
       - "toddhebebrand"
 
-  # Docker images (for when Dockerfiles are added)
+  # Rust/Tauri dependencies for the desktop helper
+  - package-ecosystem: "cargo"
+    directory: "/apps/helper/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    groups:
+      # RustCrypto crates share the `digest` core and break when bumped
+      # individually — sha2 0.11 + hmac 0.13 were an inseparable pair
+      # (#1082/#1083 each broke the build alone; merged together in #1146).
+      rustcrypto:
+        patterns:
+          - "sha2"
+          - "sha1"
+          - "hmac"
+          - "digest"
+          - "md-5"
+          - "cipher"
+          - "aes*"
+          - "crypto-common"
+    labels:
+      - "dependencies"
+      - "rust"
+      - "tauri"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Rust/Tauri dependencies for the remote viewer
+  - package-ecosystem: "cargo"
+    directory: "/apps/viewer/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    groups:
+      # Same coupling as the helper: RustCrypto crates move together.
+      rustcrypto:
+        patterns:
+          - "sha2"
+          - "sha1"
+          - "hmac"
+          - "digest"
+          - "md-5"
+          - "cipher"
+          - "aes*"
+          - "crypto-common"
+    labels:
+      - "dependencies"
+      - "rust"
+      - "tauri"
+    commit-message:
+      prefix: "chore(deps):"
+    reviewers:
+      - "toddhebebrand"
+
+  # Docker base images for workspace Dockerfiles
+  # Node base is pinned to an LTS major (oidc-provider rejects non-LTS); allow
+  # minor/patch + digest updates only.
   - package-ecosystem: "docker"
     directory: "/apps/api"
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "docker"
     commit-message:
       prefix: "chore(deps):"
-    # Will be enabled once Dockerfile is created
 
   - package-ecosystem: "docker"
     directory: "/apps/web"
     schedule:
       interval: "weekly"
       day: "monday"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "docker"
     commit-message:
       prefix: "chore(deps):"
-    # Will be enabled once Dockerfile is created
+
+  # Docker base images for release/security build Dockerfiles
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps):"

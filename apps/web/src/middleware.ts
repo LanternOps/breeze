@@ -1,39 +1,15 @@
 import { defineMiddleware } from 'astro:middleware';
+import { resolveConnectSrcDirective, resolveFrameSrcDirective, resolveUnsafeInlineCspOptions } from './lib/csp';
 
 function readFlag(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   return raw === '1' || raw === 'true';
 }
 
-function resolveConnectSrcDirective(): string {
-  const sources = new Set<string>(["'self'", 'https:', 'ws:', 'wss:']);
-  const configuredApiUrl = process.env.PUBLIC_API_URL;
-
-  if (configuredApiUrl) {
-    try {
-      const parsed = new URL(configuredApiUrl);
-      sources.add(parsed.origin);
-      if (parsed.protocol === 'http:') {
-        sources.add(`ws://${parsed.host}`);
-      } else if (parsed.protocol === 'https:') {
-        sources.add(`wss://${parsed.host}`);
-      }
-    } catch {
-      // Ignore invalid URL configuration and fall back to default policy.
-    }
-  }
-
-  if (import.meta.env.DEV) {
-    sources.add('http://localhost:3001');
-    sources.add('ws://localhost:3001');
-  }
-
-  return `connect-src ${Array.from(sources).join(' ')}`;
-}
-
-function buildFallbackCspDirectives(options: {
+export function buildFallbackCspDirectives(options: {
   allowInlineScript: boolean;
   allowInlineStyle: boolean;
+  isDev: boolean;
 }): string {
   const directives: string[] = [
     "default-src 'self'",
@@ -42,15 +18,16 @@ function buildFallbackCspDirectives(options: {
     "frame-ancestors 'self'",
     "object-src 'none'",
     options.allowInlineScript
-      ? "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com"
-      : "script-src 'self' https://cdn.jsdelivr.net https://static.cloudflareinsights.com",
+      ? "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com"
+      : "script-src 'self' https://static.cloudflareinsights.com",
     options.allowInlineStyle
-      ? "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net"
-      : "style-src 'self' https://cdn.jsdelivr.net",
+      ? "style-src 'self' 'unsafe-inline'"
+      : "style-src 'self'",
     "worker-src 'self' blob:",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
-    resolveConnectSrcDirective()
+    resolveFrameSrcDirective({}),
+    resolveConnectSrcDirective({ isDev: options.isDev })
   ];
 
   // Monaco Editor and xterm.js inject both inline style attributes and <style>
@@ -60,7 +37,7 @@ function buildFallbackCspDirectives(options: {
   // style-src to be silently ignored.  The granular style-src-elem and
   // style-src-attr directives are evaluated independently and don't inherit the
   // hashes from style-src, so 'unsafe-inline' works in both.
-  directives.push("style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net");
+  directives.push("style-src-elem 'self' 'unsafe-inline'");
   directives.push("style-src-attr 'unsafe-inline'");
 
   if (!options.allowInlineScript) {
@@ -72,10 +49,11 @@ function buildFallbackCspDirectives(options: {
 
 const strictFallbackCspDirectives = buildFallbackCspDirectives({
   allowInlineScript: false,
-  allowInlineStyle: false
+  allowInlineStyle: false,
+  isDev: import.meta.env.DEV
 });
 
-function relaxExistingCsp(
+export function relaxExistingCsp(
   csp: string,
   options: { allowInlineScript: boolean; allowInlineStyle: boolean }
 ): string {
@@ -123,7 +101,7 @@ function relaxExistingCsp(
   );
   directives.length = 0;
   directives.push(...filteredStyleGranular);
-  directives.push("style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net");
+  directives.push("style-src-elem 'self' 'unsafe-inline'");
   directives.push("style-src-attr 'unsafe-inline'");
 
   return directives.join('; ');
@@ -150,14 +128,13 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     });
   }
 
-  const allowUnsafeInlineInDev =
-    import.meta.env.DEV && (readFlag('CSP_ALLOW_DEV_UNSAFE_INLINE') || !strictDevCsp);
-  const allowUnsafeInlineScriptFlag =
-    readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_SCRIPT');
-  const allowUnsafeInlineStyleFlag =
-    readFlag('CSP_ALLOW_UNSAFE_INLINE') || readFlag('CSP_ALLOW_UNSAFE_INLINE_STYLE');
-  const allowUnsafeInlineScript = allowUnsafeInlineInDev || allowUnsafeInlineScriptFlag;
-  const allowUnsafeInlineStyle = allowUnsafeInlineInDev || allowUnsafeInlineStyleFlag;
+  const {
+    allowInlineScript: allowUnsafeInlineScript,
+    allowInlineStyle: allowUnsafeInlineStyle,
+  } = resolveUnsafeInlineCspOptions({
+    isDev: import.meta.env.DEV,
+    strictDevCsp,
+  });
 
   // Production is strict by default. Dev allows inline by default because Vite/Astro
   // inject inline script/style for HMR and hydration bootstrap.
@@ -177,7 +154,8 @@ export const onRequest = defineMiddleware(async (_context, next) => {
         'Content-Security-Policy',
         buildFallbackCspDirectives({
           allowInlineScript: allowUnsafeInlineScript,
-          allowInlineStyle: allowUnsafeInlineStyle
+          allowInlineStyle: allowUnsafeInlineStyle,
+          isDev: import.meta.env.DEV
         })
       );
     }
@@ -208,7 +186,7 @@ export const onRequest = defineMiddleware(async (_context, next) => {
     // attributes at runtime.  Astro's hashes in style-src nullify 'unsafe-inline'
     // there, but these granular directives are evaluated independently.
     if (!/\bstyle-src-elem\b/i.test(patchedCsp)) {
-      patchedCsp = `${patchedCsp}; style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net`;
+      patchedCsp = `${patchedCsp}; style-src-elem 'self' 'unsafe-inline'`;
     }
     if (!/\bstyle-src-attr\b/i.test(patchedCsp)) {
       patchedCsp = `${patchedCsp}; style-src-attr 'unsafe-inline'`;

@@ -32,7 +32,7 @@ func NewRebootManager(_ NotifyFunc, _ int) *RebootManager {
 	return &RebootManager{}
 }
 
-func (r *RebootManager) State() RebootState                                             { return RebootState{} }
+func (r *RebootManager) State() RebootState                                       { return RebootState{} }
 func (r *RebootManager) Schedule(_ time.Duration, _ time.Time, _, _ string) error { return nil }
-func (r *RebootManager) Cancel() error                                                   { return nil }
-func (r *RebootManager) Stop()                                                           {}
+func (r *RebootManager) Cancel() error                                            { return nil }
+func (r *RebootManager) Stop()                                                    {}

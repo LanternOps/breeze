@@ -149,7 +149,7 @@ function normalizeVssState(state: string | null | undefined): keyof typeof vssSt
 
 type DeviceBackupTabProps = {
   deviceId: string;
-  deviceStatus?: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
+  deviceStatus?: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
   timezone?: string;
 };
 

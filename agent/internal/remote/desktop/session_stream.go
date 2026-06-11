@@ -10,6 +10,8 @@ import (
 
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+
+	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 func (s *Session) startStreaming() {
@@ -33,6 +35,10 @@ func (s *Session) startStreaming() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			// Local recover keeps the existing slog-with-stack diagnostic
+			// (captureLoop panics historically include native-side detail
+			// worth keeping inline) AND surfaces the event to Sentry via
+			// observability.Recoverer so fleet-wide regressions get noticed.
 			defer func() {
 				if r := recover(); r != nil {
 					buf := make([]byte, 4096)
@@ -42,6 +48,12 @@ func (s *Session) startStreaming() {
 						"panic", fmt.Sprintf("%v", r),
 						"stack", string(buf[:n]),
 					)
+					// Re-raise so observability.Recoverer (next deferred)
+					// captures + scrubs + flushes to Sentry.
+					func() {
+						defer observability.Recoverer("desktop.captureLoop")
+						panic(r)
+					}()
 				}
 			}()
 			s.captureLoop()
@@ -49,11 +61,13 @@ func (s *Session) startStreaming() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer observability.Recoverer("desktop.metricsLogger")
 			s.metricsLogger()
 		}()
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer observability.Recoverer("desktop.adaptiveLoop")
 			s.adaptiveLoop()
 		}()
 		if s.cursorDC != nil {
@@ -61,6 +75,7 @@ func (s *Session) startStreaming() {
 				s.wg.Add(1)
 				go func() {
 					defer s.wg.Done()
+					defer observability.Recoverer("desktop.cursorStreamLoop")
 					s.cursorStreamLoop(cp)
 				}()
 			}

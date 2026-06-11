@@ -1,5 +1,5 @@
-FROM node:22-alpine AS base
-RUN npm install -g pnpm
+FROM node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 AS base
+RUN npm install -g pnpm@10.33.4
 
 FROM base AS deps
 WORKDIR /app
@@ -15,8 +15,11 @@ COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 RUN pnpm --filter @breeze/api build
-# Create a self-contained deployment (resolves pnpm symlinks)
-RUN pnpm --filter @breeze/api deploy --prod /deployed
+# Create a self-contained deployment (resolves pnpm symlinks).
+# pnpm 10's deploy command requires workspace deps be declared injected.
+# TODO: declare @breeze/shared (and other workspace deps) as injected in
+# apps/api/package.json and drop --legacy. See pnpm v10 release notes.
+RUN pnpm --filter @breeze/api deploy --legacy --prod /deployed
 
 FROM base AS runner
 WORKDIR /app
@@ -24,6 +27,9 @@ ENV NODE_ENV=production
 ARG APP_VERSION=0.2.0
 ENV APP_VERSION=${APP_VERSION}
 
+# CVE-2026-45447: pinned base ships libcrypto3/libssl3 3.5.6; drop once the
+# node:24-alpine digest is refreshed past 3.5.7
+RUN apk upgrade --no-cache libcrypto3 libssl3
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 hono

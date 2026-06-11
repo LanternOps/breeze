@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, lte, ilike, or, sql, SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, ilike, inArray, not, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { auditLogs as auditLogsTable, users } from '../db/schema';
+import { auditLogs as auditLogsTable, users, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { csvRow } from '../services/spreadsheetExport';
 
 export const auditLogRoutes = new Hono();
 const requireAuditLogRead = requirePermission(
@@ -32,7 +33,18 @@ const listLogsSchema = z.object({
   action: z.string().min(1).optional(),
   resource: z.string().min(1).optional(),
   from: z.string().datetime().optional(),
-  to: z.string().datetime().optional()
+  to: z.string().datetime().optional(),
+  // RecentActivity widget doesn't display "X of Y total"; the count(*) is a
+  // 2-3s RLS-bound scan even with an index. Pass skipCount=true to skip it.
+  skipCount: z.enum(['true', 'false']).optional(),
+  // Explicit org filter from the org-selector dropdown. fetchWithAuth
+  // auto-injects ?orgId=<current-org>; whitelist it here so zValidator keeps
+  // it — otherwise it is stripped and every page spans the caller's full
+  // accessible-org set, ignoring the dropdown selection.
+  orgId: z.string().uuid().optional(),
+  // CSV of action codes to exclude (e.g. routine agent telemetry). Applied to
+  // both the LATERAL fast-path (RecentActivity) and the standard query path.
+  excludeActions: z.string().optional()
 });
 
 const searchSchema = listLogsSchema.extend({
@@ -42,6 +54,25 @@ const searchSchema = listLogsSchema.extend({
 const idParamSchema = z.object({
   id: z.string().min(1)
 });
+
+const auditExportColumns = [
+  'id',
+  'timestamp',
+  'actorId',
+  'actorName',
+  'actorEmail',
+  'action',
+  'resourceType',
+  'resourceId',
+  'resourceName',
+  'category',
+  'result',
+  'ipAddress',
+  'userAgent',
+  'details'
+] as const;
+
+type AuditExportColumn = typeof auditExportColumns[number];
 
 const exportSchema = z.object({
   format: z.enum(['csv', 'json']).default('json'),
@@ -53,7 +84,9 @@ const exportSchema = z.object({
   dateRange: z.object({
     from: z.string().datetime().optional(),
     to: z.string().datetime().optional()
-  }).optional()
+  }).optional(),
+  columns: z.array(z.enum(auditExportColumns)).optional(),
+  includeDetails: z.boolean().default(true)
 });
 
 const reportQuerySchema = z.object({
@@ -127,24 +160,33 @@ function deriveCategory(action: string): string {
   return 'system';
 }
 
-type DbRow = {
+export type DbRow = {
   log: typeof auditLogsTable.$inferSelect;
   userName: string | null;
+  deviceHostname: string | null;
+  deviceDisplayName: string | null;
+  deviceSiteId?: string | null;
 };
 
-function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
+export function resolveActorName(row: DbRow, details?: Record<string, unknown> | null): string {
   if (row.userName) {
     return row.userName;
-  }
-
-  if (row.log.actorEmail) {
-    return row.log.actorEmail;
   }
 
   const rawActorId = typeof details?.rawActorId === 'string' ? details.rawActorId : null;
 
   if (row.log.actorType === 'agent') {
+    // Agent actions: never display the bare device hostname in the user
+    // column, because that makes the device look like it's masquerading
+    // as a user. Prefer "Agent (<hostname>)" when we can resolve a device,
+    // falling back to a short agent-id slug, then a generic "Agent".
+    const deviceName = row.deviceDisplayName || row.deviceHostname;
+    if (deviceName) return `Agent (${deviceName})`;
     return rawActorId ? `Agent ${rawActorId.slice(0, 8)}` : 'Agent';
+  }
+
+  if (row.log.actorEmail) {
+    return row.log.actorEmail;
   }
 
   if (row.log.actorType === 'api_key') {
@@ -186,11 +228,11 @@ function flattenEntry(row: DbRow) {
   };
 }
 
-function toFullEntry(row: DbRow) {
+function toFullEntry(row: DbRow, includeDetails = true) {
   const log = row.log;
   const details = log.details as Record<string, unknown> | null;
   const actorName = resolveActorName(row, details);
-  return {
+  const entry: Record<string, unknown> = {
     id: log.id,
     timestamp: log.timestamp.toISOString(),
     user: {
@@ -210,13 +252,24 @@ function toFullEntry(row: DbRow) {
     ipAddress: log.ipAddress ?? '',
     userAgent: log.userAgent ?? '',
     initiatedBy: log.initiatedBy ?? null,
-    details: details ?? {}
   };
+  if (includeDetails) {
+    entry.details = details ?? {};
+  }
+  return entry;
+}
+
+function parseExcludeActions(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function buildFilterConditions(
   orgCond: SQL | undefined,
-  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string }
+  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string; excludeActions?: string }
 ): SQL | undefined {
   const conditions: SQL[] = [];
 
@@ -254,6 +307,11 @@ function buildFilterConditions(
     conditions.push(lte(auditLogsTable.timestamp, new Date(filters.to)));
   }
 
+  const excludeList = parseExcludeActions(filters.excludeActions);
+  if (excludeList.length > 0) {
+    conditions.push(not(inArray(auditLogsTable.action, excludeList)));
+  }
+
   return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
@@ -270,20 +328,117 @@ function buildSearchCondition(q: string): SQL {
 
 async function queryRows(where: SQL | undefined, limit: number, offset: number): Promise<DbRow[]> {
   return db
-    .select({ log: auditLogsTable, userName: users.name })
+    .select({
+      log: auditLogsTable,
+      userName: users.name,
+      deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
+    })
     .from(auditLogsTable)
     .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+    .leftJoin(
+      devices,
+      sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
+    )
     .where(where)
     .orderBy(desc(auditLogsTable.timestamp))
     .limit(limit)
     .offset(offset);
 }
 
+// Fast path for the dashboard widget (RecentActivity): the RLS CASE in
+// breeze_has_org_access() cannot be pushed into audit_logs_org_timestamp_idx,
+// so a plain ORDER BY timestamp DESC LIMIT N degrades to a Parallel Seq Scan
+// over the whole table (~28s in prod). LATERAL per-org index scans gather N
+// rows per accessible org, then top-N sort. ~9ms under RLS.
+interface LateralAuditRow extends Record<string, unknown> {
+  id: string;
+  org_id: string | null;
+  timestamp: Date | string;
+  actor_type: 'user' | 'api_key' | 'agent' | 'system';
+  actor_id: string;
+  actor_email: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  resource_name: string | null;
+  details: unknown;
+  ip_address: string | null;
+  user_agent: string | null;
+  result: 'success' | 'failure' | 'denied';
+  error_message: string | null;
+  checksum: string | null;
+  initiated_by: string | null;
+  user_name: string | null;
+  device_hostname: string | null;
+  device_display_name: string | null;
+}
+
+async function queryLatestPerOrg(
+  orgIds: string[],
+  limit: number,
+  excludeActions: string[] = []
+): Promise<DbRow[]> {
+  const orgIdsSql = sql.join(orgIds.map((id) => sql`${id}::uuid`), sql`, `);
+  // Apply the exclude filter INSIDE the LATERAL subquery so the per-org
+  // LIMIT N kicks in after filtering noise — otherwise we fetch N noisy rows
+  // per org and drop them all.
+  const excludeFilter = excludeActions.length > 0
+    ? sql` AND audit_logs.action <> ALL(ARRAY[${sql.join(excludeActions.map((a) => sql`${a}`), sql`, `)}]::text[])`
+    : sql``;
+  const rows = await db.execute<LateralAuditRow>(sql`
+    SELECT
+      al.id, al.org_id, al.timestamp, al.actor_type, al.actor_id,
+      al.actor_email, al.action, al.resource_type, al.resource_id,
+      al.resource_name, al.details, al.ip_address, al.user_agent,
+      al.result, al.error_message, al.checksum, al.initiated_by,
+      u.name AS user_name,
+      d.hostname AS device_hostname,
+      d.display_name AS device_display_name
+    FROM unnest(ARRAY[${orgIdsSql}]::uuid[]) AS o(org_id)
+    CROSS JOIN LATERAL (
+      SELECT * FROM audit_logs
+      WHERE audit_logs.org_id = o.org_id${excludeFilter}
+      ORDER BY timestamp DESC
+      LIMIT ${limit}
+    ) al
+    LEFT JOIN users u ON al.actor_id = u.id
+    LEFT JOIN devices d
+      ON al.actor_type = 'agent'
+      AND d.agent_id = al.details->>'rawActorId'
+    ORDER BY al.timestamp DESC
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({
+    log: {
+      id: r.id,
+      orgId: r.org_id,
+      timestamp: r.timestamp instanceof Date ? r.timestamp : new Date(r.timestamp),
+      actorType: r.actor_type,
+      actorId: r.actor_id,
+      actorEmail: r.actor_email,
+      action: r.action,
+      resourceType: r.resource_type,
+      resourceId: r.resource_id,
+      resourceName: r.resource_name,
+      details: r.details,
+      ipAddress: r.ip_address,
+      userAgent: r.user_agent,
+      result: r.result,
+      errorMessage: r.error_message,
+      checksum: r.checksum,
+      initiatedBy: r.initiated_by,
+    } as DbRow['log'],
+    userName: r.user_name ?? null,
+    deviceHostname: r.device_hostname ?? null,
+    deviceDisplayName: r.device_display_name ?? null,
+  }));
+}
+
 async function countRows(where: SQL | undefined): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(auditLogsTable)
-    .leftJoin(users, eq(auditLogsTable.actorId, users.id))
     .where(where);
   return row?.count ?? 0;
 }
@@ -293,35 +448,48 @@ async function fetchAllForReports(orgCond: SQL | undefined, filters: { from?: st
   return queryRows(where, 5000, 0);
 }
 
-function toCsv(rows: DbRow[]): string {
-  const headers = [
-    'id', 'timestamp', 'actorId', 'actorName', 'actorEmail',
-    'action', 'resourceType', 'resourceId', 'resourceName',
-    'category', 'result', 'ipAddress', 'userAgent', 'details'
-  ];
+function normalizeExportColumns(columns: AuditExportColumn[] | undefined, includeDetails: boolean): AuditExportColumn[] {
+  const requested = columns === undefined ? [...auditExportColumns] : columns;
+  return requested.filter((column) => includeDetails || column !== 'details');
+}
 
-  const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
+function toExportRecord(row: DbRow, includeDetails: boolean): Record<AuditExportColumn, string> {
+  const log = row.log;
+  const actorName = resolveActorName(row, log.details as Record<string, unknown> | null);
+  return {
+    id: log.id,
+    timestamp: log.timestamp.toISOString(),
+    actorId: log.actorId,
+    actorName,
+    actorEmail: log.actorEmail ?? '',
+    action: log.action,
+    resourceType: log.resourceType,
+    resourceId: log.resourceId ?? '',
+    resourceName: log.resourceName ?? '',
+    category: deriveCategory(log.action),
+    result: log.result,
+    ipAddress: log.ipAddress ?? '',
+    userAgent: log.userAgent ?? '',
+    details: includeDetails ? JSON.stringify(log.details ?? {}) : ''
+  };
+}
+
+function pickExportColumns(
+  row: DbRow,
+  columns: AuditExportColumn[],
+  includeDetails: boolean
+): Record<string, string> {
+  const record = toExportRecord(row, includeDetails);
+  return Object.fromEntries(columns.map((column) => [column, record[column]]));
+}
+
+function toCsv(rows: DbRow[], options: { columns?: AuditExportColumn[]; includeDetails?: boolean } = {}): string {
+  const includeDetails = options.includeDetails ?? true;
+  const headers = normalizeExportColumns(options.columns, includeDetails);
 
   const csvRows = rows.map((row) => {
-    const log = row.log;
-    const actorName = resolveActorName(row, log.details as Record<string, unknown> | null);
-    const values = [
-      log.id,
-      log.timestamp.toISOString(),
-      log.actorId,
-      actorName,
-      log.actorEmail ?? '',
-      log.action,
-      log.resourceType,
-      log.resourceId ?? '',
-      log.resourceName ?? '',
-      deriveCategory(log.action),
-      log.result,
-      log.ipAddress ?? '',
-      log.userAgent ?? '',
-      JSON.stringify(log.details ?? {})
-    ];
-    return values.map((v) => escape(String(v))).join(',');
+    const record = toExportRecord(row, includeDetails);
+    return csvRow(headers.map((header) => record[header]));
   });
 
   return [headers.join(','), ...csvRows].join('\n');
@@ -388,11 +556,50 @@ function paginatedListHandler(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    // Explicit per-request org scope from the org-selector dropdown. If the
+    // caller asks for an org they cannot access, return 403 — do NOT silently
+    // fall back to the full accessible-org set.
+    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+    // BY DESIGN: the audit-log list is scoped to the org only, NOT the caller's
+    // site allowlist. Audit trails are an org-level compliance record and must
+    // stay complete for any org member with audit-read permission; partitioning
+    // them by site would hide legitimate entries (and the loose details->>
+    // 'rawActorId' device join is not a reliable site key anyway). The by-id
+    // detail view applies an agent-actor site check as defence-in-depth; the
+    // list intentionally does not. (Site-scope review decision, 2026-05-31.)
+    // A pinned ?orgId= narrows to that single (accessible) org; otherwise the
+    // standard condition spans every accessible org.
+    const orgCond = query.orgId
+      ? eq(auditLogsTable.orgId, query.orgId)
+      : auth.orgCondition(auditLogsTable.orgId);
     const where = buildFilterConditions(orgCond, query);
+    // count(*) on audit_logs is 2-3s under RLS even with the org_timestamp
+    // index. The dashboard widget that calls /logs?limit=5 doesn't need the
+    // count — it never displays "X of Y total". Pass skipCount=true there.
+    const skipCount = query.skipCount === 'true';
+    const hasFilters = !!(query.user || query.action || query.resource || query.from || query.to);
+    // excludeActions is compatible with the fast path — it's applied inside the
+    // LATERAL subquery before the per-org LIMIT. The standard path picks it up
+    // via buildFilterConditions(orgCond, query) above.
+    const excludeActions = parseExcludeActions(query.excludeActions);
+    // Fast-path org list: a pinned ?orgId= scopes the LATERAL per-org scan to
+    // that single org; otherwise it spans every accessible org.
+    const fastPathOrgIds: string[] | null = query.orgId
+      ? [query.orgId]
+      : (Array.isArray(auth.accessibleOrgIds) ? (auth.accessibleOrgIds as string[]) : null);
+    const canUseFastPath =
+      skipCount &&
+      offset === 0 &&
+      !hasFilters &&
+      fastPathOrgIds !== null &&
+      fastPathOrgIds.length > 0;
     const [total, rows] = await Promise.all([
-      countRows(where),
-      queryRows(where, limit, offset)
+      skipCount ? Promise.resolve(-1) : countRows(where),
+      canUseFastPath
+        ? queryLatestPerOrg(fastPathOrgIds as string[], limit, excludeActions)
+        : queryRows(where, limit, offset)
     ]);
 
     return c.json({
@@ -401,7 +608,7 @@ function paginatedListHandler(
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit)
+        totalPages: total < 0 ? -1 : Math.ceil(total / limit)
       }
     });
   };
@@ -437,13 +644,32 @@ auditLogRoutes.get(
     if (orgCond) conditions.push(orgCond);
 
     const [row] = await db
-      .select({ log: auditLogsTable, userName: users.name })
+      .select({
+        log: auditLogsTable,
+        userName: users.name,
+        deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
+        deviceSiteId: devices.siteId,
+      })
       .from(auditLogsTable)
       .leftJoin(users, eq(auditLogsTable.actorId, users.id))
+      .leftJoin(
+        devices,
+        sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
+      )
       .where(and(...conditions));
 
     if (!row) {
       return c.json({ error: 'Audit log not found' }, 404);
+    }
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (
+      perms?.allowedSiteIds
+      && row.log.actorType === 'agent'
+      && (typeof row.deviceSiteId !== 'string' || !canAccessSite(perms, row.deviceSiteId))
+    ) {
+      return c.json({ error: 'Audit log not found or access denied' }, 403);
     }
 
     return c.json(toFullEntry(row));
@@ -471,7 +697,7 @@ auditLogRoutes.get(
     ]);
 
     return c.json({
-      data: rows.map(toFullEntry),
+      data: rows.map((row) => toFullEntry(row)),
       query: query.q,
       pagination: {
         page,
@@ -501,6 +727,7 @@ auditLogRoutes.post(
     });
 
     const rows = await queryRows(where, 10000, 0);
+    const exportColumns = normalizeExportColumns(body.columns, body.includeDetails);
 
     writeRouteAudit(c, {
       orgId: auth.orgId,
@@ -508,23 +735,33 @@ auditLogRoutes.post(
       resourceType: 'audit_log',
       details: {
         format: body.format,
-        rowCount: rows.length
+        rowCount: rows.length,
+        filters: body.filters ?? {},
+        dateRange: body.dateRange ?? {},
+        columns: exportColumns,
+        includeDetails: body.includeDetails
       }
     });
 
     if (body.format === 'csv') {
       c.header('Content-Type', 'text/csv');
       c.header('Content-Disposition', 'attachment; filename="audit-logs.csv"');
-      return c.body(toCsv(rows));
+      return c.body(toCsv(rows, { columns: exportColumns, includeDetails: body.includeDetails }));
     }
 
-    return c.json({ data: rows.map(toFullEntry), total: rows.length });
+    const data = body.columns === undefined
+      ? rows.map((row) => toFullEntry(row, body.includeDetails))
+      : rows.map((row) => pickExportColumns(row, exportColumns, body.includeDetails));
+
+    return c.json({ data, total: rows.length });
   }
 );
 
 // GET /export — used by AuditLogViewer export button (CSV download)
 const exportGetSchema = z.object({
-  userId: z.string().uuid().optional()
+  userId: z.string().uuid().optional(),
+  columns: z.string().optional(),
+  includeDetails: z.enum(['true', 'false']).optional().default('true')
 });
 
 auditLogRoutes.get(
@@ -536,7 +773,13 @@ auditLogRoutes.get(
     const auth = c.get('auth');
     const orgCond = auth.orgCondition(auditLogsTable.orgId);
 
-    const { userId } = c.req.valid('query');
+    const { userId, columns, includeDetails: includeDetailsRaw } = c.req.valid('query');
+    const includeDetails = includeDetailsRaw !== 'false';
+    const parsedColumns = columns
+      ?.split(',')
+      .map((column) => column.trim())
+      .filter((column): column is AuditExportColumn => (auditExportColumns as readonly string[]).includes(column));
+    const exportColumns = normalizeExportColumns(parsedColumns, includeDetails);
     const conditions: SQL[] = [];
     if (orgCond) conditions.push(orgCond);
     if (userId) conditions.push(eq(auditLogsTable.actorId, userId));
@@ -544,9 +787,22 @@ auditLogRoutes.get(
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const rows = await queryRows(where, 10000, 0);
 
+    writeRouteAudit(c, {
+      orgId: auth.orgId,
+      action: 'audit_logs.export',
+      resourceType: 'audit_log',
+      details: {
+        format: 'csv',
+        rowCount: rows.length,
+        filters: { userId: userId ?? null },
+        columns: exportColumns,
+        includeDetails
+      }
+    });
+
     c.header('Content-Type', 'text/csv');
     c.header('Content-Disposition', 'attachment; filename="audit-logs.csv"');
-    return c.body(toCsv(rows));
+    return c.body(toCsv(rows, { columns: exportColumns, includeDetails }));
   }
 );
 
@@ -562,7 +818,7 @@ auditLogRoutes.get(
     const rows = await fetchAllForReports(orgCond, query);
 
     const actionsPerUser = summarizeUsers(rows);
-    const recentActivity = rows.slice(0, 10).map(toFullEntry);
+    const recentActivity = rows.slice(0, 10).map((row) => toFullEntry(row));
 
     return c.json({
       totalUsers: actionsPerUser.length,
@@ -597,7 +853,7 @@ auditLogRoutes.get(
       failedLogins,
       permissionChanges,
       byAction,
-      recentEvents: securityRows.slice(0, 10).map(toFullEntry)
+      recentEvents: securityRows.slice(0, 10).map((row) => toFullEntry(row))
     });
   }
 );
@@ -627,7 +883,7 @@ auditLogRoutes.get(
       dataChanges,
       exports,
       byAction,
-      recentEvents: complianceRows.slice(0, 10).map(toFullEntry)
+      recentEvents: complianceRows.slice(0, 10).map((row) => toFullEntry(row))
     });
   }
 );

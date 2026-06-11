@@ -2,26 +2,37 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { readFile } from 'node:fs/promises';
 import { and, eq, sql, inArray } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   patches,
   devicePatches,
   patchApprovals,
   patchComplianceReports,
-  devices
+  devices,
+  OUTSTANDING_DEVICE_PATCH_STATUSES
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
 import { resolvePatchReportOrgId } from './helpers';
 
 export const complianceRoutes = new Hono();
 
+// A device_patches row that still needs installing. 'missing' is a stale
+// tombstone, NOT an outstanding patch — see OUTSTANDING_DEVICE_PATCH_STATUSES.
+const isOutstanding = inArray(devicePatches.status, [...OUTSTANDING_DEVICE_PATCH_STATUSES]);
+const requireReportRead = requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action);
+const requireReportExport = requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action);
+
 // GET /patches/compliance - Get compliance summary
 complianceRoutes.get(
   '/compliance',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` so the site narrowing below is live (only
+  // requirePermission sets it). DEVICES_READ is granted to every device-viewing role.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', complianceSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -33,6 +44,7 @@ complianceRoutes.get(
 
     // Get devices scoped to org (or all accessible orgs for partner/system)
     const deviceConditions = [];
+    const perms = c.get('permissions') as UserPermissions | undefined;
     if (query.orgId) {
       deviceConditions.push(eq(devices.orgId, query.orgId));
     } else {
@@ -42,6 +54,22 @@ complianceRoutes.get(
       } else if (auth.scope !== 'system') {
         return c.json({ error: 'Organization context required' }, 400);
       }
+    }
+    if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          data: {
+            summary: { total: 0, pending: 0, installed: 0, failed: 0, missing: 0 },
+            compliancePercent: 100,
+            totalDevices: 0,
+            compliantDevices: 0,
+            criticalSummary: { total: 0, patched: 0, pending: 0 },
+            importantSummary: { total: 0, patched: 0, pending: 0 },
+            devicesNeedingPatches: []
+          }
+        });
+      }
+      deviceConditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const orgDevices = await db
@@ -134,8 +162,13 @@ complianceRoutes.get(
       }
     }
 
-    const compliancePercent = summary.total > 0
-      ? Math.round((summary.installed / summary.total) * 100)
+    // Compliance % is installed over the RELEVANT set (installed + outstanding),
+    // not over summary.total — total includes stale 'missing' tombstones and
+    // 'skipped' rows, which would otherwise deflate the percentage. This matches
+    // the device-detail view (routes/devices/patches.ts: installed / (pending + installed)).
+    const relevantTotal = summary.installed + summary.pending;
+    const compliancePercent = relevantTotal > 0
+      ? Math.round((summary.installed / relevantTotal) * 100)
       : 100;
 
     // Per-device patch breakdown for "devices needing patches" table
@@ -145,11 +178,11 @@ complianceRoutes.get(
         hostname: devices.hostname,
         osType: devices.osType,
         lastSeenAt: devices.lastSeenAt,
-        missingCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing'))`,
-        criticalCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'critical')`,
-        importantCount: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'important')`,
-        osMissing: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
-        thirdPartyMissing: sql<number>`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.source} in ('third_party', 'custom'))`,
+        missingCount: sql<number>`count(*) filter (where ${isOutstanding})`,
+        criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical')`,
+        importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'important')`,
+        osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
+        thirdPartyMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('third_party', 'custom'))`,
         lastInstalledAt: sql<string | null>`max(case when ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null then ${devicePatches.installedAt}::timestamptz::text end)`,
         pendingReboot: sql<boolean>`bool_or(${patches.requiresReboot} and ${devicePatches.status} = 'installed' and ${devicePatches.installedAt} is not null)`,
         lastScannedAt: sql<string | null>`max(${devicePatches.lastCheckedAt})::timestamptz::text`
@@ -159,8 +192,8 @@ complianceRoutes.get(
       .innerJoin(devices, eq(devicePatches.deviceId, devices.id))
       .where(and(...complianceConditions))
       .groupBy(devicePatches.deviceId, devices.hostname, devices.osType, devices.lastSeenAt)
-      .having(sql`count(*) filter (where ${devicePatches.status} in ('pending', 'missing')) > 0`)
-      .orderBy(sql`count(*) filter (where ${devicePatches.status} in ('pending', 'missing') and ${patches.severity} = 'critical') desc`);
+      .having(sql`count(*) filter (where ${isOutstanding}) > 0`)
+      .orderBy(sql`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical') desc`);
 
     const devicesNeedingPatches = deviceBreakdown.map(row => ({
       id: row.deviceId,
@@ -177,12 +210,14 @@ complianceRoutes.get(
       lastSeen: row.lastSeenAt?.toISOString() ?? undefined
     }));
 
-    // Severity-level summaries
+    // Severity-level summaries. "total" is the RELEVANT set (installed +
+    // outstanding) for that severity, NOT count(*) over all statuses — stale
+    // 'missing' tombstones must not be counted as pending here either.
     const severityCounts = await db
       .select({
         severity: patches.severity,
-        total: sql<number>`count(*)`,
-        installed: sql<number>`count(*) filter (where ${devicePatches.status} = 'installed')`
+        installed: sql<number>`count(*) filter (where ${devicePatches.status} = 'installed')`,
+        outstanding: sql<number>`count(*) filter (where ${isOutstanding})`
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -192,12 +227,13 @@ complianceRoutes.get(
     const severityMap: Record<string, { total: number; patched: number; pending: number }> = {};
     for (const row of severityCounts) {
       const key = row.severity ?? 'unknown';
-      const total = Number(row.total);
       const patched = Number(row.installed);
-      severityMap[key] = { total, patched, pending: total - patched };
+      const pending = Number(row.outstanding);
+      severityMap[key] = { total: patched + pending, patched, pending };
     }
 
-    // Device-level compliance: a device is compliant if it has zero pending/missing patches
+    // Device-level compliance: a device is compliant if it has zero outstanding
+    // (pending) patches. devicesNeedingPatches already excludes 'missing' tombstones.
     const compliantDeviceCount = deviceIds.length - devicesNeedingPatches.length;
 
     return c.json({
@@ -223,6 +259,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/report',
   requireScope('organization', 'partner', 'system'),
+  requireReportExport,
   zValidator('query', complianceReportSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -283,6 +320,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/report/:id',
   requireScope('organization', 'partner', 'system'),
+  requireReportRead,
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
@@ -340,6 +378,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/compliance/report/:id/download',
   requireScope('organization', 'partner', 'system'),
+  requireReportExport,
   async (c) => {
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;

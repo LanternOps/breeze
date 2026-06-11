@@ -22,10 +22,10 @@ type SNMPDevice struct {
 
 // SNMPMetric represents a single SNMP value read.
 type SNMPMetric struct {
-	OID       string      `json:"oid"`
-	Name      string      `json:"name"`
-	Value     any `json:"value"`
-	Timestamp time.Time   `json:"timestamp"`
+	OID       string    `json:"oid"`
+	Name      string    `json:"name"`
+	Value     any       `json:"value"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // CollectMetrics fetches all configured OIDs for a device.

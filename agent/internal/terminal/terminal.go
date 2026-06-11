@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 var log = logging.L("terminal")
@@ -240,6 +241,7 @@ func (s *Session) close() error {
 // call it. This prevents the data race between the background Wait goroutine
 // spawned by start() and the close() method.
 func (s *Session) waitCmd() error {
+	defer observability.Recoverer("terminal.waitCmd")
 	var err error
 	s.waitOnce.Do(func() {
 		err = s.awaitProcess()
@@ -255,35 +257,22 @@ func (s *Session) notifyClosed(err error) {
 	})
 }
 
-// readLoop reads output from the PTY and sends it to the callback
+// readLoop reads output from the PTY and sends it to the callback. Output is
+// forwarded on UTF-8 rune boundaries (streamUTF8) so a multibyte character
+// split across a read boundary isn't decoded into U+FFFD downstream.
 func (s *Session) readLoop() {
+	defer observability.Recoverer("terminal.readLoop")
 	log.Info("readLoop started", "sessionId", s.ID)
-	buf := make([]byte, 4096)
-	firstRead := true
 
-	for {
-		n, err := s.pty.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				log.Warn("session read error", "sessionId", s.ID, "error", err)
-			} else {
-				log.Info("readLoop EOF", "sessionId", s.ID)
-			}
-			s.notifyClosed(err)
-			return
-		}
-
-		if n > 0 && s.onOutput != nil {
-			if firstRead {
-				log.Info("readLoop first data", "sessionId", s.ID, "bytes", n)
-				firstRead = false
-			}
-			// Make a copy of the data
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			s.onOutput(data)
-		}
+	err := streamUTF8(s.pty, s.onOutput, func(n int) {
+		log.Info("readLoop first data", "sessionId", s.ID, "bytes", n)
+	})
+	if err != nil && err != io.EOF {
+		log.Warn("session read error", "sessionId", s.ID, "error", err)
+	} else {
+		log.Info("readLoop EOF", "sessionId", s.ID)
 	}
+	s.notifyClosed(err)
 }
 
 // getDefaultShell returns the default shell for the current OS

@@ -6,6 +6,7 @@ import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionM
 import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
@@ -122,7 +123,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         return;
       }
       const data = await response.json();
-      throw new Error(data.error || 'Failed to execute script');
+      throw new Error(extractApiError(data, 'Failed to execute script'));
     }
 
     // Refresh executions list

@@ -1,6 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Package, Search, ChevronLeft, ChevronRight, RefreshCw, X, Box } from 'lucide-react';
+import {
+  Package,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  X,
+  Box,
+  ArrowUpCircle,
+  Trash2,
+  Loader2,
+  AlertTriangle
+} from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 
 function isApplePublisher(publisher: string): boolean {
   const p = publisher.toLowerCase();
@@ -33,11 +47,43 @@ type DeviceSoftwareInventoryProps = {
   osType?: string;
 };
 
+type SoftwareAction = 'update' | 'uninstall';
+
+// We block update/uninstall for Apple-published macOS apps because their
+// package-manager identity (Apple-signed App Store / OS components) is not
+// expressible to `brew upgrade`/`brew uninstall`. The agent would just
+// return "no supported update command" — better to disable upfront and
+// explain why than to queue a guaranteed-to-fail command.
+function actionsAreSupported(osType: string | undefined, isApple: boolean): {
+  update: { allowed: boolean; reason?: string };
+  uninstall: { allowed: boolean; reason?: string };
+} {
+  const os = (osType || '').toLowerCase();
+  if (os === 'macos' || os === 'darwin') {
+    if (isApple) {
+      const reason = 'Apple-signed apps are managed by macOS — uninstall via Settings, update via Software Update.';
+      return { update: { allowed: false, reason }, uninstall: { allowed: false, reason } };
+    }
+    return { update: { allowed: true }, uninstall: { allowed: true } };
+  }
+  if (os === 'windows' || os === 'linux') {
+    return { update: { allowed: true }, uninstall: { allowed: true } };
+  }
+  const reason = `Software actions are not supported on ${osType || 'this OS'}.`;
+  return { update: { allowed: false, reason }, uninstall: { allowed: false, reason } };
+}
+
 function formatDate(value?: string, timezone?: string) {
   if (!value) return '-';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
 }
+
+type ConfirmState = {
+  action: SoftwareAction;
+  name: string;
+  version: string;
+};
 
 export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: DeviceSoftwareInventoryProps) {
   const [software, setSoftware] = useState<SoftwareItem[]>([]);
@@ -47,9 +93,17 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const [total, setTotal] = useState(0);
+  const [, setTotal] = useState(0);
   const [publisherFilter, setPublisherFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'apple' | 'third-party'>('all');
+  // Rows currently in-flight (keyed by row id) so the table can show a
+  // per-row spinner and disable other actions on that row without disabling
+  // the entire grid.
+  const [pendingActions, setPendingActions] = useState<Record<string, SoftwareAction | undefined>>({});
+  // null when no confirm dialog is open. Only Uninstall opens one — Update
+  // queues directly, since the worst case is a silent no-op when the package
+  // is already current.
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const pageSize = 25;
 
   // Use provided timezone, fetched siteTimezone, or browser default
@@ -89,6 +143,38 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
     fetchSoftware();
   }, [fetchSoftware]);
 
+  const queueSoftwareAction = useCallback(
+    async (rowId: string, action: SoftwareAction, name: string, version: string) => {
+      setPendingActions((prev) => ({ ...prev, [rowId]: action }));
+      const verb = action === 'update' ? 'Update' : 'Uninstall';
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/devices/${deviceId}/software/${action}`, {
+              method: 'POST',
+              body: JSON.stringify(version ? { name, version } : { name }),
+            }),
+          errorFallback: `${verb} could not be queued`,
+          successMessage: `${verb} queued for "${name}"`,
+        });
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) {
+          return;
+        }
+        if (!(err instanceof ActionError)) {
+          showToast({ message: `${verb} could not be queued`, type: 'error' });
+        }
+      } finally {
+        setPendingActions((prev) => {
+          const next = { ...prev };
+          delete next[rowId];
+          return next;
+        });
+      }
+    },
+    [deviceId]
+  );
+
   // Get unique publishers for filter dropdown
   const publishers = useMemo(() => {
     const publisherSet = new Set<string>();
@@ -102,16 +188,19 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
   const rows = useMemo(() => {
     return software.map((item, index) => {
       const publisher = item.publisher ?? item.vendor ?? '-';
+      const isApple = isApplePublisher(publisher);
       return {
         id: item.id ?? `${item.name ?? item.title ?? 'software'}-${index}`,
         name: item.name ?? item.title ?? 'Unknown software',
         version: item.version || '-',
+        rawVersion: item.version || '',
         publisher,
-        isApple: isApplePublisher(publisher),
-        installDate: formatDate(item.installDate ?? item.installedAt ?? item.install_date, effectiveTimezone)
+        isApple,
+        installDate: formatDate(item.installDate ?? item.installedAt ?? item.install_date, effectiveTimezone),
+        capabilities: actionsAreSupported(osType, isApple),
       };
     });
-  }, [software, effectiveTimezone]);
+  }, [software, effectiveTimezone, osType]);
 
   const filteredRows = useMemo(() => {
     return rows.filter(item => {
@@ -275,35 +364,78 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
                 <th className="px-4 py-3">Version</th>
                 <th className="px-4 py-3">Publisher</th>
                 <th className="px-4 py-3">Installed</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {paginatedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {hasActiveFilters
                       ? 'No software matches your filters.'
                       : 'No software inventory reported.'}
                   </td>
                 </tr>
               ) : (
-                paginatedRows.map(item => (
-                  <tr key={item.id} className="text-sm hover:bg-muted/30">
-                    <td className="px-4 py-3 font-medium">
-                      <span className="flex items-center gap-2">
-                        {item.isApple ? (
-                          <AppleIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        ) : (
-                          <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        )}
-                        {item.name}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{item.version}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{item.publisher}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{item.installDate}</td>
-                  </tr>
-                ))
+                paginatedRows.map(item => {
+                  const pendingAction = pendingActions[item.id];
+                  const isUpdatePending = pendingAction === 'update';
+                  const isUninstallPending = pendingAction === 'uninstall';
+                  const anyPending = pendingAction !== undefined;
+                  return (
+                    <tr key={item.id} className="text-sm hover:bg-muted/30">
+                      <td className="px-4 py-3 font-medium">
+                        <span className="flex items-center gap-2">
+                          {item.isApple ? (
+                            <AppleIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          ) : (
+                            <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          )}
+                          {item.name}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{item.version}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{item.publisher}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{item.installDate}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            data-testid={`software-update-${item.id}`}
+                            disabled={!item.capabilities.update.allowed || anyPending}
+                            title={item.capabilities.update.reason ?? 'Queue an update for this package'}
+                            onClick={() => queueSoftwareAction(item.id, 'update', item.name, item.rawVersion)}
+                            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isUpdatePending ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <ArrowUpCircle className="h-3.5 w-3.5" />
+                            )}
+                            Update
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`software-uninstall-${item.id}`}
+                            disabled={!item.capabilities.uninstall.allowed || anyPending}
+                            title={item.capabilities.uninstall.reason ?? 'Uninstall this package'}
+                            onClick={() =>
+                              setConfirmState({ action: 'uninstall', name: item.name, version: item.rawVersion })
+                            }
+                            className="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isUninstallPending ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            Uninstall
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -353,6 +485,63 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
             >
               Last
             </button>
+          </div>
+        </div>
+      )}
+
+      {confirmState && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="software-uninstall-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setConfirmState(null);
+          }}
+        >
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
+              <div className="flex-1">
+                <h4 id="software-uninstall-title" className="text-base font-semibold">
+                  Uninstall {confirmState.name}?
+                </h4>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  This will queue an uninstall command for "{confirmState.name}" on this device.
+                  Uninstalling user data or dependencies may impact other software on the device.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmState(null)}
+                className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-uninstall"
+                onClick={() => {
+                  // Resolve the row id from current rows so the spinner key
+                  // matches the row the user is looking at. We re-derive id
+                  // by name+version because pagination/filters could have
+                  // shuffled the visible set since the user clicked.
+                  const row = rows.find(
+                    (r) => r.name === confirmState.name && r.rawVersion === confirmState.version
+                  );
+                  const rowId = row?.id ?? `${confirmState.name}-${confirmState.version}`;
+                  const name = confirmState.name;
+                  const version = confirmState.version;
+                  setConfirmState(null);
+                  void queueSoftwareAction(rowId, 'uninstall', name, version);
+                }}
+                className="rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:opacity-90"
+              >
+                Uninstall
+              </button>
+            </div>
           </div>
         </div>
       )}

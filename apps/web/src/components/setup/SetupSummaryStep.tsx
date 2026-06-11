@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { CheckCircle, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 interface SetupSummaryStepProps {
   stepsVisited: boolean[];
@@ -19,9 +20,8 @@ export default function SetupSummaryStep({ stepsVisited }: SetupSummaryStepProps
     try {
       const res = await fetchWithAuth('/system/setup-complete', { method: 'POST' });
       if (!res.ok) {
-        let msg = 'Failed to complete setup';
-        try { const data = await res.json(); msg = data.error || msg; } catch { /* ignore parse error */ }
-        setError(msg);
+        const data = await res.json().catch(() => null);
+        setError(extractApiError(data, 'Failed to complete setup'));
         setLoading(false);
         return;
       }

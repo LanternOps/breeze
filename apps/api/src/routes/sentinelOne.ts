@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1SiteMappings, s1Threats } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -12,13 +12,19 @@ import {
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
-import { PERMISSIONS } from '../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
   executeS1IsolationForOrg,
   executeS1ThreatActionForOrg,
   getActiveS1IntegrationForOrg
 } from '../services/sentinelOne/actions';
 import { escapeLike } from '../utils/sql';
+import { checkSsrfSafe } from '../services/ssrfGuard';
+// SentinelOne deploys as managed SaaS only. Per-tenant management consoles
+// use the .sentinelone.net suffix (e.g. usea1-partners.sentinelone.net).
+// Any tenant-supplied URL pointing elsewhere is treated as SSRF. Shared with
+// the client's egress-time re-check so the allowlist has a single source of truth.
+import { S1_HOSTNAME_ALLOWLIST } from '../services/sentinelOne/constants';
 
 export const sentinelOneRoutes = new Hono();
 sentinelOneRoutes.use('*', authMiddleware);
@@ -29,6 +35,62 @@ function withOrgCondition(conditions: SQL[], condition: SQL | undefined): void {
 
 function whereOrUndefined(conditions: SQL[]): SQL | undefined {
   return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
+}
+
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted org user must not read
+// threat rows (or device hostnames) for devices in other sites within the same
+// org. Mirrors browserSecurity.ts `resolveSiteAllowedDeviceIds`.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  permissions: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!permissions?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => canAccessDeviceSite(d, permissions))
+    .map((d) => d.id);
+}
+
+async function hasDeniedDeviceSite(orgId: string, deviceIds: string[], permissions: UserPermissions | undefined): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  if (deviceIds.length === 0) return false;
+  const rows = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.orgId, orgId), inArray(devices.id, deviceIds)));
+  return rows.some((device) => !canAccessDeviceSite(device, permissions));
+}
+
+async function hasDeniedThreatDeviceSite(
+  orgId: string,
+  integrationId: string,
+  threatIds: string[],
+  permissions: UserPermissions | undefined,
+): Promise<boolean> {
+  if (!permissions?.allowedSiteIds) return false;
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const internalIds = threatIds.filter((id) => uuidPattern.test(id));
+  const matchCondition: SQL = internalIds.length > 0
+    ? (or(inArray(s1Threats.id, internalIds), inArray(s1Threats.s1ThreatId, threatIds)) as SQL)
+    : inArray(s1Threats.s1ThreatId, threatIds);
+  const threats = await db
+    .select({ deviceId: s1Threats.deviceId })
+    .from(s1Threats)
+    .where(and(eq(s1Threats.integrationId, integrationId), eq(s1Threats.orgId, orgId), matchCondition));
+  if (threats.some((threat) => typeof threat.deviceId !== 'string')) return true;
+  const deviceIds = threats.map((threat) => threat.deviceId).filter((id): id is string => typeof id === 'string');
+  return hasDeniedDeviceSite(orgId, deviceIds, permissions);
 }
 
 function resolveOrgId(
@@ -67,7 +129,18 @@ function resolveOrgId(
 const integrationUpsertSchema = z.object({
   orgId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
-  managementUrl: z.string().url().max(2_000),
+  managementUrl: z.string().url().max(2_000).superRefine((value, ctx) => {
+    const result = checkSsrfSafe(value, {
+      mode: 'strict-https',
+      hostnameAllowlist: S1_HOSTNAME_ALLOWLIST,
+    });
+    if (!result.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `managementUrl rejected: ${result.reason}`,
+      });
+    }
+  }),
   apiToken: z.string().max(10_000).optional(),
   isActive: z.boolean().optional()
 });
@@ -111,6 +184,11 @@ const siteMapSchema = z.object({
   siteName: z.string().min(1).max(200),
   orgId: z.string().uuid().nullable()
 });
+
+function normalizedHost(value: string): string {
+  const parsed = new URL(value);
+  return parsed.host.toLowerCase();
+}
 
 sentinelOneRoutes.get(
   '/integration',
@@ -172,13 +250,20 @@ sentinelOneRoutes.post(
 
     // Check if integration already exists (needed to validate token presence)
     const [existing] = await db
-      .select({ id: s1Integrations.id, apiTokenEncrypted: s1Integrations.apiTokenEncrypted })
+      .select({
+        id: s1Integrations.id,
+        managementUrl: s1Integrations.managementUrl,
+        apiTokenEncrypted: s1Integrations.apiTokenEncrypted
+      })
       .from(s1Integrations)
       .where(eq(s1Integrations.orgId, orgResult.orgId))
       .limit(1);
 
     if (!existing && !encryptedToken) {
       return c.json({ error: 'API token is required for new integrations' }, 400);
+    }
+    if (existing && !encryptedToken && normalizedHost(existing.managementUrl) !== normalizedHost(body.managementUrl)) {
+      return c.json({ error: 'API token must be re-entered when changing the SentinelOne management host' }, 400);
     }
 
     const now = new Date();
@@ -342,6 +427,9 @@ sentinelOneRoutes.get(
 sentinelOneRoutes.get(
   '/threats',
   requireScope('organization', 'partner', 'system'),
+  // Populates `permissions` in context (site-scope narrowing below depends on
+  // it) and gates device-telemetry reads behind DEVICES_READ.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listThreatsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -362,6 +450,24 @@ sentinelOneRoutes.get(
 
     const conditions: SQL[] = [eq(s1Threats.orgId, orgResult.orgId)];
     withOrgCondition(conditions, auth.orgCondition(s1Threats.orgId));
+
+    // Site-scope: site is an app-layer authz axis (RLS does not defend it).
+    // When the caller is site-restricted, deny an explicit out-of-scope
+    // deviceId and narrow the broad list to the caller's accessible devices.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgResult.orgId, perms);
+      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      // s1_threats.device_id is nullable; keep non-device-bound threat rows
+      // visible (they carry no site to gate on).
+      conditions.push(
+        allowedDeviceIds && allowedDeviceIds.length > 0
+          ? (or(isNull(s1Threats.deviceId), inArray(s1Threats.deviceId, allowedDeviceIds)) as SQL)
+          : isNull(s1Threats.deviceId),
+      );
+    }
 
     if (query.integrationId) conditions.push(eq(s1Threats.integrationId, query.integrationId));
     if (query.deviceId) conditions.push(eq(s1Threats.deviceId, query.deviceId));
@@ -447,6 +553,9 @@ sentinelOneRoutes.post(
     if (!integration) {
       return c.json({ error: 'No active SentinelOne integration found for this organization' }, 404);
     }
+    if (await hasDeniedDeviceSite(orgResult.orgId, body.deviceIds, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
+    }
     const result = await executeS1IsolationForOrg({
       orgId: orgResult.orgId,
       integrationId: integration.id,
@@ -510,6 +619,9 @@ sentinelOneRoutes.post(
 
     if (!isThreatAction(body.action)) {
       return c.json({ error: 'Unsupported threat action' }, 400);
+    }
+    if (await hasDeniedThreatDeviceSite(orgResult.orgId, integration.id, body.threatIds, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to one or more device sites denied' }, 403);
     }
 
     const result = await executeS1ThreatActionForOrg({

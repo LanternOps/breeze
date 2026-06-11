@@ -11,6 +11,9 @@
 <?ifndef WatchdogExePath?>
 <?define WatchdogExePath=..\breeze-watchdog-windows-amd64.exe?>
 <?endif?>
+<?ifndef UserHelperExePath?>
+<?define UserHelperExePath=..\breeze-user-helper-windows-amd64.exe?>
+<?endif?>
 <?ifndef UserTaskXmlPath?>
 <?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
 <?endif?>
@@ -60,23 +63,69 @@
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <Property Id="BREEZE_KILL_CMD" Secure="yes" />
+    <Property Id="BREEZE_ACL_CMD" Secure="yes" />
+    <Property Id="BREEZE_SC_FAILURE_CMD" Secure="yes" />
     <CustomAction Id="SetPowerShellPath" Property="POWERSHELL_EXE" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" />
 
-    <!-- Kill any running Breeze processes before InstallValidate so upgrades
-         don't leave a stale helper/watchdog running with an older binary hash.
+    <!-- Kill any running Breeze processes before InstallValidate so file
+         replacement isn't blocked by locked exes.
          ServiceControl stops BreezeAgent and BreezeWatchdog below, but the
          user-session desktop helper (spawned via CreateProcessAsUser) is not a
          service and would otherwise survive an in-place upgrade — causing the
          sessionbroker binary hash check to fail on the next remote-desktop
-         connection. Runs on upgrade, uninstall, and repair; fresh installs
-         have nothing to kill. Admin token (required by the MSI) is sufficient
-         for cross-session SeDebugPrivilege-backed termination. -->
+         connection. The CA runs on EVERY install path (fresh install, major
+         upgrade, repair) because a fresh install can land on top of a binary
+         left behind by a previous uninstall or a non-MSI deployment — the
+         MSI install log line we kept seeing was:
+            File: ...\breeze-agent.exe; Won't Overwrite;
+            Existing file is unversioned but modified
+         even on a "first-time" MSI install where the agent was previously
+         dropped onto the box by another mechanism. Skipping the kill on
+         REMOVE is fine because ServiceControl handles service shutdown on
+         uninstall and the user-helper exits cleanly when its tray menu
+         exits. The taskkill /F is idempotent: `& exit /b 0` swallows the
+         "process not found" error so a fresh box with nothing to kill
+         still returns success (#944). Admin token (required by the MSI)
+         is sufficient for cross-session SeDebugPrivilege-backed
+         termination. -->
     <SetProperty Id="BREEZE_KILL_CMD" Value="[System64Folder]cmd.exe" Before="KillBreezeProcesses" Sequence="execute" />
     <CustomAction
       Id="KillBreezeProcesses"
       Property="BREEZE_KILL_CMD"
-      ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
+      ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
       Execute="immediate"
+      Return="ignore" />
+
+    <SetProperty Id="BREEZE_ACL_CMD" Value="[System64Folder]cmd.exe" Before="HardenProgramDataAcl" Sequence="execute" />
+    <CustomAction
+      Id="HardenProgramDataAcl"
+      Property="BREEZE_ACL_CMD"
+      ExeCommand="/c (if not exist &quot;[ProgramDataBreezeDir].&quot; mkdir &quot;[ProgramDataBreezeDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeDataDir].&quot; mkdir &quot;[ProgramDataBreezeDataDir].&quot;) &amp;&amp; (if not exist &quot;[ProgramDataBreezeLogsDir].&quot; mkdir &quot;[ProgramDataBreezeLogsDir].&quot;) &amp;&amp; icacls &quot;[ProgramDataBreezeDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeDataDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F &amp;&amp; icacls &quot;[ProgramDataBreezeLogsDir].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F"
+      Execute="immediate"
+      Return="check" />
+
+    <!-- Set SCM failure-action recovery on both services after they're
+         installed. Mirrors agent/cmd/breeze-agent/service_cmd_windows.go:72-79
+         and agent/cmd/breeze-watchdog/service_cmd_windows.go:63-67 (5s/10s/30s
+         restart escalation with 24-hour counter reset).
+
+         Without this, MSI-installed services have no SCM-driven auto-restart;
+         only `breeze-agent.exe service install` (the manual subcommand)
+         applied the recovery actions before. So every MSI deployment was
+         missing this hardening.
+
+         `sc failure` syntax: spaces after each `=` are mandatory; actions are
+         a slash-separated list of (actionType/delayMs) pairs. `Return="ignore"`
+         (below) is what prevents a transient sc-error from rolling back the
+         install — keep both the static ExeCommand and Return="ignore" in
+         sync if either is ever edited. -->
+    <SetProperty Id="BREEZE_SC_FAILURE_CMD" Value="[System64Folder]cmd.exe" Before="ConfigureBreezeFailureActions" Sequence="execute" />
+    <CustomAction
+      Id="ConfigureBreezeFailureActions"
+      Property="BREEZE_SC_FAILURE_CMD"
+      ExeCommand="/c &quot;sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000&quot;"
+      Execute="deferred"
+      Impersonate="no"
       Return="ignore" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
@@ -105,6 +154,15 @@
         <Component Id="cmpBreezeBackupExe" Guid="*">
           <File Id="filBreezeBackupExe" Name="breeze-backup.exe"
                 Source="$(var.BackupExePath)" KeyPath="yes" />
+        </Component>
+
+        <Component Id="cmpBreezeUserHelperExe" Guid="*">
+          <!-- GUI-subsystem sibling of breeze-agent.exe (same Go source, -H windowsgui).
+               Launched by the AgentUserHelper scheduled task at user logon and by the
+               SYSTEM-context sessionbroker spawn paths. GUI subsystem prevents the
+               Windows kernel from allocating a console window for the helper. -->
+          <File Id="filBreezeUserHelperExe" Name="breeze-user-helper.exe"
+                Source="$(var.UserHelperExePath)" KeyPath="yes" />
         </Component>
 
         <Component Id="cmpBreezeWatchdogExe" Guid="*">
@@ -219,10 +277,30 @@
       HideTarget="yes" />
 
     <InstallExecuteSequence>
-      <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR Installed" />
+      <!-- Run on every install path EXCEPT uninstall. Broadened from the
+           original `WIX_UPGRADE_DETECTED OR Installed` (which skipped fresh
+           installs over a pre-existing non-MSI binary) — see comment at the
+           CA definition above and issue #944. -->
+      <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="NOT REMOVE" />
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
+      <Custom Action="HardenProgramDataAcl" After="CreateFolders" Condition="NOT REMOVE" />
+      <!-- Rollback rolls back the FIRST-install case only; on upgrade or
+           repair the existing task is valid prior state and shouldn't be
+           wiped by a rolled-back inner install. -->
       <Custom Action="RollbackRegisterUserHelperTask" Before="RegisterUserHelperTask" Condition="NOT Installed AND NOT REMOVE AND NOT WIX_UPGRADE_DETECTED" />
-      <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT Installed AND NOT REMOVE" />
+      <!-- RegisterUserHelperTask runs on EVERY install path that isn't
+           uninstall: first install, major upgrade, and `msiexec /fa` repair.
+           The PS script's Register-ScheduledTask -Force is idempotent, so
+           re-registering on repair just refreshes the action to the current
+           XML (the binary path may have changed across versions) — which is
+           the entire point. The previous `NOT Installed AND NOT REMOVE`
+           gate skipped repair, leaving repaired installs with stale task
+           pointers. -->
+      <Custom Action="RegisterUserHelperTask" After="InstallServices" Condition="NOT REMOVE" />
+      <!-- Apply SCM recovery actions immediately after the services are
+           registered. Deferred + non-impersonated so it runs as LocalSystem
+           (which sc.exe needs for SERVICE_CHANGE_CONFIG). -->
+      <Custom Action="ConfigureBreezeFailureActions" After="InstallServices" Condition="NOT REMOVE" />
       <!-- Enrollment runs after file copy but before InstallServices.
 
            Return="check" on the EnrollAgent CA means a non-zero exit
@@ -252,6 +330,7 @@
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
       <ComponentRef Id="cmpBreezeBackupExe" />
+      <ComponentRef Id="cmpBreezeUserHelperExe" />
       <ComponentRef Id="cmpBreezeWatchdogExe" />
       <ComponentRef Id="cmpSafeBootNetworkReg" />
       <ComponentRef Id="cmpUserTaskXml" />

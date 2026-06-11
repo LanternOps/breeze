@@ -17,6 +17,7 @@ vi.mock('bullmq', () => ({
     on = vi.fn();
   },
   Job: class {},
+  UnrecoverableError: class UnrecoverableError extends Error {},
 }));
 
 vi.mock('../services/redis', () => ({
@@ -30,7 +31,32 @@ vi.mock('../services/logForwarding', () => ({
   clearClientCache: vi.fn(),
 }));
 
-import { enqueueLogForwarding, shutdownLogForwardingWorker } from './logForwardingWorker';
+import { UnrecoverableError } from 'bullmq';
+import {
+  assertBulkDelivered,
+  enqueueLogForwarding,
+  shutdownLogForwardingWorker,
+} from './logForwardingWorker';
+
+const ctx = { deviceId: 'd1', orgId: 'o1' };
+
+describe('assertBulkDelivered', () => {
+  it('throws UnrecoverableError when the whole batch was dropped (terminal, no retry)', () => {
+    expect(() => assertBulkDelivered({ indexed: 0, errors: 5 }, ctx)).toThrow(UnrecoverableError);
+  });
+
+  it('does not throw on full success', () => {
+    expect(() => assertBulkDelivered({ indexed: 5, errors: 0 }, ctx)).not.toThrow();
+  });
+
+  it('does not throw on partial success (some indexed, some poison)', () => {
+    expect(() => assertBulkDelivered({ indexed: 3, errors: 2 }, ctx)).not.toThrow();
+  });
+
+  it('does not throw on an empty/no-op result', () => {
+    expect(() => assertBulkDelivered({ indexed: 0, errors: 0 }, ctx)).not.toThrow();
+  });
+});
 
 describe('enqueueLogForwarding', () => {
   beforeEach(async () => {

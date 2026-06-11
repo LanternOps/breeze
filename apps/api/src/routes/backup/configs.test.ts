@@ -7,13 +7,14 @@ const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'set', 'values']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
 
 const selectMock = vi.fn(() => chainMock([]));
+const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const checkBackupProviderCapabilitiesMock = vi.fn();
 const s3SendMock = vi.fn();
@@ -21,6 +22,7 @@ const s3SendMock = vi.fn();
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
+    insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -104,14 +106,66 @@ describe('backup config routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectMock.mockReset();
+    insertMock.mockReset();
     updateMock.mockReset();
     checkBackupProviderCapabilitiesMock.mockReset();
     s3SendMock.mockReset();
     selectMock.mockImplementation(() => chainMock([]));
+    insertMock.mockImplementation(() => chainMock([]));
     updateMock.mockImplementation(() => chainMock([]));
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', configsRoutes);
+  });
+
+  it('redacts storage credentials from config list responses', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'AKIA-PLAINTEXT',
+        secretKey: 'secret-plaintext',
+        credentials: {
+          token: 'nested-token-plaintext',
+        },
+      },
+    })]));
+
+    const res = await app.request('/backup/configs', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].details.bucket).toBe('backups');
+    expect(body.data[0].details.accessKey).toEqual({
+      redacted: true,
+      hasSecret: true,
+      masked: '********',
+    });
+    expect(JSON.stringify(body)).not.toContain('AKIA-PLAINTEXT');
+    expect(JSON.stringify(body)).not.toContain('secret-plaintext');
+    expect(JSON.stringify(body)).not.toContain('nested-token-plaintext');
+  });
+
+  it('redacts storage credentials from single config responses', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.details.secretKey).toEqual({
+      redacted: true,
+      hasSecret: true,
+      masked: '********',
+    });
+    expect(JSON.stringify(body)).not.toContain('"secret"');
+    expect(JSON.stringify(body)).not.toContain('"key"');
   });
 
   it('returns explicit object lock support on successful S3 config tests', async () => {
@@ -148,6 +202,66 @@ describe('backup config routes', () => {
       },
     });
     expect(body.config.providerCapabilities.objectLock.supported).toBe(true);
+  });
+
+  it('rejects encryption-required configs without enforceable storage encryption', async () => {
+    const res = await app.request('/backup/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'Local backups',
+        provider: 'local',
+        encryption: true,
+        details: { path: '/tmp/backups' },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('creates S3 configs with explicit SSE-KMS encryption enabled', async () => {
+    insertMock.mockReturnValueOnce(chainMock([makeConfig({
+      encryption: true,
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        serverSideEncryption: 'aws:kms',
+        kmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abcd',
+      },
+    })]));
+
+    const res = await app.request('/backup/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'S3 encrypted backups',
+        provider: 's3',
+        encryption: true,
+        details: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: 'secret',
+          serverSideEncryption: 'aws:kms',
+          kmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/abcd',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const insertValues = insertMock.mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      encryption: true,
+    }));
+    const body = await res.json();
+    expect(body.encryption).toMatchObject({
+      enabled: true,
+      status: 'enforced',
+      mode: 's3-sse-kms',
+    });
   });
 
   it('returns explicit unsupported object lock state for local configs', async () => {
@@ -219,8 +333,13 @@ describe('backup config routes', () => {
   });
 
   it('clears provider capabilities when config details change', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
     updateMock.mockReturnValueOnce(chainMock([makeConfig({
-      providerConfig: { bucket: 'archive' },
+      providerConfig: {
+        bucket: 'archive',
+        accessKey: 'key',
+        secretKey: 'secret',
+      },
       providerCapabilities: null,
       providerCapabilitiesCheckedAt: null,
       updatedAt: new Date('2026-03-31T02:00:00.000Z'),
@@ -237,9 +356,65 @@ describe('backup config routes', () => {
     expect(res.status).toBe(200);
     const updateSet = updateMock.mock.results[0]?.value?.set;
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
-      providerConfig: { bucket: 'archive' },
+      providerConfig: { bucket: 'archive', accessKey: 'key', secretKey: 'secret' },
       providerCapabilities: null,
       providerCapabilitiesCheckedAt: null,
     }));
+  });
+
+  it('preserves existing secrets when clients send masked secret placeholders', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+        credentials: {
+          token: 'existing-nested-token',
+        },
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'archive',
+        region: 'us-east-1',
+        accessKey: 'existing-access-key',
+        secretKey: 'existing-secret-key',
+        credentials: {
+          token: 'existing-nested-token',
+        },
+      },
+      updatedAt: new Date('2026-03-31T02:00:00.000Z'),
+    })]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        details: {
+          bucket: 'archive',
+          secretKey: { redacted: true, hasSecret: true, masked: '********' },
+          credentials: {
+            token: '********',
+          },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: {
+        bucket: 'archive',
+        secretKey: 'existing-secret-key',
+        credentials: {
+          token: 'existing-nested-token',
+        },
+        accessKey: 'existing-access-key',
+      },
+    }));
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('existing-secret-key');
+    expect(JSON.stringify(body)).not.toContain('existing-nested-token');
   });
 });

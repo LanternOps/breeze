@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -75,8 +76,9 @@ func runDesktopHelper() {
 		socketPath = cfg.IPCSocketPath
 	}
 
-	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.AuthToken != "" {
-		helperToken := secmem.NewSecureString(cfg.AuthToken)
+	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
+		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
+		cfg.HelperAuthToken = ""
 		cfg.AuthToken = ""
 		authMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
@@ -118,7 +120,7 @@ func runDesktopHelper() {
 	}
 	log.Info("desktop helper startup probe", attrs...)
 
-	client := userhelper.NewWithOptions(socketPath, ipc.HelperRoleSystem, ipc.HelperBinaryDesktopHelper, contextFlag)
+	client := userhelper.NewWithOptions(socketPath, desktopHelperRole(), ipc.HelperBinaryDesktopHelper, contextFlag)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -131,6 +133,13 @@ func runDesktopHelper() {
 		log.Error("desktop helper error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func desktopHelperRole() string {
+	if runtime.GOOS == "darwin" {
+		return ipc.HelperRoleUser
+	}
+	return ipc.HelperRoleSystem
 }
 
 type probeOutput struct {

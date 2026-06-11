@@ -72,7 +72,7 @@ export interface ReliabilityListItem {
   siteId: string;
   hostname: string;
   osType: 'windows' | 'macos' | 'linux';
-  status: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating';
+  status: 'online' | 'offline' | 'maintenance' | 'decommissioned' | 'quarantined' | 'updating' | 'pending';
   reliabilityScore: number;
   trendDirection: ReliabilityTrendDirection;
   trendConfidence: number;

@@ -8,11 +8,21 @@ import {
   isPasswordStrong,
   createTokenPair,
   rateLimiter,
-  getRedis
+  getRedis,
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily
 } from '../../services';
 import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
+import { isHosted } from '../../config/env';
+import type { PartnerStatus } from '../../db/schema/orgs';
 import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
+import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
+import { captureException } from '../../services/sentry';
+import { generateVerificationToken } from '../../services/emailVerification';
+import { getEmailService } from '../../services/email';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
@@ -85,18 +95,54 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
   return runWithSystemDbAccess(async () => {
 
-    // Block registration until any partner admin has completed initial setup.
-    // We check partner_users + users rather than a hardcoded email because the
-    // seeded admin may have changed their email during the setup wizard.
-    const [setupAdmin] = await db
-      .select({ setupCompletedAt: users.setupCompletedAt })
-      .from(users)
-      .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
-      .where(sql`${users.setupCompletedAt} IS NOT NULL`)
-      .limit(1);
+    // Self-hosted single-tenant installs need the seeded admin to finish
+    // setup before strangers can create partners. SaaS deployments
+    // (IS_HOSTED=true) skip the gate so the partner table can
+    // bootstrap from an empty state.
+    if (isHosted()) {
+      // Awaited so a DB-write failure surfaces here with full context, rather
+      // than orphaning a context-less captureException out of the request scope.
+      // Signup still proceeds on failure — these events are low-volume and
+      // gating user signup on audit-table availability would be heavy.
+      const bypassDetails = {
+        email: email.toLowerCase(),
+        companyName,
+        reason: 'mcp-bootstrap-enabled',
+      };
+      try {
+        await createAuditLog({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'register-partner.setup-admin-gate-bypass',
+          resourceType: 'partner',
+          details: bypassDetails,
+          ipAddress: getTrustedClientIpOrUndefined(c),
+          userAgent: c.req.header('user-agent'),
+          result: 'success',
+        });
+      } catch (auditErr) {
+        console.error('[register-partner] bypass audit-log write failed', {
+          error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+          stack: auditErr instanceof Error ? auditErr.stack : undefined,
+          ...bypassDetails,
+          ip: getTrustedClientIpOrUndefined(c),
+        });
+        captureException(auditErr, c);
+      }
+      // eslint-disable-next-line no-console
+      console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
+    } else {
+      const [setupAdmin] = await db
+        .select({ setupCompletedAt: users.setupCompletedAt })
+        .from(users)
+        .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .where(sql`${users.setupCompletedAt} IS NOT NULL`)
+        .limit(1);
 
-    if (!setupAdmin) {
-      return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+      if (!setupAdmin) {
+        return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
+      }
     }
 
     // Rate limit registration - stricter for partner registration
@@ -129,6 +175,15 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // Hash password before transaction (CPU-intensive, don't hold tx open)
     const passwordHash = await hashPassword(password);
 
+    type RegisterPhase =
+      | 'create-partner'
+      | 'post-create-fetch'
+      | 'token-creation'
+      | 'hook-dispatch'
+      | 'response-build';
+    let phase: RegisterPhase = 'create-partner';
+    let partnerIdForLog: string | undefined;
+
     try {
       // Atomic creation of partner, role, user, partner-user link, org, site.
       // Slug generation + uniqueness loop now live inside the service so the
@@ -139,7 +194,11 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         adminName: name,
         passwordHash,
         origin: { mcp: false },
+        status: isHosted() ? 'pending' : 'active',
       });
+      partnerIdForLog = result.partnerId;
+
+      phase = 'post-create-fetch';
 
       // Fetch the partner + user rows we need downstream (slug, plan, status,
       // billingEmail, mfa state). Kept outside the service so the service's
@@ -171,9 +230,17 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         throw new Error('Partner or user row missing after createPartner');
       }
 
+      phase = 'token-creation';
+
       // Token creation outside tx (doesn't need rollback)
       // MFA is vacuously satisfied when the user hasn't enrolled in MFA
       const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
+
+      // Auto-login from partner signup: mint a fresh refresh-token family so
+      // the first session inherits the same reuse-detection chain as a real
+      // /login. Skipping it here would leave brand-new partners' tokens
+      // outside the family-revocation envelope until their next manual login.
+      const registerFamilyId = await mintRefreshTokenFamily(newUser.id);
       const tokens = await createTokenPair({
         sub: newUser.id,
         email: newUser.email,
@@ -182,9 +249,57 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         partnerId: newPartner.id,
         scope: 'partner',
         mfa: mfaSatisfied
-      });
+      }, { refreshFam: registerFamilyId });
+
+      await bindRefreshJtiToFamily(tokens.refreshJti, registerFamilyId);
 
       setRefreshTokenCookie(c, tokens.refreshToken);
+
+      // Email verification — best-effort send. Failures must not fail the
+      // signup, but the result needs to be surfaced to the client so the
+      // UI can show a "we couldn't send the verification email — click to
+      // resend" banner instead of leaving the user waiting silently.
+      let verificationEmailSent = false;
+      try {
+        const rawToken = await generateVerificationToken({
+          partnerId: newPartner.id,
+          userId: newUser.id,
+          email: newUser.email,
+        });
+        const appBaseUrl = (
+          process.env.DASHBOARD_URL ||
+          process.env.PUBLIC_APP_URL ||
+          'http://localhost:4321'
+        ).replace(/\/$/, '');
+        const verificationUrl = `${appBaseUrl}/auth/verify-email?token=${encodeURIComponent(rawToken)}`;
+        const emailService = getEmailService();
+        if (emailService) {
+          await emailService.sendVerificationEmail({
+            to: newUser.email,
+            name: newUser.name,
+            verificationUrl,
+          });
+          verificationEmailSent = true;
+        } else {
+          // No email provider in production is a misconfiguration, not
+          // graceful degradation — capture so it's observable.
+          const err = new Error(
+            '[register-partner] Email service not configured; verification email skipped',
+          );
+          console.warn(err.message);
+          captureException(err, c);
+        }
+      } catch (verifyErr) {
+        console.error('[register-partner] verification email send failed', {
+          partnerId: newPartner.id,
+          userId: newUser.id,
+          error: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+        });
+        captureException(verifyErr, c);
+      }
+
+
+      phase = 'hook-dispatch';
 
       // Dispatch post-registration hook (external services can override status/redirect)
       const hookResponse = await dispatchHook('registration', newPartner.id, {
@@ -195,7 +310,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       // If hook overrides the partner status (e.g. to 'pending'), apply it
       const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
-      let effectiveStatus: string = newPartner.status;
+      let effectiveStatus: PartnerStatus = newPartner.status;
 
       if (hookResponse?.status && hookResponse.status !== newPartner.status) {
         if (!VALID_STATUSES.includes(hookResponse.status as any)) {
@@ -219,13 +334,38 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               .update(partners)
               .set(updateSet)
               .where(eq(partners.id, newPartner.id));
-            effectiveStatus = hookResponse.status;
+            effectiveStatus = hookResponse.status as PartnerStatus;
           } catch (statusErr) {
-            console.error(`[Registration] Failed to update partner ${newPartner.id} status to '${hookResponse.status}':`, statusErr instanceof Error ? statusErr.message : String(statusErr));
-            // Keep effectiveStatus at original value since DB update failed
+            console.error('[register-partner] hook-status update failed', {
+              partnerId: newPartner.id,
+              fromStatus: newPartner.status,
+              toStatus: hookResponse.status,
+              error: statusErr instanceof Error ? statusErr.message : String(statusErr),
+              stack: statusErr instanceof Error ? statusErr.stack : undefined,
+            });
+            // Returning the unchanged status to the client is a deliberate
+            // trade-off: surfacing a 500 here would partially undo a successful
+            // partner+user creation. The audit row below lets triage find
+            // partners whose effective status diverged from hook intent.
+            writeAuditEvent(c, {
+              orgId: null,
+              actorType: 'system',
+              action: 'register-partner.hook-status-update-failed',
+              resourceType: 'partner',
+              resourceId: newPartner.id,
+              resourceName: newPartner.name,
+              details: {
+                fromStatus: newPartner.status,
+                toStatus: hookResponse.status,
+              },
+              result: 'failure',
+              errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
+            });
           }
         }
       }
+
+      phase = 'response-build';
 
       // Only allow relative redirects from hooks to prevent open redirect
       const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
@@ -245,10 +385,16 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
+        verificationEmailSent,
         ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {
-      console.error('Partner registration error:', err instanceof Error ? err.message : String(err));
+      console.error('[register-partner] failed', {
+        phase,
+        partnerId: partnerIdForLog,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       return c.json({ error: 'Registration failed. Please try again.' }, 500);
     }
   });

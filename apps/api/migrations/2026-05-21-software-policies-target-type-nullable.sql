@@ -1,0 +1,21 @@
+-- Backport for 0040-software-policy-scope-deprecation.sql which is silently
+-- skipped on fresh installs.
+--
+-- Background: PR #249 ("Consolidate migrations") bundled the schema snapshot
+-- (0001-baseline.sql) with the same commit that introduced 0040. The runner
+-- treats migrations 0001-0065 as "already in the baseline" on fresh installs
+-- (autoMigrate.ts LEGACY_CUTOFF=65) and marks 0040 applied without running
+-- its SQL. However, 0001-baseline.sql:5731 still has
+--   target_type character varying(50) NOT NULL
+-- so the DROP NOT NULL from 0040 never takes effect on any fresh install
+-- after 2026-03-16.
+--
+-- Symptom: POST /api/v1/software-inventory/approve and POST /api/v1/software-policies
+-- both INSERT into software_policies without specifying target_type, so the
+-- DB rejects with "null value in column target_type violates not-null
+-- constraint" → 500 Internal Server Error (issues #807 and #808).
+--
+-- This migration re-runs the DROP NOT NULL post-LEGACY_CUTOFF so it actually
+-- executes. Idempotent: ALTER COLUMN ... DROP NOT NULL is a no-op when the
+-- column is already nullable.
+ALTER TABLE software_policies ALTER COLUMN target_type DROP NOT NULL;

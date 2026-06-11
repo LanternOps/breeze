@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   backupSnapshots,
@@ -15,7 +15,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
 import { enqueueRecoveryBootMediaBuild } from '../../jobs/recoveryBootMediaWorker';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getGithubReleasePageUrl } from '../../services/binarySource';
 import {
   BMR_BOOTSTRAP_VERSION,
@@ -78,6 +78,21 @@ const recoveryDownloadQuerySchema = z.object({
   path: z.string().min(1).max(4096),
 });
 
+async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+  if (!perms?.allowedSiteIds) return null;
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
+async function resolveAllowedSnapshotIds(orgId: string, allowedDeviceIds: string[]): Promise<string[]> {
+  if (allowedDeviceIds.length === 0) return [];
+  const snapshots = await db
+    .select({ id: backupSnapshots.id })
+    .from(backupSnapshots)
+    .where(and(eq(backupSnapshots.orgId, orgId), inArray(backupSnapshots.deviceId, allowedDeviceIds)));
+  return snapshots.map((snapshot) => snapshot.id);
+}
+
 type RecoveryDownloadTokenSource = 'query' | 'authorization' | 'x-recovery-token' | 'missing';
 
 function getSessionStatus(row: {
@@ -128,10 +143,6 @@ function extractBearerToken(headerValue: string | null | undefined): string | nu
 }
 
 function resolveRecoveryDownloadToken(c: any, queryToken?: string | null): { token: string | null; source: RecoveryDownloadTokenSource } {
-  if (queryToken && queryToken.trim()) {
-    return { token: queryToken.trim(), source: 'query' };
-  }
-
   const authHeader = extractBearerToken(c.req.header('authorization'));
   if (authHeader) {
     return { token: authHeader, source: 'authorization' };
@@ -142,7 +153,16 @@ function resolveRecoveryDownloadToken(c: any, queryToken?: string | null): { tok
     return { token: headerToken, source: 'x-recovery-token' };
   }
 
+  if (queryToken && queryToken.trim()) {
+    return { token: queryToken.trim(), source: 'query' };
+  }
+
   return { token: null, source: 'missing' };
+}
+
+function allowRecoveryQueryToken(): boolean {
+  const value = process.env.BMR_RECOVERY_ALLOW_QUERY_TOKEN?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
 function writeRecoveryDownloadAudit(
@@ -355,6 +375,36 @@ bmrRoutes.get(
     await expireTokenArtifacts(orgId);
 
     const query = c.req.valid('query');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+    if (query.deviceId && allowedDeviceIds && !allowedDeviceIds.includes(query.deviceId)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+    if (allowedDeviceIds && allowedDeviceIds.length === 0) {
+      return c.json({
+        data: [],
+        pagination: {
+          limit: query.limit,
+          offset: query.offset,
+          count: 0,
+        },
+      });
+    }
+    const allowedSnapshotIds = allowedDeviceIds ? await resolveAllowedSnapshotIds(orgId, allowedDeviceIds) : null;
+    if (query.snapshotId && allowedSnapshotIds && !allowedSnapshotIds.includes(query.snapshotId)) {
+      return c.json({ error: 'Device not found or access denied' }, 403);
+    }
+    if (allowedSnapshotIds && allowedSnapshotIds.length === 0) {
+      return c.json({
+        data: [],
+        pagination: {
+          limit: query.limit,
+          offset: query.offset,
+          count: 0,
+        },
+      });
+    }
+
     const rows = await db
       .select({
         id: recoveryTokens.id,
@@ -374,7 +424,9 @@ bmrRoutes.get(
           eq(recoveryTokens.orgId, orgId),
           query.status ? eq(recoveryTokens.status, query.status) : undefined,
           query.deviceId ? eq(recoveryTokens.deviceId, query.deviceId) : undefined,
-          query.snapshotId ? eq(recoveryTokens.snapshotId, query.snapshotId) : undefined
+          query.snapshotId ? eq(recoveryTokens.snapshotId, query.snapshotId) : undefined,
+          allowedDeviceIds ? inArray(recoveryTokens.deviceId, allowedDeviceIds) : undefined,
+          allowedSnapshotIds ? inArray(recoveryTokens.snapshotId, allowedSnapshotIds) : undefined
         )
       )
       .orderBy(desc(recoveryTokens.createdAt))
@@ -1272,6 +1324,18 @@ bmrPublicRoutes.get(
     await expireUnusedRecoveryTokens();
 
     const { token: queryToken, path } = c.req.valid('query');
+    if (queryToken?.trim() && !allowRecoveryQueryToken()) {
+      writeRecoveryDownloadAudit(c, {
+        orgId: null,
+        result: 'denied',
+        path,
+        tokenSource: 'query',
+        statusCode: 400,
+        reason: 'Recovery token query parameter is disabled',
+      });
+      return c.json({ error: 'Recovery token query parameter is disabled. Use Authorization: Bearer or X-Recovery-Token.' }, 400);
+    }
+
     const { token, source: tokenSource } = resolveRecoveryDownloadToken(c, queryToken);
     if (!token) {
       writeRecoveryDownloadAudit(c, {

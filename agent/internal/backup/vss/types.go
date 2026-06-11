@@ -21,7 +21,7 @@ var (
 type WriterStatus struct {
 	Name      string `json:"name"`
 	ID        string `json:"id"`
-	State     string `json:"state"`               // stable, failed, waiting, unknown
+	State     string `json:"state"` // stable, failed, waiting, unknown
 	LastError string `json:"lastError,omitempty"`
 }
 

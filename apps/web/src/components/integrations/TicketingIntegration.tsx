@@ -11,6 +11,7 @@ import {
   ArrowLeftRight
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
 
 type ProviderId = 'zendesk' | 'freshdesk' | 'servicenow';
 
@@ -254,7 +255,8 @@ export default function TicketingIntegration() {
         setLoadError(undefined);
         const response = await fetchWithAuth('/integrations/ticketing');
         if (!response.ok) {
-          throw new Error('Failed to load ticketing settings');
+          const errData = await response.json().catch(() => null);
+          throw new Error(extractApiError(errData, 'Failed to load ticketing settings'));
         }
         const data = await response.json();
         const payload = data.data ?? data;
@@ -343,8 +345,8 @@ export default function TicketingIntegration() {
         body: JSON.stringify(buildPayload())
       });
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Connection test failed');
+        const errorData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errorData, 'Connection test failed'));
       }
       const data = await response.json().catch(() => ({}));
       setTestStatus({
@@ -370,8 +372,8 @@ export default function TicketingIntegration() {
         body: JSON.stringify(buildPayload())
       });
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to save ticketing settings');
+        const errorData = await response.json().catch(() => null);
+        throw new Error(extractApiError(errorData, 'Failed to save ticketing settings'));
       }
       const data = await response.json().catch(() => ({}));
       setSaveStatus({

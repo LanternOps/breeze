@@ -7,17 +7,18 @@ import {
   Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { fetchWithAuth } from '../../stores/auth';
+import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
 import KnownGuestsSettings from './KnownGuestsSettings';
-import PartnerSecurityTab from './PartnerSecurityTab';
+import PartnerSecurityTab, { currentIpCovered } from './PartnerSecurityTab';
 import PartnerNotificationsTab from './PartnerNotificationsTab';
 import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
-import { showToast } from '../shared/Toast';
 import type {
   PartnerSettings,
   BusinessHoursPreset,
@@ -29,11 +30,14 @@ import type {
   InheritableEventLogSettings,
   InheritableDefaultSettings,
   InheritableBrandingSettings,
-  InheritableAiBudgetSettings
+  InheritableAiBudgetSettings,
+  InheritableRemoteAccessSettings,
+  IpAllowlistStatus
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, ActionError } from '@/lib/runAction';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'remoteAccess';
 
 type Partner = {
   id: string;
@@ -54,6 +58,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'defaults', label: 'Defaults' },
   { key: 'branding', label: 'Branding' },
   { key: 'aiBudgets', label: 'AI Budgets' },
+  { key: 'remoteAccess', label: 'Remote' },
 ];
 
 const TIMEZONES = [
@@ -87,6 +92,19 @@ function hasAnyValue(obj: object): boolean {
   return Object.values(obj).some(v => v !== undefined);
 }
 
+// Exported for unit-testing without mounting the full component.
+export async function runPartnerSave(
+  payload: Record<string, unknown>,
+  deps: { onUnauthorized: () => void }
+): Promise<Partner> {
+  return runAction<Partner>({
+    request: () => fetchWithAuth('/orgs/partners/me', { method: 'PATCH', body: JSON.stringify(payload) }),
+    successMessage: 'Partner settings saved',
+    errorFallback: 'Failed to save settings',
+    onUnauthorized: deps.onUnauthorized,
+  });
+}
+
 export default function PartnerSettingsPage() {
   const { currentPartnerId, isLoading: contextLoading, setPartner: setPartnerContext } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
@@ -108,6 +126,10 @@ export default function PartnerSettingsPage() {
   const [companyName, setCompanyName] = useState('');
   const [address, setAddress] = useState<NonNullable<PartnerSettings['address']>>({});
 
+  // IP allowlist status (drives "Add my current IP" + inactive banner)
+  const [ipStatus, setIpStatus] = useState<IpAllowlistStatus | null>(null);
+  const [ipStatusUnavailable, setIpStatusUnavailable] = useState(false);
+
   // Inheritable category state
   const [securityData, setSecurityData] = useState<InheritableSecuritySettings>({});
   const [notificationsData, setNotificationsData] = useState<InheritableNotificationSettings>({});
@@ -115,6 +137,7 @@ export default function PartnerSettingsPage() {
   const [defaultsData, setDefaultsData] = useState<InheritableDefaultSettings>({});
   const [brandingData, setBrandingData] = useState<InheritableBrandingSettings>({});
   const [aiBudgetsData, setAiBudgetsData] = useState<InheritableAiBudgetSettings>({});
+  const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
 
   const fetchPartner = useCallback(async () => {
     try {
@@ -151,6 +174,15 @@ export default function PartnerSettingsPage() {
       setDefaultsData(settings.defaults || {});
       setBrandingData(settings.branding || {});
       setAiBudgetsData(settings.aiBudgets || {});
+      setRemoteAccessData(settings.remoteAccessProviders || {});
+
+      // Best-effort: IP allowlist status for the editor (non-blocking). On
+      // failure we flag it explicitly so the editor can warn rather than
+      // silently hide the inactive banner / lockout confirmation.
+      fetchWithAuth('/orgs/partners/me/ip-allowlist/status')
+        .then(r => (r.ok ? r.json() : Promise.reject(new Error('status fetch failed'))))
+        .then((s: IpAllowlistStatus) => { setIpStatus(s); setIpStatusUnavailable(false); })
+        .catch(() => { setIpStatus(null); setIpStatusUnavailable(true); });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -166,70 +198,86 @@ export default function PartnerSettingsPage() {
     if (contextLoading) return;
     // No partner context in store yet. Try to seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
-    const token = useAuthStore.getState().tokens?.accessToken;
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        if (payload.scope === 'partner' && payload.partnerId) {
-          setPartnerContext(payload.partnerId as string);
-          return; // Re-render will follow with currentPartnerId set
-        }
-      } catch { /* ignore decode failures */ }
+    // getJwtClaims returns all-null on a missing/undecodable token, so the
+    // access-denied fall-through below covers those cases too.
+    const { scope, partnerId } = getJwtClaims();
+    if (scope === 'partner' && partnerId) {
+      setPartnerContext(partnerId);
+      return; // Re-render will follow with currentPartnerId set
     }
     setLoading(false); // JWT confirms non-partner scope; show access denied
   }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
 
   const handleSave = async () => {
+    setSaving(true);
+    setError(undefined);
+
+    const settings: Record<string, unknown> = {
+      timezone, dateFormat, timeFormat, language: 'en',
+      businessHours: {
+        preset: businessHoursPreset,
+        ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
+      },
+      contact: {
+        name: contactName || undefined,
+        email: contactEmail || undefined,
+        phone: contactPhone || undefined,
+        website: contactWebsite || undefined
+      },
+      address: {
+        street1: address.street1 || undefined,
+        street2: address.street2 || undefined,
+        city: address.city || undefined,
+        region: address.region || undefined,
+        postalCode: address.postalCode || undefined,
+        country: address.country || undefined,
+      }
+    };
+
+    // Always include all categories so clearing all fields removes locks
+    settings.security = securityData;
+    settings.notifications = notificationsData;
+    settings.eventLogs = eventLogsData;
+    settings.defaults = defaultsData;
+    settings.branding = brandingData;
+    settings.aiBudgets = aiBudgetsData;
+    settings.remoteAccessProviders = remoteAccessData;
+
+    const payload: Record<string, unknown> = { settings };
+    const trimmedName = companyName.trim();
+    if (trimmedName) payload.name = trimmedName;
+
+    // Lockout guard before saving a non-empty allowlist:
+    //  - status known and current IP not covered  -> precise warning
+    //  - status unavailable (fetch failed)         -> generic warning, since we
+    //    can't verify coverage and shouldn't silently skip the check
+    const nextList = securityData.ipAllowlist ?? [];
+    if (nextList.length > 0) {
+      const notCovered = ipStatus && !currentIpCovered(ipStatus.currentIp, nextList);
+      if (notCovered) {
+        const proceed = window.confirm(
+          'Your current IP is not in this allowlist. Saving may lock you out of the dashboard. Continue?'
+        );
+        if (!proceed) { setSaving(false); return; }
+      } else if (ipStatusUnavailable) {
+        const proceed = window.confirm(
+          'Couldn’t verify your current IP against this allowlist. If your IP isn’t covered, saving may lock you out. Continue?'
+        );
+        if (!proceed) { setSaving(false); return; }
+      }
+    }
+
     try {
-      setSaving(true);
-      setError(undefined);
-
-      const settings: Record<string, unknown> = {
-        timezone, dateFormat, timeFormat, language: 'en',
-        businessHours: {
-          preset: businessHoursPreset,
-          ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
-        },
-        contact: {
-          name: contactName || undefined,
-          email: contactEmail || undefined,
-          phone: contactPhone || undefined,
-          website: contactWebsite || undefined
-        },
-        address: {
-          street1: address.street1 || undefined,
-          street2: address.street2 || undefined,
-          city: address.city || undefined,
-          region: address.region || undefined,
-          postalCode: address.postalCode || undefined,
-          country: address.country || undefined,
-        }
-      };
-
-      // Always include all categories so clearing all fields removes locks
-      settings.security = securityData;
-      settings.notifications = notificationsData;
-      settings.eventLogs = eventLogsData;
-      settings.defaults = defaultsData;
-      settings.branding = brandingData;
-      settings.aiBudgets = aiBudgetsData;
-
-      const payload: Record<string, unknown> = { settings };
-      const trimmedName = companyName.trim();
-      if (trimmedName) payload.name = trimmedName;
-
-      const response = await fetchWithAuth('/orgs/partners/me', {
-        method: 'PATCH',
-        body: JSON.stringify(payload)
+      const updated = await runPartnerSave(payload, {
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
-
-      if (!response.ok) throw new Error('Failed to save settings');
-
-      const updated = await response.json();
       setPartner(updated);
-      showToast({ message: 'Partner settings saved', type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to save settings');
+      }
+      // ActionError non-401: runAction already toasted
     } finally {
       setSaving(false);
     }
@@ -459,7 +507,7 @@ export default function PartnerSettingsPage() {
       {/* Inheritable Settings Tabs */}
       {activeTab === 'security' && (
         <section className="rounded-lg border bg-card p-6 shadow-sm">
-          <PartnerSecurityTab data={securityData} onChange={setSecurityData} />
+          <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
         </section>
       )}
 
@@ -490,6 +538,12 @@ export default function PartnerSettingsPage() {
       {activeTab === 'aiBudgets' && (
         <section className="rounded-lg border bg-card p-6 shadow-sm">
           <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
+        </section>
+      )}
+
+      {activeTab === 'remoteAccess' && (
+        <section className="rounded-lg border bg-card p-6 shadow-sm">
+          <PartnerRemoteAccessTab data={remoteAccessData} onChange={setRemoteAccessData} />
         </section>
       )}
     </div>

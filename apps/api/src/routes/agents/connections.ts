@@ -7,6 +7,25 @@ import { devices, deviceConnections } from '../../db/schema';
 import { captureException } from '../../services/sentry';
 import { submitConnectionsSchema } from './schemas';
 
+// Hard caps that match the device_connections column widths. Agent
+// collectors emit kernel-bound values (TCP states, /proc comm names) that
+// normally fit, but older or non-darwin agents skip sanitization and can
+// occasionally egress oversized strings — see #504. Truncating here keeps
+// the insert from blowing up with 22001 "value too long for type" and
+// removes an entire class of 500s regardless of agent version.
+const STATE_MAX = 20;
+const PROCESS_NAME_MAX = 255;
+const ADDR_MAX = 128; // local_addr / remote_addr are text; cap for sanity (e.g. IPv6 zone IDs)
+
+function clampNullable(value: string | null | undefined, max: number): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+function clampRequired(value: string, max: number): string {
+  return value.length > max ? value.slice(0, max) : value;
+}
+
 export const connectionsRoutes = new Hono();
 
 connectionsRoutes.put(
@@ -40,13 +59,13 @@ connectionsRoutes.put(
             deviceId: device.id,
             orgId: device.orgId,
             protocol: conn.protocol,
-            localAddr: conn.localAddr,
+            localAddr: clampRequired(conn.localAddr, ADDR_MAX),
             localPort: conn.localPort,
-            remoteAddr: conn.remoteAddr || null,
+            remoteAddr: clampNullable(conn.remoteAddr, ADDR_MAX),
             remotePort: conn.remotePort || null,
-            state: conn.state || null,
+            state: clampNullable(conn.state, STATE_MAX),
             pid: conn.pid || null,
-            processName: conn.processName || null,
+            processName: clampNullable(conn.processName, PROCESS_NAME_MAX),
             updatedAt: now
           }))
         );

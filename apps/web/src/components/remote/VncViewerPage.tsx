@@ -1,14 +1,54 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, X } from 'lucide-react';
 import VncViewer from './VncViewer';
 import { fetchWithAuth } from '@/stores/auth';
 
 interface Props {
   tunnelId: string;
-  wsUrl: string;
 }
 
-export default function VncViewerPage({ tunnelId, wsUrl }: Props) {
+function buildTunnelWsUrl(tunnelId: string, ticket: string): string {
+  const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
+  const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
+  const wsHost = apiUrl.replace(/^https?:\/\//, '');
+  return `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnelId}/ws?ticket=${encodeURIComponent(ticket)}`;
+}
+
+export default function VncViewerPage({ tunnelId }: Props) {
+  const [wsUrl, setWsUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const mintTicket = async () => {
+      try {
+        const res = await fetchWithAuth(`/tunnels/${tunnelId}/ws-ticket`, { method: 'POST' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || 'Failed to obtain VNC tunnel ticket');
+        }
+        const body = await res.json();
+        const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
+        if (!ticket) {
+          throw new Error('Invalid tunnel ticket response');
+        }
+        if (!cancelled) {
+          setWsUrl(buildTunnelWsUrl(tunnelId, ticket));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to connect to VNC tunnel');
+        }
+      }
+    };
+
+    mintTicket();
+    return () => {
+      cancelled = true;
+    };
+  }, [tunnelId]);
+
   const handleDisconnect = useCallback(() => {
     fetchWithAuth(`/tunnels/${tunnelId}`, { method: 'DELETE' }).catch((err) => {
       console.error(`[VncViewerPage] Failed to close tunnel ${tunnelId}:`, err);
@@ -45,12 +85,22 @@ export default function VncViewerPage({ tunnelId, wsUrl }: Props) {
         </div>
       </div>
       <div className="flex-1 min-h-0">
-        <VncViewer
-          wsUrl={wsUrl}
-          tunnelId={tunnelId}
-          onDisconnect={handleDisconnect}
-          className="h-full"
-        />
+        {error ? (
+          <div className="flex h-full items-center justify-center text-sm text-red-300">
+            {error}
+          </div>
+        ) : wsUrl ? (
+          <VncViewer
+            wsUrl={wsUrl}
+            tunnelId={tunnelId}
+            onDisconnect={handleDisconnect}
+            className="h-full"
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-gray-400">
+            Connecting...
+          </div>
+        )}
       </div>
     </div>
   );

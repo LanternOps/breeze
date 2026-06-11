@@ -1,25 +1,40 @@
-import { useMemo, useState, useEffect, useRef, type ComponentType } from 'react';
+import { useMemo, useState, useEffect, useRef, useCallback, type ComponentType } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
 
+// Statically import Monaco's editor stylesheet so Astro bundles it into the
+// route's <head> as a hashed <link>. @monaco-editor/loader otherwise injects
+// this CSS into <head> at runtime, and Astro's View-Transition document swap
+// rebuilds <head> from the new page's server markup — dropping that runtime
+// injection and leaving the editor's hidden `.inputarea` <textarea> rendered as
+// a bare unstyled white box on SPA navigation (issue #1186). A build-time <link>
+// is part of every editor route's server markup, so it survives the swap. The
+// stylesheet is self-contained (all its url() assets — the codicon font and a
+// few images — are inline data: URIs), so Vite processes it without external
+// asset resolution. CSS-only — does not pull the Monaco JS wrapper into the
+// static bundle (see lib/monacoLoader.ts).
+import 'monaco-editor/min/vs/editor/editor.main.css';
+
 import ScriptAiPanel from './ScriptAiPanel';
 import CollapsibleSection from './CollapsibleSection';
 import { cn } from '@/lib/utils';
+import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
 import type { OSType } from './ScriptList';
 import {
   scriptSchema, languageOptions, categoryOptions,
-  runAsOptions, parameterTypeOptions,
-  type ScriptFormValues,
+  runAsOptions, parameterTypeOptions, severityOptions,
+  rowsToMapping,
+  type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
 
-export type { ScriptFormValues, ScriptParameter } from './ScriptFormSchema';
+export type { ScriptFormValues, ScriptParameter, ScriptSubmitValues } from './ScriptFormSchema';
 
 type ScriptFormProps = {
-  onSubmit?: (values: ScriptFormValues) => void | Promise<void>;
+  onSubmit?: (values: ScriptSubmitValues) => void | Promise<void>;
   onCancel?: () => void;
   defaultValues?: Partial<ScriptFormValues>;
   submitLabel?: string;
@@ -44,12 +59,36 @@ export default function ScriptForm({
   // on SPA back-navigation (e.g. scripts list → edit → list → edit).
   const [MonacoEditor, setMonacoEditor] = useState<ComponentType<EditorProps> | null>(null);
   const [editorLoadError, setEditorLoadError] = useState<string | null>(null);
+
+  // Tear down the current Monaco instance, tolerating a throw from dispose()
+  // (double-dispose, or a Monaco-internal edge case). A swallowed-but-logged
+  // failure here must not abort the editor reload below or leave a stale ref
+  // that the astro:page-load layout() handler would then call into. See #1186.
+  const disposeEditor = useCallback(() => {
+    try {
+      editorInstanceRef.current?.dispose();
+    } catch (err) {
+      console.error('Failed to dispose previous Monaco editor:', err);
+    } finally {
+      editorInstanceRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const loadEditor = () => {
-      editorInstanceRef.current = null;
+      // Dispose the previous instance before reloading. On a View-Transition
+      // swap Astro replaces the document without unmounting this React tree, so
+      // the wrapper's own dispose never fires — without this the orphaned editor
+      // (and its listeners/DOM) leaks on every SPA back-nav (issue #1186).
+      disposeEditor();
       setEditorLoadError(null);
-      import('@monaco-editor/react')
+      // Point Monaco's loader at our self-hosted /monaco/vs assets before the
+      // editor module initialises it, so it never reaches cdn.jsdelivr.net
+      // (which the CSP no longer allows). Chained so config() always lands
+      // before the editor first inits the loader. See #1023.
+      configureMonacoLoader()
+        .then(() => import('@monaco-editor/react'))
         .then((mod) => {
           if (!cancelled) setMonacoEditor(() => mod.default);
         })
@@ -65,8 +104,9 @@ export default function ScriptForm({
     return () => {
       cancelled = true;
       document.removeEventListener('astro:after-swap', loadEditor);
+      disposeEditor();
     };
-  }, []);
+  }, [disposeEditor]);
 
   // Force editor relayout after View Transition navigation completes
   useEffect(() => {
@@ -98,6 +138,7 @@ export default function ScriptForm({
       parameters: [],
       timeoutSeconds: 300,
       runAs: 'system',
+      exitCodeSeverityMapping: [],
       ...defaultValues
     }
   });
@@ -107,11 +148,20 @@ export default function ScriptForm({
     name: 'parameters'
   });
 
+  const {
+    fields: severityFields,
+    append: appendSeverity,
+    remove: removeSeverity,
+  } = useFieldArray({ control, name: 'exitCodeSeverityMapping' });
+
+  const [severityOpen, setSeverityOpen] = useState(false);
+
   // Auto-expand sections when editing a script that has existing data
   useEffect(() => {
     if (defaultValues?.parameters && defaultValues.parameters.length > 0) setParamsOpen(true);
     if (defaultValues?.timeoutSeconds !== undefined && defaultValues.timeoutSeconds !== 300) setSettingsOpen(true);
     if (defaultValues?.runAs !== undefined && defaultValues.runAs !== 'system') setSettingsOpen(true);
+    if (defaultValues?.exitCodeSeverityMapping && defaultValues.exitCodeSeverityMapping.length > 0) setSeverityOpen(true);
   }, [defaultValues]);
 
   const { panelOpen, togglePanel } = useScriptAiStore();
@@ -217,7 +267,12 @@ export default function ScriptForm({
         // onSubmit so it's true before navigateTo dispatches the event.
         skipGuardRef.current = true;
         try {
-          await onSubmit?.(values);
+          const { exitCodeSeverityMapping, ...rest } = values;
+          const submitValues: ScriptSubmitValues = {
+            ...rest,
+            exitCodeSeverityMapping: rowsToMapping(exitCodeSeverityMapping),
+          };
+          await onSubmit?.(submitValues);
         } catch {
           // Save failed — re-arm the nav guard so user doesn't lose work
           skipGuardRef.current = false;
@@ -476,6 +531,79 @@ export default function ScriptForm({
               {watch('runAs') === 'elevated' && ' Uses sudo on macOS/Linux, runas on Windows.'}
             </p>
           </div>
+        </div>
+      </CollapsibleSection>
+
+      {/* Exit-code severity mapping */}
+      <CollapsibleSection
+        title="Exit Code Severity"
+        open={severityOpen}
+        onToggle={() => setSeverityOpen(prev => !prev)}
+        badge={severityFields.length > 0 ? (
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{severityFields.length}</span>
+        ) : undefined}
+      >
+        <div className="space-y-3">
+          {severityFields.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              Map specific exit codes to alert severities. When the script returns one of these codes,
+              an alert is raised at the configured severity. Choose <em>Suppress alert</em> to mark a
+              code as informational (no incident raised). Exit codes you don&apos;t list here use the
+              default outcome handling.
+            </p>
+          )}
+          {severityFields.map((field, index) => (
+            <div key={field.id} className="flex items-start gap-3 rounded-md border bg-muted/20 p-3">
+              <div className="grid flex-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Exit code</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    placeholder="e.g. 1"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    {...register(`exitCodeSeverityMapping.${index}.exitCode`)}
+                  />
+                  {errors.exitCodeSeverityMapping?.[index]?.exitCode && (
+                    <p className="text-xs text-destructive">
+                      {errors.exitCodeSeverityMapping[index]?.exitCode?.message}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Severity</label>
+                  <select
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    {...register(`exitCodeSeverityMapping.${index}.severity`)}
+                  >
+                    {severityOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Suppress alert &mdash; exit code is treated as informational, no incident raised.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeSeverity(index)}
+                className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive"
+                title="Remove mapping"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => appendSeverity({ exitCode: '', severity: 'medium' })}
+            className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition"
+          >
+            <Plus className="h-4 w-4" />
+            Add exit code
+          </button>
         </div>
       </CollapsibleSection>
 

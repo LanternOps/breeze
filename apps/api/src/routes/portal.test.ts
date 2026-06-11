@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { portalRoutes } from './portal';
 
-const { sendPasswordResetMock } = vi.hoisted(() => ({
-  sendPasswordResetMock: vi.fn().mockResolvedValue(undefined)
+const { sendPasswordResetMock, createTicketMock } = vi.hoisted(() => ({
+  sendPasswordResetMock: vi.fn().mockResolvedValue(undefined),
+  createTicketMock: vi.fn()
 }));
 
 vi.mock('nanoid', () => ({
@@ -45,6 +46,20 @@ vi.mock('../db', () => ({
         where: vi.fn(() => Promise.resolve())
       }))
     }))
+  }
+}));
+
+// Portal ticket creation routes through the ticket service (stamps partner_id,
+// allocates internal numbers, emits lifecycle events) — mock the service here.
+vi.mock('../services/ticketService', () => ({
+  createTicket: createTicketMock,
+  TicketServiceError: class TicketServiceError extends Error {
+    status: number;
+    constructor(message: string, status = 400) {
+      super(message);
+      this.name = 'TicketServiceError';
+      this.status = status;
+    }
   }
 }));
 
@@ -459,8 +474,7 @@ describe('portal routes', () => {
           mockSelectLimit([
             portalUser
           ]) as any
-        )
-        .mockReturnValueOnce(mockSelectLimit([]) as any);
+        );
 
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -468,22 +482,16 @@ describe('portal routes', () => {
         })
       } as any);
 
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([
-            {
-              id: 'ticket-1',
-              ticketNumber: 'TICKET-1',
-              subject: 'Need help',
-              description: 'Issue details',
-              status: 'open',
-              priority: 'normal',
-              createdAt: new Date(),
-              updatedAt: new Date()
-            }
-          ])
-        })
-      } as any);
+      createTicketMock.mockResolvedValueOnce({
+        id: 'ticket-1',
+        ticketNumber: 'TICKET-1',
+        subject: 'Need help',
+        description: 'Issue details',
+        status: 'open',
+        priority: 'normal',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
 
       const token = await loginUser();
 
@@ -500,6 +508,19 @@ describe('portal routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.ticket.ticketNumber).toBe('TICKET-1');
+
+      // Creation must flow through the ticket service with portal provenance.
+      expect(createTicketMock).toHaveBeenCalledTimes(1);
+      expect(createTicketMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orgId: portalUser.orgId,
+          subject: 'Need help',
+          source: 'portal',
+          submittedBy: portalUser.id,
+          submitterEmail: portalUser.email
+        }),
+        expect.objectContaining({ userId: portalUser.id })
+      );
     });
   });
 

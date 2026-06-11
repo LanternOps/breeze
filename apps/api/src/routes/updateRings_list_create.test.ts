@@ -278,6 +278,35 @@ describe('updateRings routes', () => {
       expect(body.name).toBe('Test Ring');
     });
 
+    it('should resolve orgId from the query string for partner users (fetchWithAuth injects it there)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: () => true
+        });
+        return next();
+      });
+
+      const created = makeRing();
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([created])
+        })
+      } as any);
+
+      const res = await app.request(`/update-rings?orgId=${ORG_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Test Ring', deferralDays: 7, ringOrder: 1 })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
     it('should validate required fields (missing name)', async () => {
       const res = await app.request('/update-rings', {
         method: 'POST',

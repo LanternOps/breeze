@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
@@ -13,6 +13,7 @@ import {
 import { scheduleCisRemediation, scheduleCisRemediationWithResult, scheduleCisScan } from '../jobs/cisJobs';
 import { captureException } from '../services/sentry';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { canAccessSite, type UserPermissions } from '../services/permissions';
 import { extractFailedCheckIds, normalizeCisSchedule } from '../services/cisHardening';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveOrgId } from './networkShared';
@@ -101,7 +102,29 @@ function mapResultRow(row: typeof cisBaselineResults.$inferSelect) {
   };
 }
 
-async function assertDeviceAccess(deviceId: string, auth: AuthContext) {
+/**
+ * Sentinel returned when org-scope passes but the caller's site allowlist
+ * excludes the device's site. Routes treat this as 403 (site denied),
+ * distinct from `null` 404 (org-denied / missing) — mirrors the convention
+ * in `routes/devices/helpers.ts` (`SITE_ACCESS_DENIED`).
+ */
+const CIS_SITE_DENIED = Symbol('CIS_SITE_DENIED');
+
+/**
+ * Per-device chokepoint for CIS hardening routes. Combines org-scope (via
+ * `auth.orgCondition`) and site-scope (via `canAccessSite` on `c.get('permissions')`).
+ *
+ * Returns:
+ *   - the device row when accessible
+ *   - `null` when the device is missing OR caller's org-scope rejects it (→ 404)
+ *   - `CIS_SITE_DENIED` when org passes but site allowlist excludes it (→ 403)
+ *
+ * Site is an app-layer concept only — Postgres RLS does not defend it, so
+ * partner-scope users restricted to a subset of sites within an org would
+ * otherwise be able to query/remediate devices outside their site allowlist.
+ * See PR #864/#868 for the SP2 launch-readiness sweep this fix continues.
+ */
+async function assertDeviceAccess(c: Context, deviceId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) {
@@ -114,12 +137,22 @@ async function assertDeviceAccess(deviceId: string, auth: AuthContext) {
       orgId: devices.orgId,
       osType: devices.osType,
       hostname: devices.hostname,
+      siteId: devices.siteId,
     })
     .from(devices)
     .where(and(...conditions))
     .limit(1);
 
-  return device ?? null;
+  if (!device) return null;
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds) {
+    if (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId)) {
+      return CIS_SITE_DENIED;
+    }
+  }
+
+  return device;
 }
 
 cisHardeningRoutes.use('*', authMiddleware);
@@ -303,7 +336,7 @@ cisHardeningRoutes.post(
 
     if (Array.isArray(body.deviceIds) && body.deviceIds.length > 0) {
       const scopedDevices = await db
-        .select({ id: devices.id })
+        .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(
           inArray(devices.id, body.deviceIds),
@@ -313,6 +346,21 @@ cisHardeningRoutes.post(
 
       if (scopedDevices.length !== body.deviceIds.length) {
         return c.json({ error: 'One or more deviceIds do not belong to the baseline org/os scope' }, 400);
+      }
+
+      // Site-scope check: partner-scope users restricted to a subset of sites
+      // must not be able to schedule a CIS scan against devices in other sites
+      // within the same org. RLS does not defend the site axis.
+      const permissions = c.get('permissions') as UserPermissions | undefined;
+      if (permissions?.allowedSiteIds) {
+        const deniedDeviceIds = scopedDevices
+          .filter((device) =>
+            typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId)
+          )
+          .map((device) => device.id);
+        if (deniedDeviceIds.length > 0) {
+          return c.json({ error: 'Access to one or more device sites denied', deniedDeviceIds }, 403);
+        }
       }
     }
 
@@ -363,6 +411,27 @@ cisHardeningRoutes.get(
     }
     if (query.baselineId) conditions.push(eq(cisBaselineResults.baselineId, query.baselineId));
     if (query.osType) conditions.push(eq(cisBaselines.osType, query.osType));
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      if (permissions.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          summary: {
+            devicesAudited: 0,
+            averageScore: 100,
+            failingDevices: 0,
+            compliantDevices: 0,
+          },
+          pagination: {
+            limit: query.limit ?? 200,
+            offset: query.offset ?? 0,
+            total: 0,
+          },
+        });
+      }
+      conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
+    }
 
     const rankedResults = db
       .select({
@@ -519,7 +588,10 @@ cisHardeningRoutes.get(
     const deviceId = c.req.param('deviceId');
     const query = c.req.valid('query');
 
-    const device = await assertDeviceAccess(deviceId, auth);
+    const device = await assertDeviceAccess(c, deviceId, auth);
+    if (device === CIS_SITE_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -565,7 +637,10 @@ cisHardeningRoutes.post(
     const body = c.req.valid('json');
     const requestedCheckIds = Array.from(new Set(body.checkIds));
 
-    const device = await assertDeviceAccess(body.deviceId, auth);
+    const device = await assertDeviceAccess(c, body.deviceId, auth);
+    if (device === CIS_SITE_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
@@ -887,6 +962,27 @@ cisHardeningRoutes.get(
     if (query.approvalStatus) conditions.push(eq(cisRemediationActions.approvalStatus, query.approvalStatus));
     if (query.deviceId) conditions.push(eq(cisRemediationActions.deviceId, query.deviceId));
     if (query.baselineId) conditions.push(eq(cisRemediationActions.baselineId, query.baselineId));
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      if (query.deviceId) {
+        const device = await assertDeviceAccess(c, query.deviceId, auth);
+        if (!device || device === CIS_SITE_DENIED) {
+          return c.json({ error: 'Device not found or access denied' }, 403);
+        }
+      }
+      if (permissions.allowedSiteIds.length === 0) {
+        return c.json({
+          data: [],
+          pagination: {
+            limit: query.limit ?? 100,
+            offset: query.offset ?? 0,
+            total: 0,
+          },
+        });
+      }
+      conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
+    }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = query.limit ?? 100;

@@ -6,9 +6,14 @@ import { scriptRoutes } from './scripts';
 const SCRIPT_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SCRIPT_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 // Mock all services
 vi.mock('../services', () => ({}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn()
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -81,11 +86,24 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (c.req.header('x-site-restricted') === 'true') {
+      c.set('permissions', {
+        permissions: [{ resource, action }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-123',
+        scope: 'organization',
+        allowedSiteIds: ['site-allowed']
+      });
+    }
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';
+import { writeRouteAudit } from '../services/auditEvents';
 
 describe('scripts routes', () => {
   let app: Hono;
@@ -255,7 +273,9 @@ describe('scripts routes', () => {
     expect(body.error).toContain('active executions');
   });
 
-  it('should delete scripts without active executions', async () => {
+  // Mocks the script-found SELECT then the zero-active-executions count SELECT
+  // that the DELETE handler runs before deleting.
+  function mockDeletePreflight(): void {
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -274,9 +294,25 @@ describe('scripts routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 0 }])
         })
       } as any);
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
-    } as any);
+  }
+
+  // Builds the db.update mock chain (set -> where -> returning) used by the
+  // soft-delete handler, resolving the returning() call with `returnedRows`.
+  function mockSoftDeleteUpdate(returnedRows: Array<{ id: string }>) {
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(returnedRows)
+      })
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+    return setMock;
+  }
+
+  it('should soft-delete (not hard-delete) so scripts with execution history can be removed', async () => {
+    // Script exists, and the active-execution guard sees zero ACTIVE executions
+    // (completed/failed executions may still exist and hold FK references).
+    mockDeletePreflight();
+    const setMock = mockSoftDeleteUpdate([{ id: SCRIPT_ID_1 }]);
 
     const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
       method: 'DELETE',
@@ -286,6 +322,32 @@ describe('scripts routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+
+    // Must be a soft delete: UPDATE the row (set deletedAt), never a hard DELETE
+    // — a hard DELETE throws an FK violation when execution history exists.
+    expect(db.update).toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedAt: expect.any(Date) })
+    );
+  });
+
+  it('should return 404 (not a false success) when the soft-delete UPDATE matches zero rows', async () => {
+    // Simulates losing a race with a concurrent delete: the row is gone/already
+    // soft-deleted by the time the UPDATE runs, so returning() yields no rows.
+    mockDeletePreflight();
+    mockSoftDeleteUpdate([]);
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.success).toBeUndefined();
+    // No audit entry should be written for a delete that changed nothing.
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it.skip('should execute a script against multiple devices', async () => {
@@ -411,6 +473,141 @@ describe('scripts routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
+  });
+
+  it('denies execution details when the device is outside the caller site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: EXECUTION_ID,
+                scriptId: SCRIPT_ID_1,
+                deviceId: 'device-1',
+                status: 'completed',
+                deviceOrgId: ORG_ID,
+                deviceSiteId: 'site-denied'
+              }])
+            })
+          })
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Access to this site denied');
+  });
+
+  it('denies cancelling an execution when the device is outside the caller site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-denied'
+            }])
+          })
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Access to this site denied');
+    // Must reject before mutating
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('allows cancelling an execution when the device is within the caller site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-allowed'
+            }])
+          })
+        })
+      })
+    } as any);
+    vi.mocked(db.update)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'cancelled' }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('cancels an execution unchanged when the caller has no site restriction', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: EXECUTION_ID,
+              status: 'running',
+              deviceId: 'device-1',
+              deviceOrgId: ORG_ID,
+              deviceSiteId: 'site-denied'
+            }])
+          })
+        })
+      })
+    } as any);
+    vi.mocked(db.update)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'cancelled' }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
   });
 
   it('should validate create payload', async () => {

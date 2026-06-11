@@ -4,7 +4,7 @@
  * React refs/state are threaded in via WebRTCDeps callbacks.
  */
 
-import { createWebRTCSession, AgentSessionError, type AuthenticatedConnectionParams } from '../webrtc';
+import { createWebRTCSession, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../webrtc';
 import type { TransportSession } from './types';
 import { capabilitiesFor } from './types';
 
@@ -188,6 +188,12 @@ export async function connectWebRTC(
     // no encoder), propagate it so the viewer shows the real error instead
     // of silently falling back to WebSocket which will also fail.
     if (err instanceof AgentSessionError) {
+      throw err;
+    }
+    // A SessionEndedError means the server rejected the session as ended
+    // (401). Propagate it so the reconnect loop stops retrying the same
+    // dead sessionId and the viewer shows a terminal "session ended" state.
+    if (err instanceof SessionEndedError) {
       throw err;
     }
     console.warn('WebRTC connection failed:', err);

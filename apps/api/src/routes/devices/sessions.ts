@@ -4,8 +4,9 @@ import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { deviceSessions } from '../../db/schema';
-import { authMiddleware, requireScope } from '../../middleware/auth';
-import { getDeviceWithOrgCheck } from './helpers';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
 export const sessionsRoutes = new Hono();
 
@@ -34,12 +35,16 @@ function parsePositiveInt(value: string | undefined, fallback: number, min: numb
 sessionsRoutes.get(
   '/:id/sessions/active',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -78,6 +83,7 @@ sessionsRoutes.get(
 sessionsRoutes.get(
   '/:id/sessions/history',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
   zValidator('query', historyQuerySchema),
   async (c) => {
@@ -85,7 +91,10 @@ sessionsRoutes.get(
     const { id: deviceId } = c.req.valid('param');
     const query = c.req.valid('query');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
@@ -135,6 +144,7 @@ sessionsRoutes.get(
 sessionsRoutes.get(
   '/:id/sessions/experience',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
   zValidator('query', experienceQuerySchema),
   async (c) => {
@@ -142,7 +152,10 @@ sessionsRoutes.get(
     const { id: deviceId } = c.req.valid('param');
     const query = c.req.valid('query');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }

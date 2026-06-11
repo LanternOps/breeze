@@ -27,6 +27,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 
 vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
+  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed-${key}`]),
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
 }));
 
@@ -37,6 +38,22 @@ vi.mock('../services/remoteAccessPolicy', () => ({
     policyName: null,
     policyId: null,
   }),
+}));
+
+// Bypass tenant active-status checks (queries organizations/partners which the
+// simple db mock can't reasonably emulate). Real check runs in authMiddleware
+// after SR-001..SR-024 hardening landed (see services/tenantStatus.ts).
+vi.mock('../services/tenantStatus', () => ({
+  TenantInactiveError: class TenantInactiveError extends Error {},
+  assertActiveTenantContext: vi.fn(async () => {}),
+  getActivePartner: vi.fn(async (id: string) => ({ id })),
+  getActiveOrgTenant: vi.fn(async (id: string) => ({ orgId: id, partnerId: 'test-partner-id' })),
+}));
+
+// Bypass token revocation lookup (Redis-backed).
+vi.mock('../services/tokenRevocation', () => ({
+  isUserTokenRevoked: vi.fn(async () => false),
+  revokeUserTokens: vi.fn(async () => {}),
 }));
 
 vi.mock('../db', () => ({
@@ -68,7 +85,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  users: { id: 'id', email: 'email', name: 'name', status: 'status' },
+  users: { id: 'id', email: 'email', name: 'name', status: 'status', mfaEnabled: 'mfaEnabled' },
   devices: { id: 'id', orgId: 'orgId' },
   deviceCommands: { deviceId: 'deviceId', status: 'status', createdAt: 'createdAt' },
   alerts: { deviceId: 'deviceId', status: 'status', triggeredAt: 'triggeredAt' },
@@ -77,6 +94,7 @@ vi.mock('../db/schema', () => ({
   organizations: {},
   partnerUsers: {},
   organizationUsers: {},
+  roles: { id: 'roles.id', forceMfa: 'roles.forceMfa' },
   deviceHardware: {},
   deviceNetwork: {},
   deviceMetrics: {},
@@ -199,7 +217,13 @@ describe('device endpoints (authenticated)', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.commands).toHaveLength(2);
-      expect(body.failed).toEqual([deviceThree.id]);
+      expect(body.failed).toEqual([
+        {
+          deviceId: deviceThree.id,
+          code: 'DECOMMISSIONED',
+          message: 'Cannot send commands to a decommissioned device.',
+        },
+      ]);
       expect(body.commands.map((command: { deviceId: string }) => command.deviceId)).toEqual([
         deviceOne.id,
         deviceTwo.id

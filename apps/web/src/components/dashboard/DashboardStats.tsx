@@ -3,6 +3,7 @@ import { Monitor, CheckCircle, AlertTriangle, XCircle, AlertCircle, ArrowRight, 
 import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '@/stores/aiStore';
 
 interface DashboardStatsData {
@@ -29,6 +30,12 @@ export default function DashboardStats() {
   const [retryCount, setRetryCount] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [updatedText, setUpdatedText] = useState('');
+
+  // Re-fetch when the global org scope toggle (or selected org) changes so the
+  // tiles track the All-orgs / Current view like the rest of the app. Without
+  // these in the fetch effect's deps the stats are stale after a toggle.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgStore((s) => s.orgScope);
 
   useEffect(() => { setGreeting(getGreeting()); }, []);
 
@@ -74,7 +81,7 @@ export default function DashboardStats() {
     };
 
     fetchStats();
-  }, [retryCount]);
+  }, [retryCount, currentOrgId, orgScope]);
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
@@ -139,7 +146,7 @@ export default function DashboardStats() {
 
   const header = (
     <div className="flex items-center justify-between">
-      <h1 className="text-xl font-semibold tracking-tight">
+      <h1 data-testid="dashboard-heading" className="text-xl font-semibold tracking-tight">
         {greeting}{firstName ? `, ${firstName}` : ''}
       </h1>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -222,13 +229,14 @@ export default function DashboardStats() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="dashboard-stats">
       {header}
       <div className="grid grid-cols-2 lg:grid-cols-4 rounded-lg border bg-card overflow-hidden">
         {statItems.map((stat, idx) => (
           <a
             key={stat.name}
             href={stat.href}
+            data-testid={`dashboard-${stat.name.toLowerCase().replace(/\s+/g, '-')}-card`}
             className={cn(
               'flex items-center gap-3 px-6 py-4 transition-colors hover:bg-muted/30',
               idx % 2 !== 0 && 'border-l border-border',

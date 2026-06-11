@@ -93,8 +93,8 @@ func (s *softwareEncoder) IsPlaceholder() bool {
 	return true
 }
 
-func (s *softwareEncoder) SetD3D11Device(device, context uintptr)            {}
-func (s *softwareEncoder) SupportsGPUInput() bool                            { return false }
+func (s *softwareEncoder) SetD3D11Device(device, context uintptr) {}
+func (s *softwareEncoder) SupportsGPUInput() bool                 { return false }
 func (s *softwareEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	return nil, errors.New("GPU input not supported by software encoder")
 }

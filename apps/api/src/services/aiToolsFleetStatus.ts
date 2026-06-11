@@ -25,6 +25,7 @@ export interface InviteFunnel {
   invites_clicked: number;
   devices_enrolled: number;
   devices_online: number;
+  devices_pending: number;
   recent_enrollments: Array<{
     device_id: string;
     hostname: string;
@@ -40,7 +41,10 @@ const RECENT_ENROLLMENTS_LIMIT = 10;
  * Compute the invite funnel for a partner. Exported so route/integration
  * tests can assert behavior directly without going through the aiTools dispatch.
  */
-export async function computeInviteFunnel(partnerId: string): Promise<InviteFunnel> {
+export async function computeInviteFunnel(
+  partnerId: string,
+  auth?: AuthContext,
+): Promise<InviteFunnel> {
   const invites = await db
     .select({
       id: deploymentInvites.id,
@@ -59,16 +63,12 @@ export async function computeInviteFunnel(partnerId: string): Promise<InviteFunn
   const invites_clicked = invites.filter(
     (i) => i.status === 'clicked' || i.status === 'enrolled' || i.clickedAt !== null,
   ).length;
-  const devices_enrolled = invites.filter(
-    (i) => i.status === 'enrolled' && i.deviceId !== null,
-  ).length;
-
   const enrolledWithDevice = invites.filter((i) => i.deviceId !== null);
   const deviceIds = enrolledWithDevice
     .map((i) => i.deviceId)
     .filter((x): x is string => typeof x === 'string');
 
-  const deviceRows = deviceIds.length === 0
+  const allDeviceRows = deviceIds.length === 0
     ? []
     : await db
         .select({
@@ -77,6 +77,7 @@ export async function computeInviteFunnel(partnerId: string): Promise<InviteFunn
           osType: devices.osType,
           status: devices.status,
           orgId: devices.orgId,
+          siteId: devices.siteId,
         })
         .from(devices)
         .where(
@@ -89,11 +90,32 @@ export async function computeInviteFunnel(partnerId: string): Promise<InviteFunn
           ),
         );
 
+  // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+  // caller must not see enrolled devices in sites outside their allowlist.
+  // No-op for unrestricted callers (canAccessSite absent or returns true).
+  const deviceRows = auth?.canAccessSite
+    ? allDeviceRows.filter((d) => auth.canAccessSite!(d.siteId))
+    : allDeviceRows;
+
   const byDeviceId = new Map(deviceRows.map((d) => [d.id, d] as const));
+  // Enrolled count. Only a site-restricted caller narrows to in-scope devices
+  // (fail closed). Unrestricted callers keep prior behavior: an enrolled invite
+  // counts even if its device row is missing (e.g. the device was deleted after
+  // enrollment) — `byDeviceId.has` would wrongly drop that case.
+  const devices_enrolled = invites.filter(
+    (i) =>
+      i.status === 'enrolled' &&
+      i.deviceId !== null &&
+      (auth?.canAccessSite ? byDeviceId.has(i.deviceId) : true),
+  ).length;
   const devices_online = deviceRows.filter((d) => d.status === 'online').length;
+  const devices_pending = deviceRows.filter((d) => d.status === 'pending').length;
 
   const recent_enrollments = enrolledWithDevice
     .filter((i) => i.enrolledAt !== null)
+    // Site-restricted callers: drop enrollments whose device is out of scope
+    // (filtered out of deviceRows) rather than surfacing an "unknown" stub.
+    .filter((i) => (auth?.canAccessSite ? byDeviceId.has(i.deviceId!) : true))
     .sort((a, b) => (b.enrolledAt?.getTime() ?? 0) - (a.enrolledAt?.getTime() ?? 0))
     .slice(0, RECENT_ENROLLMENTS_LIMIT)
     .map((i) => {
@@ -112,6 +134,7 @@ export async function computeInviteFunnel(partnerId: string): Promise<InviteFunn
     invites_clicked,
     devices_enrolled,
     devices_online,
+    devices_pending,
     recent_enrollments,
   };
 }
@@ -135,7 +158,7 @@ export function registerFleetStatusTools(aiTools: Map<string, AiTool>): void {
             error: 'get_fleet_status requires a partner-scoped API key',
           });
         }
-        const funnel = await computeInviteFunnel(auth.partnerId);
+        const funnel = await computeInviteFunnel(auth.partnerId, auth);
         return JSON.stringify({ invite_funnel: funnel });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Internal error';

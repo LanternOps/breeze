@@ -5,6 +5,10 @@ import { c2cJobsRoutes } from './jobs';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CONFIG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const { permissionGate, mfaGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false },
+}));
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -76,6 +80,18 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authState);
     return next();
   }),
+  requirePermission: vi.fn(() => (c: any, next: any) => {
+    if (permissionGate.deny) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  }),
+  requireMfa: vi.fn(() => (c: any, next: any) => {
+    if (mfaGate.deny) {
+      return c.json({ error: 'MFA required' }, 403);
+    }
+    return next();
+  }),
 }));
 
 import { authMiddleware } from '../../middleware/auth';
@@ -85,9 +101,29 @@ describe('c2c jobs routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/c2c', c2cJobsRoutes);
+  });
+
+  it('requires explicit write permission and MFA before triggering sync', async () => {
+    permissionGate.deny = true;
+    const deniedPermission = await app.request(`/c2c/configs/${CONFIG_ID}/run`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(deniedPermission.status).toBe(403);
+
+    permissionGate.deny = false;
+    mfaGate.deny = true;
+    const deniedMfa = await app.request(`/c2c/configs/${CONFIG_ID}/run`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(deniedMfa.status).toBe(403);
+    expect(createC2cSyncJobIfIdleMock).not.toHaveBeenCalled();
   });
 
   it('returns 409 when a sync job is already active for the config', async () => {

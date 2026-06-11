@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -11,6 +12,39 @@ const communicationSettings = new Map<string, Record<string, unknown>>();
 const monitoringSettings = new Map<string, Record<string, unknown>>();
 const ticketingSettings = new Map<string, Record<string, unknown>>();
 const psaSettings = new Map<string, Record<string, unknown>>();
+
+// 16KB cap on free-form integration setting blobs (in-memory storage).
+const MAX_INTEGRATION_PAYLOAD_BYTES = 16 * 1024;
+
+// Loose-but-bounded schema for provider settings. Each provider has its own
+// shape we don't fully control here (these are storage-only routes), but we
+// require an object, bound key length, and reject oversized payloads.
+const integrationSettingsSchema = z
+  .record(z.string().max(64), z.unknown())
+  .refine(
+    (val) => JSON.stringify(val).length <= MAX_INTEGRATION_PAYLOAD_BYTES,
+    { message: `payload exceeds ${MAX_INTEGRATION_PAYLOAD_BYTES} bytes` }
+  );
+
+async function parseIntegrationBody(c: { req: { json: () => Promise<unknown> } }): Promise<
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; status: 400; error: string }
+> {
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return { ok: false, status: 400, error: 'Invalid JSON body' };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, status: 400, error: 'Body must be a JSON object' };
+  }
+  const parsed = integrationSettingsSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, status: 400, error: parsed.error.issues[0]?.message ?? 'Invalid payload' };
+  }
+  return { ok: true, body: parsed.data as Record<string, unknown> };
+}
 
 function resolveOrgId(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
@@ -88,9 +122,10 @@ integrationRoutes.get('/communication', requireScope('organization', 'partner', 
 for (const provider of ['slack', 'teams', 'discord'] as const) {
   integrationRoutes.post(`/${provider}`, requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
     const auth = c.get('auth');
-    const body = await c.req.json().catch(() => null);
-    if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-    const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
+    const parsed = await parseIntegrationBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.body;
+    const explicitOrgId = typeof body.orgId === 'string' ? body.orgId : requestedOrgId(c);
     const orgResult = resolveOrgId(auth, explicitOrgId);
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
@@ -100,7 +135,7 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
     const updated = { ...existing, [provider]: body };
     communicationSettings.set(orgResult.orgId, updated);
 
-    if (body?.test === true) {
+    if (body.test === true) {
       return c.json({ success: true, message: `${provider} test notification queued.` });
     }
 
@@ -127,9 +162,10 @@ integrationRoutes.get('/monitoring', requireScope('organization', 'partner', 'sy
 
 integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => null);
-  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-  const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
+  const parsed = await parseIntegrationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+  const body = parsed.body;
+  const explicitOrgId = typeof body.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
     return c.json({ error: orgResult.error }, orgResult.status);
@@ -155,9 +191,10 @@ integrationRoutes.get('/ticketing', requireScope('organization', 'partner', 'sys
 
 integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => null);
-  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-  const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
+  const parsed = await parseIntegrationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+  const body = parsed.body;
+  const explicitOrgId = typeof body.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
     return c.json({ error: orgResult.error }, orgResult.status);
@@ -188,9 +225,10 @@ integrationRoutes.get('/psa', requireScope('organization', 'partner', 'system'),
 
 integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => null);
-  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-  const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
+  const parsed = await parseIntegrationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+  const body = parsed.body;
+  const explicitOrgId = typeof body.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
     return c.json({ error: orgResult.error }, orgResult.status);
@@ -202,9 +240,10 @@ integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system')
 
 integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
-  const body = await c.req.json().catch(() => null);
-  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-  const explicitOrgId = typeof body?.orgId === 'string' ? body.orgId : requestedOrgId(c);
+  const parsed = await parseIntegrationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+  const body = parsed.body;
+  const explicitOrgId = typeof body.orgId === 'string' ? body.orgId : requestedOrgId(c);
   const orgResult = resolveOrgId(auth, explicitOrgId);
   if ('error' in orgResult) {
     return c.json({ error: orgResult.error }, orgResult.status);
@@ -215,8 +254,9 @@ integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'),
 });
 
 integrationRoutes.post('/psa/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
-  const body = await c.req.json().catch(() => null);
-  if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
-  const provider = typeof body?.provider === 'string' ? body.provider : 'provider';
+  const parsed = await parseIntegrationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+  const body = parsed.body;
+  const provider = typeof body.provider === 'string' ? body.provider : 'provider';
   return c.json({ success: true, message: `${provider} connection successful.` });
 });

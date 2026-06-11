@@ -50,6 +50,7 @@ import {
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
+import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -363,7 +364,7 @@ export function derivePolicyStateProbesFromRules(rules: unknown): {
     if (type === 'config_check') {
       const filePath = readTrimmedString(rawRule.configFilePath ?? rawRule.config_file_path);
       const configKey = readTrimmedString(rawRule.configKey ?? rawRule.config_key);
-      if (!filePath || !configKey) {
+      if (!filePath || !configKey || !isAllowedPolicyConfigProbe(filePath, configKey)) {
         continue;
       }
 
@@ -1706,6 +1707,7 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
+      eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
     ));
 
@@ -1896,6 +1898,7 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
+      eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
     ));
 
@@ -2135,6 +2138,7 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
     ))
     .where(and(
       eq(configurationPolicies.status, 'active'),
+      eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
     ));
 

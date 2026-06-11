@@ -310,7 +310,9 @@ export async function enqueueAutomationRun(
 
   try {
     const queue = getAutomationQueue();
-    const stableJobId = `automation-run:${runId}`;
+    // '-' separator (not ':') — BullMQ rejects custom jobIds whose colon-split
+    // length !== 3, and this 2-part id would throw. See #1101.
+    const stableJobId = `automation-run-${runId}`;
     const existing = await queue.getJob(stableJobId);
     if (existing) {
       const state = await existing.getState();

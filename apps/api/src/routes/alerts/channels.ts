@@ -1,19 +1,27 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
-import { db } from '../../db';
-import { notificationChannels } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { notificationChannels, organizations, partners } from '../../db/schema';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  decryptNotificationChannelConfig,
+  encryptNotificationChannelConfig,
+  redactNotificationChannelConfig,
+} from '../../services/notificationChannelSecrets';
 import {
   getEmailRecipients,
   sendEmailNotification,
   sendPagerDutyNotification,
+  sendPushoverNotification,
   sendSmsNotification,
   sendWebhookNotification,
   testWebhook,
   type AlertSeverity,
   type PagerDutyConfig,
+  type PushoverConfig,
+  type PushoverPriority,
   type SmsChannelConfig,
   type WebhookConfig
 } from '../../services/notificationSenders';
@@ -23,14 +31,34 @@ import {
   ensureOrgAccess,
   getNotificationChannelWithOrgCheck,
   validateNotificationChannelConfig,
+  validatePushoverChannelInheritance,
 } from './helpers';
+import { PERMISSIONS } from '../../services/permissions';
 
 export const channelsRoutes = new Hono();
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
+  // lastTestedAt and lastTestStatus are carried through via the ...channel spread;
+  // updatedAt is intentionally NOT bumped when persisting a test result — running
+  // a test is not a user content change, only lastTestedAt is the relevant timestamp.
+  return {
+    ...channel,
+    config: redactNotificationChannelConfig(channel.type, channel.config),
+  };
+}
+
+function getRedactedConfigValue(config: unknown, key: string): unknown {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
+  return (config as Record<string, unknown>)[key];
+}
 
 // GET /alerts/channels - List notification channels
 channelsRoutes.get(
   '/channels',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listChannelsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -95,7 +123,7 @@ channelsRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: channelsList,
+      data: channelsList.map(toChannelResponse),
       pagination: { page, limit, total }
     });
   }
@@ -105,6 +133,8 @@ channelsRoutes.get(
 channelsRoutes.post(
   '/channels',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', createChannelSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -127,14 +157,26 @@ channelsRoutes.post(
       }, 400);
     }
 
+    if (data.type === 'pushover') {
+      const inheritanceError = await validatePushoverChannelInheritance(orgId, data.config);
+      if (inheritanceError) {
+        return c.json({
+          error: `Invalid ${data.type} channel configuration`,
+          details: [inheritanceError]
+        }, 400);
+      }
+    }
+
     const [channel] = await db
       .insert(notificationChannels)
       .values({
         orgId,
         name: data.name,
         type: data.type,
-        config: data.config,
-        enabled: data.enabled
+        config: encryptNotificationChannelConfig(data.type, data.config),
+        enabled: data.enabled,
+        throttleMaxPerWindow: data.throttleMaxPerWindow ?? null,
+        throttleWindowSeconds: data.throttleWindowSeconds ?? 3600
       })
       .returning();
     if (!channel) {
@@ -153,7 +195,7 @@ channelsRoutes.post(
       },
     });
 
-    return c.json(channel, 201);
+    return c.json(toChannelResponse(channel), 201);
   }
 );
 
@@ -161,6 +203,8 @@ channelsRoutes.post(
 channelsRoutes.put(
   '/channels/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   zValidator('json', updateChannelSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -177,12 +221,26 @@ channelsRoutes.put(
     }
 
     if (data.config !== undefined) {
-      const configErrors = validateNotificationChannelConfig(channel.type, data.config);
+      const configForValidation = decryptNotificationChannelConfig(
+        channel.type,
+        encryptNotificationChannelConfig(channel.type, data.config, channel.config)
+      );
+      const configErrors = validateNotificationChannelConfig(channel.type, configForValidation);
       if (configErrors.length > 0) {
         return c.json({
           error: `Invalid ${channel.type} channel configuration`,
           details: configErrors
         }, 400);
+      }
+
+      if (channel.type === 'pushover') {
+        const inheritanceError = await validatePushoverChannelInheritance(channel.orgId, configForValidation);
+        if (inheritanceError) {
+          return c.json({
+            error: `Invalid ${channel.type} channel configuration`,
+            details: [inheritanceError]
+          }, 400);
+        }
       }
     }
 
@@ -190,8 +248,16 @@ channelsRoutes.put(
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (data.name !== undefined) updates.name = data.name;
-    if (data.config !== undefined) updates.config = data.config;
+    if (data.config !== undefined) {
+      updates.config = encryptNotificationChannelConfig(channel.type, data.config, channel.config);
+    }
     if (data.enabled !== undefined) updates.enabled = data.enabled;
+    if (data.throttleMaxPerWindow !== undefined) {
+      updates.throttleMaxPerWindow = data.throttleMaxPerWindow;
+    }
+    if (data.throttleWindowSeconds !== undefined) {
+      updates.throttleWindowSeconds = data.throttleWindowSeconds;
+    }
 
     const [updated] = await db
       .update(notificationChannels)
@@ -213,7 +279,7 @@ channelsRoutes.put(
       },
     });
 
-    return c.json(updated);
+    return c.json(toChannelResponse(updated));
   }
 );
 
@@ -221,6 +287,8 @@ channelsRoutes.put(
 channelsRoutes.delete(
   '/channels/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const channelId = c.req.param('id')!;
@@ -250,6 +318,8 @@ channelsRoutes.delete(
 channelsRoutes.post(
   '/channels/:id/test',
   requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const channelId = c.req.param('id')!;
@@ -258,6 +328,8 @@ channelsRoutes.post(
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
     }
+    const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
+    const redactedChannelConfig = redactNotificationChannelConfig(channel.type, channel.config);
 
     // Send a real test notification through the selected channel type.
     const testMessage = {
@@ -303,14 +375,14 @@ channelsRoutes.post(
         }
 
         case 'webhook': {
-          const webhookResult = await testWebhook(channel.config as WebhookConfig);
+          const webhookResult = await testWebhook(channelConfig as WebhookConfig);
           testResult = {
             success: webhookResult.success,
             message: webhookResult.success
               ? 'Test webhook sent successfully'
               : (webhookResult.error || 'Failed to send test webhook'),
             details: {
-              url: (channel.config as { url?: string })?.url,
+              url: getRedactedConfigValue(redactedChannelConfig, 'url'),
               statusCode: webhookResult.statusCode
             }
           };
@@ -319,7 +391,7 @@ channelsRoutes.post(
 
         case 'slack':
         case 'teams': {
-          const config = channel.config as Record<string, unknown>;
+          const config = channelConfig as Record<string, unknown>;
           const webhookUrl = typeof config.webhookUrl === 'string' ? config.webhookUrl.trim() : '';
           if (!webhookUrl) {
             testResult = {
@@ -354,7 +426,7 @@ channelsRoutes.post(
               ? `Test ${channel.type} message sent successfully`
               : (chatResult.error || `Failed to send test ${channel.type} message`),
             details: {
-              webhookUrl,
+              webhookUrl: getRedactedConfigValue(redactedChannelConfig, 'webhookUrl'),
               statusCode: chatResult.statusCode
             }
           };
@@ -363,7 +435,7 @@ channelsRoutes.post(
 
         case 'pagerduty': {
           const pagerDutyResult = await sendPagerDutyNotification(
-            channel.config as PagerDutyConfig,
+            channelConfig as PagerDutyConfig,
             {
               alertId: `test-${channel.id}`,
               alertName: testMessage.title,
@@ -389,10 +461,80 @@ channelsRoutes.post(
           break;
         }
 
+        case 'pushover': {
+          const cfg = { ...(channelConfig as PushoverConfig) };
+          const tokenBlank = !cfg.token || cfg.token.trim().length === 0;
+          const userBlank = !cfg.user || cfg.user.trim().length === 0;
+
+          if (tokenBlank || userBlank) {
+            // Mirror dispatcher inheritance: pull defaults from the channel's
+            // partner.settings.notifications when blank. Org-tier callers do
+            // not have partner-read RLS, so we must escape the request DB
+            // context and run the lookup under system scope. Otherwise the
+            // partner row is silently filtered and inheritance fails open
+            // with a misleading "token required" error.
+            const inherited = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+              const [orgRow] = await db
+                .select({ partnerId: organizations.partnerId })
+                .from(organizations)
+                .where(eq(organizations.id, channel.orgId))
+                .limit(1);
+              if (!orgRow?.partnerId) {
+                return null;
+              }
+              const [partner] = await db
+                .select({ settings: partners.settings })
+                .from(partners)
+                .where(eq(partners.id, orgRow.partnerId))
+                .limit(1);
+              return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
+            }));
+
+            if (inherited) {
+              if (tokenBlank && typeof inherited.pushoverAppToken === 'string') {
+                cfg.token = inherited.pushoverAppToken;
+              }
+              if (userBlank && typeof inherited.pushoverDefaultUser === 'string') {
+                cfg.user = inherited.pushoverDefaultUser;
+              }
+              if (cfg.sound === undefined && typeof inherited.pushoverDefaultSound === 'string') {
+                cfg.sound = inherited.pushoverDefaultSound;
+              }
+              if (cfg.priority === undefined && typeof inherited.pushoverDefaultPriority === 'number') {
+                cfg.priority = inherited.pushoverDefaultPriority as PushoverPriority;
+              }
+            }
+          }
+
+          const pushoverResult = await sendPushoverNotification(cfg, {
+            alertId: `test-${channel.id}`,
+            alertName: testMessage.title,
+            severity: testMessage.severity as AlertSeverity,
+            summary: testMessage.message,
+            orgId: channel.orgId,
+            orgName: 'Breeze',
+            triggeredAt: new Date().toISOString(),
+            dashboardUrl
+          });
+
+          testResult = {
+            success: pushoverResult.success,
+            message: pushoverResult.success
+              ? 'Test Pushover notification sent successfully'
+              : (pushoverResult.error || 'Failed to send test Pushover notification'),
+            details: {
+              statusCode: pushoverResult.statusCode,
+              request: pushoverResult.request,
+              receipt: pushoverResult.receipt
+            }
+          };
+          break;
+        }
+
         case 'sms':
           {
             const smsResult = await sendSmsNotification(
-              channel.config as SmsChannelConfig,
+              channelConfig as SmsChannelConfig,
               {
                 alertName: testMessage.title,
                 severity: 'info',
@@ -405,7 +547,7 @@ channelsRoutes.post(
               success: smsResult.success,
               message: smsResult.success ? 'Test SMS sent successfully' : (smsResult.error || 'Failed to send test SMS'),
               details: {
-                phoneNumbers: (channel.config as { phoneNumbers?: string[] })?.phoneNumbers,
+                phoneNumbers: (channelConfig as { phoneNumbers?: string[] })?.phoneNumbers,
                 sentCount: smsResult.sentCount,
                 failedCount: smsResult.failedCount
               }
@@ -413,17 +555,59 @@ channelsRoutes.post(
           }
           break;
 
-        default:
-          testResult = {
-            success: false,
-            message: `Unknown channel type: ${channel.type}`
-          };
+        default: {
+          // Compile-time exhaustiveness: if a new enum value is added without
+          // a case above, TS errors here. Runtime 501 covers the deploy-drift
+          // case where the DB enum has a value the code does not handle yet.
+          const _exhaustiveCheck: never = channel.type;
+          void _exhaustiveCheck;
+          const unsupportedType = (channel as { type: string }).type;
+          console.error(
+            '[Channels] Test endpoint missing handler for channel type',
+            { channelId: channel.id, type: unsupportedType }
+          );
+          writeRouteAudit(c, {
+            orgId: channel.orgId,
+            action: 'notification_channel.test',
+            resourceType: 'notification_channel',
+            resourceId: channel.id,
+            resourceName: channel.name,
+            details: {
+              success: false,
+              reason: 'unsupported_channel_type',
+              type: unsupportedType,
+            },
+            result: 'failure',
+          });
+          // NOTE: unsupported channel type returns early; last_test_status is intentionally not persisted here (deploy-drift path, already covered by the audit log).
+          return c.json(
+            {
+              success: false,
+              error: `Test endpoint does not support channel type: ${unsupportedType}`
+            },
+            501
+          );
+        }
       }
     } catch (error) {
       testResult = {
         success: false,
         message: `Failed to test channel: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
+    }
+
+    // Best-effort audit field — a DB hiccup here must not mask a successful
+    // (or completed) test send. The HTTP response reflects testResult, not this write.
+    // updatedAt is intentionally NOT bumped here; running a test is not a user content change.
+    try {
+      await db.update(notificationChannels)
+        .set({
+          lastTestedAt: new Date(),
+          lastTestStatus: testResult.success ? 'success' : 'failed',
+        })
+        .where(eq(notificationChannels.id, channel.id));
+    } catch (persistError) {
+      console.error('[Channels] Failed to persist test outcome', { channelId: channel.id, persistError });
     }
 
     const response = {

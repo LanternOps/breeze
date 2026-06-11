@@ -6,7 +6,7 @@ import { db } from '../../db';
 import { devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
-import { PERMISSIONS } from '../../services/permissions';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 
 const deviceIdParamSchema = z.object({
@@ -31,7 +31,7 @@ vssRoutes.get(
   const { deviceId } = c.req.valid('param');
 
   const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -42,6 +42,11 @@ vssRoutes.get(
 
   if (device.orgId !== orgId) {
     return c.json({ error: 'Device not found' }, 404);
+  }
+
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return c.json({ error: 'Access to this site denied' }, 403);
   }
 
   const result = await executeCommand(deviceId, CommandTypes.VSS_WRITER_LIST, {}, {

@@ -39,6 +39,27 @@ vi.mock('./agentWs', () => ({
   isAgentConnected: vi.fn(() => true)
 }));
 
+vi.mock('../services/remoteAccessPolicy', () => ({
+  checkRemoteAccess: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({})),
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: vi.fn(async () => ({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 60_000),
+  })),
+}));
+
+vi.mock('./remote/helpers', () => ({
+  logSessionAudit: vi.fn(async () => undefined),
+  getIceServers: vi.fn(() => []),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
@@ -91,7 +112,8 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
-      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined))
+      query: vi.fn((key: string) => (key === 'ticket' ? ticket : undefined)),
+      header: vi.fn(() => undefined)
     }
   };
 
@@ -111,6 +133,7 @@ describe('terminalWs — multi-tenant isolation', () => {
     const ticketUserId = 'user-org-a';
 
     vi.mocked(consumeWsTicket).mockResolvedValue({
+      ok: true,
       sessionId: SESSION_ID,
       sessionType: 'terminal',
       userId: ticketUserId,
@@ -148,6 +171,7 @@ describe('terminalWs — multi-tenant isolation', () => {
     const realSessionUserId = 'user-victim';
 
     vi.mocked(consumeWsTicket).mockResolvedValue({
+      ok: true,
       sessionId: SESSION_ID,
       sessionType: 'terminal',
       userId: ticketUserId,
@@ -167,7 +191,8 @@ describe('terminalWs — multi-tenant isolation', () => {
       agentId: AGENT_ID,
       hostname: 'test-host',
       osType: 'linux',
-      status: 'online'
+      status: 'online',
+      orgId: 'org-test-1'
     };
 
     vi.mocked(db.select)

@@ -8,6 +8,12 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: Object.assign(() => ({ currentOrgId: null }), {
+    getState: () => ({ currentOrgId: null })
+  })
+}));
+
 vi.mock('./ScriptList', () => ({
   default: ({ scripts, onRun }: { scripts: Array<{ id: string; name: string; lastRun?: string }>; onRun?: (script: { id: string; name: string; lastRun?: string }) => void }) => (
     <div>

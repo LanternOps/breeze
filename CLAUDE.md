@@ -83,6 +83,18 @@ For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE
 - `packages/shared/src/validators/` - Zod schemas
 - `packages/shared/src/utils/` - Utility functions
 
+### Web Mutation Handlers — `runAction`
+
+**Mutation handlers must surface outcome via `runAction`.** Web action handlers that POST/PUT/PATCH/DELETE should wrap the request in `runAction` (`apps/web/src/lib/runAction.ts`) so success/failure is always shown to the user. `runAction` also treats HTTP-200 `{success:false}` / `{testResult:{success:false}}` response bodies as failures (not silent no-ops).
+
+Catch pattern for callers:
+```ts
+if (err instanceof ActionError && err.status === 401) return; // let auth redirect handle it
+if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401 ActionError already toasted by runAction
+```
+
+The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/2026-05-15-ws-a-action-feedback-design.md`.
+
 ---
 
 ## Testing Standards
@@ -92,7 +104,7 @@ For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE
 - **Web**: Vitest + jsdom — `apps/web/vitest.config.ts`
 - **Agent**: Go standard `testing` package — `go test -race ./...`
 - **Shared**: Vitest — `packages/shared/vitest.config.ts`
-- **E2E**: YAML-driven runner — `e2e-tests/run.ts` with `e2e-tests/tests/*.yaml`
+- **E2E**: Playwright Test (TypeScript), `data-testid` based — `e2e-tests/playwright.config.ts`, specs under `e2e-tests/tests/*.spec.ts`, Page Objects under `e2e-tests/pages/`. Tests query DOM via `data-testid` attributes only (not text/role/CSS) — see `e2e-tests/README.md` for the convention.
 
 ### Test File Placement
 - Place test files **alongside source files**, not in separate directories
@@ -125,7 +137,7 @@ cd agent && go test -race ./...
 cd agent && go test -race ./internal/discovery/...
 
 # E2E
-cd e2e-tests && npx tsx run.ts --mode live
+cd e2e-tests && pnpm test
 ```
 
 ---
@@ -156,10 +168,13 @@ cd agent && make run
 
 ### Schema Migration Workflow
 1. Edit schema files in `apps/api/src/db/schema/`
-2. Write a hand-written SQL migration in `apps/api/migrations/NNNN-<slug>.sql`
-   - Use the next available 4-digit number (check existing files)
-   - Must be fully idempotent: `IF NOT EXISTS`, `IF EXISTS`, `DO $$ BEGIN ... EXCEPTION`
-   - Never edit a shipped migration — fix forward with a new migration
+2. Write a hand-written SQL migration in `apps/api/migrations/`. The runner accepts any filename matching `^\d{4}-.*\.sql$` and applies them in `localeCompare` (lexicographic) order, so the prefix has to sort correctly.
+   - **Naming:** use `YYYY-MM-DD-<slug>.sql` (the current convention). The legacy `NNNN-<slug>.sql` 4-digit form is still accepted but only for files predating the date-prefix switch — don't introduce new ones.
+   - **Same-day ordering:** if two migrations on the same date depend on each other (e.g. one creates a table, the other adds constraints or policies on it), insert an explicit `-a-`/`-b-` infix between the date and the slug: `2026-04-19-a-installer-bootstrap-tokens.sql`, `2026-04-19-b-installer-bootstrap-tokens-constraints.sql`. Don't rely on the slug to sort the files for you — `-` (0x2D) < `.` (0x2E), so `foo-bar.sql` sorts *after* `foo-bar-extra.sql`, which has bitten us before (issue #506). The `apps/api/src/db/autoMigrate.test.ts` regression test will catch most ordering bugs.
+   - **Idempotent:** `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then re-add, `DO $$ BEGIN ... EXCEPTION`, `pg_policies` existence checks for policies. Re-applying must be a no-op.
+   - **No inner `BEGIN;`/`COMMIT;`:** `autoMigrate` wraps each file in `client.begin(...)`. Adding your own transaction blocks emits `NOTICE: there is already a transaction in progress` and serves no purpose.
+   - **Cleanup statements must report row counts:** a migration that UPDATEs/DELETEs suspect rows (e.g. before adding a constraint) should wrap the statement in `DO $$ ... GET DIAGNOSTICS n = ROW_COUNT; IF n > 0 THEN RAISE WARNING 'cleaned % <what>', n; END IF; END $$;` so the count lands in Postgres logs. Silently fixing bad data destroys the forensic trail — if those rows could evidence a tenant-isolation breach, you want a recorded count even when it's 0 (lesson from `2026-06-10-c`).
+   - **Never edit a shipped migration** — fix forward with a new migration. (Renaming is also editing for tracking purposes: `breeze_migrations` keys on filename, so a rename causes already-migrated DBs to re-apply under the new name. Only acceptable when the file is fully idempotent and re-application is a true no-op.)
 3. Run `pnpm db:check-drift` to verify schema matches migrations
 4. Commit the migration file
 
@@ -196,3 +211,28 @@ docker compose up --build -d
 - Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
 - Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
 - This is the normal workflow — do not wait for branch protection rules to be satisfied
+
+### Production Deploy (EU + US droplets)
+
+Droplets pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VERSION` in `/opt/breeze/.env`. The flow is:
+
+```bash
+ssh root@<droplet> "cd /opt/breeze && \
+  cp .env .env.bak-pre-<new-version> && \
+  sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
+  docker compose pull api web && \
+  docker compose up -d binaries-init api web"
+```
+
+Then `curl -sf https://<region>.2breeze.app/health` to verify (200 = healthy).
+
+**Required env vars added by v0.65+ — droplets without these refuse to start:**
+
+- `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` — base64 SPKI of the Ed25519 release manifest signing key. Source: `internal/release-keys/release-manifest.ed25519.pub` (the base64 between `-----BEGIN PUBLIC KEY-----` and `-----END PUBLIC KEY-----`, single line). The API config validator refuses to boot in production without it when `BINARY_SOURCE=github`.
+- `IS_HOSTED` — must be explicitly set to `true` (hosted SaaS) or `false` (self-hosted) in production. Without this, a misconfigured deploy (e.g. `.env` value not mapped through compose) silently drops new partners straight to `status='active'`, bypassing the email-verification gate in `/auth/register-partner` (issue #570).
+
+When introducing a new required env var: add it to `/opt/breeze/.env` AND map it explicitly in the `api`/`web` service `environment:` block of `/opt/breeze/docker-compose.yml`. Compose interpolation only happens for vars listed there — having a value in `.env` is necessary but not sufficient.
+
+**Watchtower policy (#603):** repo-tracked compose files never include Watchtower (enforced by `check-supply-chain-hardening.sh`). On droplets, Watchtower is acceptable for sidecars (caddy, redis, postgres-exporter, cloudflared) but **must not** auto-update `breeze-api` or `breeze-web`. Concretely, the `com.centurylinklabs.watchtower.enable: "true"` label is forbidden on those two services. The hardening check additionally rejects that label string in any tracked compose file as defense-in-depth.
+
+**Known drift:** the deployed `/opt/breeze/docker-compose.yml` uses Watchtower + mutable tags, while `deploy/docker-compose.prod.yml` in the repo uses digest-pinning + no Watchtower. The `check-supply-chain-hardening.sh` rule scans repo files only, so the droplet drift isn't fully enforced. Reconciling this is tracked separately.

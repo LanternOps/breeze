@@ -16,6 +16,20 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
+type encryptionTestProvider struct {
+	algorithm string
+	kmsKeyID  string
+}
+
+func (p *encryptionTestProvider) Upload(_, _ string) error        { return nil }
+func (p *encryptionTestProvider) Download(_, _ string) error      { return nil }
+func (p *encryptionTestProvider) List(_ string) ([]string, error) { return nil, nil }
+func (p *encryptionTestProvider) Delete(_ string) error           { return nil }
+func (p *encryptionTestProvider) SetServerSideEncryption(algorithm, kmsKeyID string) {
+	p.algorithm = algorithm
+	p.kmsKeyID = kmsKeyID
+}
+
 func TestExecBackupRestoreWithProgressNilManager(t *testing.T) {
 	payload, err := json.Marshal(map[string]any{
 		"commandId":  "restore-1",
@@ -122,6 +136,63 @@ func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for restore progress")
+	}
+}
+
+func TestApplyCommandStorageEncryptionConfiguresS3SSE(t *testing.T) {
+	provider := &encryptionTestProvider{}
+	payload, err := json.Marshal(map[string]any{
+		"storageEncryption": map[string]any{
+			"required":     true,
+			"mode":         "s3-sse-kms",
+			"keyReference": "arn:aws:kms:us-east-1:123456789012:key/abcd",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	if err := applyCommandStorageEncryption(provider, payload); err != nil {
+		t.Fatalf("apply encryption: %v", err)
+	}
+	if provider.algorithm != "aws:kms" || provider.kmsKeyID != "arn:aws:kms:us-east-1:123456789012:key/abcd" {
+		t.Fatalf("provider encryption = %q/%q", provider.algorithm, provider.kmsKeyID)
+	}
+}
+
+func TestApplyCommandStorageEncryptionFailsClosedForUnsupportedProvider(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"storageEncryption": map[string]any{
+			"required": true,
+			"mode":     "s3-sse-s3",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	err = applyCommandStorageEncryption(providers.NewLocalProvider(t.TempDir()), payload)
+	if err == nil {
+		t.Fatal("expected unsupported provider error")
+	}
+	if err.Error() != "backup storage encryption is required but the configured provider cannot enforce it" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestApplyCommandStorageEncryptionAllowsDisabledPayload(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"storageEncryption": map[string]any{
+			"required": false,
+			"mode":     "disabled",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	if err := applyCommandStorageEncryption(providers.NewLocalProvider(t.TempDir()), payload); err != nil {
+		t.Fatalf("disabled encryption should not fail: %v", err)
 	}
 }
 

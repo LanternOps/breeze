@@ -1,0 +1,12 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import AuthOverlay from '../../components/auth/AuthOverlay';
+import ToastContainer from '../../components/shared/Toast';
+import MobileDevicesPage from '../../components/account/MobileDevicesPage';
+---
+
+<Layout title="Trusted devices">
+  <AuthOverlay client:load />
+  <MobileDevicesPage client:load />
+  <ToastContainer client:load />
+</Layout>
