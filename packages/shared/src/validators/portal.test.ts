@@ -45,6 +45,16 @@ describe('updatePortalSettingsSchema', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableTickets: null }).success).toBe(false);
   });
 
+  it('accepts a supportEmail at exactly the 255-char limit', () => {
+    const email = `${'a'.repeat(245)}@b.example`; // 245 + 10 = 255 chars
+    expect(email).toHaveLength(255);
+    expect(updatePortalSettingsSchema.safeParse({ supportEmail: email }).success).toBe(true);
+  });
+
+  it('accepts supportEmail: null on its own', () => {
+    expect(updatePortalSettingsSchema.safeParse({ supportEmail: null }).success).toBe(true);
+  });
+
   it('rejects over-length strings', () => {
     expect(updatePortalSettingsSchema.safeParse({ supportPhone: 'x'.repeat(51) }).success).toBe(false);
     expect(updatePortalSettingsSchema.safeParse({ supportEmail: `${'a'.repeat(250)}@b.example` }).success).toBe(false);
