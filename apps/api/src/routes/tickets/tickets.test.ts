@@ -639,6 +639,26 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
     expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
   });
 
+  it('400 with a status-route hint when only status is sent', async () => {
+    const res = await makeApp().request('/tickets/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'open' })
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/POST \/tickets\/:id\/status/);
+  });
+
+  it('400 with an assign-route hint when only assigneeId is sent', async () => {
+    const res = await makeApp().request('/tickets/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigneeId: '22222222-2222-4222-8222-222222222222' })
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/POST \/tickets\/:id\/assign/);
+  });
+
   describe('deviceId reassignment cross-org guard (enforced by the service)', () => {
     const DEVICE_ID = '9a8b7c6d-1111-4222-8333-444455556666';
 
