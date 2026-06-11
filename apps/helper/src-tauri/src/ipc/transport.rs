@@ -125,8 +125,8 @@ fn current_sid_string() -> Result<String, String> {
         // Copy the wide string into an owned Rust String, then free it.
         let sid = pwstr.to_string().map_err(|e| format!("SID utf16 decode failed: {e}"))?;
         // LocalFree expects an HLOCAL; the SID-string buffer is LocalAlloc'd.
-        // TODO(T13 Windows VM verify): exact LocalFree/HLOCAL cast for windows 0.58.
-        let _ = LocalFree(HLOCAL(pwstr.0 as *mut core::ffi::c_void));
+        // windows 0.62: LocalFree takes Option<HLOCAL>.
+        let _ = LocalFree(Some(HLOCAL(pwstr.0 as *mut core::ffi::c_void)));
         Ok(sid)
     }
 }
