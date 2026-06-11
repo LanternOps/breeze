@@ -41,7 +41,10 @@ type PortalSettingsRow = {
 // every column not listed here (logoUrl, faviconUrl, primary/secondary/accent
 // colors, customCss, customDomain, domainVerified) never reaches the app
 // layer on either path, so a toResponse refactor can't accidentally leak them.
-const PORTAL_SETTINGS_COLUMNS = {
+// A function, not a module-scope const: other route tests (orgs.test.ts etc.)
+// mock ../db/schema without portalBranding, and an import-time column deref
+// would crash their whole file at collection.
+const portalSettingsColumns = () => ({
   enableTickets: portalBranding.enableTickets,
   enableAssetCheckout: portalBranding.enableAssetCheckout,
   enableSelfService: portalBranding.enableSelfService,
@@ -50,7 +53,7 @@ const PORTAL_SETTINGS_COLUMNS = {
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
   footerText: portalBranding.footerText
-};
+});
 
 function toResponse(orgId: string, row?: PortalSettingsRow) {
   if (!row) return { orgId, ...PORTAL_SETTINGS_DEFAULTS };
@@ -97,7 +100,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
       if (org instanceof Response) return org;
 
       const rows = await db
-        .select(PORTAL_SETTINGS_COLUMNS)
+        .select(portalSettingsColumns())
         .from(portalBranding)
         .where(eq(portalBranding.orgId, org.id))
         .limit(1);
@@ -129,7 +132,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
           target: portalBranding.orgId,
           set: { ...body, updatedAt: new Date() }
         })
-        .returning(PORTAL_SETTINGS_COLUMNS);
+        .returning(portalSettingsColumns());
 
       writeRouteAudit(c, {
         orgId: org.id,
