@@ -22,7 +22,7 @@ import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, withDbAccessContext, runOutsideDbContext } from '../../db';
 import { getTestDb } from './setup';
 import { createPartner, createOrganization } from './db-utils';
 
@@ -211,5 +211,99 @@ describe('audit_logs checksum chain', () => {
     `)) as unknown as Array<{ broken_id: string }>;
     expect(breaks.length).toBeGreaterThanOrEqual(1);
     expect(breaks.map(b => b.broken_id)).toContain(inserted[1]!.id);
+  });
+
+  // ——— issue #1002 regression suite ———
+
+  // Fork regression: N independent transactions inserting same-org rows
+  // concurrently. Pre-fix, each reads the same committed head as `prev` and
+  // the chain forks → verify reports false breaks. Post-fix (-h- migration,
+  // deferred commit-time sealing) the seal serializes at commit → 0 breaks.
+  it('verify_chain returns no breaks under concurrent same-org inserts', async () => {
+    const N = 25;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        withSystemDbAccessContext(async () => {
+          await db.execute(sql`
+            INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+            VALUES (${orgId}, 'system', gen_random_uuid(), ${'concurrent-' + i}, 'test', 'success')
+          `);
+        })
+      )
+    );
+
+    await withSystemDbAccessContext(async () => {
+      const breaks = (await db.execute(sql`
+        SELECT broken_id FROM public.audit_log_verify_chain(${orgId}::uuid)
+      `)) as unknown as Array<{ broken_id: string }>;
+      expect(breaks).toEqual([]);
+    });
+  });
+
+  // Deadlock regression (the bug that killed draft PR #1240): an in-tx audit
+  // insert followed — while that tx is still open — by a same-org insert on a
+  // SEPARATE pooled connection. With any lock held from insert to commit, the
+  // second insert blocks on the first while the first awaits the second: a
+  // JS-level deadlock Postgres can't detect (30s test timeout). With deferred
+  // sealing the first tx holds nothing until commit, so this completes fast.
+  // Generous explicit timeout so a regression fails loudly as a timeout here,
+  // not flakily elsewhere.
+  it('in-tx insert + separate-connection same-org insert does not deadlock', { timeout: 20_000 }, async () => {
+    await expect(
+      withDbAccessContext(
+        { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+        async () => {
+          await db.execute(sql`
+            INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+            VALUES (${orgId}, 'system', gen_random_uuid(), 'deadlock-caller-tx', 'test', 'success')
+          `);
+          // Escape the caller tx exactly like logSessionAudit does.
+          await runOutsideDbContext(() =>
+            withSystemDbAccessContext(async () => {
+              await db.execute(sql`
+                INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+                VALUES (${orgId}, 'system', gen_random_uuid(), 'deadlock-escaped', 'test', 'success')
+              `);
+            })
+          );
+          throw new Error('simulated caller rollback');
+        }
+      )
+    ).rejects.toThrow('simulated caller rollback');
+
+    await withSystemDbAccessContext(async () => {
+      // The escaped row committed and sealed; the rolled-back row left no
+      // orphan seal; the chain stayed clean.
+      const rows = (await db.execute(sql`
+        SELECT action FROM audit_logs WHERE org_id = ${orgId}::uuid AND action LIKE 'deadlock-%'
+      `)) as unknown as Array<{ action: string }>;
+      expect(rows.map((r) => r.action)).toEqual(['deadlock-escaped']);
+
+      const breaks = (await db.execute(sql`
+        SELECT broken_id FROM public.audit_log_verify_chain(${orgId}::uuid)
+      `)) as unknown as Array<{ broken_id: string }>;
+      expect(breaks).toEqual([]);
+    });
+  });
+
+  // Same-transaction multi-row batches were the OTHER documented limitation of
+  // the in-row chain. Deferred seals fire per row at commit in insertion order
+  // within one lock hold, so batches link correctly.
+  it('multiple same-org inserts in ONE transaction seal in order with no breaks', async () => {
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`
+        INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+        VALUES (${orgId}, 'system', gen_random_uuid(), 'batch-1', 'test', 'success'),
+               (${orgId}, 'system', gen_random_uuid(), 'batch-2', 'test', 'success'),
+               (${orgId}, 'system', gen_random_uuid(), 'batch-3', 'test', 'success')
+      `);
+    });
+
+    await withSystemDbAccessContext(async () => {
+      const breaks = (await db.execute(sql`
+        SELECT broken_id FROM public.audit_log_verify_chain(${orgId}::uuid)
+      `)) as unknown as Array<{ broken_id: string }>;
+      expect(breaks).toEqual([]);
+    });
   });
 });
