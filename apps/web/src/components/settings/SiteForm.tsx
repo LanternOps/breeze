@@ -75,6 +75,16 @@ export default function SiteForm({
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
+  // Ensure the selected/default timezone is always a real <option>, otherwise a
+  // native select silently falls back to its first option (e.g. a partner tz
+  // like "Europe/Paris" that isn't in the short list above).
+  const zones = useMemo(() => {
+    const selected = defaultValues?.timezone;
+    return selected && !timezoneOptions.includes(selected)
+      ? [selected, ...timezoneOptions]
+      : timezoneOptions;
+  }, [defaultValues?.timezone]);
+
   return (
     <form
       onSubmit={handleSubmit(async values => {
@@ -108,7 +118,7 @@ export default function SiteForm({
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             {...register('timezone')}
           >
-            {timezoneOptions.map(zone => (
+            {zones.map(zone => (
               <option key={zone} value={zone}>
                 {zone}
               </option>
