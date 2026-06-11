@@ -712,6 +712,9 @@ alertsRoutes.get(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // The join filters by alertId only; org isolation is the alert-visibility
+    // gate above plus RLS on tickets/ticket_alert_links (both org-scoped) —
+    // don't remove the getAlertWithOrgCheck call without replacing that bound.
     const data = await db
       .select({
         id: tickets.id,

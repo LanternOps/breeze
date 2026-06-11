@@ -81,8 +81,20 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
 
+      // Explicit projection (not select-all): the deferred visual-branding
+      // columns (logoUrl, colors, customCss, customDomain) never reach the
+      // app layer, so a toResponse refactor can't accidentally leak them.
       const rows = await db
-        .select()
+        .select({
+          enableTickets: portalBranding.enableTickets,
+          enableAssetCheckout: portalBranding.enableAssetCheckout,
+          enableSelfService: portalBranding.enableSelfService,
+          enablePasswordReset: portalBranding.enablePasswordReset,
+          supportEmail: portalBranding.supportEmail,
+          supportPhone: portalBranding.supportPhone,
+          welcomeMessage: portalBranding.welcomeMessage,
+          footerText: portalBranding.footerText
+        })
         .from(portalBranding)
         .where(eq(portalBranding.orgId, org.id))
         .limit(1);
