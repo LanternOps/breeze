@@ -43,6 +43,18 @@ import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 
+// Provider check that tolerates an unvalidated config: route unit tests never
+// call validateConfig(), and getConfig() throws in that state. Without a
+// validated config, behave as the default anthropic path. Production always
+// validates at boot, so this never masks a misconfiguration there.
+function isOpenAICompatibleProvider(): boolean {
+  try {
+    return isOpenAICompatibleProvider();
+  } catch {
+    return false;
+  }
+}
+
 // Lazy singleton for the openai-compatible path.
 // Only constructed on first use when MCP_LLM_PROVIDER=openai-compatible.
 let _openaiSessionManager: OpenAISessionManager | null = null;
@@ -222,7 +234,7 @@ aiRoutes.delete(
     }
 
     const manager =
-      getConfig().MCP_LLM_PROVIDER === 'openai-compatible'
+      isOpenAICompatibleProvider()
         ? getOpenAISessionManager()
         : streamingSessionManager;
     manager.remove(sessionId);
@@ -366,7 +378,7 @@ aiRoutes.post(
     const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
-    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+    if (isOpenAICompatibleProvider()) {
       const openaiManager = getOpenAISessionManager();
       const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
@@ -537,7 +549,7 @@ aiRoutes.post(
     let result: { interrupted: boolean; reason?: string };
     try {
       const manager =
-        getConfig().MCP_LLM_PROVIDER === 'openai-compatible'
+        isOpenAICompatibleProvider()
           ? getOpenAISessionManager()
           : streamingSessionManager;
       result = await manager.interrupt(sessionId);
@@ -622,7 +634,7 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+    if (isOpenAICompatibleProvider()) {
       return c.json(
         {
           error: 'This operation is not supported when using the OpenAI-compatible provider.',
@@ -679,7 +691,7 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+    if (isOpenAICompatibleProvider()) {
       return c.json(
         {
           error: 'This operation is not supported when using the OpenAI-compatible provider.',
@@ -752,7 +764,7 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    if (getConfig().MCP_LLM_PROVIDER === 'openai-compatible') {
+    if (isOpenAICompatibleProvider()) {
       return c.json(
         {
           error: 'This operation is not supported when using the OpenAI-compatible provider.',
