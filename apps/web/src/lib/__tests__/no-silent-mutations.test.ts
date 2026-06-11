@@ -43,6 +43,7 @@ const TARGET_GLOBS = [
   'src/components/pam/PamRuleModal.tsx',
   'src/components/pam/PamRulesTab.tsx',
   'src/components/settings/TicketCategoriesPage.tsx',
+  'src/components/settings/OrgPortalSettingsEditor.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -234,7 +235,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(15);
+    expect(absoluteFiles.length).toBe(16);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
