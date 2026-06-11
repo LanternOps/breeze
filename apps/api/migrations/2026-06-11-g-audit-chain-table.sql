@@ -16,7 +16,8 @@
 CREATE TABLE IF NOT EXISTS audit_log_chain (
   chain_seq bigserial PRIMARY KEY,
   audit_id uuid NOT NULL REFERENCES audit_logs(id) ON DELETE CASCADE,
-  org_id uuid REFERENCES organizations(id),
+  -- ON DELETE CASCADE: chain entries are org-scoped metadata; orphans (audit rows removed via replica-role test cleanup or manual clearing) must not block org deletion. GDPR erasure still deletes chain rows explicitly first; audit_logs's own FK still blocks org deletes while audit rows exist.
+  org_id uuid REFERENCES organizations(id) ON DELETE CASCADE,
   content_checksum varchar(128) NOT NULL,
   prev_chain_checksum varchar(128),
   chain_checksum varchar(128) NOT NULL,
@@ -84,14 +85,25 @@ GRANT SELECT, DELETE ON TABLE audit_log_chain TO breeze_audit_admin;
 REVOKE UPDATE ON TABLE audit_log_chain FROM breeze_audit_admin;
 
 -- Append-only enforcement, mirroring audit_log_immutable on audit_logs:
--- DELETE only under the retention GUC; UPDATE is NEVER allowed (no re-anchor
--- exists in this design — rewriting a sealed entry is always tampering).
+-- DELETE only under the retention GUC or via an FK cascade; UPDATE is NEVER
+-- allowed (no re-anchor exists in this design — rewriting a sealed entry is
+-- always tampering).
+--
+-- pg_trigger_depth() > 1 means this DELETE was issued by another trigger —
+-- in practice the RI cascade from a parent-row delete (depth 2), since both
+-- FKs here are ON DELETE CASCADE. Cascades are safe to admit: the audit_logs
+-- parent is itself guarded by its own append-only trigger (so its rows only
+-- die under the retention GUC anyway), and an organizations parent delete is
+-- a total org erasure where blocking orphaned chain rows would be pointless
+-- (GDPR cascade deletes chain rows explicitly first; this branch matters for
+-- orphans left by replica-role test cleanup / manual audit clearing). A
+-- direct SQL DELETE always runs the trigger at depth 1 and stays blocked.
 CREATE OR REPLACE FUNCTION audit_log_chain_immutable() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
   allow_retention text := current_setting('breeze.allow_audit_retention', true);
 BEGIN
-  IF TG_OP = 'DELETE' AND allow_retention = '1' THEN
+  IF TG_OP = 'DELETE' AND (allow_retention = '1' OR pg_trigger_depth() > 1) THEN
     RETURN OLD;
   END IF;
 

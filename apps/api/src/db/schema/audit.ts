@@ -34,7 +34,7 @@ export const auditLogs = pgTable('audit_logs', {
 export const auditLogChain = pgTable('audit_log_chain', {
   chainSeq: bigserial('chain_seq', { mode: 'number' }).primaryKey(),
   auditId: uuid('audit_id').notNull().references(() => auditLogs.id, { onDelete: 'cascade' }),
-  orgId: uuid('org_id').references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
   contentChecksum: varchar('content_checksum', { length: 128 }).notNull(),
   prevChainChecksum: varchar('prev_chain_checksum', { length: 128 }),
   chainChecksum: varchar('chain_checksum', { length: 128 }).notNull(),

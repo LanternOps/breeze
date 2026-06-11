@@ -189,15 +189,15 @@ describe('auditRetention worker', () => {
       expect(stats.errors).toBe(0);
     });
 
-    it('issues SET LOCAL ROLE + SET LOCAL GUC before DELETE and re-anchors the chain', async () => {
+    it('issues SET LOCAL ROLE + SET LOCAL GUC before the prefix-cut and unsealed-sweep DELETEs, with no UPDATE', async () => {
       dbExecuteMock
         .mockResolvedValueOnce([
           { id: 'p1', org_id: 'org-a', retention_days: 30 },
         ]) // policy list
         .mockResolvedValueOnce(undefined) // SET LOCAL ROLE
         .mockResolvedValueOnce(undefined) // SET LOCAL GUC
-        .mockResolvedValueOnce({ rowCount: 5 }) // DELETE
-        .mockResolvedValueOnce(undefined) // re-anchor UPDATE (rows were deleted)
+        .mockResolvedValueOnce({ rowCount: 5 }) // prefix-cut DELETE
+        .mockResolvedValueOnce(undefined) // unsealed-old-rows sweep DELETE
         .mockResolvedValueOnce(undefined); // UPDATE last_cleanup_at
 
       const stats = await pruneExpiredAuditLogs();
@@ -206,7 +206,7 @@ describe('auditRetention worker', () => {
       expect(stats.rowsDeleted).toBe(5);
       expect(stats.errors).toBe(0);
 
-      // 1 select + 3 (role/guc/delete) + 1 re-anchor + 1 last_cleanup_at update = 6 calls.
+      // 1 select + 4 (role/guc/prefix-cut delete/unsealed sweep) + 1 last_cleanup_at update = 6 calls.
       expect(dbExecuteMock).toHaveBeenCalledTimes(6);
 
       const callTexts = dbExecuteMock.mock.calls.map((call: unknown[]) => {
@@ -221,25 +221,50 @@ describe('auditRetention worker', () => {
       });
       expect(callTexts[1]).toMatch(/SET LOCAL ROLE breeze_audit_admin/);
       expect(callTexts[2]).toMatch(/SET LOCAL breeze\.allow_audit_retention/);
+      // (a) prefix-cut DELETE: removes the maximal all-old chain prefix.
       expect(callTexts[3]).toMatch(/DELETE FROM audit_logs/);
-      // Re-anchor UPDATE rewrites prev_checksum=NULL on the new chain head.
-      expect(callTexts[4]).toMatch(/prev_checksum = NULL/);
+      expect(callTexts[3]).toMatch(/SELECT c\.audit_id/);
+      expect(callTexts[3]).toMatch(/FROM audit_log_chain c/);
+      // (b) unsealed-old-rows sweep: old rows with no chain entry.
+      expect(callTexts[4]).toMatch(/DELETE FROM audit_logs a/);
+      expect(callTexts[4]).toMatch(/NOT EXISTS \(SELECT 1 FROM audit_log_chain c WHERE c\.audit_id = a\.id\)/);
+      // The deferred-sealing design (issue #1002) never re-anchors: retention
+      // must issue NO UPDATE of audit_logs or audit_log_chain — the only
+      // UPDATE in the whole pass is the last_cleanup_at bookkeeping.
+      const updates = callTexts.filter((t) => /UPDATE/i.test(t));
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatch(/UPDATE audit_retention_policies/);
     });
 
-    it('skips chain re-anchor when no rows were deleted', async () => {
+    it('never issues an UPDATE even when no rows were deleted (no re-anchor exists)', async () => {
       dbExecuteMock
         .mockResolvedValueOnce([
           { id: 'p1', org_id: 'org-a', retention_days: 30 },
         ])
         .mockResolvedValueOnce(undefined) // SET LOCAL ROLE
         .mockResolvedValueOnce(undefined) // SET LOCAL GUC
-        .mockResolvedValueOnce({ rowCount: 0 }) // DELETE — no rows
+        .mockResolvedValueOnce({ rowCount: 0 }) // prefix-cut DELETE — no rows
+        .mockResolvedValueOnce(undefined) // unsealed-old-rows sweep DELETE
         .mockResolvedValueOnce(undefined); // UPDATE last_cleanup_at
 
       const stats = await pruneExpiredAuditLogs();
       expect(stats.rowsDeleted).toBe(0);
-      // 1 select + 3 (role/guc/delete) + 1 last_cleanup_at = 5 calls. No re-anchor.
-      expect(dbExecuteMock).toHaveBeenCalledTimes(5);
+      // 1 select + 4 (role/guc/prefix-cut delete/unsealed sweep) + 1 last_cleanup_at = 6 calls.
+      expect(dbExecuteMock).toHaveBeenCalledTimes(6);
+      // Design guarantee (issue #1002): retention never UPDATEs audit_logs or
+      // audit_log_chain — verify treats the first surviving entry's prev as
+      // the trusted anchor, so no re-anchor rewrite is ever issued.
+      const callTexts = dbExecuteMock.mock.calls.map((call: unknown[]) => {
+        const q = call[0];
+        const sqlObj = q as { queryChunks?: Array<{ value?: string[] } | string> };
+        if (Array.isArray(sqlObj.queryChunks)) {
+          return sqlObj.queryChunks
+            .map((c) => (typeof c === 'string' ? c : Array.isArray((c as { value?: unknown }).value) ? ((c as { value: string[] }).value).join('') : ''))
+            .join(' ');
+        }
+        return String(q);
+      });
+      expect(callTexts.some((t) => /UPDATE audit_logs|UPDATE audit_log_chain|prev_checksum/.test(t))).toBe(false);
     });
 
     it('continues to the next policy when one fails', async () => {
@@ -252,7 +277,7 @@ describe('auditRetention worker', () => {
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error('connection lost'))
-        // org-b: role, guc, DELETE ok, re-anchor ok, UPDATE ok
+        // org-b: role, guc, prefix-cut DELETE ok, sweep DELETE ok, last_cleanup_at UPDATE ok
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce({ rowCount: 3 })

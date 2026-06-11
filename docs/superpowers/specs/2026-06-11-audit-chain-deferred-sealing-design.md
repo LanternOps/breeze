@@ -48,7 +48,7 @@ inside commit processing, where no application code can interleave an `await`.
    |---|---|---|
    | `chain_seq` | `bigserial` PK | total order of the chain (per-org subsequences are walked by `WHERE org_id … ORDER BY chain_seq`) |
    | `audit_id` | `uuid` FK → `audit_logs(id)` ON DELETE CASCADE, UNIQUE | one seal per audit row |
-   | `org_id` | `uuid` NULL, FK → `organizations(id)` | chain key; NULL = system chain (mirrors `audit_logs.org_id`) |
+   | `org_id` | `uuid` NULL, FK → `organizations(id)` ON DELETE CASCADE (orphaned chain entries must not block org hard-deletes; GDPR erasure deletes explicitly first) | chain key; NULL = system chain (mirrors `audit_logs.org_id`) |
    | `content_checksum` | `varchar(128)` NOT NULL | `sha256(audit_log_canonical_payload(row, NULL))` — content-only, recomputable from the audit row |
    | `prev_chain_checksum` | `varchar(128)` NULL | previous entry's `chain_checksum` (NULL = genesis; non-NULL on an org's first surviving entry = retention-pruned history, treated as the trusted anchor) |
    | `chain_checksum` | `varchar(128)` NOT NULL | `sha256(COALESCE(prev,'') \|\| '\|' \|\| content_checksum)` |
@@ -123,7 +123,10 @@ REPEATABLE READ, where the head SELECT could read a stale snapshot) into a
 shape-1 policies (`breeze_has_org_access(org_id)` — auto-discovered by
 `rls-coverage`, no allowlist entry); `breeze_app` gets SELECT+INSERT only
 (UPDATE/DELETE revoked); append-only trigger allows **DELETE only** under
-`breeze.allow_audit_retention='1'` — **UPDATE is never allowed**, not even for
+`breeze.allow_audit_retention='1'` or via an FK cascade (`pg_trigger_depth() > 1`
+— the audit_logs parent is itself retention-GUC-guarded, and an organizations
+parent delete is total org erasure; direct SQL DELETE stays blocked) —
+**UPDATE is never allowed**, not even for
 retention, because the design needs no chain rewrite ever (see Retention).
 DELETE granted to `breeze_audit_admin` only (post-#915 a separate login
 credential). Hiding an `audit_logs` tamper by rewriting the chain therefore
