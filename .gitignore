@@ -62,6 +62,9 @@ target/
 # Playwright MCP screenshots
 .playwright-mcp/
 
+# impeccable design-critique plugin artifacts
+.impeccable/
+
 # Claude Code
 CLAUDE.md
 .claude/plans/
