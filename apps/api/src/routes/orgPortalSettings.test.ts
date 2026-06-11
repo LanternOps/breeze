@@ -218,7 +218,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     const res = await patch({ enableTickets: false });
     expect(res.status).toBe(200);
     expect(auditSpy).toHaveBeenCalledTimes(1);
-    const event = auditSpy.mock.calls[0][1];
+    const event = auditSpy.mock.calls[0]?.[1];
     expect(event.action).toBe('organization.portal_settings.update');
     expect(event.orgId).toBe(ORG_ID);
     expect(event.details.changedFields).toEqual(['enableTickets']);
